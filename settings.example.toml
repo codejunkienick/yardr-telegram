@@ -1,0 +1,67 @@
+# EXAMPLE settings for one city's Telegram bridge. Copy it to
+# ~/.config/<workspace_name>/telegram-bridge.toml (workspace_name is in the
+# city's .gc/site.toml), chmod 600, and replace every value: the names, ids
+# and paths below are examples, not defaults. The bridge refuses to start on
+# a missing file, a file readable by others, an unknown key or a bad value,
+# and says which. Nothing here is a credential: the token and the callback
+# secret stay in their own owner-only files.
+
+city = "example-city"                       # gc's city name (the extmsg scope)
+state_dir = "/home/alex/example-city/.runtime/attention"   # ledger, offset, inbound files, heartbeat
+port = 8932                                 # loopback callback port, unique per city on the host
+token_file = "~/.config/example-city/telegram-bot-token"
+callback_secret_file = "~/.config/example-city/telegram-callback-secret"
+# lock_dir = "~/.config/example-city"       # default: the token file's directory
+# unit = "example-city-telegram.service"    # default: <city>-telegram.service
+# python = "/usr/bin/python3"
+user_display_name = "Alex"                  # how inbound messages name the paired user
+timezone = "Europe/Berlin"                  # times in /quota and notices; default UTC
+# gc_base_url = "http://127.0.0.1:8372"     # loopback only
+# gc_api_token_file = "~/.config/example-city/gc-api-token"
+# health_file = "/home/alex/example-city/.runtime/city-health.json"  # quota-exhausted notice
+# pairing_update_id = 0                     # first offset is this + 1, only for a new ledger
+# agent = "mayor"                           # the gc agent this bridge serves; default mayor
+# handler_write_paths = ["/home/alex/example-city/var/deploy"]  # dirs [[command]] handlers may write
+
+[bot]
+bot_id = 1000000001                         # numeric, from getMe
+user_id = 1000000002                        # the paired user's numeric id
+chat_id = 1000000002                        # private chat: equals user_id
+account_id = "example_city_bot"             # bot username, the GC adapter account
+
+# The paired chat's "/" menu, in order (`bridge.py set-commands` registers it).
+[[menu]]
+command = "status"
+description = "What's running, what landed, what waits on you"
+
+# A command the city's own handler answers instead of the agent (OPERATIONS.md,
+# "City commands"): /deploy, and button presses whose data starts with "deploy:".
+# [[command]]
+# name = "deploy"
+# description = "Deploy a branch"
+# handler = "/home/alex/example-city/bin/telegram-deploy"   # or url = "http://127.0.0.1:8095/deploy"
+# menu = true                               # in the "/" menu; default true
+# callback_prefix = "deploy:"               # default "<name>:"
+# timeout = 10                              # seconds, 1-30
+
+[quota]
+enabled = false                             # true: the bridge answers /quota itself (aiquokka)
+# gate_file = "/home/alex/example-city/.runtime/quota-gate.json"
+# deepseek_key_file = "~/.config/example-city/deepseek-api-key"
+
+[transcribe]
+enabled = true                              # voice and audio notes get an English transcript
+# whisper_cli = "~/work/whisper.cpp/build/bin/whisper-cli"
+# models_dir = "~/work/whisper.cpp/models"
+# model = "large-v3-turbo-q5_0"
+# vad_model = "silero-v6.2.0"
+# cpus = "2-7,10-15"                        # CPUs the transcriber may use; default every CPU
+# threads = 4                               # 1-4
+# timeout = 120                             # base seconds, 5-300
+# timeout_per_minute = 120                  # added per minute of audio; killed when the total runs out
+# gpu = false                               # true: the GPU when ComfyUI is idle and the card has room, else the CPU
+# comfyui_url = "http://127.0.0.1:8188"     # GET /queue and /system_stats (+ /free with comfyui_free); loopback IP only
+# gpu_min_free_mb = 2048                    # free video memory a GPU run needs, MiB
+# comfyui_free = false                      # true: ask an idle ComfyUI to unload its models (POST /free) for the GPU
+# Every city on the host waits in one transcription queue,
+# ~/.local/state/voice-transcribe; it is deliberately not a setting.

@@ -317,6 +317,77 @@ class TranscribeSettingsTests(unittest.TestCase):
         self.assertEqual(bridge._transcribe_gpu_allowance(0), 30)  # the floor
         self.assertEqual(bridge._transcribe_gpu_allowance(None), 240)  # (60 + 900) / 4
 
+    def check_file(self, name='gpu-check', mode=0o755):
+        path = self.root / name
+        path.write_text('#!/bin/sh\n')
+        path.chmod(mode)
+        return path
+
+    def test_each_method_loads(self):
+        cpu = self.load('enabled = true\nmethod = "cpu"\n')
+        self.assertEqual(cpu.transcribe['method'], 'cpu')
+        self.assertIs(cpu.transcribe['gpu'], False)
+        self.assertEqual(cpu.transcribe['env']['VOICE_TRANSCRIBE_METHOD'], 'cpu')
+        self.assertNotIn('VOICE_TRANSCRIBE_GPU_CHECK', cpu.transcribe['env'])
+        self.assertNotIn('gpu_check', cpu.transcribe)
+        gpu = self.load('enabled = true\nmethod = "gpu"\n')
+        self.assertEqual(gpu.transcribe['method'], 'gpu')
+        self.assertEqual(gpu.transcribe['env']['VOICE_TRANSCRIBE_METHOD'], 'gpu')
+        self.assertNotIn('VOICE_TRANSCRIBE_GPU_CHECK', gpu.transcribe['env'])
+        auto = self.load('enabled = true\nmethod = "auto"\n')
+        default_check = str(PACK / 'transcriber' / 'gpu_check.py')
+        self.assertEqual(auto.transcribe['method'], 'auto')
+        self.assertEqual(auto.transcribe['gpu_check'], default_check)
+        self.assertEqual(auto.transcribe['env']['VOICE_TRANSCRIBE_METHOD'], 'auto')
+        self.assertEqual(auto.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], default_check)
+        self.assertTrue(os.access(default_check, os.X_OK))
+
+    def test_method_auto_uses_a_configured_safe_gpu_check(self):
+        check = self.check_file()
+        settings = self.load(f'enabled = true\nmethod = "auto"\ngpu_check = "{check}"\n')
+        self.assertEqual(settings.transcribe['gpu_check'], str(check))
+        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], str(check))
+        options = vt.Options(environ=settings.transcribe['env'])
+        self.assertEqual((options.method, options.gpu, options.gpu_check), ('auto', True, str(check)))
+
+    def test_method_and_legacy_gpu_keys_refuse_together(self):
+        for table, pattern in (
+                ('enabled = true\nmethod = "cpu"\ngpu = false\n', 'set one of transcribe.method and transcribe.gpu'),
+                ('enabled = true\nmethod = "gpu"\ngpu = true\n', 'set one of transcribe.method and transcribe.gpu'),
+                ('enabled = true\nmethod = "auto"\ncomfyui_url = "http://127.0.0.1:8188"\n',
+                 'transcribe.comfyui_url and comfyui_free belong to gpu = true'),
+                ('enabled = true\nmethod = "cpu"\ncomfyui_free = true\n',
+                 'transcribe.comfyui_url and comfyui_free belong to gpu = true'),
+                ('enabled = true\nmethod = "fast"\n', 'transcribe.method must be one of'),
+                ('enabled = true\nmethod = 1\n', 'transcribe.method must be one of')):
+            with self.subTest(table=table):
+                with self.assertRaisesRegex(b.SettingsError, pattern):
+                    self.load(table)
+
+    def test_gpu_check_needs_method_auto_and_a_safe_executable(self):
+        check = self.check_file()
+        for table in ('enabled = true\ngpu_check = "%s"\n',
+                      'enabled = true\nmethod = "cpu"\ngpu_check = "%s"\n',
+                      'enabled = true\nmethod = "gpu"\ngpu_check = "%s"\n',
+                      'enabled = true\ngpu = true\ngpu_check = "%s"\n'):
+            with self.subTest(table=table):
+                with self.assertRaisesRegex(b.SettingsError, 'transcribe.gpu_check needs method = "auto"'):
+                    self.load(table % check)
+        for bad, mode in ((self.root / 'absent-check', None), (self.check_file('not-executable', 0o644), None),
+                          (self.check_file('group-writable', 0o775), None)):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(b.SettingsError, 'transcribe.gpu_check'):
+                    self.load(f'enabled = true\nmethod = "auto"\ngpu_check = "{bad}"\n')
+        with self.assertRaisesRegex(b.SettingsError, 'transcribe.gpu_check'):
+            self.load('enabled = true\nmethod = "auto"\ngpu_check = "relative/check"\n')
+
+    def test_method_gpu_and_auto_get_the_gpu_allowance_and_cpu_does_not(self):
+        for method, allowance in (('cpu', 0), ('gpu', 30), ('auto', 30)):
+            with self.subTest(method=method):
+                settings = self.load(f'enabled = true\nmethod = "{method}"\ntimeout = 60\ntimeout_per_minute = 90\n')
+                bridge = b.Bridge(settings.config, None, 'SECRET', None, transcribe=settings.transcribe)
+                self.assertEqual(bridge._transcribe_gpu_allowance(0), allowance)
+
     def test_disabled_transcription_still_validates_its_table(self):
         self.assertIsNone(self.load('enabled = false\nmodel = "small"\n').transcribe)
 
@@ -463,6 +534,16 @@ class InstallCheckTests(unittest.TestCase):
         results = b.install_problems(self.settings, which=lambda n: n, sums=sums)
         self.assertIn((False, 'bot token file must be an owner-only regular file'), results)
         self.assertNotIn('TESTTOKEN', repr(results))
+
+    def test_an_unlisted_model_fails_naming_the_supported_models(self):
+        sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
+        settings = b.Settings(**dict(self.settings.__dict__, model='tiny'))
+        self.assertEqual(b.supported_models(settings),
+                         ['large-v3-turbo-q5_0', 'small.en', 'small.en-q5_1', 'base.en', 'small'])
+        self.assertEqual([line for ok, line in b.install_problems(settings, which=lambda n: '/usr/bin/' + n,
+                                                                  sums=sums) if not ok],
+                         ['transcribe model tiny is not one of the supported models: '
+                          'large-v3-turbo-q5_0, small.en, small.en-q5_1, base.en, small'])
 
     def test_the_pack_records_the_handed_over_model_sums(self):
         sums = b.recorded_sums()

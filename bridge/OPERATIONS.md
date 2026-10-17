@@ -379,7 +379,9 @@ notes one at a time and relays a second message, `[voice <m:ss> transcript
 `<id>-transcript`.
 
 The transcriber is `<python> <pack>/transcriber/adapter.py AUDIO MODEL DEVICE`,
-DEVICE `cpu` (`gpu = false`) or `auto` (`gpu = true`, below).
+DEVICE `cpu` (`method = "cpu"`, the default, or legacy `gpu = false`), `check`
+(`method = "auto"`), `gpu` (`method = "gpu"`) or `auto` (the legacy
+`gpu = true` form, below).
 It prints `{"state": "running"}` when its turn in the host-wide queue starts,
 then, last, one JSON line: `{"text": ...}` or `{"error": <code>}`, with
 `"device": <label>` once whisper ran. It runs
@@ -401,9 +403,54 @@ cannot be set fails the note (`fence_failed`) rather than running unfenced.
 
 ### GPU or CPU
 
-With `gpu = false` (the default) every note runs on the CPU exactly as
-before: `-ng`, and the bridge starts the adapter with `CUDA_VISIBLE_DEVICES`
-empty. With `gpu = true` the transcriber picks the device per note, once
+`[transcribe] method` chooses where notes run: `cpu` (the default) is
+always the CPU (`cpu: gpu-off`), `gpu` is always the GPU with no check,
+and `auto` asks the configured GPU check (below) once per note. A settings
+file with `method` may not also set `gpu`, `comfyui_url` or
+`comfyui_free`; a city that wants its own GPU decision, including one
+based on ComfyUI, writes it as its own `gpu_check` command. There is no
+other off switch: no check at all is `method = "gpu"`. In every method
+mode a GPU run that fails or runs past its GPU limit (a quarter of the
+run limit, at least 30 s) is retried once on the CPU (`cpu: gpu-failed`).
+
+#### The GPU check
+
+With `method = "auto"`, once the note's turn has started and its audio is
+decoded, right before whisper, the transcriber runs the check once:
+
+- argv is `[gpu_check]` (default `<pack>/transcriber/gpu_check.py`), no
+  shell, empty stdin, its own directory as the working directory, and
+  only `PATH=/usr/local/bin:/usr/bin:/bin`, `HOME`, `LANG` and
+  `GPU_MIN_FREE_MB=<gpu_min_free_mb>` in its environment. At most 15 s,
+  then its whole process group is killed.
+- Its stdout, read up to 4 KiB, must be exactly one JSON object
+  `{"gpu": true}` or `{"gpu": true|false, "reason": "<reason>"}`, where a
+  reason is 1-32 characters of `a-z`, `0-9` or `-` and not one of the
+  transcriber's own `gpu-failed`, `gpu-off` or `check-error`.
+- `true` runs on the GPU (label `gpu`, or `gpu: <reason>`), `false` on
+  the CPU (label `cpu: <reason>`, or `cpu: busy` without a reason), and
+  anything else — a non-zero exit, a timeout, bad JSON, a bad or reserved
+  reason — on the CPU with `cpu: check-error`. Nothing the check prints
+  reaches the log beyond that label.
+
+The pack's default check is a small standard-library script. It uses
+`nvidia-smi --query-gpu=memory.used,memory.total` only when that is found
+on PATH: free MiB at least `GPU_MIN_FREE_MB` (default 2048) answers
+`{"gpu": true}`, less answers `{"gpu": false, "reason": "vram-low"}`,
+and when it cannot tell (no `nvidia-smi`, a non-zero exit, or an answer
+that is not one well-formed line) it answers
+`{"gpu": true, "reason": "unknown"}`, so the GPU is tried and a failing
+GPU run retries on the CPU. That `nvidia-smi` runs in its own process
+group, reads at most 4 KiB in at most 5 s, and is killed by process group
+on timeout or overrun. No vendor tool runs in the bridge, the
+adapter or the method paths of the transcriber itself.
+
+#### The legacy `gpu = true` form
+
+A `[transcribe]` table without `method` keeps the form it had: with
+`gpu = false` every note runs on the CPU exactly as before: `-ng`, and
+the bridge starts the adapter with `CUDA_VISIBLE_DEVICES` empty. With
+`gpu = true` the transcriber picks the device per note, once
 the note reaches the front of the host-wide queue (and its audio is
 decoded), and never disturbs a ComfyUI render on the same card:
 
@@ -449,10 +496,11 @@ decoded), and never disturbs a ComfyUI render on the same card:
 A CPU run never sees the GPU (`CUDA_VISIBLE_DEVICES` empty), whichever path
 led to it. The bridge logs one line per note with the device and the
 reason, never the text: `voice transcription done (msg <id>): <s> s; device
-gpu`, `device gpu: comfy-freed` (after step 3), or `device cpu: <reason>` with
-reason `comfy-busy`, `vram-low`, `api-error`, `gpu-failed` or `gpu-off`; a
-failure line ends the same way.
-An adapter device label outside that set makes the result `invalid output`.
+gpu`, `device gpu: comfy-freed` (after step 3 of the legacy form), `device
+gpu: <reason>` or `device cpu: <reason>` with a reason of 1-32 characters
+of `a-z`, `0-9` or `-` (the legacy reasons are `comfy-busy`, `vram-low`,
+`api-error`, `gpu-failed` and `gpu-off`); a failure line ends the same way.
+An adapter device label outside that shape makes the result `invalid output`.
 Measured on an RTX 5060 Ti 16 GB with `large-v3-turbo-q5_0`: a 72 s note in
 2.4 s on the GPU at about 1.1 GB of video memory, against about 54 s per
 audio minute on 4 CPU threads.
@@ -490,10 +538,26 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `threads` | `4` | whisper-cli threads, 1-4 |
 | `timeout` | `120` | base seconds of a run, 5-300 (the decode limit, and the start of the whisper limit) |
 | `timeout_per_minute` | `120` | seconds of whisper limit added per minute of audio (the bridge uses Telegram's duration, assuming 10 minutes when it gives none) |
-| `gpu` | `false` | `true` runs a note on the GPU when ComfyUI leaves it free (above); `false` is the CPU only |
-| `comfyui_url` | `"http://127.0.0.1:8188"` | ComfyUI's API: `http://` on a literal loopback IP (`127.x.x.x` or `[::1]`), optional port, no path; anything else is refused |
-| `gpu_min_free_mb` | `2048` | free video memory, MiB, a GPU run needs (256-131072); whisper itself takes about 1.1 GB |
-| `comfyui_free` | `false` | `true` asks an idle ComfyUI that holds the memory to unload its models (step 3 above); matters only with `gpu = true` |
+| `method` | `cpu` | `auto`, `cpu` or `gpu` (above); with it, `gpu`, `comfyui_url` and `comfyui_free` are refused |
+| `gpu_check` | `<pack>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner |
+| `gpu` | `false` | legacy form without `method`: `true` runs a note on the GPU when ComfyUI leaves it free (above); `false` is the CPU only |
+| `comfyui_url` | `"http://127.0.0.1:8188"` | legacy `gpu = true` only: ComfyUI's API, `http://` on a literal loopback IP (`127.x.x.x` or `[::1]`), optional port, no path; anything else is refused |
+| `gpu_min_free_mb` | `2048` | free video memory, MiB, a GPU run needs (256-131072); whisper itself takes about 1.1 GB; also the check's `GPU_MIN_FREE_MB` |
+| `comfyui_free` | `false` | legacy form only: `true` asks an idle ComfyUI that holds the memory to unload its models (step 3 above); matters only with `gpu = true` |
+
+The supported models are the `ggml-<name>.bin` entries of
+`<pack>/transcriber/models.sha256` except the VAD model. `load_settings`
+accepts any well-formed `model` name, but `check-install` fails an
+unlisted one with `FAIL  transcribe model <name> is not one of the
+supported models: <list>`:
+
+| model | file | speed at 4 threads | language |
+| --- | --- | --- | --- |
+| `large-v3-turbo-q5_0` | `ggml-large-v3-turbo-q5_0.bin`, about 574 MB | about 210 core-seconds per minute of audio | multilingual, forced to English |
+| `small.en` | `ggml-small.en.bin`, about 488 MB | about 50 core-seconds per minute, with more slips in names | English-only |
+| `small.en-q5_1` | `ggml-small.en-q5_1.bin`, about 191 MB | not measured here | English-only |
+| `base.en` | `ggml-base.en.bin`, about 148 MB | not measured here | English-only |
+| `small` | `ggml-small.bin`, about 488 MB | not measured here | multilingual, forced to English |
 
 `install.sh` creates the queue directory and checks `whisper-cli`, both model files and
 their SHA-256 against `<pack>/transcriber/models.sha256`.
@@ -517,8 +581,10 @@ characters. Oversize audio keeps the plain skip note.
 `voice-transcribe [--model NAME|PATH] [--force] [--quiet] <file|dir>...` is the
 same transcriber by hand: it writes `<name>.txt` next to each audio file and
 prints the text (`install.sh` links it into `~/.local/bin`). It runs on the
-CPU unless `VOICE_TRANSCRIBE_GPU=1` is set (then it picks the device as
-above, with `VOICE_TRANSCRIBE_COMFYUI_URL`,
+CPU unless `VOICE_TRANSCRIBE_METHOD` is `auto` or `gpu` (with
+`VOICE_TRANSCRIBE_GPU_CHECK` for `auto`), or, with no method set,
+`VOICE_TRANSCRIBE_GPU=1` is set (then it picks the device by the legacy
+form above, with `VOICE_TRANSCRIBE_COMFYUI_URL`,
 `VOICE_TRANSCRIBE_GPU_MIN_FREE_MB` and `VOICE_TRANSCRIBE_COMFYUI_FREE=1` for
 `comfyui_free`), and prints one
 `voice-transcribe: <file>: device <label>` line per file on stderr.
@@ -527,20 +593,27 @@ above, with `VOICE_TRANSCRIBE_COMFYUI_URL`,
 
 After the change is integrated, on the host:
 
-1. Add `gpu = true` under `[transcribe]` in the city's
-   `~/.config/<city>/telegram-bridge.toml` (keep it mode 0600).
+1. Add `method = "auto"` under `[transcribe]` in the city's
+   `~/.config/<city>/telegram-bridge.toml` (keep it mode 0600), removing
+   any `gpu`, `comfyui_url` and `comfyui_free` there; or `method = "gpu"`
+   for the GPU with no check at all. A city with its own GPU decision
+   also sets `gpu_check` to its own command.
 2. `python3 <pack>/bridge/bridge.py --settings <file> probe` must load the
    settings without an error.
 3. `python3 <pack>/bridge/bridge.py --settings <file> check-install --gpu-probe`
-   proves the GPU where the bridge runs, before the restart (below).
+   proves the GPU where the bridge runs, before the restart (below). It
+   skips with `method = "cpu"` (or legacy `gpu = false`) and probes with
+   `method = "auto"` or `"gpu"` (or legacy `gpu = true`).
 4. `systemctl --user restart <city>-telegram.service`, then send a voice
    note: the journal (`journalctl --user -u <city>-telegram.service`) shows
-   `voice transcription done (msg <id>): ... device gpu` with ComfyUI idle.
-   Back out with `gpu = false` and another restart.
-5. Optionally add `comfyui_free = true` too, when ComfyUI keeps its models
-   loaded while idle and notes show `device cpu: vram-low`: after a
-   restart such a note shows `device gpu: comfy-freed`, and ComfyUI's next
-   run loads its model again first. Back out with `comfyui_free = false`.
+   `voice transcription done (msg <id>): ... device gpu`. Back out with
+   `method = "cpu"` and another restart.
+5. The legacy form still works unchanged for a file without `method`:
+   `gpu = true`, optionally with `comfyui_free = true` when ComfyUI keeps
+   its models loaded while idle and notes show `device cpu: vram-low`;
+   after a restart such a note shows `device gpu: comfy-freed`, and
+   ComfyUI's next run loads its model again first. That form is removed
+   by a later change; new setups use `method`.
 
 `check-install --gpu-probe [--clip <path>]` transcribes a short clip with the
 pack's transcriber and `VOICE_TRANSCRIBE_GPU=1` inside a transient unit
@@ -557,9 +630,15 @@ comfy-freed`: the probe decides its device like a note, so with
 `FAIL  gpu probe: device
 cpu: gpu-failed` (the GPU failed inside the sandbox; check-install exits
 non-zero); `skip  gpu probe: ComfyUI busy or card full (<reason>), try later`
-for `comfy-busy`, `vram-low` or `api-error`; one `skip` line with
-transcription or `gpu` off; and a `FAIL` line for a missing clip, a missing
-writable path of the unit or a transcriber error.
+for `comfy-busy`, `vram-low` or `api-error` in the legacy form; one `skip` line with
+transcription off, legacy `gpu` off or `method = "cpu"`; and a `FAIL` line
+for a missing clip, a missing writable path of the unit or a transcriber error.
+With `method = "auto"` a GPU check that answers `false` is not a failure:
+any `cpu: <reason>` it gives (including `cpu: busy` without a reason and
+the default check's `cpu: vram-low`) prints `skip  gpu probe: GPU not
+free now (cpu: <reason>), try later` and check-install still succeeds, as
+with the legacy busy answers; `cpu: gpu-failed` and `cpu: check-error`
+(a check the transcriber could not use) stay `FAIL`.
 
 ### Durable transcript queue
 

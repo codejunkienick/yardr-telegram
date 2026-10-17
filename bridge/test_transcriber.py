@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 PACK = Path(__file__).resolve().parents[1]
 TRANSCRIBER = PACK / 'transcriber'
@@ -98,8 +99,8 @@ class FakeWhisperCase(unittest.TestCase):
                         VOICE_TRANSCRIBE_THREADS='3', FAKE_WHISPER_LOG=str(self.log),
                         VOICE_TRANSCRIBE_COMFYUI_URL=f'http://127.0.0.1:{closed_port()}')
 
-    def adapter(self, *answers, audio=None, model='large-v3-turbo-q5_0', device='cpu'):
-        env = dict(self.env, FAKE_WHISPER_ANSWERS=json.dumps(list(answers)))
+    def adapter(self, *answers, audio=None, model='large-v3-turbo-q5_0', device='cpu', extra_env=None):
+        env = dict(self.env, FAKE_WHISPER_ANSWERS=json.dumps(list(answers)), **(extra_env or {}))
         return subprocess.run([sys.executable, str(TRANSCRIBER / 'adapter.py'), str(audio or self.audio), model, device],
                               env=env, capture_output=True, text=True, timeout=60)
 
@@ -213,7 +214,7 @@ class TranscriberTests(FakeWhisperCase):
         self.assertEqual(self.result('unused'), {'error': 'whisper_missing'})
 
     def test_usage_errors_exit_2(self):
-        for device in ('cuda', 'gpu', ''):
+        for device in ('cuda', 'auto2', ''):
             with self.subTest(device=device):
                 done = self.adapter('x', device=device)
                 self.assertEqual((done.returncode, done.stdout), (2, ''))
@@ -237,6 +238,220 @@ class TranscriberTests(FakeWhisperCase):
                          ['70-voice.ogg', 'bin', 'home', 'models', 'whisper-calls.jsonl', 'whisper-calls.jsonl.cuda',
                           'whisper-calls.jsonl.fence'])
         self.assertEqual(os.listdir(self.queue), ['queue.lock'])  # its ticket is gone
+
+
+class GpuCheckMethodTests(FakeWhisperCase):
+    """method auto / gpu / cpu through the adapter: the check runs once with
+    a fixed environment, its contract decides the device, method gpu runs
+    no check at all, and a failed GPU run retries once on the CPU."""
+
+    def setUp(self):
+        super().setUp()
+        self.check_dir = self.root / 'gpu-check'
+        self.check_dir.mkdir()
+        self.check = self.check_dir / 'check.py'
+        self.check_log = self.root / 'check-calls.jsonl'
+
+    def write_check(self, body):
+        self.check.write_text(
+            f'#!{sys.executable}\nimport json, os, sys, time\n'
+            f'with open({str(self.check_log)!r}, "a") as stream:\n'
+            '    stream.write(json.dumps(dict(env=dict(os.environ), cwd=os.getcwd(), argv=sys.argv[1:])) + "\\n")\n'
+            + body)
+        self.check.chmod(0o755)
+        return str(self.check)
+
+    def check_calls(self):
+        if not self.check_log.exists():
+            return []
+        return [json.loads(line) for line in self.check_log.read_text().splitlines()]
+
+    def checked(self, *answers, **kwargs):
+        kwargs.setdefault('device', 'check')
+        kwargs.setdefault('extra_env', {})['VOICE_TRANSCRIBE_GPU_CHECK'] = str(self.check)
+        return self.result(*answers, **kwargs)
+
+    def test_a_true_check_runs_whisper_on_the_gpu_with_a_fixed_environment(self):
+        self.write_check('print(\'{"gpu": true}\')\n')
+        self.assertEqual(self.checked('Ship it.'), {'text': 'Ship it.'})
+        self.assertEqual(self.device, 'gpu')
+        [argv] = self.whisper_calls()
+        self.assertNotIn('-ng', argv)
+        self.assertEqual(self.whisper_cuda(), [None])
+        [call] = self.check_calls()
+        self.assertEqual(call['argv'], [])
+        self.assertEqual(call['cwd'], str(self.check_dir))
+        self.assertEqual(set(call['env']), {'PATH', 'HOME', 'LANG', 'GPU_MIN_FREE_MB'})
+        self.assertEqual(call['env']['PATH'], '/usr/local/bin:/usr/bin:/bin')
+        self.assertEqual(call['env']['GPU_MIN_FREE_MB'], '2048')
+
+    def test_a_true_check_with_a_reason_labels_the_gpu_with_it(self):
+        self.write_check('print(\'{"gpu": true, "reason": "unknown"}\')\n')
+        self.assertEqual(self.checked('Fine.'), {'text': 'Fine.'})
+        self.assertEqual(self.device, 'gpu: unknown')
+        self.assertNotIn('-ng', self.whisper_calls()[0])
+
+    def test_a_false_check_runs_on_the_cpu(self):
+        for body, label in (('print(\'{"gpu": false, "reason": "operator-busy"}\')\n', 'cpu: operator-busy'),
+                            ('print(\'{"gpu": false}\')\n', 'cpu: busy')):
+            with self.subTest(label=label):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.cuda').unlink(missing_ok=True)
+                self.check_log.unlink(missing_ok=True)
+                self.write_check(body)
+                self.assertEqual(self.checked('Fine.'), {'text': 'Fine.'})
+                self.assertEqual(self.device, label)
+                self.assertIn('-ng', self.whisper_calls()[0])
+                self.assertEqual(self.whisper_cuda(), [''])
+                self.assertEqual(len(self.check_calls()), 1)
+
+    def test_anything_outside_the_check_contract_means_check_error_on_the_cpu(self):
+        for body in ('print("not json")\n',
+                     'print(\'{"gpu": true, "reason": null}\')\n',
+                     'print(\'{"gpu": false, "reason": null}\')\n',
+                     'print(\'{"gpu": true, "reason": "gpu-failed"}\')\n',
+                     'print(\'{"gpu": true, "reason": "Bad Reason"}\')\n',
+                     'print(\'{"gpu": "yes"}\')\n',
+                     'print(\'{"gpu": true, "extra": 1}\')\n',
+                     'print("x" * 5000)\n',
+                     'print(\'{"gpu": true}\')\nsys.exit(3)\n'):
+            with self.subTest(body=body):
+                self.log.unlink(missing_ok=True)
+                self.write_check(body)
+                self.assertEqual(self.checked('Fine.'), {'text': 'Fine.'})
+                self.assertEqual(self.device, 'cpu: check-error')
+                self.assertIn('-ng', self.whisper_calls()[0])
+
+    def test_a_check_that_times_out_means_check_error(self):
+        self.write_check('time.sleep(30)\n')
+        options = vt.Options(environ=dict(self.env, VOICE_TRANSCRIBE_GPU_CHECK=str(self.check)), method='auto')
+        started = time.monotonic()
+        with _patched_timeout():
+            self.assertEqual(vt.choose_device(options), ('cpu', 'check-error'))
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_method_auto_with_the_default_check_and_no_nvidia_smi_tries_the_gpu(self):
+        # The default check (transcriber/gpu_check.py) run through
+        # run_gpu_check's fixed environment, with GPU_CHECK_PATH narrowed to
+        # a directory holding only a python3 link: no nvidia-smi is found, so
+        # the check answers unknown and whisper runs on the GPU.
+        check_bin = self.root / 'default-check-bin'
+        check_bin.mkdir()
+        (check_bin / 'python3').symlink_to(sys.executable)
+        env = dict(self.env, FAKE_WHISPER_ANSWERS='["Ship it."]')
+        labels = []
+        with patch.dict(os.environ, env):
+            os.environ.pop('CUDA_VISIBLE_DEVICES', None)
+            options = vt.Options(environ=env, method='auto')
+            self.assertEqual(options.gpu_check, str(TRANSCRIBER / 'gpu_check.py'))
+            with patch.object(vt, 'GPU_CHECK_PATH', str(check_bin)), \
+                    patch.object(vt, 'fence', lambda options: None):
+                text = vt.transcribe(str(self.audio), options, on_device=labels.append)
+        self.assertEqual(text, 'Ship it.')
+        self.assertEqual(labels, ['gpu: unknown'])
+        [argv] = self.whisper_calls()
+        self.assertNotIn('-ng', argv)
+        self.assertEqual(self.whisper_cuda(), [None])
+        self.assertEqual(self.nvidia_smi_calls(), [])
+
+    def test_method_gpu_runs_no_check_and_retries_a_failure_on_the_cpu(self):
+        self.write_check('print(\'{"gpu": false}\')\n')
+        env = {'VOICE_TRANSCRIBE_GPU_CHECK': str(self.check)}
+        self.assertEqual(self.result('Ship it.', device='gpu', extra_env=env), {'text': 'Ship it.'})
+        self.assertEqual(self.device, 'gpu')
+        self.assertNotIn('-ng', self.whisper_calls()[0])
+        self.assertEqual(self.check_calls(), [])
+        self.log.unlink()
+        self.assertEqual(self.result('FAIL', 'Still here.', device='gpu', extra_env=env),
+                         {'text': 'Still here.'})
+        self.assertEqual(self.device, 'cpu: gpu-failed')
+        gpu_run, cpu_run = self.whisper_calls()
+        self.assertNotIn('-ng', gpu_run)
+        self.assertIn('-ng', cpu_run)
+        self.assertEqual(self.check_calls(), [])
+
+    def test_method_cpu_never_runs_a_check_or_the_gpu(self):
+        self.write_check('print(\'{"gpu": true}\')\n')
+        env = {'VOICE_TRANSCRIBE_GPU_CHECK': str(self.check)}
+        self.assertEqual(self.result('Fine.', device='cpu', extra_env=env), {'text': 'Fine.'})
+        self.assertEqual(self.device, 'cpu: gpu-off')
+        self.assertIn('-ng', self.whisper_calls()[0])
+        self.assertEqual(self.check_calls(), [])
+
+
+class _patched_timeout:
+    """Shorten the GPU check timeout for one in-process choose_device call."""
+
+    def __enter__(self):
+        self.old = vt.GPU_CHECK_TIMEOUT
+        vt.GPU_CHECK_TIMEOUT = 0.2
+        return self
+
+    def __exit__(self, *exc):
+        vt.GPU_CHECK_TIMEOUT = self.old
+        return False
+
+
+class GpuCheckScriptTests(unittest.TestCase):
+    """transcriber/gpu_check.py against a fake nvidia-smi (or none)."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+
+    def run_check(self, smi=None, exit_code='0', path=None, min_free='2048'):
+        if smi is not None:
+            fake = self.bin / 'nvidia-smi'
+            fake.write_text(FAKE_NVIDIA_SMI)
+            fake.chmod(0o755)
+        env = dict(PATH=str(self.bin) if path is None else path, HOME=str(self.root),
+                   GPU_MIN_FREE_MB=min_free, FAKE_WHISPER_LOG=str(self.root / 'log'),
+                   FAKE_NVIDIA_SMI=smi or '', FAKE_NVIDIA_SMI_EXIT=exit_code)
+        done = subprocess.run([sys.executable, str(TRANSCRIBER / 'gpu_check.py')],
+                              env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_enough_free_memory_means_the_gpu(self):
+        self.assertEqual(self.run_check('926, 16311\n'), {'gpu': True})
+        self.assertEqual(self.run_check('926, 16311\n', min_free='20000'),
+                         {'gpu': False, 'reason': 'vram-low'})
+
+    def test_too_little_free_memory_means_vram_low(self):
+        self.assertEqual(self.run_check('15000, 16311\n'), {'gpu': False, 'reason': 'vram-low'})
+
+    def test_a_missing_nvidia_smi_means_try_the_gpu(self):
+        empty = self.root / 'empty'
+        empty.mkdir()
+        self.assertEqual(self.run_check(path=str(empty)), {'gpu': True, 'reason': 'unknown'})
+
+    def test_a_malformed_or_failing_nvidia_smi_means_try_the_gpu(self):
+        for smi, code in (('N/A, 16311\n', '0'), ('', '0'), ('926, 16311\n926, 16311\n', '0'),
+                          ('926, 16311\n', '9')):
+            with self.subTest(smi=smi, code=code):
+                self.assertEqual(self.run_check(smi, exit_code=code), {'gpu': True, 'reason': 'unknown'})
+
+    def test_a_flooding_nvidia_smi_is_capped_and_its_group_is_killed(self):
+        marker = self.root / 'descendant-ran'
+        fake = self.bin / 'nvidia-smi'
+        fake.write_text(
+            f'#!{sys.executable}\nimport subprocess, sys, time\n'
+            f'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.6); '
+            f'open({str(marker)!r}, \'w\').write(\'x\')"])\n'
+            'while True:\n'
+            '    sys.stdout.write("x" * 8192)\n'
+            '    sys.stdout.flush()\n')
+        fake.chmod(0o755)
+        env = dict(PATH=str(self.bin), HOME=str(self.root), GPU_MIN_FREE_MB='2048')
+        started = time.monotonic()
+        done = subprocess.run([sys.executable, str(TRANSCRIBER / 'gpu_check.py')],
+                              env=env, capture_output=True, text=True, timeout=30)
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'gpu': True, 'reason': 'unknown'})
+        time.sleep(1)
+        self.assertFalse(marker.exists())  # the descendant died with its group
 
 
 class QueueTests(FakeWhisperCase):

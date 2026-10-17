@@ -22,9 +22,17 @@ before it decodes anything: only the CPUs it is given (sched_setaffinity),
 the agents' priority (nice 10, best-effort I/O level 7), and at most 4
 whisper threads. Idle priority is not used: under a busy host it starves.
 
-The GPU is used only with VOICE_TRANSCRIBE_GPU=1 (the bridge's gpu = true),
-and only when the card is free for it, decided per note once its turn in the
-queue starts. ComfyUI shares the card, so its local API is read first
+With VOICE_TRANSCRIBE_METHOD (the bridge's transcribe.method) the device is
+chosen without any vendor tool in this process: cpu is always the CPU
+(cpu: gpu-off), gpu is always the GPU with no check, and auto runs the
+VOICE_TRANSCRIBE_GPU_CHECK command once, after the audio is decoded and
+right before whisper (below, "The GPU check" in the operations guide).
+A GPU run that fails is retried once on the CPU in the same turn.
+
+The legacy GPU path is used only with VOICE_TRANSCRIBE_GPU=1 and no method
+(the bridge's gpu = true), and only when the card is free for it, decided
+per note once its turn in the queue starts. ComfyUI shares the card, so
+its local API is read first
 (GET /queue and GET /system_stats, loopback only): anything rendering or
 queued, or less free video memory than the margin, and the note runs on the
 CPU. Only with VOICE_TRANSCRIBE_COMFYUI_FREE=1 (the bridge's comfyui_free =
@@ -50,7 +58,9 @@ settings this way):
   VOICE_TRANSCRIBE_CPUS         CPU list such as 2-7,10-15 (unset: every CPU the caller has)
   VOICE_TRANSCRIBE_TIMEOUT      run limit in seconds, before the per-minute allowance (120)
   VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE  seconds added per minute of audio (120)
-  VOICE_TRANSCRIBE_GPU          1 = GPU when free, anything else = CPU only (unset)
+  VOICE_TRANSCRIBE_GPU          1 = GPU when free, anything else = CPU only (unset; legacy, only without a method)
+  VOICE_TRANSCRIBE_METHOD       auto, cpu or gpu (unset: the legacy VOICE_TRANSCRIBE_GPU rule)
+  VOICE_TRANSCRIBE_GPU_CHECK    GPU check command for method auto (the pack's gpu_check.py beside this file)
   VOICE_TRANSCRIBE_COMFYUI_URL  ComfyUI on a loopback address (http://127.0.0.1:8188)
   VOICE_TRANSCRIBE_GPU_MIN_FREE_MB  free video memory needed for the GPU, MiB (2048)
   VOICE_TRANSCRIBE_COMFYUI_FREE  1 = ask an idle ComfyUI to unload its models for the GPU (unset)
@@ -66,6 +76,8 @@ import math
 import os
 from pathlib import Path
 import re
+import selectors
+import signal
 import subprocess
 import sys
 import tempfile
@@ -113,6 +125,13 @@ NVIDIA_SMI_TIMEOUT = 5
 # counts as failed and the CPU takes over; the bridge allows the same extra.
 GPU_LIMIT_SHARE = 4
 GPU_MIN_LIMIT = 30
+# The GPU check for method auto: one command, at most 15 s, at most 4 KiB of
+# stdout, one JSON object with a reason of lower-case letters, digits or '-'.
+GPU_CHECK_TIMEOUT = 15
+GPU_CHECK_MAX_BYTES = 4 * 1024
+GPU_CHECK_REASON_RE = re.compile(r'[a-z0-9-]{1,32}')
+GPU_CHECK_RESERVED_REASONS = frozenset({'gpu-failed', 'gpu-off', 'check-error'})
+GPU_CHECK_PATH = '/usr/local/bin:/usr/bin:/bin'
 
 
 class TranscribeError(Exception):
@@ -124,7 +143,7 @@ class TranscribeError(Exception):
 
 
 class Options:
-    def __init__(self, environ=None, model=None, gpu=None):
+    def __init__(self, environ=None, model=None, gpu=None, method=None, gpu_check=None):
         env = os.environ if environ is None else environ
         home = Path.home()
         self.whisper_cli = Path(env.get('VOICE_TRANSCRIBE_WHISPER_CLI')
@@ -137,7 +156,21 @@ class Options:
         self.queue_dir = home / QUEUE_SUBDIR
         self.timeout = _positive(env.get('VOICE_TRANSCRIBE_TIMEOUT'), 120)
         self.timeout_per_minute = _positive(env.get('VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE'), 120)
-        self.gpu = env.get('VOICE_TRANSCRIBE_GPU') == '1' if gpu is None else bool(gpu)
+        if method is not None:
+            self.method = method
+        elif env.get('VOICE_TRANSCRIBE_METHOD') in ('auto', 'cpu', 'gpu'):
+            self.method = env['VOICE_TRANSCRIBE_METHOD']
+        else:
+            self.method = 'legacy'
+        if self.method == 'cpu':
+            self.gpu = False
+        elif self.method in ('auto', 'gpu'):
+            self.gpu = True
+        else:
+            self.gpu = env.get('VOICE_TRANSCRIBE_GPU') == '1' if gpu is None else bool(gpu)
+        self.gpu_check = (str(gpu_check) if gpu_check is not None
+                          else env.get('VOICE_TRANSCRIBE_GPU_CHECK')
+                          or str(Path(__file__).resolve().parent / 'gpu_check.py'))
         # None when the URL is not a literal loopback one: the note then runs
         # on the CPU (api-error) and nothing is contacted.
         self.comfyui = comfyui_address(env.get('VOICE_TRANSCRIBE_COMFYUI_URL') or COMFYUI_URL)
@@ -316,6 +349,86 @@ def nvidia_free_bytes(run=subprocess.run):
     return (int(match.group(2)) - int(match.group(1))) * MIB
 
 
+def _kill_check_group(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def run_gpu_check(options, popen=subprocess.Popen):
+    """Run the method-auto GPU check once and return (device, reason).
+
+    argv is the check alone, no shell, empty stdin, its own directory as the
+    working directory, and only PATH, HOME, LANG and GPU_MIN_FREE_MB in the
+    environment. At most 15 s and 4 KiB of stdout; anything outside exactly
+    one {"gpu": bool} or {"gpu": bool, "reason": "<1-32 of a-z 0-9 ->"}
+    object with a reason that is not one of this module's own means the CPU
+    with check-error. Nothing the check prints is returned beyond that."""
+    check = str(Path(getattr(options, 'gpu_check', '') or '').expanduser())
+    env = {'PATH': GPU_CHECK_PATH, 'HOME': os.environ.get('HOME') or str(Path.home()),
+           'LANG': os.environ.get('LANG') or 'C.UTF-8',
+           'GPU_MIN_FREE_MB': str(getattr(options, 'gpu_min_free_mb', GPU_MIN_FREE_MB))}
+    try:
+        proc = popen([check], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                     env=env, cwd=str(Path(check).parent or '.'), start_new_session=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 'cpu', 'check-error'
+    out, deadline = bytearray(), time.monotonic() + GPU_CHECK_TIMEOUT
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        eof = False
+        while not eof:
+            if len(out) > GPU_CHECK_MAX_BYTES:
+                _kill_check_group(proc)
+                proc.wait()
+                return 'cpu', 'check-error'
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _kill_check_group(proc)
+                proc.wait()
+                return 'cpu', 'check-error'
+            if not selector.select(remaining):
+                _kill_check_group(proc)
+                proc.wait()
+                return 'cpu', 'check-error'
+            chunk = os.read(proc.stdout.fileno(), GPU_CHECK_MAX_BYTES + 1 - len(out))
+            if chunk:
+                out += chunk
+            else:
+                eof = True
+        try:
+            proc.wait(timeout=max(deadline - time.monotonic(), 0))
+        except subprocess.TimeoutExpired:
+            _kill_check_group(proc)
+            proc.wait()
+            return 'cpu', 'check-error'
+    finally:
+        selector.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+    if proc.returncode != 0 or len(out) > GPU_CHECK_MAX_BYTES:
+        return 'cpu', 'check-error'
+    try:
+        answer = json.loads(bytes(out).decode('utf-8'))
+    except (UnicodeError, ValueError):
+        return 'cpu', 'check-error'
+    if not isinstance(answer, dict) or set(answer) not in ({'gpu'}, {'gpu', 'reason'}) \
+            or type(answer.get('gpu')) is not bool:
+        return 'cpu', 'check-error'
+    if 'reason' in answer:
+        reason = answer['reason']
+        if not isinstance(reason, str) or not GPU_CHECK_REASON_RE.fullmatch(reason) \
+                or reason in GPU_CHECK_RESERVED_REASONS:
+            return 'cpu', 'check-error'
+    else:
+        reason = None
+    if answer['gpu']:
+        return 'gpu', reason or 'gpu'
+    return 'cpu', reason or 'busy'
+
+
 def choose_device(options, run=subprocess.run, get=comfyui_get, post=comfyui_post, clock=time.monotonic,
                   sleep=time.sleep, deadline=None):
     """('gpu', 'gpu') when the card is free for whisper, ('gpu',
@@ -323,6 +436,13 @@ def choose_device(options, run=subprocess.run, get=comfyui_get, post=comfyui_pos
     models (options.comfyui_free only), else ('cpu', reason). deadline (a
     clock() value) ends the wait for the memory early: it never extends the
     note's run limit."""
+    method = getattr(options, 'method', 'legacy')
+    if method == 'cpu':
+        return 'cpu', 'gpu-off'
+    if method == 'gpu':
+        return 'gpu', 'gpu'
+    if method == 'auto':
+        return run_gpu_check(options)
     if not options.gpu:
         return 'cpu', 'gpu-off'
     if options.comfyui is None:
@@ -543,7 +663,7 @@ def _whisper(options, wav, run, device, deadline, gpu_limit, get, no_context=Fal
     before it starts, at most gpu_limit seconds, and any failure moves the
     note to the CPU for this pass and the rest of it. The CPU pass never sees
     a GPU (CUDA_VISIBLE_DEVICES empty)."""
-    if device.name == 'gpu':
+    if device.name == 'gpu' and getattr(options, 'method', 'legacy') == 'legacy':
         late = gpu_still_free(options, get)
         if late is not None:
             device.to_cpu(late)

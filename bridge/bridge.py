@@ -879,9 +879,17 @@ class Bridge:
     # as GPU_LIMIT_SHARE and GPU_MIN_LIMIT in transcriber/voice_transcribe.py.
     TRANSCRIBE_GPU_SHARE = 4
     TRANSCRIBE_GPU_MIN = 30
-    # The adapter's "device" line: which device ran the note and why.
+    # The adapter's "device" line: which device ran the note and why. The
+    # legacy labels, plus gpu / gpu: <reason> / cpu: <reason> for a reason of
+    # 1-32 lower-case letters, digits or hyphens from a GPU check.
     TRANSCRIBE_DEVICES = frozenset({'gpu', 'gpu: comfy-freed', 'cpu: comfy-busy', 'cpu: vram-low', 'cpu: api-error',
                                     'cpu: gpu-failed', 'cpu: gpu-off'})
+    TRANSCRIBE_DEVICE_RE = re.compile(r'(?:gpu|cpu): [a-z0-9-]{1,32}')
+
+    @classmethod
+    def _valid_transcribe_device(cls, value):
+        return isinstance(value, str) and (value in cls.TRANSCRIBE_DEVICES
+                                           or cls.TRANSCRIBE_DEVICE_RE.fullmatch(value) is not None)
 
     def _transcribe_timeout(self, audio_seconds):
         """Seconds one run may take once its turn started: the settings' base
@@ -896,7 +904,7 @@ class Bridge:
     def _transcribe_gpu_allowance(self, audio_seconds):
         """Extra seconds of a run with gpu on: a GPU run that hangs or fails
         still leaves the CPU retry its whole run limit."""
-        if not self.transcribe.get('gpu'):
+        if not (self.transcribe.get('gpu') or self.transcribe.get('method') in ('auto', 'gpu')):
             return 0
         return max(self.TRANSCRIBE_GPU_MIN, math.ceil(self._transcribe_timeout(audio_seconds) / self.TRANSCRIBE_GPU_SHARE))
 
@@ -919,7 +927,8 @@ class Bridge:
         raises."""
         cfg = self.transcribe
         python, script = cfg['python'], cfg['script']
-        device = 'auto' if cfg.get('gpu') else 'cpu'
+        device = {'cpu': 'cpu', 'auto': 'check', 'gpu': 'gpu'}.get(cfg.get('method'),
+                                                                  'auto' if cfg.get('gpu') else 'cpu')
         stats = dict(exit_code=None, stdout_bytes=0, stderr_bytes=0, seconds=0.0, device=None)
         if shutil.which('ffmpeg') is None:
             return None, 'transcriber missing (ffmpeg not on PATH)', stats
@@ -985,7 +994,7 @@ class Bridge:
             if not isinstance(result, dict):
                 return None, 'invalid output', stats
             if 'device' in result:
-                if result['device'] not in self.TRANSCRIBE_DEVICES:
+                if not self._valid_transcribe_device(result['device']):
                     return None, 'invalid output', stats
                 stats['device'] = result['device']
             if 'error' in result:
@@ -2631,7 +2640,8 @@ _HANDLER_URL_RE = re.compile(r'http://(127\.0\.0\.1|\[::1\]):([0-9]{1,5})(/[A-Za
 _CALLBACK_PREFIX_RE = re.compile(r'[\x21-\x7e]{1,64}')
 HANDLER_WRITE_PATHS_MAX = 16
 TRANSCRIBE_KEYS = {'enabled', 'whisper_cli', 'models_dir', 'model', 'vad_model', 'threads', 'cpus', 'timeout',
-                   'timeout_per_minute', 'gpu', 'comfyui_url', 'gpu_min_free_mb', 'comfyui_free'}
+                   'timeout_per_minute', 'gpu', 'comfyui_url', 'gpu_min_free_mb', 'comfyui_free', 'method', 'gpu_check'}
+TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
 # Neutral defaults: the whisper.cpp build and models every city on the host
 # shares (never under a city), the large turbo model with Silero VAD, every
 # CPU the bridge has, a run limit of 120 s plus 120 s per minute of audio, and
@@ -2653,6 +2663,7 @@ _COMFYUI_URL_RE = re.compile(r'http://(\[[0-9A-Fa-f:.]{2,45}\]|[0-9.]{7,15})(?::
 QUEUE_SUBDIR = '.local/state/voice-transcribe'
 _CPU_LIST_RE = re.compile(r'[0-9]{1,4}(?:-[0-9]{1,4})?(?:,[0-9]{1,4}(?:-[0-9]{1,4})?)*')
 ADAPTER = PACK_DIR / 'transcriber' / 'adapter.py'
+GPU_CHECK = PACK_DIR / 'transcriber' / 'gpu_check.py'
 MODEL_SUMS = PACK_DIR / 'transcriber' / 'models.sha256'
 UNIT_TEMPLATE = PACK_DIR / 'systemd' / 'telegram-bridge.service.in'
 
@@ -2926,7 +2937,24 @@ def load_settings(path, home=None):
     config['unit'] = unit
 
     python = _path_setting(data.get('python', '/usr/bin/python3'), 'python')
-    found = dict(TRANSCRIBE_DEFAULTS, **_table(data, 'transcribe', TRANSCRIBE_KEYS))
+    raw_transcribe = _table(data, 'transcribe', TRANSCRIBE_KEYS)
+    found = dict(TRANSCRIBE_DEFAULTS, **raw_transcribe)
+    method = raw_transcribe.get('method') if 'method' in raw_transcribe else None
+    if method is not None:
+        if 'gpu' in raw_transcribe:
+            raise SettingsError('settings: set one of transcribe.method and transcribe.gpu')
+        if 'comfyui_url' in raw_transcribe or 'comfyui_free' in raw_transcribe:
+            raise SettingsError('settings: transcribe.comfyui_url and comfyui_free belong to gpu = true; '
+                                'with method, ComfyUI is a gpu_check command of the city\'s own')
+        if method not in TRANSCRIBE_METHODS:
+            raise SettingsError('settings: transcribe.method must be one of "auto", "cpu" or "gpu"')
+    if 'gpu_check' in raw_transcribe and method != 'auto':
+        raise SettingsError('settings: transcribe.gpu_check needs method = "auto"')
+    gpu_check = None
+    if 'gpu_check' in raw_transcribe:
+        gpu_check = _handler_setting(raw_transcribe['gpu_check'], 'transcribe.gpu_check')
+    elif method == 'auto':
+        gpu_check = _handler_setting(str(GPU_CHECK), 'transcribe.gpu_check')
     whisper_cli = _path_setting(found['whisper_cli'], 'transcribe.whisper_cli')
     models_dir = _path_setting(found['models_dir'], 'transcribe.models_dir')
     model = _text_setting(found['model'], 'transcribe.model', _MODEL_RE, limit=80)
@@ -2962,6 +2990,14 @@ def load_settings(path, home=None):
             # Absent unless true, so a settings file without the key gives
             # the transcriber exactly the environment it had before.
             transcribe['env']['VOICE_TRANSCRIBE_COMFYUI_FREE'] = '1'
+        if method is not None:
+            # Absent without method, so a legacy settings file gives the
+            # transcriber exactly the environment and device it had before.
+            transcribe['method'] = method
+            transcribe['env']['VOICE_TRANSCRIBE_METHOD'] = method
+            if method == 'auto':
+                transcribe['gpu_check'] = gpu_check
+                transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'] = gpu_check
     return Settings(
         path=path, city=city, config=config, unit=unit, python=python,
         state_dir=_path_setting(data.get('state_dir'), 'state_dir'),
@@ -3014,6 +3050,13 @@ def recorded_sums(path=None):
         digest, name = line.split(None, 1)
         sums[name.strip().lstrip('*')] = digest.lower()
     return sums
+
+
+def supported_models(settings=None, path=None):
+    """The supported transcription models: the ggml-<name>.bin entries of
+    models.sha256 except the Silero VAD model, in file order."""
+    return [name[5:-4] for name in recorded_sums(path)
+            if name.startswith('ggml-') and name.endswith('.bin') and not name.startswith('ggml-silero-')]
 
 
 def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
@@ -3070,7 +3113,17 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
     except (OSError, ValueError):
         sums = {}
         check(False, 'recorded model checksums are unreadable')
-    for name in (settings.model, settings.vad_model):
+    try:
+        supported = supported_models(settings)
+    except (OSError, ValueError):
+        supported = []
+    unsupported = bool(supported) and settings.model not in supported
+    if unsupported:
+        check(False, f'transcribe model {settings.model} is not one of the supported models: '
+                     f'{", ".join(supported)}')
+    for index, name in enumerate((settings.model, settings.vad_model)):
+        if index == 0 and unsupported:
+            continue
         file_name = f'ggml-{name}.bin'
         path = settings.models_dir / file_name
         if file_name not in sums:
@@ -3091,6 +3144,10 @@ UNIT_PROCESS_KEYS = frozenset({'Type', 'WorkingDirectory', 'ExecStart', 'Restart
 _UNIT_KEY_RE = re.compile(r'[A-Za-z]+')
 GPU_PROBE_OUTPUT_MAX = 64 * 1024
 GPU_PROBE_LATER = ('cpu: comfy-busy', 'cpu: vram-low', 'cpu: api-error')
+# With method auto a GPU check that answers false puts the note on the CPU
+# for now, whatever its reason; only a GPU run that then failed, or a check
+# the transcriber could not use, is a probe failure.
+GPU_PROBE_AUTO_FAIL = ('cpu: gpu-failed', 'cpu: check-error')
 GPU_PROBE_ERRORS = dict(Bridge.TRANSCRIBER_ERRORS, clip_unreadable='the clip is empty or over 25 MiB')
 
 
@@ -3150,7 +3207,7 @@ def _probe_result(stdout):
         return None
     if not isinstance(result, dict) or not result or set(result) - {'device', 'error', 'seconds'}:
         return None
-    if 'device' in result and result['device'] not in Bridge.TRANSCRIBE_DEVICES:
+    if 'device' in result and not Bridge._valid_transcribe_device(result['device']):
         return None
     if 'error' in result and not isinstance(result['error'], str):
         return None
@@ -3168,7 +3225,9 @@ def gpu_probe(settings, clip=None, run=subprocess.run, which=shutil.which):
     transcript, the unit's stderr or anything else the probe printed."""
     if settings.transcribe is None:
         return 'skip', 'gpu probe: transcription off ([transcribe] enabled = false)'
-    if not settings.transcribe.get('gpu'):
+    if settings.transcribe.get('method') == 'cpu':
+        return 'skip', 'gpu probe: method = cpu'
+    if settings.transcribe.get('method') not in ('auto', 'gpu') and not settings.transcribe.get('gpu'):
         return 'skip', 'gpu probe: gpu = false'
     if clip is None:
         clip = default_probe_clip(settings)
@@ -3198,10 +3257,13 @@ def gpu_probe(settings, clip=None, run=subprocess.run, which=shutil.which):
     device = (result or {}).get('device')
     if result is None:
         return 'FAIL', 'gpu probe: invalid output'
-    if device in ('gpu', 'gpu: comfy-freed'):
+    if device == 'gpu' or (isinstance(device, str) and device.startswith('gpu: ')):
         if 'seconds' not in result:
             return 'FAIL', 'gpu probe: invalid output'
         return 'ok', f"gpu probe: device {device} ({result['seconds']} s)"
+    if settings.transcribe.get('method') == 'auto' and isinstance(device, str) \
+            and device.startswith('cpu: ') and device not in GPU_PROBE_AUTO_FAIL:
+        return 'skip', f'gpu probe: GPU not free now ({device}), try later'
     if device in GPU_PROBE_LATER:
         return 'skip', f'gpu probe: ComfyUI busy or card full ({device[5:]}), try later'
     if device is not None:

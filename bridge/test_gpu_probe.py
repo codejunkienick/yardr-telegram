@@ -73,6 +73,10 @@ class GpuProbeTests(ProbeFixture):
         self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "gpu", "seconds": 2.4}}\n'),
                          ('ok', 'gpu probe: device gpu (2.4 s)'))
 
+    def test_a_gpu_with_a_check_reason_is_ok(self):
+        self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "gpu: unknown", "seconds": 2.4}}\n'),
+                         ('ok', 'gpu probe: device gpu: unknown (2.4 s)'))
+
     def test_a_gpu_freed_by_comfyui_is_ok_too(self):
         # The probe decides its device like a note: with comfyui_free on it
         # may ask an idle ComfyUI to unload its models first.
@@ -101,7 +105,7 @@ class GpuProbeTests(ProbeFixture):
         for stdout in ('', 'garbage\n', '[]\n', '{}\n', f'{RUNNING}\n{{"device": "gpu"}}\n',
                        '{"device": "gpu", "seconds": 1, "text": "ask not what your country"}\n',
                        'ask not what your country\n{"device": "gpu", "seconds": 1}\n',
-                       '{"device": "gpu: fast", "seconds": 1}\n', '{"device": "gpu", "seconds": -1}\n',
+                       '{"device": "gpu: FAST!", "seconds": 1}\n', '{"device": "gpu", "seconds": -1}\n',
                        '{"device": "gpu", "seconds": true}\n', 'x' * (b.GPU_PROBE_OUTPUT_MAX + 1)):
             self.assertEqual(self.probe(stdout), ('FAIL', 'gpu probe: invalid output'), stdout[:80])
         self.assertEqual(self.probe('{"device": "gpu", "seconds": 1}\n', exit_code=3),
@@ -130,6 +134,33 @@ class GpuProbeTests(ProbeFixture):
         self.assertEqual(self.probe(settings=self.settings('enabled = true\ngpu = false\n')),
                          ('skip', 'gpu probe: gpu = false'))
         self.assertEqual(self.recorded(), [])
+
+    def test_method_cpu_skips_and_method_auto_and_gpu_probe(self):
+        self.assertEqual(self.probe(settings=self.settings('enabled = true\nmethod = "cpu"\n')),
+                         ('skip', 'gpu probe: method = cpu'))
+        self.assertEqual(self.recorded(), [])
+        for method in ('auto', 'gpu'):
+            with self.subTest(method=method):
+                settings = self.settings(f'enabled = true\nmethod = "{method}"\n')
+                self.assertEqual(self.probe('{"device": "gpu", "seconds": 1}\n', settings=settings),
+                                 ('ok', 'gpu probe: device gpu (1 s)'))
+        self.assertEqual(len(self.recorded()), 2)
+        env = [a[len('--setenv='):] for a in self.recorded()[0]['argv'] if a.startswith('--setenv=')]
+        self.assertIn('VOICE_TRANSCRIBE_METHOD=auto', env)
+        self.assertIn(f'VOICE_TRANSCRIBE_GPU_CHECK={b.GPU_CHECK}', env)
+
+    def test_a_method_auto_check_that_says_no_is_a_skip_to_try_later(self):
+        settings = self.settings('enabled = true\nmethod = "auto"\n')
+        for device in ('cpu: busy', 'cpu: vram-low', 'cpu: operator-busy'):
+            with self.subTest(device=device):
+                self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "{device}", "seconds": 30}}\n',
+                                            settings=settings),
+                                 ('skip', f'gpu probe: GPU not free now ({device}), try later'))
+        for device in ('cpu: gpu-failed', 'cpu: check-error'):
+            with self.subTest(device=device):
+                self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "{device}", "seconds": 30}}\n',
+                                            settings=settings),
+                                 ('FAIL', f'gpu probe: device {device}'))
 
     def test_a_missing_writable_path_of_the_unit_fails_before_running(self):
         (self.root / 'state').rmdir()

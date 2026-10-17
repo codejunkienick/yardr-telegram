@@ -2618,9 +2618,10 @@ SETTINGS_KEYS = {'city', 'state_dir', 'port', 'python', 'token_file', 'callback_
 BOT_KEYS = {'bot_id', 'user_id', 'chat_id', 'account_id'}
 QUOTA_KEYS = {'enabled', 'gate_file', 'deepseek_key_file'}
 COMMAND_KEYS = {'name', 'description', 'handler', 'url', 'menu', 'callback_prefix', 'timeout'}
-# Commands the bridge itself owns: /start is never relayed, /quota is the
-# bridge's own answer.
-RESERVED_COMMANDS = ('start', 'quota')
+# Commands the bridge itself owns: /start is never relayed. /quota is the
+# bridge's own answer only while [quota] enabled = true; with it off a city
+# may register /quota as an ordinary [[command]].
+RESERVED_COMMANDS = ('start',)
 # Telegram's limit on one chat's command menu.
 MENU_MAX = 100
 # A city command's handler URL: plain http to 127.0.0.1 or [::1], an explicit
@@ -2799,9 +2800,10 @@ def _handler_url_setting(value, what):
     return value
 
 
-def _command_settings(data, menu):
+def _command_settings(data, menu, quota_enabled=False):
     """The validated [[command]] entries, in file order, each with its
-    defaults filled in."""
+    defaults filled in. `quota` clashes only while the built-in /quota is
+    enabled; `start` and every [[menu]] command always clash."""
     entries = data.get('command', [])
     if not isinstance(entries, list) or len(entries) > MENU_MAX or any(not isinstance(e, dict) for e in entries):
         raise SettingsError(f'settings: command must be a list of at most {MENU_MAX} [[command]] tables')
@@ -2815,6 +2817,8 @@ def _command_settings(data, menu):
             raise SettingsError(f'settings: unknown key {unknown[0]} in {label}')
         if any(name == other['name'] for other in commands):
             raise SettingsError(f'settings: {label} repeats a command name')
+        if name == 'quota' and quota_enabled:
+            raise SettingsError(f'settings: {label} clashes with /quota, which [quota] enabled = true still answers')
         if name in RESERVED_COMMANDS or name in menu_names:
             raise SettingsError(f'settings: {label} clashes with /{name}, which the bridge or [[menu]] already has')
         command = dict(name=name, description=_text_setting(item.get('description'), f'{label} description', limit=256),
@@ -2896,13 +2900,14 @@ def load_settings(path, home=None):
             raise SettingsError(f'settings: menu entry {index + 1} needs exactly command and description')
         menu_entries.append((_text_setting(item['command'], f'menu entry {index + 1} command', _COMMAND_RE),
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
-    city_commands = _command_settings(data, menu_entries)
-
     quota = _table(data, 'quota', QUOTA_KEYS)
+    quota_enabled = _bool_setting(quota.get('enabled', False), 'quota.enabled')
+    city_commands = _command_settings(data, menu_entries, quota_enabled)
+
     config = dict(city=city, account_id=account, gc_base_url=gc_base_url,
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),
                   timezone=timezone, menu=tuple(menu_entries),
-                  quota_command=_bool_setting(quota.get('enabled', False), 'quota.enabled'), **ids)
+                  quota_command=quota_enabled, **ids)
     # Present only when set, so a city without them gets the config it had.
     agent = _text_setting(data.get('agent', 'mayor'), 'agent', NAME_RE)
     if agent != 'mayor':

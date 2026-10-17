@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -345,6 +346,30 @@ class DispatchTests(CommandCase):
             self.drain(self.message('/quota', 40), self.message('/start', 42))
         quota.assert_called_once_with(1040)
         self.assertEqual(self.records(), [])
+        self.assertNotIn('inbound', self.telegram.methods())
+        with patch.object(self.bridge, 'fetch_quota', return_value={}):
+            self.drain(self.message('/quota', 44))
+        self.assertIn('quota-1044', self.ledger())
+        self.assertNotIn('inbound', self.telegram.methods())
+
+    def test_quota_as_a_city_command_runs_its_handler_and_never_the_builtin(self):
+        self.bridge = self.make_bridge(commands=(self.command('quota'),), quota_command=False)
+        seen = []
+
+        def fake_run(argv, *args, **kwargs):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 1, '', 'no quota')
+
+        with patch.object(b.subprocess, 'run', side_effect=fake_run):
+            log = self.drain(self.message('/quota', 40))
+        [given] = self.inputs()
+        self.assertEqual((given['kind'], given['command'], given['args'], given['update_id']),
+                         ('command', 'quota', '', 40))
+        self.assertEqual(self.telegram.methods(), ['sendMessage'])
+        self.assertNotIn('inbound', self.telegram.methods())
+        self.assertEqual(list(self.ledger()), ['command:40:0'])
+        self.assertEqual([argv for argv in seen if argv and argv[0] == 'aiquokka'], [])
+        self.assertEqual(log, 'command quota handled (update 40): 1 action(s)\n')
 
     def test_the_handler_environment_is_fixed_and_carries_no_secret(self):
         self.drain(self.message('/deploy'))

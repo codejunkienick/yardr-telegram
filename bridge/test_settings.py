@@ -59,6 +59,28 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(config['quota_command'])
         self.assertNotIn('deepseek_key_file', config)
 
+    def test_quota_command_loads_only_while_the_builtin_is_off(self):
+        handler = self.root / 'quota-handler'
+        handler.write_text('#!/bin/sh\n')
+        handler.chmod(0o700)
+        entry = f'\n[[command]]\nname = "quota"\ndescription = "Quota"\nhandler = "{handler}"\n'
+        base = write_settings(self.root).read_text().split('\n[[menu]]')[0]
+        for table in ('', '\n[quota]\nenabled = false\n'):
+            with self.subTest(table=table):
+                settings = b.load_settings(write_settings(self.root, body=base + entry + table))
+                self.assertFalse(settings.config['quota_command'])
+                self.assertEqual([c['name'] for c in settings.config['commands']], ['quota'])
+        with self.assertRaisesRegex(
+                b.SettingsError,
+                r'command entry 1 \(quota\) clashes with /quota, which \[quota\] enabled = true still answers'):
+            b.load_settings(write_settings(self.root, body=base + entry + '\n[quota]\nenabled = true\n'))
+        menu = '\n[[menu]]\ncommand = "quota"\ndescription = "Quota"\n'
+        with self.assertRaisesRegex(b.SettingsError, r'command entry 1 \(quota\) clashes with /quota'):
+            b.load_settings(write_settings(self.root, body=base + menu + entry))
+        start = entry.replace('name = "quota"', 'name = "start"')
+        with self.assertRaisesRegex(b.SettingsError, r'command entry 1 \(start\) clashes with /start'):
+            b.load_settings(write_settings(self.root, body=base + start))
+
     def test_missing_settings_refuse_with_the_path(self):
         with self.assertRaisesRegex(b.SettingsError, 'settings file not found: .*nowhere.toml'):
             b.load_settings(self.root / 'nowhere.toml')

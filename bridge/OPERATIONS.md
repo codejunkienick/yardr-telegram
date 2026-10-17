@@ -48,7 +48,7 @@ city.
 | `[[menu]]` `command`, `description` | no | the chat's "/" menu, in order |
 | `[[command]]` | no | the city's own commands and buttons, run by its own handlers ("City commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
-| `[quota]` `enabled`, `gate_file`, `deepseek_key_file` | no | the bridge answers `/quota` itself (below) |
+| `[quota]` `enabled`, `gate_file`, `deepseek_key_file` | no | the built-in `/quota` (being retired); while it is off, `/quota` may be a `[[command]]` instead (below) |
 | `[transcribe]` | no | voice transcription (below); off by default |
 
 Paths may start with `~`; after that they must be absolute, normalized, and
@@ -127,9 +127,13 @@ With `[quota] enabled = true` the bridge answers `/quota` itself, from
 `deepseek_key_file`) plus, when `gate_file` names the city's quota gate report,
 the company account's readings; it never reaches the mayor, so it works while
 the mayor is out of quota. The `/quota` reply and the quota-exhausted notice go
-out as Telegram HTML (bold headers) through the bridge's own `publish()`. A
-city's own commands go to their handlers (below); every other command reaches
-the mayor as an ordinary message.
+out as Telegram HTML (bold headers) through the bridge's own `publish()`. This
+built-in is being retired: with `enabled = false` or no `[quota]` table, a city
+may instead register `/quota` as an ordinary `[[command]]` (below) and its
+handler answers; the built-in then never runs. A `[[command]] name = "quota"`
+together with `enabled = true` refuses to load, naming both. A city's own
+commands go to their handlers (below); every other command reaches the mayor as
+an ordinary message.
 
 ## City commands
 
@@ -148,10 +152,18 @@ settings and its own handler programs, without editing this pack. Each
 | `timeout` | `10` | seconds the handler may take, 1-30 |
 
 The settings refuse to load, naming the entry, on an unknown key, a repeated
-name, a name equal to `start`, `quota` or a `[[menu]]` command, a missing or
+name, a name equal to `start` or a `[[menu]]` command, `quota` while
+`[quota] enabled = true` (that refusal names the setting), a missing or
 second handler, a handler that is not an owner-writable-only executable file,
 a URL off loopback, a `callback_prefix` that equals or starts another one
 (a press would have two owners), or more than 100 menu entries in all.
+`start` stays reserved always; `quota` is reserved only while the built-in
+is on.
+
+An add-on is one `[[command]]` table, with no enable flag of its own. Add one
+by adding the table (and a `handler_write_paths` entry if it writes, then
+`install.sh` again), restarting the unit and running `set-commands`; remove
+one by deleting the table and doing the same steps.
 
 **Dispatch.** A message from the paired user whose text is `/<name>` or
 `/<name>@<bot username>`, alone or followed by a space and arguments, goes to

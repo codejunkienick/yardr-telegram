@@ -3,5 +3,5 @@
 # plus the shared Telegram skills.
 [pack]
 name = "telegram"
-version = ""
+version = "0.1.0"
 schema = 2

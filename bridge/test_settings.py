@@ -241,6 +241,24 @@ class TranscribeSettingsTests(unittest.TestCase):
             self.assertEqual(vt.Options(environ=city.transcribe['env']).queue_dir,
                              Path.home() / '.local/state/voice-transcribe')
 
+    def test_importing_bridge_does_not_need_voice_transcribe_on_sys_path(self):
+        bridge = PACK / 'bridge' / 'bridge.py'
+        code = (
+            'import importlib.util, sys\n'
+            f'spec = importlib.util.spec_from_file_location("bridge_under_test", {str(bridge)!r})\n'
+            'mod = importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(mod)\n'
+            'assert not any("transcriber" in entry for entry in sys.path), sys.path\n'
+            'assert mod.QUEUE_SUBDIR == ".local/state/voice-transcribe"\n'
+            'assert mod.Bridge.TRANSCRIBE_RUNNING_LINE == b\'{"state": "running"}\'\n'
+            'assert mod.Bridge.TRANSCRIBE_GPU_SHARE == 4\n'
+            'assert mod.Bridge.TRANSCRIBE_GPU_MIN == 30\n'
+        )
+        done = subprocess.run([sys.executable, '-B', '-c', code], cwd=self.root,
+                              env={k: v for k, v in os.environ.items() if k != 'PYTHONPATH'},
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_paths_and_limits_come_from_the_settings(self):
         settings = self.load('enabled = true\nwhisper_cli = "/opt/w/whisper-cli"\nmodels_dir = "/opt/w/models"\n'
                              'model = "small.en"\nthreads = 2\ncpus = "0-1,4-5"\ntimeout = 60\ntimeout_per_minute = 90\n')
@@ -539,7 +557,7 @@ class InstallCheckTests(unittest.TestCase):
         failed = self.failures(sums=sums)
         self.assertIn(f'whisper-cli {self.cli}', failed)
         self.assertIn(f'model {self.models}/ggml-large-v3-turbo-q5_0.bin is missing', failed)
-        self.assertIn('model ggml-small.bin: no recorded SHA-256 in the pack',
+        self.assertIn('transcribe model small is not one of the supported models: large-v3-turbo-q5_0',
                       [line for ok, line in b.install_problems(
                           b.Settings(**dict(self.settings.__dict__, model='small')), which=lambda n: n, sums=sums)
                        if not ok])
@@ -552,15 +570,24 @@ class InstallCheckTests(unittest.TestCase):
         self.assertIn((False, 'bot token file must be an owner-only regular file'), results)
         self.assertNotIn('TESTTOKEN', repr(results))
 
+    def test_a_model_without_a_recorded_sum_fails_naming_it(self):
+        sums = self.model('large-v3-turbo-q5_0', b'turbo')
+        self.assertEqual(self.failures(sums=sums),
+                         ['model ggml-silero-v6.2.0.bin: no recorded SHA-256 in the pack'])
+
+    def test_install_problems_uses_the_injected_sums_for_supported_models(self):
+        sums = {**self.model('small.en', b'small'), **self.model('silero-v6.2.0', b'vad')}
+        self.assertEqual(self.failures(sums=sums),
+                         ['transcribe model large-v3-turbo-q5_0 is not one of the supported models: small.en'])
+
     def test_an_unlisted_model_fails_naming_the_supported_models(self):
         sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
         settings = b.Settings(**dict(self.settings.__dict__, model='tiny'))
-        self.assertEqual(b.supported_models(settings),
+        self.assertEqual(b.supported_models(),
                          ['large-v3-turbo-q5_0', 'small.en', 'small.en-q5_1', 'base.en', 'small'])
         self.assertEqual([line for ok, line in b.install_problems(settings, which=lambda n: '/usr/bin/' + n,
                                                                   sums=sums) if not ok],
-                         ['transcribe model tiny is not one of the supported models: '
-                          'large-v3-turbo-q5_0, small.en, small.en-q5_1, base.en, small'])
+                         ['transcribe model tiny is not one of the supported models: large-v3-turbo-q5_0'])
 
     def test_the_pack_records_the_handed_over_model_sums(self):
         sums = b.recorded_sums()

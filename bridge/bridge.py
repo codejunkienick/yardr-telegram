@@ -9,6 +9,7 @@ import datetime
 import fcntl
 import hashlib
 import hmac
+import importlib.util
 from html import escape as html_escape
 from html import unescape as html_unescape
 import http.client
@@ -57,6 +58,11 @@ GC_OUTBOUND_TIMEOUT = 35
 # false, failure_kind transient. Its ledger row is not final.
 NOT_SENT_REASON = 'transport_unavailable_not_sent'
 PACK_DIR = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True  # the pack directory is read-only under the unit
+_transcriber_spec = importlib.util.spec_from_file_location(
+    'voice_transcribe', PACK_DIR / 'transcriber' / 'voice_transcribe.py')
+voice_transcribe = importlib.util.module_from_spec(_transcriber_spec)
+_transcriber_spec.loader.exec_module(voice_transcribe)
 SETTINGS_ENV = 'TELEGRAM_BRIDGE_SETTINGS'
 SETTINGS_NAME = 'telegram-bridge.toml'
 
@@ -979,12 +985,11 @@ class Bridge:
     # scaled whisper limit), so the transcriber normally stops itself first.
     TRANSCRIBE_GRACE = 30
     # The line the adapter prints when its turn in the host-wide queue starts.
-    TRANSCRIBE_RUNNING_LINE = b'{"state": "running"}'
-    # With gpu on, a GPU run may take a quarter of the run limit (at least
-    # 30 s) before the transcriber moves the note to the CPU; the same rule
-    # as GPU_LIMIT_SHARE and GPU_MIN_LIMIT in transcriber/voice_transcribe.py.
-    TRANSCRIBE_GPU_SHARE = 4
-    TRANSCRIBE_GPU_MIN = 30
+    TRANSCRIBE_RUNNING_LINE = voice_transcribe.RUNNING_LINE.encode()
+    # With gpu on, a GPU run may take this share of the run limit (at least
+    # this many seconds) before the transcriber moves the note to the CPU.
+    TRANSCRIBE_GPU_SHARE = voice_transcribe.GPU_LIMIT_SHARE
+    TRANSCRIBE_GPU_MIN = voice_transcribe.GPU_MIN_LIMIT
     # The adapter's "device" line: which device ran the note and why:
     # gpu / gpu: <reason> / cpu: <reason> for a reason of 1-32 lower-case
     # letters, digits or hyphens from a GPU check.
@@ -2314,10 +2319,9 @@ TRANSCRIBE_DEFAULTS = dict(enabled=False, whisper_cli='~/work/whisper.cpp/build/
                            gpu=False, gpu_min_free_mb=2048)
 # The host-wide transcription queue, under the home directory of the user
 # every city's bridge runs as. Deliberately not a setting: two cities naming
-# different queues would run whisper at the same time. The transcriber
-# (transcriber/voice_transcribe.py, QUEUE_SUBDIR) derives the same path.
-QUEUE_SUBDIR = '.local/state/voice-transcribe'
-_CPU_LIST_RE = re.compile(r'[0-9]{1,4}(?:-[0-9]{1,4})?(?:,[0-9]{1,4}(?:-[0-9]{1,4})?)*')
+# different queues would run whisper at the same time.
+QUEUE_SUBDIR = voice_transcribe.QUEUE_SUBDIR
+_CPU_LIST_RE = voice_transcribe.CPU_LIST_RE
 ADAPTER = PACK_DIR / 'transcriber' / 'adapter.py'
 GPU_CHECK = PACK_DIR / 'transcriber' / 'gpu_check.py'
 MODEL_SUMS = PACK_DIR / 'transcriber' / 'models.sha256'
@@ -2689,10 +2693,12 @@ def recorded_sums(path=None):
     return sums
 
 
-def supported_models(settings=None, path=None):
+def supported_models(path=None, sums=None):
     """The supported transcription models: the ggml-<name>.bin entries of
     models.sha256 except the Silero VAD model, in file order."""
-    return [name[5:-4] for name in recorded_sums(path)
+    if sums is None:
+        sums = recorded_sums(path)
+    return [name[5:-4] for name in sums
             if name.startswith('ggml-') and name.endswith('.bin') and not name.startswith('ggml-silero-')]
 
 
@@ -2751,7 +2757,7 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
         sums = {}
         check(False, 'recorded model checksums are unreadable')
     try:
-        supported = supported_models(settings)
+        supported = supported_models(sums=sums)
     except (OSError, ValueError):
         supported = []
     unsupported = bool(supported) and settings.model not in supported

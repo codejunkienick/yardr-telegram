@@ -29,24 +29,10 @@ VOICE_TRANSCRIBE_GPU_CHECK command once, after the audio is decoded and
 right before whisper (below, "The GPU check" in the operations guide).
 A GPU run that fails is retried once on the CPU in the same turn.
 
-The legacy GPU path is used only with VOICE_TRANSCRIBE_GPU=1 and no method
-(the bridge's gpu = true), and only when the card is free for it, decided
-per note once its turn in the queue starts. ComfyUI shares the card, so
-its local API is read first
-(GET /queue and GET /system_stats, loopback only): anything rendering or
-queued, or less free video memory than the margin, and the note runs on the
-CPU. Only with VOICE_TRANSCRIBE_COMFYUI_FREE=1 (the bridge's comfyui_free =
-true), an idle ComfyUI short of the margin, its /queue read empty again
-right before, is asked once to unload its models (POST /free
-{"unload_models": true}, the one request ever sent that is not a read) and
-its free memory read again every 0.5 s for at most 10 s;
-nothing is reloaded or restored afterwards. With ComfyUI not listening,
-nvidia-smi gives the free memory instead and nothing is sent. /queue is read
-again right before whisper starts on the GPU. Any error, timeout or
-unexpected answer means the CPU. A GPU run that fails is retried once on the
-CPU in the same turn. One "device" line per note says which ran and why:
-gpu, gpu: comfy-freed, or cpu: comfy-busy | vram-low | api-error | gpu-failed
-| gpu-off.
+With no method set, VOICE_TRANSCRIBE_GPU=1 (the bridge's legacy
+gpu = true) means method auto: the configured GPU check decides, exactly
+as above. One "device" line per note says which ran and why: gpu,
+gpu: <reason>, or cpu: <reason> | gpu-failed | gpu-off.
 
 Settings come from the environment (the Telegram bridge passes its city's
 settings this way):
@@ -58,19 +44,15 @@ settings this way):
   VOICE_TRANSCRIBE_CPUS         CPU list such as 2-7,10-15 (unset: every CPU the caller has)
   VOICE_TRANSCRIBE_TIMEOUT      run limit in seconds, before the per-minute allowance (120)
   VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE  seconds added per minute of audio (120)
-  VOICE_TRANSCRIBE_GPU          1 = GPU when free, anything else = CPU only (unset; legacy, only without a method)
+  VOICE_TRANSCRIBE_GPU          1 = method auto, anything else = CPU only (unset; legacy, only without a method)
   VOICE_TRANSCRIBE_METHOD       auto, cpu or gpu (unset: the legacy VOICE_TRANSCRIBE_GPU rule)
   VOICE_TRANSCRIBE_GPU_CHECK    GPU check command for method auto (the pack's gpu_check.py beside this file)
-  VOICE_TRANSCRIBE_COMFYUI_URL  ComfyUI on a loopback address (http://127.0.0.1:8188)
   VOICE_TRANSCRIBE_GPU_MIN_FREE_MB  free video memory needed for the GPU, MiB (2048)
-  VOICE_TRANSCRIBE_COMFYUI_FREE  1 = ask an idle ComfyUI to unload its models for the GPU (unset)
 The queue is always ~/.local/state/voice-transcribe, never a setting, so every
 caller running as this user waits in the same one.
 """
 import argparse
 import fcntl
-import http.client
-import ipaddress
 import json
 import math
 import os
@@ -104,23 +86,7 @@ QUEUE_POLL = 0.25
 # limit starts there, not while the note waits in the queue.
 RUNNING_LINE = '{"state": "running"}'
 CPU_LIST_RE = re.compile(r'[0-9]{1,4}(?:-[0-9]{1,4})?(?:,[0-9]{1,4}(?:-[0-9]{1,4})?)*')
-# ComfyUI's local API: a literal loopback address only (no name to resolve),
-# plain HTTP, no path. Every read has a 2 s limit and a size cap.
-COMFYUI_URL = 'http://127.0.0.1:8188'
-COMFYUI_URL_RE = re.compile(r'http://(\[[0-9A-Fa-f:.]{2,45}\]|[0-9.]{7,15})(?::([0-9]{1,5}))?/?')
-COMFYUI_TIMEOUT = 2
-COMFYUI_MAX_BYTES = 1024 * 1024
 GPU_MIN_FREE_MB = 2048
-# POST /free with only unload_models: ComfyUI unloads its models from the
-# card and keeps its cached node outputs (free_memory would drop those too),
-# so its next run only loads the model again. The memory is then read every
-# COMFYUI_FREE_POLL seconds for at most COMFYUI_FREE_WAIT.
-COMFYUI_FREE_REQUEST = {'unload_models': True}
-COMFYUI_FREE_WAIT = 10
-COMFYUI_FREE_POLL = 0.5
-MIB = 1024 * 1024
-NVIDIA_SMI = ['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits']
-NVIDIA_SMI_TIMEOUT = 5
 # A GPU run gets a quarter of the CPU run limit (at least 30 s) before it
 # counts as failed and the CPU takes over; the bridge allows the same extra.
 GPU_LIMIT_SHARE = 4
@@ -160,22 +126,16 @@ class Options:
             self.method = method
         elif env.get('VOICE_TRANSCRIBE_METHOD') in ('auto', 'cpu', 'gpu'):
             self.method = env['VOICE_TRANSCRIBE_METHOD']
+        elif gpu is not None:
+            self.method = 'auto' if gpu else 'cpu'
         else:
-            self.method = 'legacy'
-        if self.method == 'cpu':
-            self.gpu = False
-        elif self.method in ('auto', 'gpu'):
-            self.gpu = True
-        else:
-            self.gpu = env.get('VOICE_TRANSCRIBE_GPU') == '1' if gpu is None else bool(gpu)
+            # The legacy switch: gpu = true asks the GPU check (method auto).
+            self.method = 'auto' if env.get('VOICE_TRANSCRIBE_GPU') == '1' else 'cpu'
+        self.gpu = self.method in ('auto', 'gpu')
         self.gpu_check = (str(gpu_check) if gpu_check is not None
                           else env.get('VOICE_TRANSCRIBE_GPU_CHECK')
                           or str(Path(__file__).resolve().parent / 'gpu_check.py'))
-        # None when the URL is not a literal loopback one: the note then runs
-        # on the CPU (api-error) and nothing is contacted.
-        self.comfyui = comfyui_address(env.get('VOICE_TRANSCRIBE_COMFYUI_URL') or COMFYUI_URL)
         self.gpu_min_free_mb = _positive(env.get('VOICE_TRANSCRIBE_GPU_MIN_FREE_MB'), GPU_MIN_FREE_MB)
-        self.comfyui_free = env.get('VOICE_TRANSCRIBE_COMFYUI_FREE') == '1'
 
     def run_limit(self, audio_seconds):
         """Seconds one run may take: the base plus the allowance per minute."""
@@ -197,19 +157,6 @@ def _positive(value, default):
     except (TypeError, ValueError):
         return default
     return number if number > 0 else default
-
-
-def comfyui_address(url):
-    """(host, port) of a literal loopback http URL with no path, else None."""
-    match = COMFYUI_URL_RE.fullmatch(url) if isinstance(url, str) else None
-    if match is None:
-        return None
-    host, port = match.group(1).strip('[]'), int(match.group(2) or 80)
-    try:
-        loopback = ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return None
-    return (host, port) if loopback and 0 < port < 65536 else None
 
 
 def parse_cpus(text):
@@ -261,92 +208,6 @@ def whisper_argv(options, wav, no_context=False, gpu=False):
     if no_context:
         argv += ['-mc', '0']
     return argv
-
-
-class ComfyDown(Exception):
-    """Nothing listens on ComfyUI's address (connection refused)."""
-
-
-class ComfyError(Exception):
-    """ComfyUI's answer is missing, late, refused or not the expected shape."""
-
-
-def _comfyui_request(address, method, path, body, headers, connection):
-    """The body of one 200 answer from ComfyUI's local API. http.client, not
-    urllib: no proxy from the environment and no redirect is ever followed."""
-    host, port = address
-    conn = connection(host, port, timeout=COMFYUI_TIMEOUT)
-    try:
-        conn.request(method, path, body=body, headers=headers)
-        response = conn.getresponse()
-        answer = response.read(COMFYUI_MAX_BYTES + 1)
-    except ConnectionRefusedError:
-        raise ComfyDown() from None
-    except (OSError, http.client.HTTPException):
-        raise ComfyError() from None
-    finally:
-        conn.close()
-    if response.status != 200 or len(answer) > COMFYUI_MAX_BYTES:
-        raise ComfyError()
-    return answer
-
-
-def comfyui_get(address, path, connection=http.client.HTTPConnection):
-    """The JSON of one GET to ComfyUI's local API."""
-    answer = _comfyui_request(address, 'GET', path, None, {'Accept': 'application/json'}, connection)
-    try:
-        return json.loads(answer)
-    except ValueError:
-        raise ComfyError() from None
-
-
-def comfyui_post(address, path, payload, connection=http.client.HTTPConnection):
-    """One POST of a JSON payload to ComfyUI's local API. Any 200 answer is
-    accepted whatever its body; anything else raises like comfyui_get."""
-    _comfyui_request(address, 'POST', path, json.dumps(payload).encode(),
-                     {'Content-Type': 'application/json'}, connection)
-
-
-def _comfy_busy(answer):
-    """True when GET /queue shows anything running or waiting."""
-    running = answer.get('queue_running') if isinstance(answer, dict) else None
-    pending = answer.get('queue_pending') if isinstance(answer, dict) else None
-    if not isinstance(running, list) or not isinstance(pending, list):
-        raise ComfyError()
-    return bool(running or pending)
-
-
-def _whole(value):
-    return type(value) is int and value >= 0
-
-
-def _comfy_free_bytes(answer):
-    """Video memory another process can take, from GET /system_stats: its one
-    CUDA device's vram_free less torch_vram_free, the part ComfyUI counts as
-    free but still holds in its own allocator."""
-    devices = answer.get('devices') if isinstance(answer, dict) else None
-    if not isinstance(devices, list) or not all(isinstance(d, dict) for d in devices):
-        raise ComfyError()
-    cuda = [d for d in devices if d.get('type') == 'cuda']
-    if len(cuda) != 1:
-        raise ComfyError()
-    free, held = cuda[0].get('vram_free'), cuda[0].get('torch_vram_free')
-    if not _whole(free) or not _whole(held) or held > free:
-        raise ComfyError()
-    return free - held
-
-
-def nvidia_free_bytes(run=subprocess.run):
-    """Free video memory of the host's one GPU from nvidia-smi."""
-    try:
-        done = run(NVIDIA_SMI, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=NVIDIA_SMI_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        raise ComfyError() from None
-    lines = (done.stdout or '').strip().splitlines() if done.returncode == 0 else []
-    match = re.fullmatch(r'([0-9]{1,9}), ([0-9]{1,9})', lines[0].strip()) if len(lines) == 1 else None
-    if match is None or int(match.group(1)) > int(match.group(2)):
-        raise ComfyError()
-    return (int(match.group(2)) - int(match.group(1))) * MIB
 
 
 def _kill_check_group(proc):
@@ -429,80 +290,15 @@ def run_gpu_check(options, popen=subprocess.Popen):
     return 'cpu', reason or 'busy'
 
 
-def choose_device(options, run=subprocess.run, get=comfyui_get, post=comfyui_post, clock=time.monotonic,
-                  sleep=time.sleep, deadline=None):
-    """('gpu', 'gpu') when the card is free for whisper, ('gpu',
-    'comfy-freed') when it became free once an idle ComfyUI unloaded its
-    models (options.comfyui_free only), else ('cpu', reason). deadline (a
-    clock() value) ends the wait for the memory early: it never extends the
-    note's run limit."""
-    method = getattr(options, 'method', 'legacy')
-    if method == 'cpu':
-        return 'cpu', 'gpu-off'
+def choose_device(options):
+    """('gpu', 'gpu') for method gpu, the GPU check's answer for method
+    auto, else ('cpu', reason)."""
+    method = getattr(options, 'method', 'cpu')
     if method == 'gpu':
         return 'gpu', 'gpu'
     if method == 'auto':
         return run_gpu_check(options)
-    if not options.gpu:
-        return 'cpu', 'gpu-off'
-    if options.comfyui is None:
-        return 'cpu', 'api-error'
-    try:
-        if _comfy_busy(get(options.comfyui, '/queue')):
-            return 'cpu', 'comfy-busy'
-        free = _comfy_free_bytes(get(options.comfyui, '/system_stats'))
-    except ComfyDown:
-        # Not listening: nvidia-smi decides, and there is nobody to ask.
-        try:
-            free = nvidia_free_bytes(run)
-        except ComfyError:
-            return 'cpu', 'api-error'
-        return ('gpu', 'gpu') if free >= options.gpu_min_free_mb * MIB else ('cpu', 'vram-low')
-    except ComfyError:
-        return 'cpu', 'api-error'
-    if free >= options.gpu_min_free_mb * MIB:
-        return 'gpu', 'gpu'
-    if not options.comfyui_free:
-        return 'cpu', 'vram-low'
-    return _free_comfyui(options, get, post, clock, sleep, deadline)
-
-
-def _free_comfyui(options, get, post, clock, sleep, deadline):
-    """Ask an idle ComfyUI to unload its models, then wait for the memory: at
-    most one POST, whatever happens next. /queue is read again right before
-    the POST so that nothing but that one round trip separates an empty queue
-    from the request: ComfyUI has no conditional /free. Its prompt worker
-    takes the flag at once when its queue is empty, and otherwise only after
-    the item it takes next has run (server.py "/free", main.py
-    prompt_worker), so a job queued in that gap still runs with its models
-    loaded. The freed memory shows in /system_stats."""
-    try:
-        if _comfy_busy(get(options.comfyui, '/queue')):
-            return 'cpu', 'comfy-busy'
-        post(options.comfyui, '/free', COMFYUI_FREE_REQUEST)
-        end = clock() + COMFYUI_FREE_WAIT
-        if deadline is not None:
-            end = min(end, deadline)
-        while True:
-            if _comfy_free_bytes(get(options.comfyui, '/system_stats')) >= options.gpu_min_free_mb * MIB:
-                return 'gpu', 'comfy-freed'
-            left = end - clock()
-            if left <= 0:
-                return 'cpu', 'vram-low'
-            sleep(min(COMFYUI_FREE_POLL, left))
-    except (ComfyDown, ComfyError):
-        return 'cpu', 'api-error'
-
-
-def gpu_still_free(options, get=comfyui_get):
-    """None when a GPU run may start now (ComfyUI idle, or not listening),
-    else the CPU reason: the check right before whisper starts."""
-    try:
-        return 'comfy-busy' if _comfy_busy(get(options.comfyui, '/queue')) else None
-    except ComfyDown:
-        return None
-    except ComfyError:
-        return 'api-error'
+    return 'cpu', 'gpu-off'
 
 
 class Device:
@@ -658,15 +454,11 @@ class Queue:
         raise TranscribeError('queue_failed', 'our ticket left the queue')
 
 
-def _whisper(options, wav, run, device, deadline, gpu_limit, get, no_context=False):
-    """One whisper pass on the note's device. On the GPU: /queue again right
-    before it starts, at most gpu_limit seconds, and any failure moves the
-    note to the CPU for this pass and the rest of it. The CPU pass never sees
-    a GPU (CUDA_VISIBLE_DEVICES empty)."""
-    if device.name == 'gpu' and getattr(options, 'method', 'legacy') == 'legacy':
-        late = gpu_still_free(options, get)
-        if late is not None:
-            device.to_cpu(late)
+def _whisper(options, wav, run, device, deadline, gpu_limit, get=None, no_context=False):
+    """One whisper pass on the note's device. On the GPU: at most gpu_limit
+    seconds, and any failure moves the note to the CPU for this pass and the
+    rest of it. The CPU pass never sees a GPU (CUDA_VISIBLE_DEVICES empty).
+    `get` is accepted and ignored: it was the removed sharing check's seam."""
     if device.name == 'gpu':
         try:
             return _run_whisper(whisper_argv(options, wav, no_context, gpu=True), run,
@@ -682,7 +474,7 @@ def _wav_seconds(path):
     return max(os.path.getsize(path) - 44, 0) / 32000
 
 
-def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None, get=comfyui_get):
+def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None, get=None):
     """English text of one audio file ('' when it holds no speech), or
     TranscribeError. Waits for its turn in the host-wide queue, calls
     on_turn() when it starts, picks the device, and runs within
@@ -711,7 +503,7 @@ def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None,
         seconds = _wav_seconds(wav)
         gpu_limit = options.gpu_run_limit(seconds)
         deadline = time.monotonic() + options.run_limit(seconds) + (gpu_limit if options.gpu else 0)
-        device = Device(*choose_device(options, run, get, deadline=deadline))
+        device = Device(*choose_device(options))
         try:
             text = _whisper(options, wav, run, device, deadline, gpu_limit, get)
             if longest_repeat(text) >= LOOP_MIN_REPEATS:

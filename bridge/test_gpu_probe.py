@@ -77,20 +77,16 @@ class GpuProbeTests(ProbeFixture):
         self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "gpu: unknown", "seconds": 2.4}}\n'),
                          ('ok', 'gpu probe: device gpu: unknown (2.4 s)'))
 
-    def test_a_gpu_freed_by_comfyui_is_ok_too(self):
-        # The probe decides its device like a note: with comfyui_free on it
-        # may ask an idle ComfyUI to unload its models first.
-        self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "gpu: comfy-freed", "seconds": 3.1}}\n'),
-                         ('ok', 'gpu probe: device gpu: comfy-freed (3.1 s)'))
-
     def test_gpu_failed_is_a_failure(self):
         self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "cpu: gpu-failed", "seconds": 40.1}}\n'),
                          ('FAIL', 'gpu probe: device cpu: gpu-failed'))
 
     def test_a_busy_or_full_card_is_a_skip_to_try_later(self):
-        for reason in ('comfy-busy', 'vram-low', 'api-error'):
+        # The fixture's legacy gpu = true is method auto: a check that
+        # says no is a skip to try later, whatever its reason.
+        for reason in ('busy', 'vram-low', 'operator-busy'):
             self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "cpu: {reason}", "seconds": 30}}\n'),
-                             ('skip', f'gpu probe: ComfyUI busy or card full ({reason}), try later'))
+                             ('skip', f'gpu probe: GPU not free now (cpu: {reason}), try later'))
 
     def test_transcriber_errors_map_to_their_fixed_phrases(self):
         self.assertEqual(self.probe('{"error": "whisper_missing"}\n'),
@@ -132,7 +128,7 @@ class GpuProbeTests(ProbeFixture):
         self.assertEqual(self.probe(settings=self.settings('enabled = false\ngpu = true\n')),
                          ('skip', 'gpu probe: transcription off ([transcribe] enabled = false)'))
         self.assertEqual(self.probe(settings=self.settings('enabled = true\ngpu = false\n')),
-                         ('skip', 'gpu probe: gpu = false'))
+                         ('skip', 'gpu probe: method = cpu'))
         self.assertEqual(self.recorded(), [])
 
     def test_method_cpu_skips_and_method_auto_and_gpu_probe(self):
@@ -180,13 +176,6 @@ class GpuProbeTests(ProbeFixture):
         self.assertIn(f'VOICE_TRANSCRIBE_WHISPER_CLI={self.cli}', env)
         self.assertEqual(sorted(e.split('=', 1)[0] for e in env),
                          sorted(['VOICE_TRANSCRIBE_GPU', 'TMPDIR', *settings.transcribe['env']]))
-        self.assertNotIn('VOICE_TRANSCRIBE_COMFYUI_FREE=1', env)
-
-    def test_the_probe_follows_comfyui_free_like_a_note(self):
-        settings = self.settings(transcribe='enabled = true\ngpu = true\ncomfyui_free = true\n')
-        self.probe('{"device": "gpu", "seconds": 1}\n', settings=settings)
-        env = [a[len('--setenv='):] for a in self.recorded()[0]['argv'] if a.startswith('--setenv=')]
-        self.assertIn('VOICE_TRANSCRIBE_COMFYUI_FREE=1', env)
 
     def test_the_probe_carries_exactly_the_rendered_units_sandbox(self):
         settings = self.settings()
@@ -253,8 +242,8 @@ class CheckInstallFlagTests(ProbeFixture):
     def test_with_the_flag_the_line_is_printed_and_only_a_failure_fails(self):
         self.assertEqual(self.run_main('--gpu-probe', stdout='{"device": "gpu", "seconds": 2.4}\n'),
                          (0, 'ok    python\nok    gpu probe: device gpu (2.4 s)\n'))
-        self.assertEqual(self.run_main('--gpu-probe', stdout='{"device": "cpu: comfy-busy", "seconds": 9}\n'),
-                         (0, 'ok    python\nskip  gpu probe: ComfyUI busy or card full (comfy-busy), try later\n'))
+        self.assertEqual(self.run_main('--gpu-probe', stdout='{"device": "cpu: busy", "seconds": 9}\n'),
+                         (0, 'ok    python\nskip  gpu probe: GPU not free now (cpu: busy), try later\n'))
         self.assertEqual(self.run_main('--gpu-probe', '--clip', str(self.jfk),
                                        stdout='{"device": "cpu: gpu-failed", "seconds": 9}\n'),
                          ('1 install check(s) failed', 'ok    python\nFAIL  gpu probe: device cpu: gpu-failed\n'))

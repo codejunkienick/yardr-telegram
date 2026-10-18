@@ -1,18 +1,15 @@
-"""The whisper.cpp transcriber and its bridge adapter, with a fake whisper-cli,
-a fake ffmpeg, a fake nvidia-smi and a fake ComfyUI on loopback: English is
+"""The whisper.cpp transcriber and its bridge adapter, with a fake whisper-cli
+and a fake ffmpeg: English is
 forced, VAD is on, loops are retried, non-English text is refused, the adapter
 speaks the bridge's JSON-line contract, every caller on the host waits its turn
-in one FIFO queue, and the GPU is used only when ComfyUI leaves it free."""
-import http.server
+in one FIFO queue, and the GPU is used only when the GPU check allows it."""
 import importlib.util
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -89,15 +86,12 @@ class FakeWhisperCase(unittest.TestCase):
         self.home = self.root / 'home'
         self.home.mkdir()
         self.queue = self.home / vt.QUEUE_SUBDIR
-        # Nothing from the caller's environment picks the device or ComfyUI:
-        # the real ComfyUI is never contacted (the default address is a
-        # closed loopback port here; GPU tests start a fake one).
+        # Nothing from the caller's environment picks the device.
         inherited = {k: v for k, v in os.environ.items()
                      if not k.startswith('VOICE_TRANSCRIBE_') and k != 'CUDA_VISIBLE_DEVICES'}
         self.env = dict(inherited, PATH=f'{bin_dir}{os.pathsep}{os.environ.get("PATH", "")}', HOME=str(self.home),
                         VOICE_TRANSCRIBE_WHISPER_CLI=str(self.cli), VOICE_TRANSCRIBE_MODEL_DIR=str(self.models),
-                        VOICE_TRANSCRIBE_THREADS='3', FAKE_WHISPER_LOG=str(self.log),
-                        VOICE_TRANSCRIBE_COMFYUI_URL=f'http://127.0.0.1:{closed_port()}')
+                        VOICE_TRANSCRIBE_THREADS='3', FAKE_WHISPER_LOG=str(self.log))
 
     def adapter(self, *answers, audio=None, model='large-v3-turbo-q5_0', device='cpu', extra_env=None):
         env = dict(self.env, FAKE_WHISPER_ANSWERS=json.dumps(list(answers)), **(extra_env or {}))
@@ -127,13 +121,6 @@ class FakeWhisperCase(unittest.TestCase):
         result = json.loads(lines[-1])
         self.device = result.pop('device', None)
         return result
-
-
-def closed_port():
-    """A loopback port nothing listens on (connection refused)."""
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        return sock.getsockname()[1]
 
 
 class TranscriberTests(FakeWhisperCase):
@@ -370,6 +357,22 @@ class GpuCheckMethodTests(FakeWhisperCase):
         self.assertIn('-ng', cpu_run)
         self.assertEqual(self.check_calls(), [])
 
+    def test_the_legacy_auto_device_runs_the_gpu_check(self):
+        # Adapter DEVICE auto is the legacy name for the check path: the
+        # fake check decides, and gpu_min_free_mb reaches its environment.
+        self.write_check('print(\'{"gpu": true}\')\n')
+        env = {'VOICE_TRANSCRIBE_GPU_CHECK': str(self.check), 'VOICE_TRANSCRIBE_GPU_MIN_FREE_MB': '3072'}
+        self.assertEqual(self.result('Ship it.', device='auto', extra_env=env), {'text': 'Ship it.'})
+        self.assertEqual(self.device, 'gpu')
+        self.assertNotIn('-ng', self.whisper_calls()[0])
+        [call] = self.check_calls()
+        self.assertEqual(call['env']['GPU_MIN_FREE_MB'], '3072')
+        # VOICE_TRANSCRIBE_GPU=1 with no method is the same check path.
+        options = vt.Options(environ=dict(self.env, VOICE_TRANSCRIBE_GPU='1',
+                                          VOICE_TRANSCRIBE_GPU_CHECK=str(self.check)))
+        self.assertEqual((options.method, options.gpu), ('auto', True))
+        self.assertEqual(vt.Options(environ=dict(self.env, VOICE_TRANSCRIBE_GPU='0')).method, 'cpu')
+
     def test_method_cpu_never_runs_a_check_or_the_gpu(self):
         self.write_check('print(\'{"gpu": true}\')\n')
         env = {'VOICE_TRANSCRIBE_GPU_CHECK': str(self.check)}
@@ -555,504 +558,6 @@ class QueueTests(FakeWhisperCase):
         self.assertEqual(self.whisper_calls(), [])
 
 
-class FakeComfyUI(http.server.ThreadingHTTPServer):
-    """ComfyUI's API on a loopback port. Every request is recorded, whatever
-    its method or path, and every POST's Content-Type and body too; GET
-    /queue and GET /system_stats answer from per-path scripts (one answer per
-    call, the last repeats). An answer is a JSON value, ('raw', status,
-    bytes), or ('sleep', seconds) before an idle answer. POST /free answers
-    200 with an empty body only when free_status is set to 200."""
-
-    daemon_threads = True
-    block_on_close = False
-
-    def __init__(self):
-        self.requests, self.scripts, self.lock = [], {}, threading.Lock()
-        self.posts, self.free_status = [], None
-        super().__init__(('127.0.0.1', 0), self.Handler)
-
-    def handle_error(self, request, client_address):
-        pass  # a client that gave up at its timeout closed the connection
-
-    @property
-    def url(self):
-        return f'http://127.0.0.1:{self.server_address[1]}'
-
-    def answer(self, method, path, content_type=None, body=b''):
-        with self.lock:
-            self.requests.append((method, path))
-            calls = sum(1 for m, p in self.requests if (m, p) == (method, path))
-            if method == 'POST':
-                self.posts.append((path, content_type, body))
-        if (method, path) == ('POST', '/free') and self.free_status is not None:
-            return self.free_status, b''
-        script = self.scripts.get(path) if method == 'GET' else None
-        if not script:
-            return 405 if method != 'GET' else 404, b'{}'
-        answer = script[min(calls, len(script)) - 1]
-        if isinstance(answer, tuple) and answer[0] == 'raw':
-            return answer[1], answer[2]
-        if isinstance(answer, tuple) and answer[0] == 'sleep':
-            time.sleep(answer[1])
-            answer = IDLE
-        return 200, json.dumps(answer).encode()
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def respond(self):
-            sent = self.rfile.read(int(self.headers.get('Content-Length') or 0))
-            status, body = self.server.answer(self.command, self.path, self.headers.get('Content-Type'), sent)
-            self.send_response(status)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            if self.command != 'HEAD':
-                self.wfile.write(body)
-
-        do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = respond
-
-        def log_message(self, *args):
-            pass
-
-
-IDLE = {'queue_running': [], 'queue_pending': []}
-BUSY_RUNNING = {'queue_running': [[1, 'prompt-id', {}, {}, []]], 'queue_pending': []}
-BUSY_PENDING = {'queue_running': [], 'queue_pending': [[2, 'prompt-id', {}, {}, []]]}
-GIB = 1024 ** 3
-
-
-def stats(free, held=0, devices=None):
-    """A /system_stats answer: one CUDA device with free bytes, held of them
-    in ComfyUI's own allocator."""
-    return {'system': {'comfyui_version': '0.38.0'}, 'devices': devices if devices is not None else [
-        {'name': 'cuda:0 Fake GPU', 'type': 'cuda', 'index': 0, 'vram_total': 16 * GIB, 'vram_free': free,
-         'torch_vram_total': held, 'torch_vram_free': held}]}
-
-
-class GpuChoiceTests(FakeWhisperCase):
-    """Device choice once the note's turn starts: the GPU only when ComfyUI is
-    idle (or not listening) and the card has room, /queue again right before
-    the GPU run, a failed GPU run retried on the CPU, and every doubt the CPU.
-    Across every test ComfyUI sees only GET /queue and GET /system_stats."""
-
-    ALLOWED = {('GET', '/queue'), ('GET', '/system_stats')}
-
-    def setUp(self):
-        super().setUp()
-        self.comfy = FakeComfyUI()
-        threading.Thread(target=self.comfy.serve_forever, daemon=True).start()
-        self.addCleanup(self.comfy.server_close)
-        self.addCleanup(self.comfy.shutdown)
-        self.env.update(VOICE_TRANSCRIBE_COMFYUI_URL=self.comfy.url, FAKE_NVIDIA_SMI='926, 16311\n')
-        self.cpu_argv = None
-
-    def tearDown(self):
-        # Only the comfyui_free tests may also send their one POST /free.
-        allowed = self.ALLOWED | ({('POST', '/free')} if self.env.get('VOICE_TRANSCRIBE_COMFYUI_FREE') == '1' else set())
-        self.assertLessEqual(set(self.comfy.requests), allowed, self.comfy.requests)
-        super().tearDown()
-
-    def comfy_answers(self, queue, system_stats=None):
-        self.comfy.scripts = {'/queue': queue, '/system_stats': [system_stats] if system_stats is not None else []}
-
-    def gpu(self, *answers, **kwargs):
-        return self.result(*answers, device='auto', **kwargs)
-
-    def assert_cpu_run(self, argv):
-        self.assertIn('-ng', argv)
-
-    def assert_gpu_run(self, argv):
-        self.assertNotIn('-ng', argv)
-        # The GPU call is the CPU call without -ng, nothing else (the log
-        # leaves out the binary).
-        cpu = vt.whisper_argv(vt.Options(environ=self.env), Path(argv[argv.index('-f') + 1]), no_context='-mc' in argv)
-        self.assertEqual(['-ng', *argv], cpu[1:])
-
-    def test_idle_with_room_runs_on_the_gpu(self):
-        self.comfy_answers([IDLE], stats(free=12 * GIB, held=GIB))
-        self.assertEqual(self.gpu('Ship it.'), {'text': 'Ship it.'})
-        self.assertEqual(self.device, 'gpu')
-        [argv] = self.whisper_calls()
-        self.assert_gpu_run(argv)
-        self.assertEqual(self.whisper_cuda(), [None])  # the GPU run inherits the device list
-        # /queue, /system_stats, then /queue again right before the GPU run.
-        self.assertEqual(self.comfy.requests, [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue')])
-        self.assertEqual(self.nvidia_smi_calls(), [])
-
-    def test_a_busy_comfyui_means_the_cpu(self):
-        for name, queue in (('running', BUSY_RUNNING), ('pending', BUSY_PENDING)):
-            with self.subTest(name):
-                self.log.unlink(missing_ok=True)
-                self.comfy.requests.clear()
-                self.comfy_answers([queue], stats(free=15 * GIB))
-                self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-                self.assertEqual(self.device, 'cpu: comfy-busy')
-                [argv] = self.whisper_calls()
-                self.assert_cpu_run(argv)
-                self.assertEqual(self.comfy.requests, [('GET', '/queue')])
-
-    def test_idle_but_full_means_the_cpu(self):
-        # 2048 MiB needed: 1.5 GiB free is too little, and so is 3 GiB of
-        # which ComfyUI's own allocator still holds 2 GiB.
-        for free, held in ((3 * GIB // 2, 0), (3 * GIB, 2 * GIB)):
-            with self.subTest(free=free, held=held):
-                self.log.unlink(missing_ok=True)
-                self.comfy_answers([IDLE], stats(free=free, held=held))
-                self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-                self.assertEqual(self.device, 'cpu: vram-low')
-                self.assert_cpu_run(self.whisper_calls()[0])
-        self.env['VOICE_TRANSCRIBE_GPU_MIN_FREE_MB'] = '1024'
-        self.log.unlink()
-        self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-        self.assertEqual(self.device, 'gpu')  # the margin is a setting
-        self.assertEqual(self.comfy.posts, [])  # comfyui_free off: never asked to unload
-
-    def test_an_idle_comfyui_asked_to_unload_frees_the_gpu(self):
-        # comfyui_free on, idle but full: one POST /free with exactly
-        # {"unload_models": true} as JSON, the memory read again, the GPU.
-        self.env['VOICE_TRANSCRIBE_COMFYUI_FREE'] = '1'
-        self.comfy.free_status = 200
-        self.comfy.scripts = {'/queue': [IDLE], '/system_stats': [stats(free=GIB), stats(free=12 * GIB)]}
-        self.assertEqual(self.gpu('Ship it.'), {'text': 'Ship it.'})
-        self.assertEqual(self.device, 'gpu: comfy-freed')
-        [argv] = self.whisper_calls()
-        self.assert_gpu_run(argv)
-        self.assertEqual(self.comfy.posts, [('/free', 'application/json', b'{"unload_models": true}')])
-        # The POST follows an empty /queue read at once.
-        self.assertEqual(self.comfy.requests, [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue'),
-                                               ('POST', '/free'), ('GET', '/system_stats'), ('GET', '/queue')])
-
-    def test_a_job_queued_after_the_free_sends_the_note_to_the_cpu(self):
-        self.env['VOICE_TRANSCRIBE_COMFYUI_FREE'] = '1'
-        self.comfy.free_status = 200
-        self.comfy.scripts = {'/queue': [IDLE, IDLE, BUSY_PENDING],
-                              '/system_stats': [stats(free=GIB), stats(free=12 * GIB)]}
-        self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-        self.assertEqual(self.device, 'cpu: comfy-busy')
-        self.assert_cpu_run(self.whisper_calls()[0])
-        self.assertEqual(len(self.comfy.posts), 1)
-        self.assertEqual(self.comfy.requests[-1], ('GET', '/queue'))
-
-    def test_a_refused_free_means_the_cpu(self):
-        self.env['VOICE_TRANSCRIBE_COMFYUI_FREE'] = '1'
-        for status in (None, 500):  # None: the fake's 405 for an unscripted POST
-            with self.subTest(status=status):
-                self.log.unlink(missing_ok=True)
-                self.comfy.requests.clear()
-                self.comfy.posts.clear()
-                self.comfy.free_status = status
-                self.comfy_answers([IDLE], stats(free=GIB))
-                self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-                self.assertEqual(self.device, 'cpu: api-error')
-                self.assert_cpu_run(self.whisper_calls()[0])
-                self.assertEqual(self.comfy.requests,
-                                 [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue'), ('POST', '/free')])
-
-    def test_comfyui_free_never_posts_to_a_busy_or_absent_comfyui(self):
-        self.env['VOICE_TRANSCRIBE_COMFYUI_FREE'] = '1'
-        self.comfy.free_status = 200
-        self.comfy_answers([BUSY_RUNNING], stats(free=GIB))
-        self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-        self.assertEqual(self.device, 'cpu: comfy-busy')
-        # Not listening: nvidia-smi decides as before and nothing is sent.
-        self.env.update(VOICE_TRANSCRIBE_COMFYUI_URL=f'http://127.0.0.1:{closed_port()}', FAKE_NVIDIA_SMI='15000, 16311\n')
-        self.log.unlink()
-        self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-        self.assertEqual(self.device, 'cpu: vram-low')
-        self.assertEqual(self.comfy.posts, [])
-
-    def test_comfyui_not_listening_asks_nvidia_smi(self):
-        self.env['VOICE_TRANSCRIBE_COMFYUI_URL'] = f'http://127.0.0.1:{closed_port()}'
-        for smi, device in (('926, 16311\n', 'gpu'), ('15000, 16311\n', 'cpu: vram-low')):
-            with self.subTest(smi=smi):
-                self.log.unlink(missing_ok=True)
-                self.env['FAKE_NVIDIA_SMI'] = smi
-                self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-                self.assertEqual(self.device, device)
-                [argv] = self.whisper_calls()
-                (self.assert_gpu_run if device == 'gpu' else self.assert_cpu_run)(argv)
-        self.assertEqual(self.nvidia_smi_calls(), ['--query-gpu=memory.used,memory.total --format=csv,noheader,nounits'] * 2)
-        self.assertEqual(self.comfy.requests, [])
-
-    def test_an_nvidia_smi_that_fails_or_says_something_else_means_the_cpu(self):
-        self.env['VOICE_TRANSCRIBE_COMFYUI_URL'] = f'http://127.0.0.1:{closed_port()}'
-        for smi, code in (('926, 16311\n', '9'), ('', '0'), ('N/A, 16311\n', '0'), ('926, 16311\n926, 16311\n', '0'),
-                          ('17000, 16311\n', '0'), ('926 16311\n', '0')):
-            with self.subTest(smi=smi, code=code):
-                self.log.unlink(missing_ok=True)
-                self.env.update(FAKE_NVIDIA_SMI=smi, FAKE_NVIDIA_SMI_EXIT=code)
-                self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-                self.assertEqual(self.device, 'cpu: api-error')
-                self.assert_cpu_run(self.whisper_calls()[0])
-
-        def missing(*args, **kwargs):
-            raise FileNotFoundError('nvidia-smi')
-
-        self.assertEqual(vt.choose_device(vt.Options(environ=self.env, gpu=True), run=missing), ('cpu', 'api-error'))
-
-    def test_malformed_answers_and_errors_mean_the_cpu(self):
-        broken = (
-            ([('raw', 200, b'not json')], None),
-            ([('raw', 500, b'{}')], None),
-            ([('raw', 200, b'[]')], None),
-            ([{'queue_running': None, 'queue_pending': []}], None),
-            ([{'queue_running': []}], None),
-            ([IDLE], ('raw', 200, b'{"devices": "x"}')),
-            ([IDLE], stats(0, devices=[])),
-            ([IDLE], stats(0, devices=[{'type': 'cpu', 'vram_free': 15 * GIB, 'torch_vram_free': 0}])),
-            ([IDLE], stats(0, devices=[{'type': 'cuda', 'vram_free': 15 * GIB, 'torch_vram_free': 0}] * 2)),
-            ([IDLE], stats(0, devices=[{'type': 'cuda', 'vram_free': '15000000000', 'torch_vram_free': 0}])),
-            ([IDLE], stats(0, devices=[{'type': 'cuda', 'vram_free': True, 'torch_vram_free': 0}])),
-            ([IDLE], stats(0, devices=[{'type': 'cuda', 'vram_free': 15 * GIB}])),
-            ([IDLE], stats(0, devices=[{'type': 'cuda', 'vram_free': GIB, 'torch_vram_free': 2 * GIB}])),
-            ([IDLE], ('raw', 200, b'{' + b' ' * vt.COMFYUI_MAX_BYTES + b'}')),
-        )
-        for queue, system_stats in broken:
-            with self.subTest(queue=queue, system_stats=str(system_stats)[:80]):
-                self.log.unlink(missing_ok=True)
-                self.comfy_answers(queue, system_stats)
-                self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-                self.assertEqual(self.device, 'cpu: api-error')
-                self.assert_cpu_run(self.whisper_calls()[0])
-        self.assertEqual(self.nvidia_smi_calls(), [])  # an answering ComfyUI is never second-guessed
-
-    def test_a_comfyui_that_does_not_answer_in_time_means_the_cpu(self):
-        self.comfy_answers([('sleep', vt.COMFYUI_TIMEOUT + 1)], stats(free=15 * GIB))
-        started = time.monotonic()
-        self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-        self.assertEqual(self.device, 'cpu: api-error')
-        self.assertLess(time.monotonic() - started, vt.COMFYUI_TIMEOUT + 10)
-        self.assert_cpu_run(self.whisper_calls()[0])
-        self.assertEqual(self.nvidia_smi_calls(), [])
-
-    def test_comfyui_turning_busy_before_the_gpu_run_means_the_cpu(self):
-        self.comfy_answers([IDLE, BUSY_PENDING], stats(free=15 * GIB))
-        self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-        self.assertEqual(self.device, 'cpu: comfy-busy')
-        [argv] = self.whisper_calls()
-        self.assert_cpu_run(argv)
-        self.assertEqual(self.comfy.requests, [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue')])
-
-    def test_a_recheck_that_errors_means_the_cpu(self):
-        self.comfy_answers([IDLE, ('raw', 200, b'garbage')], stats(free=15 * GIB))
-        self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-        self.assertEqual(self.device, 'cpu: api-error')
-        self.assert_cpu_run(self.whisper_calls()[0])
-
-    def test_a_failed_gpu_run_is_retried_once_on_the_cpu(self):
-        self.comfy_answers([IDLE], stats(free=15 * GIB))
-        self.assertEqual(self.gpu('FAIL', 'Still here.'), {'text': 'Still here.'})
-        self.assertEqual(self.device, 'cpu: gpu-failed')
-        gpu_run, cpu_run = self.whisper_calls()
-        self.assert_gpu_run(gpu_run)
-        self.assert_cpu_run(cpu_run)
-        self.assertEqual(self.whisper_cuda(), [None, ''])
-        self.assertEqual(self.gpu('FAIL', 'FAIL'), {'error': 'whisper_failed'})  # the CPU retry is the last word
-        self.assertEqual(len(self.whisper_calls()), 4)
-
-    def test_a_loop_retry_on_the_gpu_checks_comfyui_again(self):
-        looped = 'what is it? what is it? what is it? what is it?'
-        self.comfy_answers([IDLE, IDLE, BUSY_RUNNING], stats(free=15 * GIB))
-        self.assertEqual(self.gpu(looped, 'what is it, he asked'), {'text': 'what is it, he asked'})
-        self.assertEqual(self.device, 'cpu: comfy-busy')
-        first, retry = self.whisper_calls()
-        self.assert_gpu_run(first)
-        self.assert_cpu_run(retry)
-        self.assertEqual(retry[retry.index('-mc') + 1], '0')
-        self.assertEqual(self.comfy.requests.count(('GET', '/queue')), 3)
-
-    def test_gpu_off_never_contacts_comfyui_or_nvidia_smi(self):
-        self.comfy_answers([IDLE], stats(free=15 * GIB))
-        for _ in range(2):
-            self.assertEqual(self.result('Fine.'), {'text': 'Fine.'})
-            self.assertEqual(self.device, 'cpu: gpu-off')
-        self.assertTrue(all('-ng' in argv for argv in self.whisper_calls()))
-        self.assertEqual(self.whisper_cuda(), ['', ''])
-        self.assertEqual((self.comfy.requests, self.nvidia_smi_calls()), ([], []))
-        # The command by hand: the GPU only with VOICE_TRANSCRIBE_GPU=1.
-        for value, device in (('0', 'cpu: gpu-off'), ('true', 'cpu: gpu-off'), ('1', 'gpu')):
-            with self.subTest(value=value):
-                env = dict(self.env, VOICE_TRANSCRIBE_GPU=value, FAKE_WHISPER_ANSWERS='["Hello."]')
-                done = subprocess.run([sys.executable, str(TRANSCRIBER / 'voice_transcribe.py'), '--quiet', '--force',
-                                       str(self.audio)], env=env, capture_output=True, text=True, timeout=60)
-                self.assertEqual((done.returncode, done.stdout), (0, 'Hello.\n'), done.stderr)
-                self.assertEqual(done.stderr, f'voice-transcribe: {self.audio}: device {device}\n')
-
-    def test_a_comfyui_address_off_loopback_is_never_contacted(self):
-        for url in ('http://192.0.2.1:8188', 'http://localhost:8188', f'{self.comfy.url}/api'):
-            with self.subTest(url=url):
-                self.log.unlink(missing_ok=True)
-                self.env['VOICE_TRANSCRIBE_COMFYUI_URL'] = url
-                self.assertEqual(self.gpu('Fine.'), {'text': 'Fine.'})
-                self.assertEqual(self.device, 'cpu: api-error')
-                self.assert_cpu_run(self.whisper_calls()[0])
-        self.assertEqual((self.comfy.requests, self.nvidia_smi_calls()), ([], []))
-
-
-class FakeComfyApi:
-    """ComfyUI's API as the injected get and post seams of choose_device, with
-    a fake clock: every call is recorded; /system_stats answers free bytes
-    from a script and /queue its answer, or one of a list per read (the last
-    repeats); post raises `fails`."""
-
-    def __init__(self, queue=None, free=(), fails=None):
-        self.queue = queue if isinstance(queue, list) else [queue or IDLE]
-        self.free, self.fails = list(free), fails
-        self.calls, self.sleeps, self.now = [], [], 1000.0
-
-    def get(self, address, path):
-        self.calls.append(('GET', path))
-        script = self.queue if path == '/queue' else self.free
-        answer = script[min(sum(1 for c in self.calls if c == ('GET', path)), len(script)) - 1]
-        if isinstance(answer, Exception):
-            raise answer
-        return answer if path == '/queue' else stats(free=answer)
-
-    def post(self, address, path, payload):
-        self.calls.append(('POST', path, payload))
-        if self.fails is not None:
-            raise self.fails
-
-    def clock(self):
-        return self.now
-
-    def sleep(self, seconds):
-        self.sleeps.append(seconds)
-        self.now += seconds
-
-    def reads_after_post(self):
-        posted = [i for i, c in enumerate(self.calls) if c[0] == 'POST']
-        return sum(1 for c in self.calls[posted[0]:] if c == ('GET', '/system_stats')) if posted else 0
-
-
-class ComfyFreeTests(unittest.TestCase):
-    """comfyui_free: an idle ComfyUI short of the margin is asked once to
-    unload its models, the memory is read every 0.5 s for at most 10 s, and
-    every doubt means the CPU; in process, with fakes and a fake clock."""
-
-    FREE = ('POST', '/free', {'unload_models': True})
-
-    def setUp(self):
-        # A closed port: nothing real could be reached even without the fakes.
-        self.env = {'VOICE_TRANSCRIBE_COMFYUI_FREE': '1', 'VOICE_TRANSCRIBE_COMFYUI_URL': f'http://127.0.0.1:{closed_port()}'}
-
-    def choose(self, api, comfyui_free=True, deadline=None):
-        def no_nvidia_smi(*args, **kwargs):
-            raise AssertionError('nvidia-smi must not run while ComfyUI answers')
-
-        env = self.env if comfyui_free else {'VOICE_TRANSCRIBE_COMFYUI_URL': self.env['VOICE_TRANSCRIBE_COMFYUI_URL']}
-        return vt.choose_device(vt.Options(environ=env, gpu=True), run=no_nvidia_smi, get=api.get, post=api.post,
-                                clock=api.clock, sleep=api.sleep, deadline=deadline)
-
-    def test_the_memory_freed_on_the_third_poll_means_the_gpu(self):
-        api = FakeComfyApi(free=[GIB, GIB, GIB, 12 * GIB])
-        self.assertEqual(self.choose(api), ('gpu', 'comfy-freed'))
-        self.assertEqual(api.calls, [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue'), self.FREE]
-                         + [('GET', '/system_stats')] * 3)
-        self.assertEqual(api.sleeps, [vt.COMFYUI_FREE_POLL] * 2)
-        self.assertEqual(vt.Device('gpu', 'comfy-freed').label, 'gpu: comfy-freed')
-
-    def test_memory_that_never_frees_means_the_cpu_after_10_s(self):
-        api = FakeComfyApi(free=[GIB])
-        self.assertEqual(self.choose(api), ('cpu', 'vram-low'))
-        self.assertEqual([c for c in api.calls if c[0] == 'POST'], [self.FREE])
-        self.assertLessEqual(api.reads_after_post(), 21)
-        self.assertEqual(api.now - 1000.0, vt.COMFYUI_FREE_WAIT)
-        self.assertEqual(vt.COMFYUI_FREE_WAIT, 10)
-
-    def test_the_wait_ends_at_the_notes_deadline(self):
-        api = FakeComfyApi(free=[GIB])
-        self.assertEqual(self.choose(api, deadline=1003.2), ('cpu', 'vram-low'))
-        self.assertEqual(api.now, 1003.2)  # never past the run limit
-        self.assertEqual(api.reads_after_post(), 8)
-
-    def test_a_busy_comfyui_is_never_asked(self):
-        for queue in (BUSY_RUNNING, BUSY_PENDING):
-            with self.subTest(queue=queue):
-                api = FakeComfyApi(queue=queue, free=[GIB])
-                self.assertEqual(self.choose(api), ('cpu', 'comfy-busy'))
-                self.assertEqual(api.calls, [('GET', '/queue')])
-
-    def test_a_job_queued_before_the_post_means_no_post(self):
-        # /queue is read again right before the POST: a job that arrived
-        # since the first read keeps ComfyUI's models loaded.
-        for queue in (BUSY_RUNNING, BUSY_PENDING):
-            with self.subTest(queue=queue):
-                api = FakeComfyApi(queue=[IDLE, queue], free=[GIB])
-                self.assertEqual(self.choose(api), ('cpu', 'comfy-busy'))
-                self.assertEqual(api.calls, [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue')])
-        for error in (vt.ComfyError(), vt.ComfyDown()):
-            with self.subTest(read=type(error).__name__):
-                api = FakeComfyApi(queue=[IDLE, error], free=[GIB])
-                self.assertEqual(self.choose(api), ('cpu', 'api-error'))
-                self.assertEqual(api.calls, [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue')])
-
-    def test_comfyui_free_off_never_asks(self):
-        api = FakeComfyApi(free=[GIB])
-        self.assertEqual(self.choose(api, comfyui_free=False), ('cpu', 'vram-low'))
-        self.assertEqual(api.calls, [('GET', '/queue'), ('GET', '/system_stats')])
-        self.assertEqual(api.sleeps, [])
-
-    def test_enough_memory_already_never_asks(self):
-        api = FakeComfyApi(free=[12 * GIB])
-        self.assertEqual(self.choose(api), ('gpu', 'gpu'))
-        self.assertEqual(api.calls, [('GET', '/queue'), ('GET', '/system_stats')])
-
-    def test_a_failed_post_or_read_means_the_cpu_with_no_second_post(self):
-        for fails in (vt.ComfyError(), vt.ComfyDown()):
-            with self.subTest(fails=type(fails).__name__):
-                api = FakeComfyApi(free=[GIB], fails=fails)
-                self.assertEqual(self.choose(api), ('cpu', 'api-error'))
-                self.assertEqual(api.calls, [('GET', '/queue'), ('GET', '/system_stats'), ('GET', '/queue'), self.FREE])
-        for error in (vt.ComfyError(), vt.ComfyDown()):
-            with self.subTest(read=type(error).__name__):
-                api = FakeComfyApi(free=[GIB, GIB, error])
-                self.assertEqual(self.choose(api), ('cpu', 'api-error'))
-                self.assertEqual([c for c in api.calls if c[0] == 'POST'], [self.FREE])
-
-    def test_the_post_goes_out_as_one_json_request_on_the_get_transport(self):
-        class Response:
-            def __init__(self, status, body):
-                self.status, self.body = status, body
-
-            def read(self, limit):
-                return self.body[:limit]
-
-        class Connection:
-            made = []
-
-            def __init__(self, host, port, timeout):
-                self.args, self.sent = (host, port, timeout), None
-                Connection.made.append(self)
-
-            def request(self, method, path, body=None, headers=None):
-                self.sent = (method, path, body, headers)
-                if Connection.refuse:
-                    raise ConnectionRefusedError()
-
-            def getresponse(self):
-                return Response(*Connection.answer)
-
-            def close(self):
-                pass
-
-        for answer, refuse, outcome in (((200, b''), False, None), ((200, b'{"anything": 1}'), False, None),
-                                        ((500, b''), False, vt.ComfyError),
-                                        ((200, b'x' * (vt.COMFYUI_MAX_BYTES + 1)), False, vt.ComfyError),
-                                        ((200, b''), True, vt.ComfyDown)):
-            with self.subTest(answer=answer[0], size=len(answer[1]), refuse=refuse):
-                Connection.answer, Connection.refuse, Connection.made = answer, refuse, []
-                if outcome is None:
-                    self.assertIsNone(vt.comfyui_post(('127.0.0.1', 8999), '/free', {'unload_models': True},
-                                                      connection=Connection))
-                else:
-                    with self.assertRaises(outcome):
-                        vt.comfyui_post(('127.0.0.1', 8999), '/free', {'unload_models': True}, connection=Connection)
-                [conn] = Connection.made
-                self.assertEqual(conn.args, ('127.0.0.1', 8999, vt.COMFYUI_TIMEOUT))
-                self.assertEqual(conn.sent, ('POST', '/free', b'{"unload_models": true}',
-                                             {'Content-Type': 'application/json'}))
-
-
 class GpuRunLimitTests(unittest.TestCase):
     """A GPU run that hangs is stopped at its own limit, so the CPU retry
     still has its whole run limit; in process, with fake runs."""
@@ -1070,7 +575,7 @@ class GpuRunLimitTests(unittest.TestCase):
         device = vt.Device('gpu', 'gpu')
         gpu_limit = options.gpu_run_limit(60)
         deadline = time.monotonic() + options.run_limit(60) + gpu_limit
-        text = vt._whisper(options, Path('/x.wav'), run, device, deadline, gpu_limit, get=lambda *a: IDLE)
+        text = vt._whisper(options, Path('/x.wav'), run, device, deadline, gpu_limit)
         self.assertEqual((text, device.label), ('Done.', 'cpu: gpu-failed'))
         (gpu, gpu_timeout, gpu_cuda), (cpu, cpu_timeout, cpu_cuda) = calls
         self.assertEqual((gpu, gpu_timeout, gpu_cuda), (False, gpu_limit, None))

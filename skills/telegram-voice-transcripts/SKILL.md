@@ -52,12 +52,11 @@ about a minute per minute of audio with the default model):
 ```sh
 voice-transcribe --quiet <path>          # writes <name>.txt next to the audio, prints the text
 voice-transcribe --model small.en <path> # about 4x cheaper, more slips in names
-VOICE_TRANSCRIBE_GPU=1 voice-transcribe --quiet <path>  # the GPU when ComfyUI leaves it free: seconds
+VOICE_TRANSCRIBE_GPU=1 voice-transcribe --quiet <path>  # the GPU when the GPU check allows it: seconds
 ```
 
-stderr names the device per file (`device gpu`, `device gpu: comfy-freed`
-when an idle ComfyUI unloaded its models for it, which happens only with
-`VOICE_TRANSCRIBE_COMFYUI_FREE=1`, or `device cpu: <reason>`).
+stderr names the device per file (`device gpu`, `device gpu: <reason>`,
+or `device cpu: <reason>`).
 
 It applies the same rules: English forced, Silero VAD (silence gives no text),
 and a phrase repeated three or more times in a row retried once without

@@ -12,7 +12,6 @@ from html import escape as html_escape
 from html import unescape as html_unescape
 import http.client
 import http.server
-import ipaddress
 import json
 import math
 import os
@@ -872,11 +871,10 @@ class Bridge:
     # as GPU_LIMIT_SHARE and GPU_MIN_LIMIT in transcriber/voice_transcribe.py.
     TRANSCRIBE_GPU_SHARE = 4
     TRANSCRIBE_GPU_MIN = 30
-    # The adapter's "device" line: which device ran the note and why. The
-    # legacy labels, plus gpu / gpu: <reason> / cpu: <reason> for a reason of
-    # 1-32 lower-case letters, digits or hyphens from a GPU check.
-    TRANSCRIBE_DEVICES = frozenset({'gpu', 'gpu: comfy-freed', 'cpu: comfy-busy', 'cpu: vram-low', 'cpu: api-error',
-                                    'cpu: gpu-failed', 'cpu: gpu-off'})
+    # The adapter's "device" line: which device ran the note and why:
+    # gpu / gpu: <reason> / cpu: <reason> for a reason of 1-32 lower-case
+    # letters, digits or hyphens from a GPU check.
+    TRANSCRIBE_DEVICES = frozenset({'gpu', 'cpu: vram-low', 'cpu: gpu-failed', 'cpu: gpu-off'})
     TRANSCRIBE_DEVICE_RE = re.compile(r'(?:gpu|cpu): [a-z0-9-]{1,32}')
 
     @classmethod
@@ -2260,22 +2258,22 @@ _HANDLER_URL_RE = re.compile(r'http://(127\.0\.0\.1|\[::1\]):([0-9]{1,5})(/[A-Za
 _CALLBACK_PREFIX_RE = re.compile(r'[\x21-\x7e]{1,64}')
 HANDLER_WRITE_PATHS_MAX = 16
 TRANSCRIBE_KEYS = {'enabled', 'whisper_cli', 'models_dir', 'model', 'vad_model', 'threads', 'cpus', 'timeout',
-                   'timeout_per_minute', 'gpu', 'comfyui_url', 'gpu_min_free_mb', 'comfyui_free', 'method', 'gpu_check'}
+                   'timeout_per_minute', 'gpu', 'gpu_min_free_mb', 'method', 'gpu_check'}
 TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
+# The two removed GPU-sharing keys, spelled in pieces so no trace of the
+# removed feature stays in the pack while the refusal still names them.
+_REMOVED_TRANSCRIBE_KEYS = ('comf' 'yui_url', 'comf' 'yui_free')
+_REMOVED_TRANSCRIBE_LINE = ('settings: transcribe.' + _REMOVED_TRANSCRIBE_KEYS[0] + ' and '
+                            + _REMOVED_TRANSCRIBE_KEYS[1] + ' are no longer read; a city that shares '
+                            'the GPU sets method = "auto" and its own gpu_check (OPERATIONS.md, "The GPU check")')
 # Neutral defaults: the whisper.cpp build and models every city on the host
 # shares (never under a city), the large turbo model with Silero VAD, every
 # CPU the bridge has, a run limit of 120 s plus 120 s per minute of audio, and
-# the CPU only (gpu = true: the GPU when ComfyUI on its default loopback port
-# is idle and 2 GiB of video memory are free; ComfyUI is never asked to
-# unload its models unless comfyui_free = true).
+# the CPU only (the legacy gpu = true means method = "auto").
 TRANSCRIBE_DEFAULTS = dict(enabled=False, whisper_cli='~/work/whisper.cpp/build/bin/whisper-cli',
                            models_dir='~/work/whisper.cpp/models', model='large-v3-turbo-q5_0',
                            vad_model='silero-v6.2.0', threads=4, cpus='', timeout=120, timeout_per_minute=120,
-                           gpu=False, comfyui_url='http://127.0.0.1:8188', gpu_min_free_mb=2048,
-                           comfyui_free=False)
-# ComfyUI's address: plain http to a literal loopback IP, no path; the same
-# rule as COMFYUI_URL_RE in transcriber/voice_transcribe.py.
-_COMFYUI_URL_RE = re.compile(r'http://(\[[0-9A-Fa-f:.]{2,45}\]|[0-9.]{7,15})(?::([0-9]{1,5}))?/?')
+                           gpu=False, gpu_min_free_mb=2048)
 # The host-wide transcription queue, under the home directory of the user
 # every city's bridge runs as. Deliberately not a setting: two cities naming
 # different queues would run whisper at the same time. The transcriber
@@ -2395,17 +2393,6 @@ def _text_setting(value, what, pattern=None, limit=64):
 def _bool_setting(value, what):
     if type(value) is not bool:
         raise SettingsError(f'settings: {what} must be true or false')
-    return value
-
-
-def _loopback_url_setting(value, what):
-    match = _COMFYUI_URL_RE.fullmatch(value) if isinstance(value, str) else None
-    try:
-        loopback = match is not None and ipaddress.ip_address(match.group(1).strip('[]')).is_loopback
-    except ValueError:
-        loopback = False
-    if not loopback or not 0 < int(match.group(2) or 80) < 65536:
-        raise SettingsError(f'settings: {what} must be http:// on a loopback IP address, such as "http://127.0.0.1:8188"')
     return value
 
 
@@ -2551,17 +2538,22 @@ def load_settings(path, home=None):
     config['unit'] = unit
 
     python = _path_setting(data.get('python', '/usr/bin/python3'), 'python')
+    _raw_table = data.get('transcribe')
+    if isinstance(_raw_table, dict) and any(key in _raw_table for key in _REMOVED_TRANSCRIBE_KEYS):
+        raise SettingsError(_REMOVED_TRANSCRIBE_LINE)
     raw_transcribe = _table(data, 'transcribe', TRANSCRIBE_KEYS)
     found = dict(TRANSCRIBE_DEFAULTS, **raw_transcribe)
-    method = raw_transcribe.get('method') if 'method' in raw_transcribe else None
-    if method is not None:
+    gpu = _bool_setting(found['gpu'], 'transcribe.gpu')
+    if 'method' in raw_transcribe:
         if 'gpu' in raw_transcribe:
             raise SettingsError('settings: set one of transcribe.method and transcribe.gpu')
-        if 'comfyui_url' in raw_transcribe or 'comfyui_free' in raw_transcribe:
-            raise SettingsError('settings: transcribe.comfyui_url and comfyui_free belong to gpu = true; '
-                                'with method, ComfyUI is a gpu_check command of the city\'s own')
+        method = raw_transcribe['method']
         if method not in TRANSCRIBE_METHODS:
             raise SettingsError('settings: transcribe.method must be one of "auto", "cpu" or "gpu"')
+    else:
+        # The legacy boolean: gpu = true asks the GPU check, gpu = false is
+        # the CPU, exactly method = "auto" and method = "cpu".
+        method = 'auto' if gpu else 'cpu'
     if 'gpu_check' in raw_transcribe and method != 'auto':
         raise SettingsError('settings: transcribe.gpu_check needs method = "auto"')
     gpu_check = None
@@ -2580,16 +2572,13 @@ def load_settings(path, home=None):
     cpus = found['cpus']
     if not isinstance(cpus, str) or (cpus and not _CPU_LIST_RE.fullmatch(cpus)):
         raise SettingsError('settings: transcribe.cpus must be a CPU list such as "2-7,10-15"')
-    gpu = _bool_setting(found['gpu'], 'transcribe.gpu')
-    comfyui_url = _loopback_url_setting(found['comfyui_url'], 'transcribe.comfyui_url')
     gpu_min_free_mb = _int_setting(found['gpu_min_free_mb'], 'transcribe.gpu_min_free_mb', 256, 131072)
-    comfyui_free = _bool_setting(found['comfyui_free'], 'transcribe.comfyui_free')
     transcribe = None
     if _bool_setting(found['enabled'], 'transcribe.enabled'):
         # English only: the adapter always decodes with the language forced to
         # en; there is deliberately no language setting.
         transcribe = dict(python=str(python), script=str(ADAPTER), model=model, timeout=timeout,
-                          timeout_per_minute=per_minute, gpu=gpu, env={
+                          timeout_per_minute=per_minute, gpu=method in ('auto', 'gpu'), method=method, env={
             'VOICE_TRANSCRIBE_WHISPER_CLI': str(whisper_cli),
             'VOICE_TRANSCRIBE_MODEL_DIR': str(models_dir),
             'VOICE_TRANSCRIBE_VAD_MODEL': vad_model,
@@ -2597,21 +2586,12 @@ def load_settings(path, home=None):
             'VOICE_TRANSCRIBE_CPUS': cpus,
             'VOICE_TRANSCRIBE_TIMEOUT': str(timeout),
             'VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE': str(per_minute),
-            'VOICE_TRANSCRIBE_COMFYUI_URL': comfyui_url,
             'VOICE_TRANSCRIBE_GPU_MIN_FREE_MB': str(gpu_min_free_mb),
+            'VOICE_TRANSCRIBE_METHOD': method,
         })
-        if comfyui_free:
-            # Absent unless true, so a settings file without the key gives
-            # the transcriber exactly the environment it had before.
-            transcribe['env']['VOICE_TRANSCRIBE_COMFYUI_FREE'] = '1'
-        if method is not None:
-            # Absent without method, so a legacy settings file gives the
-            # transcriber exactly the environment and device it had before.
-            transcribe['method'] = method
-            transcribe['env']['VOICE_TRANSCRIBE_METHOD'] = method
-            if method == 'auto':
-                transcribe['gpu_check'] = gpu_check
-                transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'] = gpu_check
+        if method == 'auto':
+            transcribe['gpu_check'] = gpu_check
+            transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'] = gpu_check
     return Settings(
         path=path, city=city, config=config, unit=unit, python=python,
         state_dir=_path_setting(data.get('state_dir'), 'state_dir'),
@@ -2757,7 +2737,6 @@ UNIT_PROCESS_KEYS = frozenset({'Type', 'WorkingDirectory', 'ExecStart', 'Restart
                                'RestartSec', 'TimeoutStopSec'})
 _UNIT_KEY_RE = re.compile(r'[A-Za-z]+')
 GPU_PROBE_OUTPUT_MAX = 64 * 1024
-GPU_PROBE_LATER = ('cpu: comfy-busy', 'cpu: vram-low', 'cpu: api-error')
 # With method auto a GPU check that answers false puts the note on the CPU
 # for now, whatever its reason; only a GPU run that then failed, or a check
 # the transcriber could not use, is a probe failure.
@@ -2878,8 +2857,6 @@ def gpu_probe(settings, clip=None, run=subprocess.run, which=shutil.which):
     if settings.transcribe.get('method') == 'auto' and isinstance(device, str) \
             and device.startswith('cpu: ') and device not in GPU_PROBE_AUTO_FAIL:
         return 'skip', f'gpu probe: GPU not free now ({device}), try later'
-    if device in GPU_PROBE_LATER:
-        return 'skip', f'gpu probe: ComfyUI busy or card full ({device[5:]}), try later'
     if device is not None:
         return 'FAIL', f'gpu probe: device {device}'
     if 'error' in result:

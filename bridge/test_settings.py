@@ -177,7 +177,7 @@ class TranscribeSettingsTests(unittest.TestCase):
         home = Path.home()
         self.assertEqual(settings.transcribe, dict(
             python='/usr/bin/python3', script=str(PACK / 'transcriber' / 'adapter.py'), model='large-v3-turbo-q5_0',
-            timeout=120, timeout_per_minute=120, gpu=False, env={
+            timeout=120, timeout_per_minute=120, gpu=False, method='cpu', env={
                 'VOICE_TRANSCRIBE_WHISPER_CLI': str(home / 'work/whisper.cpp/build/bin/whisper-cli'),
                 'VOICE_TRANSCRIBE_MODEL_DIR': str(home / 'work/whisper.cpp/models'),
                 'VOICE_TRANSCRIBE_VAD_MODEL': 'silero-v6.2.0',
@@ -185,16 +185,12 @@ class TranscribeSettingsTests(unittest.TestCase):
                 'VOICE_TRANSCRIBE_CPUS': '',
                 'VOICE_TRANSCRIBE_TIMEOUT': '120',
                 'VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE': '120',
-                'VOICE_TRANSCRIBE_COMFYUI_URL': 'http://127.0.0.1:8188',
                 'VOICE_TRANSCRIBE_GPU_MIN_FREE_MB': '2048',
+                'VOICE_TRANSCRIBE_METHOD': 'cpu',
             }))
         self.assertTrue(Path(settings.transcribe['script']).is_file())
         self.assertEqual(settings.queue_dir, home / '.local/state/voice-transcribe')
-        # comfyui_free defaults to false and then stays out of the
-        # environment: a settings file without it gives exactly today's env.
-        self.assertNotIn('VOICE_TRANSCRIBE_COMFYUI_FREE', settings.transcribe['env'])
-        self.assertIs(vt.Options(environ=settings.transcribe['env'], gpu=True).comfyui_free, False)
-        self.assertEqual(self.load('enabled = true\ngpu = true\ncomfyui_free = false\n').transcribe['env'],
+        self.assertEqual(self.load('enabled = true\ngpu = false\n').transcribe['env'],
                          settings.transcribe['env'])
 
     def test_every_city_gets_the_one_host_wide_queue(self):
@@ -232,43 +228,37 @@ class TranscribeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_TIMEOUT'], '60')
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE'], '90')
 
-    def test_gpu_settings_reach_the_transcriber(self):
-        settings = self.load('enabled = true\ngpu = true\ncomfyui_url = "http://127.0.0.1:8190"\n'
-                             'gpu_min_free_mb = 3072\n')
+    def test_legacy_gpu_true_behaves_as_method_auto(self):
+        settings = self.load('enabled = true\ngpu = true\ngpu_min_free_mb = 3072\n')
+        default_check = str(PACK / 'transcriber' / 'gpu_check.py')
         self.assertIs(settings.transcribe['gpu'], True)
-        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_COMFYUI_URL'], 'http://127.0.0.1:8190')
+        self.assertEqual(settings.transcribe['method'], 'auto')
+        self.assertEqual(settings.transcribe['gpu_check'], default_check)
+        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_METHOD'], 'auto')
+        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], default_check)
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_GPU_MIN_FREE_MB'], '3072')
-        options = vt.Options(environ=settings.transcribe['env'], gpu=settings.transcribe['gpu'])
-        self.assertEqual((options.gpu, options.comfyui, options.gpu_min_free_mb), (True, ('127.0.0.1', 8190), 3072))
-        for url, address in (('http://[::1]:8188', ('::1', 8188)), ('http://127.0.0.2:8188/', ('127.0.0.2', 8188)),
-                             ('http://127.0.0.1', ('127.0.0.1', 80))):
-            with self.subTest(url):
-                self.assertEqual(self.load(f'enabled = true\ncomfyui_url = "{url}"\n')
-                                 .transcribe['env']['VOICE_TRANSCRIBE_COMFYUI_URL'], url)
-                self.assertEqual(vt.comfyui_address(url), address)
+        options = vt.Options(environ=settings.transcribe['env'])
+        self.assertEqual((options.method, options.gpu, options.gpu_min_free_mb), ('auto', True, 3072))
+        # A configured check with legacy gpu = true loads, as method auto does.
+        check = self.check_file()
+        configured = self.load(f'enabled = true\ngpu = true\ngpu_check = "{check}"\n')
+        self.assertEqual(configured.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], str(check))
 
-    def test_comfyui_free_reaches_the_transcriber_only_when_true(self):
-        settings = self.load('enabled = true\ngpu = true\ncomfyui_free = true\n')
-        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_COMFYUI_FREE'], '1')
-        self.assertIs(vt.Options(environ=settings.transcribe['env'], gpu=True).comfyui_free, True)
-        # The transcriber takes only "1"; anything else given by hand is off.
-        for value in ('0', 'true', 'yes', ''):
-            with self.subTest(value=value):
-                self.assertIs(vt.Options(environ={'VOICE_TRANSCRIBE_COMFYUI_FREE': value}).comfyui_free, False)
-
-    def test_the_comfyui_address_must_be_loopback(self):
-        # The bridge refuses the settings; the transcriber, given one through
-        # its environment anyway, never contacts it (comfyui_address is None).
-        for url in ('http://192.168.1.5:8188', 'http://10.0.0.1:8188', 'http://localhost:8188',
-                    'https://127.0.0.1:8188', 'http://127.0.0.1:8188/api', 'http://127.0.0.1:8188?x=1',
-                    'http://user@127.0.0.1:8188', 'http://127.0.0.1:0', 'http://127.0.0.1:70000',
-                    'http://[::ffff:8.8.8.8]:8188', 'http://0.0.0.0:8188', 'http://127.1:8188', ''):
-            with self.subTest(url):
-                with self.assertRaisesRegex(b.SettingsError, 'transcribe.comfyui_url must be http:// on a loopback IP'):
-                    self.load(f'enabled = true\ncomfyui_url = "{url}"\n')
-                self.assertIsNone(vt.comfyui_address(url))
-        with self.assertRaisesRegex(b.SettingsError, 'transcribe.comfyui_url must be http://'):
-            self.load('enabled = false\ncomfyui_url = 8188\n')
+    def test_each_removed_key_refuses_with_the_migration_line(self):
+        removed_url = 'comf' 'yui_url'
+        removed_free = 'comf' 'yui_free'
+        line = ('settings: transcribe.' + removed_url + ' and ' + removed_free + ' are no longer read; '
+                'a city that shares the GPU sets method = "auto" and its own gpu_check '
+                '(OPERATIONS.md, "The GPU check")')
+        for table in (f'enabled = true\n{removed_url} = "http://127.0.0.1:8188"\n',
+                      f'enabled = true\n{removed_free} = true\n',
+                      f'enabled = true\ngpu = true\n{removed_free} = false\n',
+                      f'enabled = true\nmethod = "auto"\n{removed_url} = "http://127.0.0.1:8188"\n',
+                      f'enabled = false\n{removed_free} = true\n'):
+            with self.subTest(table=table):
+                with self.assertRaises(b.SettingsError) as caught:
+                    self.load(table)
+                self.assertEqual(str(caught.exception), line)
 
     def test_there_is_no_language_setting_and_bad_values_refuse(self):
         for table, pattern in (('language = "ru"\n', 'unknown key transcribe.language'),
@@ -286,9 +276,7 @@ class TranscribeSettingsTests(unittest.TestCase):
                                ('gpu = 1\n', 'transcribe.gpu must be true or false'),
                                ('gpu_min_free_mb = 100\n', 'transcribe.gpu_min_free_mb must be an integer from 256'),
                                ('gpu_min_free_mb = "2048"\n', 'transcribe.gpu_min_free_mb must be an integer'),
-                               ('comfyui_unload = true\n', 'unknown key transcribe.comfyui_unload'),
-                               ('comfyui_free = "true"\n', 'transcribe.comfyui_free must be true or false'),
-                               ('comfyui_free = 1\n', 'transcribe.comfyui_free must be true or false')):
+                               ('device = "cuda"\n', 'unknown key transcribe.device')):
             with self.subTest(table):
                 with self.assertRaisesRegex(b.SettingsError, pattern):
                     self.load(table)
@@ -353,10 +341,6 @@ class TranscribeSettingsTests(unittest.TestCase):
         for table, pattern in (
                 ('enabled = true\nmethod = "cpu"\ngpu = false\n', 'set one of transcribe.method and transcribe.gpu'),
                 ('enabled = true\nmethod = "gpu"\ngpu = true\n', 'set one of transcribe.method and transcribe.gpu'),
-                ('enabled = true\nmethod = "auto"\ncomfyui_url = "http://127.0.0.1:8188"\n',
-                 'transcribe.comfyui_url and comfyui_free belong to gpu = true'),
-                ('enabled = true\nmethod = "cpu"\ncomfyui_free = true\n',
-                 'transcribe.comfyui_url and comfyui_free belong to gpu = true'),
                 ('enabled = true\nmethod = "fast"\n', 'transcribe.method must be one of'),
                 ('enabled = true\nmethod = 1\n', 'transcribe.method must be one of')):
             with self.subTest(table=table):
@@ -367,8 +351,7 @@ class TranscribeSettingsTests(unittest.TestCase):
         check = self.check_file()
         for table in ('enabled = true\ngpu_check = "%s"\n',
                       'enabled = true\nmethod = "cpu"\ngpu_check = "%s"\n',
-                      'enabled = true\nmethod = "gpu"\ngpu_check = "%s"\n',
-                      'enabled = true\ngpu = true\ngpu_check = "%s"\n'):
+                      'enabled = true\nmethod = "gpu"\ngpu_check = "%s"\n'):
             with self.subTest(table=table):
                 with self.assertRaisesRegex(b.SettingsError, 'transcribe.gpu_check needs method = "auto"'):
                     self.load(table % check)

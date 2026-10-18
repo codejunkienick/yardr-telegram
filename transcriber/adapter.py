@@ -7,10 +7,9 @@ then, last, one JSON line: {"text": ...} ("" when the note holds no speech),
 or {"error": <code>} for a known failure (see TRANSCRIBER_ERRORS in the
 bridge), with "device": <label> (gpu, or cpu: <reason>) once whisper ran.
 Exits non-zero only on a usage error or a crash. DEVICE is cpu (CPU only),
-auto (the legacy GPU path: the GPU when it is free for it), check (method
-auto: the configured GPU check decides) or gpu (method gpu: the GPU, no
-check); the paths, limits and addresses come from the VOICE_TRANSCRIBE_*
-environment.
+auto or check (method auto: the configured GPU check decides; auto is the
+legacy name for the same path) or gpu (method gpu: the GPU, no check);
+the paths and limits come from the VOICE_TRANSCRIBE_* environment.
 """
 import json
 import os
@@ -30,8 +29,8 @@ def main(argv):
         print(voice_transcribe.RUNNING_LINE, flush=True)
 
     device = {}
-    method = {'cpu': 'cpu', 'auto': 'legacy', 'check': 'auto', 'gpu': 'gpu'}[argv[3]]
-    options = voice_transcribe.Options(model=argv[2], gpu=argv[3] == 'auto', method=method)
+    method = {'cpu': 'cpu', 'auto': 'auto', 'check': 'auto', 'gpu': 'gpu'}[argv[3]]
+    options = voice_transcribe.Options(model=argv[2], method=method)
     try:
         result = {'text': voice_transcribe.transcribe(argv[1], options, on_turn=running,
                                                       on_device=lambda label: device.update(device=label))}

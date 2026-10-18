@@ -58,11 +58,9 @@ enabled = true                              # voice and audio notes get an Engli
 # threads = 4                               # 1-4
 # timeout = 120                             # base seconds, 5-300
 # timeout_per_minute = 120                  # added per minute of audio; killed when the total runs out
-# method = "cpu"                            # auto, cpu or gpu (default cpu); set method instead of gpu/comfyui_* below
+# method = "cpu"                            # auto, cpu or gpu (default cpu); set method instead of gpu below
 # gpu_check = "/home/alex/example-city/bin/gpu-check"  # method auto only; default the pack's transcriber/gpu_check.py
-# gpu = false                               # legacy form without method: true is the GPU when ComfyUI is idle and the card has room, else the CPU
-# comfyui_url = "http://127.0.0.1:8188"     # legacy gpu = true only: GET /queue and /system_stats (+ /free with comfyui_free); loopback IP only
+# gpu = false                               # legacy form without method: true behaves as method = "auto", false as method = "cpu"
 # gpu_min_free_mb = 2048                    # free video memory a GPU run needs, MiB
-# comfyui_free = false                      # legacy gpu = true only: ask an idle ComfyUI to unload its models (POST /free) for the GPU
 # Every city on the host waits in one transcription queue,
 # ~/.local/state/voice-transcribe; it is deliberately not a setting.

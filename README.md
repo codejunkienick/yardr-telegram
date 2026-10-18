@@ -43,10 +43,9 @@ with this pack at `<pack>`:
    downloads the chosen models, checked against
    `transcriber/models.sha256` (`~/work/whisper.cpp` by default). Every city on the host shares one FIFO
    queue, `~/.local/state/voice-transcribe` (not a setting), so two bridges
-   never run whisper at once. `gpu = true` there runs a note on the GPU when
-   ComfyUI (loopback, read-only unless `comfyui_free = true` lets an idle
-   one be asked to unload its models) is idle and the card has room, else on
-   the CPU (`bridge/OPERATIONS.md`, "GPU or CPU").
+   never run whisper at once. `gpu = true` there behaves as
+   `method = "auto"`: the configured GPU check decides whether a note runs
+   on the GPU, else it runs on the CPU (`bridge/OPERATIONS.md`, "GPU or CPU").
 4. Bind the conversation to the mayor once (`gc extmsg bind`, agent-name
    `mayor`, the private chat id, no wildcard route).
 5. `<pack>/install.sh --settings ~/.config/<city>/telegram-bridge.toml`: it

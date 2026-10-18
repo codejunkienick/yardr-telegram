@@ -1205,13 +1205,13 @@ class VoiceTranscriptionTests(BridgeTests):
         self.assertRegex(log.getvalue(), r'voice transcription done \(msg 76\): [0-9.]+ s; device gpu\n')
         self.assertNotIn('auto None', log.getvalue())  # the log never carries the text
 
-    def test_a_gpu_freed_by_comfyui_is_a_valid_device(self):
+    def test_a_gpu_with_a_check_reason_is_a_valid_device(self):
         self.bridge.transcribe['gpu'] = True
-        self.write_script('print(json.dumps(dict(text="hello", device="gpu: comfy-freed")))')
+        self.write_script('print(json.dumps(dict(text="hello", device="gpu: unknown")))')
         with patch('sys.stderr', new_callable=io.StringIO) as log:
             texts = self.drain_and_wait(self.voice_message(uid=77))
         self.assertIn('transcript (msg 77): hello] (audio: ', texts[1])
-        self.assertRegex(log.getvalue(), r'voice transcription done \(msg 77\): [0-9.]+ s; device gpu: comfy-freed\n')
+        self.assertRegex(log.getvalue(), r'voice transcription done \(msg 77\): [0-9.]+ s; device gpu: unknown\n')
 
     def test_a_failure_line_carries_the_device_too(self):
         self.write_script('print(json.dumps(dict(error="whisper_failed", device="cpu: gpu-failed")))')

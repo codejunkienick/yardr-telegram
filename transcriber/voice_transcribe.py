@@ -13,27 +13,6 @@ times in a row is retried once without text context and the result with
 fewer repeats is kept. Text that is mostly not Latin script is refused as
 not English.
 
-One transcription at a time on the whole host, whoever calls, in arrival
-order: a FIFO queue in one directory every caller on the host shares (every
-city's bridge and this command). A waiting note keeps its place until its
-turn, however long; each run has a hard time limit scaled to the audio
-length, so a hung whisper cannot hold the queue. The process fences itself
-before it decodes anything: only the CPUs it is given (sched_setaffinity),
-the agents' priority (nice 10, best-effort I/O level 7), and at most 4
-whisper threads. Idle priority is not used: under a busy host it starves.
-
-With VOICE_TRANSCRIBE_METHOD (the bridge's transcribe.method) the device is
-chosen without any vendor tool in this process: cpu is always the CPU
-(cpu: gpu-off), gpu is always the GPU with no check, and auto runs the
-VOICE_TRANSCRIBE_GPU_CHECK command once, after the audio is decoded and
-right before whisper (below, "The GPU check" in the operations guide).
-A GPU run that fails is retried once on the CPU in the same turn.
-
-With no method set, VOICE_TRANSCRIBE_GPU=1 (the bridge's legacy
-gpu = true) means method auto: the configured GPU check decides, exactly
-as above. One "device" line per note says which ran and why: gpu,
-gpu: <reason>, or cpu: <reason> | gpu-failed | gpu-off.
-
 Settings come from the environment (the Telegram bridge passes its city's
 settings this way):
   VOICE_TRANSCRIBE_WHISPER_CLI  whisper-cli binary (~/work/whisper.cpp/build/bin/whisper-cli)
@@ -41,15 +20,15 @@ settings this way):
   VOICE_TRANSCRIBE_MODEL        model name or path (large-v3-turbo-q5_0)
   VOICE_TRANSCRIBE_VAD_MODEL    VAD model name or path (silero-v6.2.0)
   VOICE_TRANSCRIBE_THREADS      CPU threads, at most 4 (4)
-  VOICE_TRANSCRIBE_CPUS         CPU list such as 2-7,10-15 (unset: every CPU the caller has)
+  VOICE_TRANSCRIBE_CPUS         CPU list such as 0-3 (unset: every CPU the caller has)
   VOICE_TRANSCRIBE_TIMEOUT      run limit in seconds, before the per-minute allowance (120)
   VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE  seconds added per minute of audio (120)
   VOICE_TRANSCRIBE_GPU          1 = method auto, anything else = CPU only (unset; legacy, only without a method)
   VOICE_TRANSCRIBE_METHOD       auto, cpu or gpu (unset: the legacy VOICE_TRANSCRIBE_GPU rule)
   VOICE_TRANSCRIBE_GPU_CHECK    GPU check command for method auto (the pack's gpu_check.py beside this file)
   VOICE_TRANSCRIBE_GPU_MIN_FREE_MB  free video memory needed for the GPU, MiB (2048)
-The queue is always ~/.local/state/voice-transcribe, never a setting, so every
-caller running as this user waits in the same one.
+
+See bridge/OPERATIONS.md, "Voice-note transcription", for the queue, fence and device rules.
 """
 import argparse
 import fcntl
@@ -160,7 +139,7 @@ def _positive(value, default):
 
 
 def parse_cpus(text):
-    """{2, 3, ...} from a list such as '2-7,10-15'; ValueError when malformed."""
+    """{0, 1, 2, 3} from a list such as '0-3'; ValueError when malformed."""
     if not CPU_LIST_RE.fullmatch(text):
         raise ValueError(f'bad CPU list {text!r}')
     cpus = set()
@@ -454,11 +433,10 @@ class Queue:
         raise TranscribeError('queue_failed', 'our ticket left the queue')
 
 
-def _whisper(options, wav, run, device, deadline, gpu_limit, get=None, no_context=False):
+def _whisper(options, wav, run, device, deadline, gpu_limit, no_context=False):
     """One whisper pass on the note's device. On the GPU: at most gpu_limit
     seconds, and any failure moves the note to the CPU for this pass and the
-    rest of it. The CPU pass never sees a GPU (CUDA_VISIBLE_DEVICES empty).
-    `get` is accepted and ignored: it was the removed sharing check's seam."""
+    rest of it. The CPU pass never sees a GPU (CUDA_VISIBLE_DEVICES empty)."""
     if device.name == 'gpu':
         try:
             return _run_whisper(whisper_argv(options, wav, no_context, gpu=True), run,
@@ -474,7 +452,7 @@ def _wav_seconds(path):
     return max(os.path.getsize(path) - 44, 0) / 32000
 
 
-def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None, get=None):
+def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None):
     """English text of one audio file ('' when it holds no speech), or
     TranscribeError. Waits for its turn in the host-wide queue, calls
     on_turn() when it starts, picks the device, and runs within
@@ -505,11 +483,11 @@ def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None,
         deadline = time.monotonic() + options.run_limit(seconds) + (gpu_limit if options.gpu else 0)
         device = Device(*choose_device(options))
         try:
-            text = _whisper(options, wav, run, device, deadline, gpu_limit, get)
+            text = _whisper(options, wav, run, device, deadline, gpu_limit)
             if longest_repeat(text) >= LOOP_MIN_REPEATS:
                 # A decoding loop: retry with no text context, keep the better one.
                 try:
-                    retry = _whisper(options, wav, run, device, deadline, gpu_limit, get, no_context=True)
+                    retry = _whisper(options, wav, run, device, deadline, gpu_limit, no_context=True)
                 except TranscribeError as error:
                     if error.code != 'timeout':
                         raise

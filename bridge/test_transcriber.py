@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -217,6 +218,15 @@ class TranscriberTests(FakeWhisperCase):
                                env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(again.stdout, '')  # a directory skips audio that already has its .txt
         self.assertEqual(len(self.whisper_calls()), 1)
+
+    def test_help_lists_every_environment_variable_the_module_reads(self):
+        source = (TRANSCRIBER / 'voice_transcribe.py').read_text()
+        names = sorted(set(re.findall(r'VOICE_TRANSCRIBE_[A-Z_]+', source)))
+        done = subprocess.run([sys.executable, str(TRANSCRIBER / 'voice_transcribe.py'), '--help'],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for name in names:
+            self.assertIn(name, done.stdout)
 
     def test_the_adapter_writes_nothing_beside_the_audio(self):
         done = self.adapter('Fine.')

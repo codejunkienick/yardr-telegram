@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The pack's default GPU check for transcribe method auto.
 
-Prints one JSON line and exits 0: {"gpu": true} when the host's one GPU has
-at least GPU_MIN_FREE_MB MiB free (default 2048), {"gpu": false, "reason":
+Prints one JSON line and exits 0: {"gpu": true} when the GPU (a single-GPU host; several GPUs answer unknown) has at least
+GPU_MIN_FREE_MB MiB free (default 2048), {"gpu": false, "reason":
 "vram-low"} when it has less, and {"gpu": true, "reason": "unknown"} when it
 cannot tell, so the GPU is tried and a failing GPU run is retried on the
 CPU. It tells from nvidia-smi only when that is found on PATH, runs nothing

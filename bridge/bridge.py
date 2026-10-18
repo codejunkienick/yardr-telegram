@@ -94,11 +94,23 @@ class RequestUnconfirmed(TransportFailure):
     """The request may have reached the server: never sent again."""
 
 
+def _is_owner_only(st, kind):
+    return kind(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+
+
+def _is_owner_only_regular(st):
+    return _is_owner_only(st, stat.S_ISREG)
+
+
+def _is_owner_only_directory(st):
+    return _is_owner_only(st, stat.S_ISDIR)
+
+
 def private_text(path):
     path = Path(path).expanduser()
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     st = os.fstat(fd)
-    if st.st_uid != os.getuid() or st.st_mode & 0o077 or not stat.S_ISREG(st.st_mode):
+    if not _is_owner_only_regular(st):
         os.close(fd)
         raise TransportError('credential must be an owner-only regular file')
     with os.fdopen(fd) as stream:
@@ -831,6 +843,59 @@ class Bridge:
         remote_size = result.get('file_size')
         return file_path, remote_size if isinstance(remote_size, int) else None
 
+    @staticmethod
+    def _open_pinned_dir(path, label, open_error=None):
+        # open_error is the message for an OSError while opening or pinning
+        # the directory; None re-raises that OSError unchanged, for callers
+        # whose original code let it propagate. Either way a descriptor
+        # opened before the failure is closed, never leaked.
+        dfd = None
+        try:
+            dfd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            pinned, named = os.fstat(dfd), os.lstat(path)
+        except OSError as error:
+            if dfd is not None:
+                os.close(dfd)
+            if open_error is None:
+                raise
+            raise TransportError(open_error) from error
+        if (pinned.st_dev, pinned.st_ino) != (named.st_dev, named.st_ino):
+            os.close(dfd)
+            raise TransportError(f'{label} changed while opening')
+        return dfd
+
+    @staticmethod
+    def _atomic_write_pinned(dfd, dest_name, prefix, write_fn, fsync_dir=False, create_error=None):
+        tmp_name = f'.{prefix}-{secrets.token_hex(16)}.tmp'
+        fd = None
+        try:
+            # An unpredictable name opened with O_EXCL|O_NOFOLLOW refuses a
+            # pre-placed symlink or file.
+            try:
+                fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+            except OSError as error:
+                if create_error is None:
+                    raise
+                raise TransportError(create_error) from error
+            result = write_fn(fd)
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            os.replace(tmp_name, dest_name, src_dir_fd=dfd, dst_dir_fd=dfd)
+            if fsync_dir:
+                os.fsync(dfd)
+            return result
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(tmp_name, dir_fd=dfd)
+            except OSError:
+                pass  # renamed into place, or never created
+
     def _download_to(self, remote_file_path, dest, root_resolved):
         """Download into dest and return the byte size. After the containment
         check the date directory is opened once and pinned by descriptor; the
@@ -840,46 +905,25 @@ class Bridge:
         date_dir = dest.parent
         self._verify_contained(date_dir, root_resolved, 'inbound date directory')
         url = 'https://api.telegram.org/file/bot' + self.token + '/' + remote_file_path
-        tmp_name = f'.inbound-{secrets.token_hex(16)}.tmp'
-        dfd = None
-        fd = None
+        dfd = self._open_pinned_dir(date_dir, 'inbound date directory',
+                                    open_error='inbound temp file could not be created safely')
         try:
-            try:
-                dfd = os.open(date_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                pinned, named = os.fstat(dfd), os.lstat(date_dir)
-                if (pinned.st_dev, pinned.st_ino) != (named.st_dev, named.st_ino):
-                    raise TransportError('inbound date directory changed while opening')
-                # An unpredictable name opened with O_EXCL|O_NOFOLLOW refuses a
-                # pre-placed symlink or file. Every response byte flows through
-                # this one fd (request_download dup's it onto curl's stdout).
-                fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
-            except OSError as error:
-                raise TransportError('inbound temp file could not be created safely') from error
-            status = self.request_download(url, fd, self.INBOUND_MAX_BYTES)
-            os.fsync(fd)
-            size = os.fstat(fd).st_size
-            os.fchmod(fd, 0o600)
-            os.close(fd)
-            fd = None
-            # A 200 with an empty body is a valid empty attachment.
-            if status != 200:
-                raise TransportError('Telegram file download rejected or unconfirmed')
-            os.replace(tmp_name, dest.name, src_dir_fd=dfd, dst_dir_fd=dfd)
-            return size
+            def write(fd):
+                # Every response byte flows through this one fd
+                # (request_download dup's it onto curl's stdout).
+                status = self.request_download(url, fd, self.INBOUND_MAX_BYTES)
+                # A 200 with an empty body is a valid empty attachment.
+                if status != 200:
+                    raise TransportError('Telegram file download rejected or unconfirmed')
+                size = os.fstat(fd).st_size
+                os.fchmod(fd, 0o600)
+                return size
+            return self._atomic_write_pinned(dfd, dest.name, 'inbound', write,
+                                             create_error='inbound temp file could not be created safely')
         except OSError as error:
             raise TransportError('inbound attachment write failed') from error
         finally:
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            if dfd is not None:
-                try:
-                    os.unlink(tmp_name, dir_fd=dfd)
-                except OSError:
-                    pass  # already renamed into place, or never created
-                os.close(dfd)
+            os.close(dfd)
 
     def _fetch_inbound_attachment(self, kind, file_id, known_size, message_id, original_name):
         """Download one inbound attachment, bounded to a few attempts so a
@@ -1093,37 +1137,19 @@ class Bridge:
         """Verify containment and return a descriptor pinned to the date directory."""
         _, root_resolved = self._inbound_root()
         self._verify_contained(day_dir, root_resolved, 'inbound date directory')
-        try:
-            dfd = os.open(day_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        except OSError as error:
-            raise TransportError('inbound date directory could not be opened safely') from error
-        pinned, named = os.fstat(dfd), os.lstat(day_dir)
-        if (pinned.st_dev, pinned.st_ino) != (named.st_dev, named.st_ino):
-            os.close(dfd)
-            raise TransportError('inbound date directory changed while opening')
-        return dfd
+        return self._open_pinned_dir(day_dir, 'inbound date directory',
+                                     open_error='inbound date directory could not be opened safely')
 
     def _pending_write(self, day_dir, mid, state):
         dfd = self._open_day_dir(day_dir)
-        tmp_name = f'.pending-{secrets.token_hex(16)}.tmp'
-        fd = None
         try:
-            fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
-            os.write(fd, json.dumps(state).encode())
-            os.fsync(fd)
-            os.fchmod(fd, 0o600)
-            os.close(fd)
-            fd = None
-            os.replace(tmp_name, f'{mid}{self.PENDING_SUFFIX}', src_dir_fd=dfd, dst_dir_fd=dfd)
+            def write(fd):
+                os.write(fd, json.dumps(state).encode())
+                os.fchmod(fd, 0o600)
+            self._atomic_write_pinned(dfd, f'{mid}{self.PENDING_SUFFIX}', 'pending', write)
         except OSError as error:
             raise TransportError('pending transcript file write failed') from error
         finally:
-            if fd is not None:
-                os.close(fd)
-            try:
-                os.unlink(tmp_name, dir_fd=dfd)
-            except OSError:
-                pass  # renamed into place, or never created
             os.close(dfd)
 
     def _pending_read(self, day_dir, mid):
@@ -1229,16 +1255,14 @@ class Bridge:
         contained directory, before anything is read. Returns the count queued."""
         if self.state_dir is None or not self.transcribe:
             return 0
-        for chain in (self.state_dir, self.state_dir / 'telegram-inbound'):
-            try:
-                if not stat.S_ISDIR(os.lstat(chain).st_mode):
-                    return 0
-            except OSError:
-                return 0
-        base_resolved = chain.resolve(strict=False)
+        root_resolved = self.state_dir.resolve(strict=False)
+        chain = self.state_dir / 'telegram-inbound'
         try:
-            base_resolved.relative_to(self.state_dir.resolve(strict=False))
-        except ValueError:
+            for entry, what in ((self.state_dir, 'state directory'), (chain, 'inbound root')):
+                if not stat.S_ISDIR(os.lstat(entry).st_mode):
+                    return 0
+                self._verify_contained(entry, root_resolved, what)
+        except (OSError, TransportError):
             return 0
         queued = 0
         for day in sorted(os.listdir(chain)):
@@ -2017,29 +2041,14 @@ class Bridge:
         runtime = path.parent
         if os.path.realpath(runtime) != str(runtime):
             raise TransportError('heartbeat directory is not its own canonical path')
-        dfd = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        tmp_name = f'.heartbeat-{secrets.token_hex(16)}.tmp'
-        fd = None
+        dfd = Bridge._open_pinned_dir(runtime, 'heartbeat directory')
         try:
-            pinned, named = os.fstat(dfd), os.lstat(runtime)
-            if (pinned.st_dev, pinned.st_ino) != (named.st_dev, named.st_ino):
-                raise TransportError('heartbeat directory changed while opening')
-            fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
-            data = memoryview(text.encode())
-            while data:
-                data = data[os.write(fd, data):]
-            os.fsync(fd)
-            os.close(fd)
-            fd = None
-            os.replace(tmp_name, path.name, src_dir_fd=dfd, dst_dir_fd=dfd)
-            os.fsync(dfd)
+            def write(fd):
+                data = memoryview(text.encode())
+                while data:
+                    data = data[os.write(fd, data):]
+            Bridge._atomic_write_pinned(dfd, path.name, 'heartbeat', write, fsync_dir=True)
         finally:
-            if fd is not None:
-                os.close(fd)
-            try:
-                os.unlink(tmp_name, dir_fd=dfd)
-            except OSError:
-                pass  # renamed into place, or never created
             os.close(dfd)
 
     @staticmethod
@@ -2370,7 +2379,7 @@ def _read_private_settings(path):
     try:
         with path.open('rb') as stream:
             st = os.fstat(stream.fileno())
-            if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+            if not _is_owner_only_regular(st):
                 raise SettingsError(f'settings file must be an owner-only regular file (mode 0600): {path}')
             raw = stream.read(SETTINGS_MAX_BYTES + 1)
     except FileNotFoundError:
@@ -2741,7 +2750,7 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
     check(which('ffmpeg'), 'ffmpeg on PATH')
     try:
         st = os.stat(settings.queue_dir)
-        check(stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077,
+        check(_is_owner_only_directory(st),
               f'transcription queue {settings.queue_dir} is an owner-only directory')
     except FileNotFoundError:
         # install.sh creates it before the unit starts (the unit cannot).

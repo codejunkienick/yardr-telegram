@@ -110,6 +110,25 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(pattern=pattern, replace=replace):
                 self.refused(pattern, **replace)
 
+    def test_gc_base_url_must_be_plain_http_on_loopback_without_a_path_or_user(self):
+        line = 'settings: gc_base_url must be plain HTTP on 127.0.0.1 without a path or user'
+        for url in ('http://10.0.0.1:8372', 'https://127.0.0.1:8372',
+                    'http://127.0.0.1:8372/api', 'http://u@127.0.0.1:8372'):
+            with self.subTest(url=url):
+                with self.assertRaises(b.SettingsError) as caught:
+                    b.load_settings(write_settings(self.root, gc_base_url=f'"{url}"'))
+                self.assertEqual(str(caught.exception), line)
+        settings = b.load_settings(write_settings(self.root, gc_base_url='"http://127.0.0.1:8372"'))
+        self.assertEqual(settings.config['gc_base_url'], 'http://127.0.0.1:8372')
+
+    def test_bot_id_above_the_signed_64_bit_bound_is_refused(self):
+        base = write_settings(self.root).read_text()
+        path = write_settings(self.root, body=base.replace('bot_id = 999', 'bot_id = 9223372036854775808'))
+        with self.assertRaises(b.SettingsError) as caught:
+            b.load_settings(path)
+        self.assertEqual(str(caught.exception),
+                         'settings: bot.bot_id must be an integer from 1 to 9223372036854775807')
+
     def test_token_and_callback_secret_must_be_different_files(self):
         token = self.root / 'private' / 'telegram-bot-token'
         secret = self.root / 'private' / 'telegram-callback-secret'

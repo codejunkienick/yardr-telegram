@@ -431,6 +431,51 @@ class Store:
             db.execute('UPDATE deliveries SET receipt=? WHERE key=?', (json.dumps(receipt), key))
 
 
+def check_bridge_config(config, *, settings=False):
+    """The one validation of a bridge config's identity: the bot, user and
+    chat ids are positive integers in a private pairing, the city and agent
+    names match NAME_RE, an account is present, the timezone is known and
+    the GC URL is plain HTTP on 127.0.0.1 without a path or user. Returns
+    (city, account, agent, local_tz, base). With settings=True every refusal
+    is a SettingsError naming its key; otherwise a TransportError."""
+    def fail(bridge_message, settings_message):
+        raise SettingsError(settings_message) if settings else TransportError(bridge_message)
+
+    for key in ('bot_id', 'user_id', 'chat_id'):
+        value = config.get(key)
+        if type(value) is not int or not 1 <= value <= 2 ** 63 - 1:
+            fail('positive numeric bot/user/private-chat IDs required',
+                 f'settings: bot.{key} must be an integer from 1 to 9223372036854775807')
+    if config['chat_id'] != config['user_id']:
+        fail('private chat ID must match authorized user ID',
+             'settings: bot.chat_id must equal bot.user_id (a private chat with the paired user)')
+    city = config.get('city')
+    if not isinstance(city, str) or not NAME_RE.fullmatch(city):
+        fail('city name required', 'settings: city is missing or malformed')
+    account = config.get('account_id', config.get('bot_username'))
+    if not account:
+        fail('account_id required', 'settings: bot.account_id is missing or malformed')
+    agent = config.get('agent', 'mayor')
+    if not isinstance(agent, str) or not NAME_RE.fullmatch(agent):
+        fail('agent name required', 'settings: agent is missing or malformed')
+    try:
+        local_tz = zoneinfo.ZoneInfo(config.get('timezone') or 'UTC')
+    except (ValueError, TypeError, zoneinfo.ZoneInfoNotFoundError):
+        fail('timezone is not a known time zone', 'settings: timezone is not a known time zone')
+    base_value = config.get('gc_base_url', 'http://127.0.0.1:8372')
+    base = base_value.rstrip('/') if isinstance(base_value, str) else ''
+    try:
+        parsed = urlsplit(base)
+        bad_gc_url = (not base or parsed.scheme != 'http' or parsed.hostname != '127.0.0.1'
+                      or parsed.path or parsed.username)
+    except ValueError:
+        bad_gc_url = True
+    if bad_gc_url:
+        fail('GC URL must be plain HTTP on 127.0.0.1 without a path',
+             'settings: gc_base_url must be plain HTTP on 127.0.0.1 without a path or user')
+    return city, account, agent, local_tz, base
+
+
 class Bridge:
     ATTACHMENT_KINDS = {
         'photo': ('sendPhoto', 'photo', 10 * 1024 * 1024),
@@ -494,33 +539,16 @@ class Bridge:
         self.request_download = request_download or http_download
         # The bridge's own directory: ledger, offset, inbound files, heartbeat.
         self.state_dir = Path(state_dir) if state_dir is not None else None
-        for key in ('bot_id', 'user_id', 'chat_id'):
-            if type(config.get(key)) is not int or config[key] <= 0:
-                raise TransportError('positive numeric bot/user/private-chat IDs required')
-        if config['chat_id'] != config['user_id']:
-            raise TransportError('private chat ID must match authorized user ID')
-        self.city = config.get('city')
-        if not isinstance(self.city, str) or not NAME_RE.fullmatch(self.city):
-            raise TransportError('city name required')
-        self.account = config.get('account_id', config.get('bot_username'))
-        if not self.account:
-            raise TransportError('account_id required')
+        self.city, self.account, self.agent, self.local_tz, self.base = check_bridge_config(config)
         self.display_name = config.get('user_display_name') or 'User'
         self.unit = config.get('unit')
         self.menu = tuple(config.get('menu') or ())
         # The city's own commands ([[command]]), by name in file order; the
         # settings loader has validated every entry.
         self.commands = {command['name']: command for command in config.get('commands') or ()}
-        # The gc agent this bridge serves: inbound must be routed to it, and
-        # the quota-exhaustion notice watches its session.
-        self.agent = config.get('agent', 'mayor')
-        if not isinstance(self.agent, str) or not NAME_RE.fullmatch(self.agent):
-            raise TransportError('agent name required')
-        self.local_tz = zoneinfo.ZoneInfo(config.get('timezone') or 'UTC')
-        self.base = config.get('gc_base_url', 'http://127.0.0.1:8372').rstrip('/')
-        parsed = urlsplit(self.base)
-        if parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.path or parsed.username:
-            raise TransportError('GC URL must be plain HTTP on 127.0.0.1 without a path')
+        # The gc agent this bridge serves (check_bridge_config validated it):
+        # inbound must be routed to it, and the quota-exhaustion notice
+        # watches its session.
         self.conversation = dict(scope_id=self.city, provider='telegram', account_id=self.account,
                                  conversation_id=str(config['chat_id']), kind='dm')
         self.publish_lock = threading.Lock()
@@ -2487,22 +2515,16 @@ def load_settings(path, home=None):
     if unknown:
         raise SettingsError(f'settings: unknown key {unknown[0]}')
 
-    city = _text_setting(data.get('city'), 'city', NAME_RE)
+    city = _text_setting(data.get('city'), 'city')
     bot = _table(data, 'bot', BOT_KEYS, required=True)
-    ids = {key: _int_setting(bot.get(key), f'bot.{key}', 1, 2 ** 63 - 1) for key in ('bot_id', 'user_id', 'chat_id')}
-    if ids['chat_id'] != ids['user_id']:
-        raise SettingsError('settings: bot.chat_id must equal bot.user_id (a private chat with the paired user)')
+    ids = {key: bot.get(key) for key in ('bot_id', 'user_id', 'chat_id')}
     account = _text_setting(bot.get('account_id'), 'bot.account_id', NAME_RE)
     token_file = _path_setting(data.get('token_file'), 'token_file')
     callback_secret_file = _path_setting(data.get('callback_secret_file'), 'callback_secret_file')
     if _same_file(token_file, callback_secret_file):
         raise SettingsError('settings: token_file and callback_secret_file must name different files')
     lock_dir = _path_setting(data.get('lock_dir', str(token_file.parent)), 'lock_dir')
-    timezone = data.get('timezone', 'UTC')
-    try:
-        zoneinfo.ZoneInfo(_text_setting(timezone, 'timezone'))
-    except (ValueError, zoneinfo.ZoneInfoNotFoundError):
-        raise SettingsError('settings: timezone is not a known time zone') from None
+    timezone = _text_setting(data.get('timezone', 'UTC'), 'timezone')
     gc_base_url = _text_setting(data.get('gc_base_url', 'http://127.0.0.1:8372'), 'gc_base_url', limit=200)
 
     menu = data.get('menu', [])
@@ -2520,7 +2542,7 @@ def load_settings(path, home=None):
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),
                   timezone=timezone, menu=tuple(menu_entries), **ids)
     # Present only when set, so a city without them gets the config it had.
-    agent = _text_setting(data.get('agent', 'mayor'), 'agent', NAME_RE)
+    agent = _text_setting(data.get('agent', 'mayor'), 'agent')
     if agent != 'mayor':
         config['agent'] = agent
     if city_commands:
@@ -2531,6 +2553,7 @@ def load_settings(path, home=None):
         found = _path_setting(value, what, required=False)
         if found is not None:
             config[key] = str(found)
+    check_bridge_config(config, settings=True)
     unit = _text_setting(data.get('unit', f'{city}-telegram.service'), 'unit', _UNIT_RE, limit=128)
     config['unit'] = unit
 

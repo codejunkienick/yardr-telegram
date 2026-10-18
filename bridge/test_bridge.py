@@ -491,6 +491,21 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaises(b.TransportError):
             b.Bridge(dict(self.config, gc_base_url='https://outside.example'), self.store, 'SECRET', 'CAP')
 
+    def test_bridge_config_identity_is_validated(self):
+        cases = [
+            dict(bot_id=0),
+            dict(bot_id=2 ** 63),
+            dict(chat_id=124),
+            dict(city='two words'),
+            dict(account_id='', bot_username=''),
+            dict(agent='bad agent'),
+            dict(timezone='Mars/Olympus'),
+            dict(gc_base_url='http://10.0.0.1:8372'),
+        ]
+        for replace in cases:
+            with self.subTest(replace=replace), self.assertRaises(b.TransportError):
+                b.Bridge(dict(self.config, **replace), self.store, 'SECRET', 'CAP')
+
     def test_quota_exhausted_notice_sends_html(self):
         self.write_city_health(self.mayor_waiting(self.future_until(), 'ep-1'))
         self.bridge.drain([self.update(uid=10)])

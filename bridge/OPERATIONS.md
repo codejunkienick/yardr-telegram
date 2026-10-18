@@ -401,6 +401,55 @@ decoding it confines itself (and so ffmpeg and whisper-cli) to the settings'
 Idle priority is not used: on a busy host it starves the note. A fence that
 cannot be set fails the note (`fence_failed`) rather than running unfenced.
 
+### Setting up whisper.cpp
+
+The host's whisper.cpp build and models are shared by every city (never
+under a city). `install.sh` only checks them; `<pack>/transcriber/setup.sh`
+creates them for one city's settings:
+
+```sh
+<pack>/transcriber/setup.sh --settings <settings> [--dry-run] [--whisper-ref <ref>]
+```
+
+It is idempotent and prints one `ok`/`FAIL`/`would` line per step. It reads
+`whisper_cli`, `models_dir`, `model`, `vad_model` and the method from the
+settings through the bridge's loader, prints no settings value other than
+the paths it acts on, and never reads the token or secret files. With
+`[transcribe] enabled = false` it prints `skip  transcription is off in
+<file>` and does nothing. A usage error exits 64.
+
+Prerequisites (git, cmake, make or ninja, a C++ compiler, ffmpeg, curl and
+sha256sum) are only reported: a missing tool is `FAIL  <tool> not found
+(install it with your package manager)` and the script exits 1 before any
+change, installing nothing itself. There is no sudo, nothing is installed
+system-wide and nothing is started.
+
+The checkout is the directory the `whisper_cli` layout names
+(`<checkout>/build/bin/whisper-cli`). A missing checkout is cloned from
+the whisper.cpp repository and moved to the pinned ref with a detached
+checkout; a present checkout is left exactly as it is (never reset or
+pulled) and reported with its describe string. The pinned default is the
+commit `764482c3` (`v1.8.3-120-g764482c3`); `--whisper-ref` takes a tag
+or a commit instead. `whisper-cli` is built only when it is missing
+(`cmake -B build`, then `cmake --build build -j --config Release
+--target whisper-cli`). For method `gpu` or `auto` the configure adds
+`-DGGML_CUDA=1` only when nvcc is on PATH (nvcc is no prerequisite);
+without nvcc it builds for the CPU and reports that the GPU is tried and
+falls back to the CPU.
+
+Each model file (`<models_dir>/ggml-<name>.bin` for `model` and for
+`vad_model`) must be named in `transcriber/models.sha256`. A present file
+with the recorded SHA-256 is `ok`; with any other hash it fails and is
+never overwritten. A missing file is downloaded over HTTPS into a
+temporary file in `models_dir`, checked, and only then moved into place;
+a mismatch deletes the temporary file and fails, leaving no file. Whisper
+models come from the whisper.cpp model repository and the VAD model from
+the whisper-vad repository, at the URLs the checksum file's header names.
+`--dry-run` prints `would ...` for each change and changes nothing. The
+last line on success names the next step,
+`next: <pack>/install.sh --settings <file>`; run that next so every check
+says `ok`.
+
 ### GPU or CPU
 
 `[transcribe] method` chooses where notes run: `cpu` (the default) is

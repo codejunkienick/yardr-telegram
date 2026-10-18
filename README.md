@@ -36,9 +36,12 @@ with this pack at `<pack>`:
 3. Write `~/.config/<city>/telegram-bridge.toml` from `settings.example.toml`,
    `chmod 600`: the city name, its own `state_dir` and `port`, the bot's and the
    user's numeric ids (`getMe`, and the `/start` update), the token file, the
-   menu, and `[transcribe] enabled = true` if the host has whisper.cpp
-   (`~/work/whisper.cpp` by default, models listed in
-   `transcriber/models.sha256`). Every city on the host shares one FIFO
+   menu, and `[transcribe] enabled = true` for voice transcription. If the
+   host has no whisper.cpp build or models yet, run
+   `<pack>/transcriber/setup.sh --settings <file>` first (`--dry-run` shows
+   what it would do): it builds whisper.cpp for the settings' method and
+   downloads the chosen models, checked against
+   `transcriber/models.sha256` (`~/work/whisper.cpp` by default). Every city on the host shares one FIFO
    queue, `~/.local/state/voice-transcribe` (not a setting), so two bridges
    never run whisper at once. `gpu = true` there runs a note on the GPU when
    ComfyUI (loopback, read-only unless `comfyui_free = true` lets an idle

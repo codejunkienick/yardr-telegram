@@ -1320,6 +1320,13 @@ class Bridge:
             raise TransportError('Telegram update has invalid ID')
         return uid
 
+    @staticmethod
+    def _message_id(message):
+        mid = message.get('message_id')
+        if type(mid) is not int or mid <= 0:
+            raise TransportError('authorized inbound message has invalid ID')
+        return mid
+
     def inbound(self, update):
         if 'callback_query' in update:
             self.inbound_callback(self._update_id(update), update['callback_query'])
@@ -1343,9 +1350,7 @@ class Bridge:
         if found is not None:
             # A city command goes to its handler, never to GC.
             command, args = found
-            uid, mid = self._update_id(update), message.get('message_id')
-            if type(mid) is not int or mid <= 0:
-                raise TransportError('authorized inbound message has invalid ID')
+            uid, mid = self._update_id(update), self._message_id(message)
             self.run_command(command, uid, dict(
                 kind='command', command=command['name'], args=args, update_id=uid, message_id=mid,
                 callback_data=None, callback_message_id=None, received_at=self._received_at(),
@@ -1354,9 +1359,7 @@ class Bridge:
         if attachment is None and (not isinstance(text, str) or not text.strip() or text.startswith('/start')):
             return
 
-        mid = message.get('message_id')
-        if type(mid) is not int or mid <= 0:
-            raise TransportError('authorized inbound message has invalid ID')
+        mid = self._message_id(message)
 
         transcribe_job = None
         if attachment is not None:
@@ -1664,6 +1667,24 @@ class Bridge:
             actions.append(parsed)
         return actions
 
+    def _reserve_and_deliver(self, key, identity, deliver_fn):
+        """The one ledger reservation path for every send: reserve the key
+        durably under publish_lock before Telegram is contacted, return a
+        saved receipt instead of sending again, and finish with the result
+        of deliver_fn(pending)."""
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        with self.publish_lock:
+            pending = self.receipt(reason='ambiguous_delivery_requires_manual_reconciliation')
+            try:
+                cached = self.store.reserve(key, fingerprint, pending)
+            except TransportError:
+                return self.receipt(reason='idempotency_key_conflict')
+            if cached:
+                return cached
+            result = deliver_fn(pending)
+            self.store.finish(key, result)
+            return result
+
     def _command_message(self, key, action):
         """Send or edit one message under its ledger key: reserved before
         Telegram is contacted, a saved receipt returned instead of a second
@@ -1675,18 +1696,8 @@ class Bridge:
         if action['type'] == 'edit':
             method, extra['message_id'] = 'editMessageText', action['message_id']
         identity = {k: v for k, v in action.items() if k != 'plain'}
-        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-        with self.publish_lock:
-            pending = self.receipt(reason='ambiguous_delivery_requires_manual_reconciliation')
-            try:
-                cached = self.store.reserve(key, fingerprint, pending)
-            except TransportError:
-                return self.receipt(reason='idempotency_key_conflict')
-            if cached:
-                return cached
-            receipt = self._deliver_text(action['text'], None, pending, action['plain'], method=method, extra=extra)
-            self.store.finish(key, receipt)
-            return receipt
+        return self._reserve_and_deliver(key, identity, lambda pending: self._deliver_text(
+            action['text'], None, pending, action['plain'], method=method, extra=extra))
 
     def _answer_callback(self, update_id, query_id, text='', alert=False):
         """Answer one callback query once, under command:<update_id>:answer."""
@@ -1695,16 +1706,9 @@ class Bridge:
             body['text'] = text
         if alert:
             body['show_alert'] = True
-        fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
-        with self.publish_lock:
-            pending = self.receipt(reason='ambiguous_delivery_requires_manual_reconciliation')
-            key = f'command:{update_id}:answer'
-            try:
-                cached = self.store.reserve(key, fingerprint, pending)
-            except TransportError:
-                return self.receipt(reason='idempotency_key_conflict')
-            if cached:
-                return cached
+        key = f'command:{update_id}:answer'
+
+        def deliver(pending):
             receipt = pending
             try:
                 status, data = self._send('answerCallbackQuery',
@@ -1717,8 +1721,8 @@ class Bridge:
                 receipt = self.not_sent()
             except TransportError:
                 pass
-            self.store.finish(key, receipt)
             return receipt
+        return self._reserve_and_deliver(key, body, deliver)
 
     @staticmethod
     def _log(line):
@@ -1791,9 +1795,7 @@ class Bridge:
 
     def drain(self, updates):
         for update in updates:
-            uid = update.get('update_id')
-            if type(uid) is not int or uid < 0:
-                raise TransportError('Telegram update has invalid ID')
+            uid = self._update_id(update)
             if uid < self.store.offset():
                 continue
             self.inbound(update)  # errors retain offset; GC dedups provider_message_id
@@ -1874,7 +1876,7 @@ class Bridge:
         return (status == 200 and data.get('ok') is True and type(sent.get('message_id')) is int
                 and sent.get('chat', {}).get('id') == self.config['chat_id'])
 
-    def _deliver_text(self, text, reply, pending, plain=None, method='sendMessage', extra=None):
+    def _deliver_text(self, text, reply, pending, plain=None, method='sendMessage', extra=None, fallback_reason=None):
         """Send text; `plain` is set for HTML, and is the one fallback body
         sent (under the same key, same reservation) when Telegram cannot parse
         the markup. The first send was then definitively not delivered, so
@@ -1889,6 +1891,9 @@ class Bridge:
         try:
             status, data = self._send(method, lambda timeout: self.telegram(method, body, timeout))
             if self._confirmed(status, data):
+                if fallback_reason is not None:
+                    return self.receipt(True, message_id=str(data['result']['message_id']),
+                                        fallback_reason=fallback_reason)
                 return self.receipt(True, message_id=str(data['result']['message_id']))
             if plain is not None and self._html_rejected(data):
                 receipt = self._deliver_text(plain, reply, pending, method=method, extra=extra)
@@ -1936,23 +1941,9 @@ class Bridge:
             return pending
 
     def _fallback_to_text(self, text, reply, reason, pending):
-        body = dict(chat_id=self.config['chat_id'],
-                    text=self._truncate_utf16((text + '\n' if text.strip() else '')
-                                              + f'[attachment rejected: {reason}]', 4096),
-                    link_preview_options={'is_disabled': True})
-        if reply:
-            body['reply_parameters'] = {'message_id': int(reply)}
-        try:
-            status, data = self._send('sendMessage', lambda timeout: self.telegram('sendMessage', body, timeout))
-            if self._confirmed(status, data):
-                return self.receipt(True, message_id=str(data['result']['message_id']), fallback_reason=reason)
-            if data.get('ok') is False and 400 <= data.get('error_code', 0) < 500:
-                return self.receipt(reason='telegram_rejected_not_sent_' + str(data['error_code']))
-            return pending
-        except RequestNotSent:
-            return self.not_sent()
-        except TransportError:
-            return pending
+        fallback_text = self._truncate_utf16((text + '\n' if text.strip() else '')
+                                             + f'[attachment rejected: {reason}]', 4096)
+        return self._deliver_text(fallback_text, reply, pending, fallback_reason=reason)
 
     def publish(self, request):
         if request.get('conversation') != self.conversation:
@@ -1993,21 +1984,11 @@ class Bridge:
             error = self._attachment_error(attachment, text, visible)
             if error:
                 return self.receipt(reason=error)
-        fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
-        with self.publish_lock:
-            pending = self.receipt(reason='ambiguous_delivery_requires_manual_reconciliation')
-            try:
-                cached = self.store.reserve(key, fingerprint, pending)
-            except TransportError:
-                return self.receipt(reason='idempotency_key_conflict')
-            if cached:
-                return cached
+        def deliver(pending):
             if attachment is not None:
-                receipt = self._deliver_attachment(attachment, text, reply, pending, plain)
-            else:
-                receipt = self._deliver_text(text, reply, pending, plain)
-            self.store.finish(key, receipt)
-            return receipt
+                return self._deliver_attachment(attachment, text, reply, pending, plain)
+            return self._deliver_text(text, reply, pending, plain)
+        return self._reserve_and_deliver(key, request, deliver)
 
     # Poll heartbeat for a city's health check: proof that getUpdates is
     # still succeeding, written at most once a minute. It judges health
@@ -2267,24 +2248,29 @@ def _dispatch_outbound(bridge, args, text):
             request['attachment'] = dict(path=str(args.attachment.resolve()),
                                          kind=args.attachment_kind or infer_attachment_kind(args.attachment))
         receipt = bridge.publish(request)
-        if receipt.get('delivered') is not True:
-            reason = receipt.get('metadata', {}).get('reason') or 'delivery not confirmed'
-            _print_gc_receipt(False, receipt.get('failure_kind', 'permanent'), reason)
-            if reason == NOT_SENT_REASON:
-                raise TransportError(NOT_SENT_MESSAGE)
-            raise TransportError('Telegram delivery not confirmed: ' + reason)
-        return receipt.get('message_id', '')
-    outbound = dict(session_id=args.session, conversation=bridge.conversation, text=text,
-                    idempotency_key=args.idempotency_key)
-    result = _relay_outbound(bridge, outbound)
-    receipt = result.get('Receipt', {})
-    if receipt.get('Delivered') is not True:
-        reason = receipt.get('Metadata', {}).get('reason') or 'delivery not confirmed'
-        _print_gc_receipt(False, receipt.get('FailureKind', 'permanent'), reason)
+        delivered = receipt.get('delivered') is True
+        failure_kind = receipt.get('failure_kind', 'permanent')
+        reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
+        message_id = receipt.get('message_id', '')
+        direct = True
+    else:
+        outbound = dict(session_id=args.session, conversation=bridge.conversation, text=text,
+                        idempotency_key=args.idempotency_key)
+        result = _relay_outbound(bridge, outbound)
+        receipt = result.get('Receipt', {})
+        delivered = receipt.get('Delivered') is True
+        failure_kind = receipt.get('FailureKind', 'permanent')
+        reason = (receipt.get('Metadata') or {}).get('reason') or 'delivery not confirmed'
+        message_id = receipt.get('MessageID', '')
+        direct = False
+    if not delivered:
+        _print_gc_receipt(False, failure_kind, reason)
         if reason == NOT_SENT_REASON:
             raise TransportError(NOT_SENT_MESSAGE)
+        if direct:
+            raise TransportError('Telegram delivery not confirmed: ' + reason)
         raise TransportError('GC did not confirm delivery; inspect receipt before trying a new key')
-    return receipt.get('MessageID', '')
+    return message_id
 
 
 # ---- per-city settings ------------------------------------------------------

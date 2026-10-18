@@ -1183,6 +1183,35 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.bridge.publish(explicit), result)
         self.assertEqual(len(self.calls), 1)
 
+    def test_ledger_fingerprints_are_pinned_for_every_send_path(self):
+        # Ledger rows already saved must keep matching after the reservation
+        # refactor, so these hex strings pin today's fingerprint inputs.
+        self.assertTrue(self.bridge.publish(self.publish(key='fp-plain', text='fingerprint hello'))['delivered'])
+        self.assertTrue(self.bridge.publish(self.html('<b>fingerprint hello</b>', key='fp-html'))['delivered'])
+        attachment = self.publish(key='fp-attach', text='fingerprint hello')
+        attachment['attachment'] = dict(path='/fixed/photo.png', kind='document')
+        # A fixed path keeps the pinned hex deterministic; the file checks
+        # are covered by the other attachment tests.
+        with patch.object(self.bridge, '_attachment_error', return_value=None):
+            self.assertTrue(self.bridge.publish(attachment)['delivered'])
+        self.assertTrue(self.bridge._command_message(
+            'command:fp:0', dict(type='send', text='fingerprint hello', format='plain', plain=None))['delivered'])
+
+        def answer_transport(url, body, *args, **kwargs):
+            self.calls.append((url, body))
+            return 200, dict(ok=True, result=True)
+        with patch.object(self.bridge, 'request', answer_transport):
+            self.assertTrue(self.bridge._answer_callback(99, 'query-fp', 'Done')['delivered'])
+        with closing(sqlite3.connect(self.path)) as db:
+            stored = dict(db.execute('SELECT key, fingerprint FROM deliveries').fetchall())
+        self.assertEqual(stored, {
+            'fp-plain': '7609b9f4d5825ccaf5f7645c0576d462697fe26bb1cc31257cc079e455e3ef27',
+            'fp-html': 'e4f1bb50b5cca60431d9750b9630159e954b1591c1f4d47dd0d90426ab0af3ed',
+            'fp-attach': '886c87529309c6441284797abf4b254a4aeaa7f8709492cd000e4c6640431736',
+            'command:fp:0': '77200b81a791a0164fe831686d76a1785360c834f44a504d73cbb05fd6f16780',
+            'command:99:answer': 'b1331513ad3a6e82c42aaae0253da342312f2c373a52aadd7554a3412437881c',
+        })
+
     def test_html_opt_in_sends_parse_mode_html_with_the_markup(self):
         text = '<b>mayor:</b> build <i>green</i>\n<blockquote expandable>a &lt; b &amp;&amp; c</blockquote>'
         result = self.bridge.publish(self.html(text))

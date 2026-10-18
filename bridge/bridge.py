@@ -229,9 +229,7 @@ def http_multipart(url, fields, file_field, file_path, timeout=20):
     config = ['url = ' + _curl_config_quote(url)]
     for key, value in fields.items():
         text = str(value)
-        if text[:1] in ('@', '<'):
-            text = '\\' + text  # curl's own escape: an unescaped leading @/< means "read from file"
-        config.append('form = ' + _curl_config_quote(f'{key}={text}'))
+        config.append('form-string = ' + _curl_config_quote(f'{key}={text}'))
     config.append('form = ' + _curl_config_quote(f'{file_field}=@{file_path}'))
     return _curl(['--request', 'POST'], config, url, timeout)
 

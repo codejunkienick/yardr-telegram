@@ -1,14 +1,17 @@
 import datetime
+import http.server
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -720,19 +723,83 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn('SECRET', repr(args))
         self.assertIn('SECRET', kwargs['input'])
         self.assertNotIn('application/json', kwargs['input'])
-        self.assertIn('form = "chat_id=123"', kwargs['input'])
-        self.assertIn('form = "caption=hi"', kwargs['input'])
+        self.assertIn('form-string = "chat_id=123"', kwargs['input'])
+        self.assertIn('form-string = "caption=hi"', kwargs['input'])
         self.assertIn('form = "photo=@/tmp/sample.png"', kwargs['input'])
 
-    def test_multipart_form_value_starting_with_at_is_escaped(self):
+    def test_multipart_text_fields_use_form_string(self):
         with patch.object(b.subprocess, 'run') as run:
             run.return_value = subprocess.CompletedProcess(
                 [], 0, json.dumps({'ok': True, 'result': {}}) + '\n200 0.010000 0.020000 0', '')
             b.http_multipart('https://example.com/x', {'caption': '@not-a-file'}, 'photo', '/tmp/a.png')
-        # config-file quoting doubles the backslash curl needs to see one; curl then
-        # un-escapes it back to a single backslash, which is curl's own form escape
-        # for a literal leading '@' (otherwise read-from-file).
-        self.assertIn('form = "caption=\\\\@not-a-file"', run.call_args.kwargs['input'])
+        self.assertIn('form-string = "caption=@not-a-file"', run.call_args.kwargs['input'])
+        self.assertIn('form = "photo=@/tmp/a.png"', run.call_args.kwargs['input'])
+
+    @unittest.skipUnless(shutil.which('curl'), 'curl required')
+    def test_multipart_captions_arrive_verbatim_over_loopback(self):
+        captured = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(length)
+                captured.append((self.headers.get('Content-Type', ''), body))
+                payload = json.dumps({'ok': True, 'result': {}}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        port = server.server_address[1]
+        captions = ['hello; world', 'a;type=text/evil', 'x;headers=X-Evil: 1',
+                    '"quoted" rest', '@<file>']
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpfile = str(Path(tmp) / 'a.bin')
+            Path(tmpfile).write_bytes(b'file-bytes')
+            empty = str(Path(tmp) / 'empty')
+            Path(empty).mkdir()
+            env = {'CURL_HOME': empty, 'XDG_CONFIG_HOME': empty}
+            for caption in captions:
+                with self.subTest(caption=caption):
+                    captured.clear()
+                    with patch.dict(os.environ, env):
+                        status, data = b.http_multipart(
+                            f'http://127.0.0.1:{port}/x',
+                            {'caption': caption, 'chat_id': '1'}, 'document', tmpfile)
+                    self.assertEqual((status, data.get('ok')), (200, True))
+                    self.assertEqual(len(captured), 1)
+                    content_type, body = captured[0]
+                    self.assertIn('multipart/form-data; boundary=', content_type)
+                    boundary = content_type.split('boundary=', 1)[1].encode()
+                    parts = []
+                    for chunk in body.split(b'--' + boundary):
+                        if b'\r\n\r\n' not in chunk:
+                            continue
+                        head, _, part_body = chunk.partition(b'\r\n\r\n')
+                        if part_body.endswith(b'\r\n'):
+                            part_body = part_body[:-2]
+                        parts.append((head, part_body))
+                    by_name = {}
+                    for head, part_body in parts:
+                        for token in head.split(b';'):
+                            token = token.strip()
+                            if token.startswith(b'name='):
+                                by_name[token[5:].strip(b'"').decode()] = (head, part_body)
+                    self.assertIn('caption', by_name)
+                    self.assertEqual(by_name['caption'][1], caption.encode())
+                    for name, (head, _part_body) in by_name.items():
+                        self.assertNotIn(b'X-Evil', head)
+                        if name != 'document':
+                            self.assertNotIn(b'Content-Type:', head)
 
     def test_infer_attachment_kind_by_extension(self):
         self.assertEqual(b.infer_attachment_kind(Path('shot.png')), 'photo')

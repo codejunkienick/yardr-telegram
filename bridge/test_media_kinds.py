@@ -208,7 +208,7 @@ class MediaKindCliTests(unittest.TestCase):
         self.assertEqual(len(configs), 2)
         self.assertIn('/sendVoice"', configs[0])
         self.assertIn(f'form = "voice=@{voice}"', configs[0])
-        self.assertIn('form = "caption=hear me"', configs[0])
+        self.assertIn('form-string = "caption=hear me"', configs[0])
         self.assertIn('/sendVideoNote"', configs[1])
         self.assertIn(f'form = "video_note=@{circle}"', configs[1])
         self.assertNotIn('caption', configs[1])

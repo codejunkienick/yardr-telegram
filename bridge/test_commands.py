@@ -240,6 +240,57 @@ class CommandSettingsTests(SettingsCase):
             with self.subTest(pattern=pattern, tables=tables):
                 self.refused(pattern, tables)
 
+    def test_a_handler_in_a_group_writable_directory_is_refused_and_in_a_private_one_loads(self):
+        shared = self.root / 'shared-handlers'
+        shared.mkdir()
+        shared.chmod(0o775)
+        shared_handler = handler_script(shared, 'pass', name='shared.py')
+        shared_handler.chmod(0o755)
+        self.refused(r'command entry 1 \(deploy\) handler .* must be owned by this user or root, '
+                     r'in a directory only they can write', self.entry(handler=str(shared_handler)))
+        private = self.root / 'private-handlers'
+        private.mkdir()
+        private.chmod(0o700)
+        private_handler = handler_script(private, 'pass', name='private.py')
+        private_handler.chmod(0o755)
+        settings = b.load_settings(self.settings(self.entry(handler=str(private_handler))))
+        self.assertEqual(settings.config['commands'][0]['handler'], str(private_handler))
+
+    def test_a_handler_owned_by_another_user_is_refused(self):
+        real_stat = os.stat
+
+        def other_owner(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if os.fspath(path) == str(self.handler):
+                return os.stat_result((result.st_mode, result.st_ino, result.st_dev, result.st_nlink,
+                                       result.st_uid + 1000, result.st_gid, result.st_size,
+                                       int(result.st_atime), int(result.st_mtime), int(result.st_ctime)))
+            return result
+
+        with patch('os.stat', other_owner):
+            self.refused(r'command entry 1 \(deploy\) handler .* must be owned by this user or root, '
+                         r'in a directory only they can write', self.entry())
+
+    def test_a_symlinked_handler_needs_both_directories_safe(self):
+        safe = self.root / 'safe-target'
+        safe.mkdir()
+        safe.chmod(0o700)
+        target = handler_script(safe, 'pass', name='target.py')
+        target.chmod(0o755)
+        shared = self.root / 'shared-link'
+        shared.mkdir()
+        shared.chmod(0o775)
+        link_in_shared = shared / 'link.py'
+        link_in_shared.symlink_to(target)
+        self.refused(r'must be owned by this user or root, in a directory only they can write',
+                     self.entry(handler=str(link_in_shared)))
+        shared_target = handler_script(shared, 'pass', name='shared-target.py')
+        shared_target.chmod(0o755)
+        link_in_safe = safe / 'link.py'
+        link_in_safe.symlink_to(shared_target)
+        self.refused(r'must be owned by this user or root, in a directory only they can write',
+                     self.entry(handler=str(link_in_safe)))
+
     def test_more_than_100_menu_entries_in_total_are_refused(self):
         many = ''.join(self.entry(f'c{i}', callback_prefix=f'c{i}|') for i in range(97))
         b.load_settings(self.settings(many))  # 3 [[menu]] + 97 = 100

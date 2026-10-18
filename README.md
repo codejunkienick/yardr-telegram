@@ -110,8 +110,10 @@ pack gets them as `telegram.<name>`.
 An add-on is one `[[command]]` table in a city's settings, with no enable
 flag. Its handler lives outside the pack: the city's own program, or one it
 installs. Add one: install the handler at an absolute path (owner-writable
-only, executable), add the table (and a `handler_write_paths` entry if it
-writes, then run `install.sh` again), restart the unit, and run
+only, executable, owned by this user or root, in a directory owned by
+this user or root and writable by neither group nor others), add the
+table (and a `handler_write_paths` entry if it writes, then run
+`install.sh` again), restart the unit, and run
 `set-commands`. Remove one: delete the table and do the same steps. The
 handler protocol is in `bridge/OPERATIONS.md`, "City commands".
 

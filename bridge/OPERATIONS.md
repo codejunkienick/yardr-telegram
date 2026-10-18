@@ -143,7 +143,7 @@ settings and its own handler programs, without editing this pack. Each
 | --- | --- | --- |
 | `name` | required | the command, `/<name>`: 1-32 of `a-z`, `0-9`, `_` |
 | `description` | required | the menu text, 1-256 characters |
-| `handler` | one of the two | absolute path of an existing regular file this user may execute, writable by nobody but its owner |
+| `handler` | one of the two | absolute path of an existing regular file this user may execute, writable by nobody but its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
 | `url` | one of the two | `http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`, nothing else |
 | `menu` | `true` | show it in the chat's "/" menu (`set-commands`) |
 | `callback_prefix` | `"<name>:"` | button presses whose `callback_data` starts with it go to this handler; 1-64 printable ASCII characters, no space |
@@ -151,7 +151,9 @@ settings and its own handler programs, without editing this pack. Each
 
 The settings refuse to load, naming the entry, on an unknown key, a repeated
 name, a name equal to `start` or a `[[menu]]` command, a missing or
-second handler, a handler that is not an owner-writable-only executable file,
+second handler, a handler that is not an owner-writable-only executable file
+owned by this user or root in a directory only they can write (for a
+symlink, both the link's and the target's directories),
 a URL off loopback, a `callback_prefix` that equals or starts another one
 (a press would have two owners), or more than 100 menu entries in all.
 `start` stays reserved always.
@@ -535,7 +537,7 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `timeout` | `120` | base seconds of a run, 5-300 (the decode limit, and the start of the whisper limit) |
 | `timeout_per_minute` | `120` | seconds of whisper limit added per minute of audio (the bridge uses Telegram's duration, assuming 10 minutes when it gives none) |
 | `method` | `cpu` | `auto`, `cpu` or `gpu` (above); with it, `gpu` is refused |
-| `gpu_check` | `<pack>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner |
+| `gpu_check` | `<pack>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
 | `gpu` | `false` | legacy form without `method`: `true` behaves as `method = "auto"`, `false` as `method = "cpu"` |
 | `gpu_min_free_mb` | `2048` | free video memory, MiB, a GPU run needs (256-131072); whisper itself takes about 1.1 GB; also the check's `GPU_MIN_FREE_MB` |
 

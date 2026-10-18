@@ -2440,7 +2440,8 @@ def _bool_setting(value, what):
 
 def _handler_setting(value, what):
     """A command handler: an absolute path to an existing regular file this
-    user may execute, writable by nobody but its owner."""
+    user may execute, writable by nobody but its owner, owned by this user
+    or root, in a directory only they can write."""
     path = _path_setting(value, what)
     try:
         st = os.stat(path)
@@ -2450,6 +2451,22 @@ def _handler_setting(value, what):
         raise SettingsError(f'settings: {what} {path} must be an executable regular file')
     if st.st_mode & 0o022:
         raise SettingsError(f'settings: {what} {path} must not be writable by group or others')
+    uid = os.getuid()
+    directories = {path.parent, Path(os.path.realpath(path)).parent}
+    owned = st.st_uid in (uid, 0)
+    if owned:
+        for directory in directories:
+            try:
+                dir_st = os.stat(directory)
+            except OSError:
+                owned = False
+                break
+            if dir_st.st_uid not in (uid, 0) or dir_st.st_mode & 0o022:
+                owned = False
+                break
+    if not owned:
+        raise SettingsError(f'settings: {what} {path} must be owned by this user or root, '
+                            f'in a directory only they can write')
     return str(path)
 
 

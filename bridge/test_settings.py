@@ -391,6 +391,17 @@ class TranscribeSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(b.SettingsError, 'transcribe.gpu_check'):
             self.load('enabled = true\nmethod = "auto"\ngpu_check = "relative/check"\n')
 
+    def test_gpu_check_in_a_group_writable_directory_is_refused(self):
+        shared = self.root / 'shared-checks'
+        shared.mkdir()
+        shared.chmod(0o775)
+        check = shared / 'gpu-check'
+        check.write_text('#!/bin/sh\n')
+        check.chmod(0o755)
+        with self.assertRaisesRegex(b.SettingsError, r'transcribe\.gpu_check .* must be owned by this user or root, '
+                                                     r'in a directory only they can write'):
+            self.load(f'enabled = true\nmethod = "auto"\ngpu_check = "{check}"\n')
+
     def test_method_gpu_and_auto_get_the_gpu_allowance_and_cpu_does_not(self):
         for method, allowance in (('cpu', 0), ('gpu', 30), ('auto', 30)):
             with self.subTest(method=method):

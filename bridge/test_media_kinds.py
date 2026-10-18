@@ -2,7 +2,6 @@
 multipart send, ledger, receipts, 4xx text fallback) with the fake Telegram,
 and the CLI and reply-current command passing both kinds through."""
 from contextlib import closing
-import importlib.util
 import io
 import json
 import os
@@ -14,17 +13,19 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
-b = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(b)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_bridge import MENU, write_settings  # noqa: E402
+import bridge as b  # noqa: E402
+from test_bridge import BridgeTestCase, MENU, run_main, write_fake_curl, write_settings  # noqa: E402
 
 PACK = Path(__file__).resolve().parents[1]
 LIMIT = 50 * 1024 * 1024
 
 
-class MediaKindTests(unittest.TestCase):
+class MediaKindTests(BridgeTestCase):
+    # Own root/store fixture; the enterContext cleanup replaces tearDown.
+    def tearDown(self):
+        pass
+
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.store = b.Store(self.root / 'state.sqlite3', 10)
@@ -178,13 +179,10 @@ class MediaKindCliTests(unittest.TestCase):
         """A curl on PATH that answers every send with message 42 and keeps
         each config it was given on stdin."""
         bin_dir = self.root / 'bin'
-        bin_dir.mkdir()
-        curl = bin_dir / 'curl'
-        curl.write_text(f'#!{sys.executable}\nimport json, sys, uuid\nfrom pathlib import Path\n'
+        write_fake_curl(bin_dir, f'#!{sys.executable}\nimport json, sys, uuid\nfrom pathlib import Path\n'
                         f'Path({str(self.root)!r}, "curl-" + uuid.uuid4().hex).write_text(sys.stdin.read())\n'
                         'print(json.dumps({"ok": True, "result": {"message_id": 42, "chat": {"id": 123}}}))\n'
                         'print("200 0.010000 0.020000 0", end="")\n')
-        curl.chmod(0o755)
         return bin_dir
 
     def test_gc_telegram_reply_current_passes_both_kinds_to_send_voice_and_send_video_note(self):
@@ -223,13 +221,10 @@ class MediaKindCliTests(unittest.TestCase):
         body.write_text('no captions here')
         argv = ['bridge.py', '--settings', str(settings), 'reply-current', '--body-file', str(body),
                 '--idempotency-key', 'k', '--attachment', str(circle), '--attachment-kind', 'video_note']
-        umask = os.umask(0o077)
-        os.umask(umask)
-        self.addCleanup(os.umask, umask)  # main() narrows the process umask
         with patch.object(b.subprocess, 'run', side_effect=AssertionError('nothing may be sent')), \
-             patch('sys.argv', argv), patch('sys.stderr', new_callable=io.StringIO) as err:
+             patch('sys.stderr', new_callable=io.StringIO) as err:
             with self.assertRaisesRegex(b.TransportError, 'video_note_takes_no_caption'):
-                b.main()
+                run_main(self, *argv)
         self.assertIn('"reason": "video_note_takes_no_caption"', err.getvalue())
 
 

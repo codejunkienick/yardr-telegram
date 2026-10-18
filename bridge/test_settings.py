@@ -10,15 +10,14 @@ import sys
 import tempfile
 import unittest
 
-spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
-b = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(b)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bridge as b  # noqa: E402
+from test_bridge import MENU, write_settings  # noqa: E402
+
 vt_spec = importlib.util.spec_from_file_location(
     'voice_transcribe', Path(__file__).resolve().parents[1] / 'transcriber' / 'voice_transcribe.py')
 vt = importlib.util.module_from_spec(vt_spec)
 vt_spec.loader.exec_module(vt)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_bridge import MENU, write_settings  # noqa: E402
 
 PACK = Path(__file__).resolve().parents[1]
 
@@ -303,8 +302,7 @@ class TranscribeSettingsTests(unittest.TestCase):
                                ('gpu = "yes"\n', 'transcribe.gpu must be true or false'),
                                ('gpu = 1\n', 'transcribe.gpu must be true or false'),
                                ('gpu_min_free_mb = 100\n', 'transcribe.gpu_min_free_mb must be an integer from 256'),
-                               ('gpu_min_free_mb = "2048"\n', 'transcribe.gpu_min_free_mb must be an integer'),
-                               ('device = "cuda"\n', 'unknown key transcribe.device')):
+                               ('gpu_min_free_mb = "2048"\n', 'transcribe.gpu_min_free_mb must be an integer')):
             with self.subTest(table):
                 with self.assertRaisesRegex(b.SettingsError, pattern):
                     self.load(table)

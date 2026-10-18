@@ -5,7 +5,6 @@ Telegram and fake GC; temp files only; no network beyond a loopback fixture."""
 import contextlib
 import datetime
 import http.server
-import importlib.util
 import io
 import json
 import os
@@ -19,10 +18,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
-b = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(b)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bridge as b  # noqa: E402
 from test_bridge import MENU, write_settings  # noqa: E402
 
 INPUT_KEYS = {'kind', 'command', 'args', 'update_id', 'message_id', 'callback_data', 'callback_message_id',

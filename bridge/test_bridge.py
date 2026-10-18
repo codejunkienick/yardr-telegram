@@ -2,7 +2,6 @@ import datetime
 import gc
 import http.client
 import http.server
-import importlib.util
 import io
 import json
 import os
@@ -21,9 +20,8 @@ import warnings
 from contextlib import closing
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
-b = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(b)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bridge as b  # noqa: E402
 
 
 def write_settings(root, body=None, mode=0o600, **replace):
@@ -55,7 +53,32 @@ MENU = (('quota', 'Usage limits, instant'), ('status', "What's running, what lan
         ('waiting', 'Only the questions waiting on you'))
 
 
-class BridgeTests(unittest.TestCase):
+def run_main(case, *argv):
+    """Call b.main() with `argv`, restoring the process umask at cleanup.
+
+    main() narrows the process umask; saving it first and restoring it
+    with addCleanup keeps one CLI test from leaking that into the next.
+    """
+    umask = os.umask(0o077)
+    os.umask(umask)
+    case.addCleanup(os.umask, umask)
+    with patch('sys.argv', list(argv)):
+        return b.main()
+
+
+def write_fake_curl(directory, script_body):
+    """Write an executable fake `curl` in `directory`; return its path."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    curl = directory / 'curl'
+    curl.write_text(script_body)
+    curl.chmod(0o755)
+    return curl
+
+
+class BridgeTestCase(unittest.TestCase):
+    """Shared Bridge fixture and fake transports; carries no tests."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'state.sqlite3'
@@ -142,6 +165,12 @@ class BridgeTests(unittest.TestCase):
     def publish(self, key='delivery-1', text='hello'):
         return dict(conversation=self.bridge.conversation, text=text, idempotency_key=key, session_id='mayor')
 
+    def relayed_texts(self):
+        return [c[1]['message']['text'] for c in self.calls
+                if c[0] == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+
+
+class BridgeTests(BridgeTestCase):
     def test_allowlist_rejects_group_unknown_and_bot(self):
         for section, field, value in [('chat', 'type', 'group'), ('chat', 'id', 124),
                                       ('from', 'id', 124), ('from', 'is_bot', True), ('from', 'id', '123')]:
@@ -241,10 +270,6 @@ class BridgeTests(unittest.TestCase):
         self.bridge.drain([update])
         self.assertEqual(self.store.offset(), 11)
         self.assertEqual(self.calls, [])
-
-    def relayed_texts(self):
-        return [c[1]['message']['text'] for c in self.calls
-                if c[0] == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
 
     def test_inbound_photo_picks_largest_size_downloads_and_relays_with_safe_permissions(self):
         self.bridge.state_dir = Path(self.tmp.name)
@@ -1124,17 +1149,11 @@ class BridgeTests(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, payload + '\n200 0.010000 0.020000 0', '')
                 raise AssertionError('unexpected curl invocation: ' + input[:200])
 
-            original_umask = os.umask(0)
-            os.umask(original_umask)
-            try:
-                with patch.object(b.subprocess, 'run', fake_run), \
-                     patch('sys.argv', ['bridge.py', '--settings', str(settings), 'send',
-                                        '--body-file', str(body_file), '--idempotency-key', 'shared-store-key',
-                                        '--attachment', str(attachment)]), \
-                     patch('sys.stdout', new_callable=io.StringIO) as out:
-                    b.main()
-            finally:
-                os.umask(original_umask)
+            with patch.object(b.subprocess, 'run', fake_run), \
+                 patch('sys.stdout', new_callable=io.StringIO) as out:
+                run_main(self, 'bridge.py', '--settings', str(settings), 'send',
+                         '--body-file', str(body_file), '--idempotency-key', 'shared-store-key',
+                         '--attachment', str(attachment))
             self.assertIn('Telegram delivery confirmed; message ID 42', out.getvalue())
 
             store_path = root / 'state/telegram-bridge.sqlite3'
@@ -1445,7 +1464,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
-class VoiceTranscriptionTests(BridgeTests):
+class VoiceTranscriptionTests(BridgeTestCase):
     """Voice notes: saved through the fenced download path, then transcribed by a
     fake transcriber subprocess (no network, no real whisper)."""
 
@@ -1801,11 +1820,6 @@ class VoiceTranscriptionTests(BridgeTests):
         pending.write_text(' ' * (self.bridge.PENDING_MAX_BYTES + 1))
         self.assertEqual(self.restarted_bridge().reconcile_pending(), 0)
 
-# Inherit BridgeTests' fixtures only, not a second run of its tests.
-for _name in dir(BridgeTests):
-    if _name.startswith('test_') and _name not in VoiceTranscriptionTests.__dict__:
-        setattr(VoiceTranscriptionTests, _name, None)
-
 
 class ProbeRetryTests(unittest.TestCase):
     def make(self, responses):
@@ -1880,11 +1894,7 @@ class UnitDownMessageTests(unittest.TestCase):
 
 
 
-class HeartbeatTests(unittest.TestCase):
-    # Borrow the BridgeTests fixture without re-running its tests.
-    setUp, tearDown = BridgeTests.setUp, BridgeTests.tearDown
-    transport, multipart_transport, download_transport = BridgeTests.transport, BridgeTests.multipart_transport, BridgeTests.download_transport
-    accepted, update = BridgeTests.accepted, BridgeTests.update
+class HeartbeatTests(BridgeTestCase):
 
     def heartbeat(self):
         return json.loads(self.bridge.heartbeat_path().read_text())
@@ -2045,11 +2055,9 @@ class SetCommandsTests(unittest.TestCase):
         """Run bridge.py set-commands as a process, with curl faked on PATH."""
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         fake_bin = root / 'bin'
-        fake_bin.mkdir()
         settings = write_settings(root)
         log = root / 'curl-calls.jsonl'
-        curl = fake_bin / 'curl'
-        curl.write_text(f"""#!{sys.executable}
+        write_fake_curl(fake_bin, f"""#!{sys.executable}
 import json, sys
 stdin = sys.stdin.read()
 with open({str(log)!r}, 'a') as stream:
@@ -2060,7 +2068,6 @@ else:
     answer = dict(ok=True, result=json.loads({json.dumps(json.dumps(readback))}))
 print(json.dumps(answer) + '\\n200 0.010000 0.020000 0', end='')
 """)
-        os.chmod(curl, 0o700)
         env = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ.get('PATH', ''))
         result = subprocess.run([sys.executable, str(Path(b.__file__)), '--settings', str(settings), 'set-commands'],
                                 env=env, capture_output=True, text=True, timeout=30)

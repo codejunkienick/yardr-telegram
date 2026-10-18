@@ -11,15 +11,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
-b = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(b)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bridge as b  # noqa: E402
+from test_bridge import run_main, write_settings  # noqa: E402
+
 probe_spec = importlib.util.spec_from_file_location(
     'gpu_probe', Path(__file__).resolve().parents[1] / 'transcriber' / 'gpu_probe.py')
 helper = importlib.util.module_from_spec(probe_spec)
 probe_spec.loader.exec_module(helper)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_bridge import write_settings  # noqa: E402
 
 RUNNING = '{"state": "running"}'
 CLIP = b'RIFF\x24\x00\x00\x00WAVEfmt '
@@ -229,14 +228,11 @@ class CheckInstallFlagTests(ProbeFixture):
     def run_main(self, *flags, stdout=''):
         settings = self.settings()
         argv = ['bridge.py', '--settings', str(settings.path), 'check-install', *flags]
-        umask = os.umask(0o077)
-        os.umask(umask)
-        self.addCleanup(os.umask, umask)  # main() narrows the process umask
         with patch.object(b, 'install_problems', return_value=[(True, 'python')]), \
-             patch.dict(os.environ, FAKE_PROBE_STDOUT=stdout), patch('sys.argv', argv), \
+             patch.dict(os.environ, FAKE_PROBE_STDOUT=stdout), \
              patch('sys.stdout', new_callable=io.StringIO) as out:
             try:
-                b.main()
+                run_main(self, *argv)
                 return 0, out.getvalue()
             except b.TransportError as error:
                 return str(error), out.getvalue()

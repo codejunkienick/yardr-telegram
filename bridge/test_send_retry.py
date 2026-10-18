@@ -5,7 +5,6 @@ definite not-sent receipt whose ledger row is not final, and ambiguity kept
 for every send that may have reached Telegram. Fake curl, fake Telegram,
 fake clock; no network and no real sleep."""
 from contextlib import closing
-import importlib.util
 import io
 import json
 import os
@@ -18,11 +17,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
-b = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(b)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_bridge import MENU, write_settings  # noqa: E402
+import bridge as b  # noqa: E402
+from test_bridge import BridgeTestCase, MENU, run_main, write_settings  # noqa: E402
 
 URL = 'https://api.telegram.org/botSECRET/sendMessage'
 OK = (200, dict(ok=True, result=dict(message_id=77, chat=dict(id=123))))
@@ -139,7 +136,11 @@ class TransportClassificationTests(unittest.TestCase):
         self.assertEqual(kwargs['timeout'], 13.25)
 
 
-class SendRetryTests(unittest.TestCase):
+class SendRetryTests(BridgeTestCase):
+    # Own root/store fixture; the enterContext cleanup replaces tearDown.
+    def tearDown(self):
+        pass
+
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.store = b.Store(self.root / 'state.sqlite3', 10)
@@ -427,13 +428,10 @@ class SendRetryCliTests(unittest.TestCase):
 
         argv = ['bridge.py', '--settings', str(settings), 'reply-current', '--body-file', str(body),
                 '--idempotency-key', 'cli-1', '--format', 'html']
-        umask = os.umask(0o077)
-        os.umask(umask)
-        self.addCleanup(os.umask, umask)  # main() narrows the process umask
         with patch.object(b.subprocess, 'run', fake_run), patch.object(b.time, 'sleep', sleeps.append), \
-             patch('sys.argv', argv), patch('sys.stderr', new_callable=io.StringIO) as err:
+             patch('sys.stderr', new_callable=io.StringIO) as err:
             with self.assertRaisesRegex(b.TransportError, 'nothing was sent'):
-                b.main()
+                run_main(self, *argv)
         self.assertEqual((len(configs), sleeps), (3, [1, 3]))
         log = err.getvalue()
         self.assertIn('GC_RECEIPT {"delivered": false, "failure_kind": "transient", "reason": "transport_unavailable_not_sent"}', log)
@@ -448,9 +446,9 @@ class SendRetryCliTests(unittest.TestCase):
 
         state['ok'] = True
         with patch.object(b.subprocess, 'run', fake_run), patch.object(b.time, 'sleep', sleeps.append), \
-             patch('sys.argv', argv), patch('sys.stderr', new_callable=io.StringIO), \
+             patch('sys.stderr', new_callable=io.StringIO), \
              patch('sys.stdout', new_callable=io.StringIO) as out:
-            b.main()
+            run_main(self, *argv)
         self.assertIn('Telegram delivery confirmed; message ID 42', out.getvalue())
         self.assertEqual(len(configs), 4)
 

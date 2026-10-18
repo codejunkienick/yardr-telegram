@@ -15,6 +15,8 @@ PACK = Path(__file__).resolve().parents[1]
 SETUP = PACK / "transcriber" / "setup.sh"
 FAKE_BYTES = b"fake-model\n"
 DESCRIBE = "v1.8.3-120-g764482c3"
+PIN = "764482c3175d9c3bc6089c1ec84df7d1b9537d83"
+USAGE = "usage: transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>]"
 CPU_FALLBACK = (
     "ok    whisper-cli built for the CPU "
     "(no nvcc on PATH; the GPU is tried and falls back to the CPU)"
@@ -29,6 +31,10 @@ if [ "$1" = clone ]; then
 fi
 if [ "$1" = -C ] && [ "$3" = describe ]; then
   printf '%s\\n' 'v1.8.3-120-g764482c3'
+  exit 0
+fi
+if [ "$1" = -C ] && [ "$3" = rev-parse ]; then
+  printf '%s\\n' "${FAKE_GIT_HEAD:-764482c3175d9c3bc6089c1ec84df7d1b9537d83}"
   exit 0
 fi
 if [ "$1" = -C ] && [ "$3" = checkout ] && [ -n "${FAKE_GIT_FAIL_DETACH:-}" ]; then
@@ -177,8 +183,11 @@ class SetupTests(unittest.TestCase):
             lines[-1], f"next: {PACK}/install.sh --settings {settings}")
         log = self.log_text()
         clone_at = log.index("git clone https://github.com/ggml-org/whisper.cpp")
-        detach_at = log.index("checkout --detach 764482c3")
+        detach_at = log.index(f"checkout --detach {PIN}")
         self.assertLess(clone_at, detach_at)
+        self.assertIn("rev-parse HEAD", log)
+        note = f"note  checksum list from TELEGRAM_PACK_MODELS_SHA256: {self.sums}"
+        self.assertEqual(result.stdout.count(note), 1)
         configure = [ln for ln in log.splitlines()
                      if ln.startswith("cmake -B build")]
         self.assertEqual(configure, ["cmake -B build -DGGML_CUDA=1"])
@@ -186,6 +195,7 @@ class SetupTests(unittest.TestCase):
                       "--target whisper-cli", log)
         curls = [ln for ln in log.splitlines() if ln.startswith("curl ")]
         self.assertEqual(len(curls), 2)
+        self.assertTrue(all(ln.split()[1] == "-q" for ln in curls))
         self.assertTrue(all("-fL" in ln and "--proto" in ln for ln in curls))
         self.assertIn(
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
@@ -228,7 +238,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         for line in second.stdout.strip().splitlines():
             self.assertTrue(
-                line.startswith("ok    ") or line.startswith("next: "),
+                line.startswith("ok    ") or line.startswith("next: ")
+                or line.startswith("note  "),
                 line)
         self.assertNotIn("FAIL", second.stdout)
         self.assertNotIn("would", second.stdout)
@@ -270,6 +281,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(
             result.stdout,
+            f"note  checksum list from TELEGRAM_PACK_MODELS_SHA256: {self.sums}\n"
             f"skip  transcription is off in {settings}\n")
         self.assertEqual(self.log_text(), "")
         self.assertFalse(self.checkout.exists())
@@ -308,7 +320,19 @@ class SetupTests(unittest.TestCase):
         retry = self.run_setup(settings, bin_dir)
         self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
         self.assertIn("git clone", self.log_text())
-        self.assertIn("checkout --detach 764482c3", self.log_text())
+        self.assertIn(f"checkout --detach {PIN}", self.log_text())
+
+    def test_default_ref_head_mismatch_fails_and_removes_checkout(self):
+        settings = self.settings("cpu")
+        head = "0" * 40
+        result = self.run_setup(settings, self.make_bin(),
+                                env_extra={"FAKE_GIT_HEAD": head})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            f"FAIL  whisper.cpp at {self.checkout} is {head}, not the pinned {PIN}",
+            result.stdout)
+        self.assertFalse(self.checkout.exists())
+        self.assertNotIn("next:", result.stdout)
 
     def test_build_that_misses_configured_whisper_cli_fails(self):
         other = self.checkout / "build" / "bin" / "main"
@@ -331,6 +355,15 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("cmake --build", self.log_text())
         self.assertTrue(os.access(self.whisper_cli, os.X_OK))
+
+    def test_cuda_with_ninja_generator_configures_both(self):
+        settings = self.settings("auto")
+        bin_dir = self.make_bin(omit=("make",), with_ninja=True, with_nvcc=True)
+        result = self.run_setup(settings, bin_dir)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        configure = [ln for ln in self.log_text().splitlines()
+                     if ln.startswith("cmake -B build")]
+        self.assertEqual(configure, ["cmake -B build -DGGML_CUDA=1 -G Ninja"])
 
     def test_ninja_only_host_configures_with_ninja_generator(self):
         settings = self.settings("cpu")
@@ -368,22 +401,26 @@ class SetupTests(unittest.TestCase):
     def test_whisper_ref_override_and_usage_errors(self):
         settings = self.settings("cpu")
         bin_dir = self.make_bin()
-        result = self.run_setup(settings, bin_dir, "--whisper-ref", "v1.8.3")
+        result = self.run_setup(settings, bin_dir, "--whisper-ref", "v1.8.3",
+                                env_extra={"FAKE_GIT_HEAD": "0" * 40})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("checkout --detach v1.8.3", self.log_text())
+        self.assertNotIn("rev-parse", self.log_text())
         env = dict(HOME=str(self.home), PATH=str(bin_dir),
                    FAKE_LOG=str(self.log), LANG="C")
-        missing = subprocess.run(
-            [str(SETUP)], env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(missing.returncode, 64)
-        unknown = subprocess.run(
+        cases = (
+            [str(SETUP)],
             [str(SETUP), "--settings", str(settings), "--bogus"],
-            env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(unknown.returncode, 64)
-        no_value = subprocess.run(
             [str(SETUP), "--settings"],
-            env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(no_value.returncode, 64)
+            [str(SETUP), "--settings", str(settings), "--whisper-ref"],
+            [str(SETUP), "--settings", str(settings), "--whisper-ref="],
+        )
+        for argv in cases:
+            with self.subTest(argv=argv):
+                done = subprocess.run(
+                    argv, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(done.returncode, 64)
+                self.assertIn(USAGE, done.stderr)
 
 
 if __name__ == "__main__":

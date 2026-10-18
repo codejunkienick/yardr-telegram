@@ -19,24 +19,31 @@ _cleanup_tmp() { if [ -n "$tmpfile" ]; then rm -f "$tmpfile"; fi; }
 trap _cleanup_tmp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-# v1.8.3-120-g764482c3 (2026-02-09), the build the host transcribes with.
-WHISPER_REF=764482c3
+# v1.8.3-120-g764482c3 (2026-02-09), the build the pack is tested with.
+WHISPER_REF=764482c3175d9c3bc6089c1ec84df7d1b9537d83
 pack=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
 bridge="$pack/bridge/bridge.py"
 sums_file=${TELEGRAM_PACK_MODELS_SHA256:-"$pack/transcriber/models.sha256"}
-settings= dry_run=0 whisper_ref=$WHISPER_REF
+usage() {
+  echo "usage: transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>]" >&2
+  exit 64
+}
+settings= dry_run=0 whisper_ref=$WHISPER_REF whisper_ref_given=0
 while [ $# -gt 0 ]; do
   case $1 in
-    --settings) [ $# -ge 2 ] || { echo "setup.sh: --settings needs a file (usage: transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>])" >&2; exit 64; }; settings=$2; shift 2 ;;
+    --settings) [ $# -ge 2 ] || { echo "setup.sh: --settings needs a file" >&2; usage; }; settings=$2; shift 2 ;;
     --settings=*) settings=${1#*=}; shift ;;
     --dry-run) dry_run=1; shift ;;
-    --whisper-ref) [ $# -ge 2 ] || { echo "setup.sh: --whisper-ref needs a ref (usage: transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>])" >&2; exit 64; }; whisper_ref=$2; shift 2 ;;
-    --whisper-ref=*) whisper_ref=${1#*=}; shift ;;
-    *) echo "setup.sh: unknown argument $1 (usage: transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>])" >&2; exit 64 ;;
+    --whisper-ref) [ $# -ge 2 ] || { echo "setup.sh: --whisper-ref needs a ref" >&2; usage; }; whisper_ref=$2; whisper_ref_given=1; shift 2 ;;
+    --whisper-ref=*) whisper_ref=${1#*=}; whisper_ref_given=1; shift ;;
+    *) echo "setup.sh: unknown argument $1" >&2; usage ;;
   esac
 done
-[ -n "$settings" ] || { echo "setup.sh: --settings <file> is required (usage: transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>])" >&2; exit 64; }
-[ -n "$whisper_ref" ] || { echo "setup.sh: --whisper-ref needs a ref (usage: transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>])" >&2; exit 64; }
+[ -n "$settings" ] || { echo "setup.sh: --settings <file> is required" >&2; usage; }
+[ -n "$whisper_ref" ] || { echo "setup.sh: --whisper-ref needs a ref" >&2; usage; }
+if [ -n "${TELEGRAM_PACK_MODELS_SHA256:-}" ]; then
+  printf 'note  checksum list from TELEGRAM_PACK_MODELS_SHA256: %s\n' "$sums_file"
+fi
 
 # Read the transcribe paths and method the way install.sh does, through
 # the bridge's own settings loader. It validates the file and reads no
@@ -44,7 +51,8 @@ done
 settings_out=$(python3 -c '
 import runpy, shlex, sys
 try:
-    s = runpy.run_path(sys.argv[1])["load_settings"](sys.argv[2])
+    bridge_ns = runpy.run_path(sys.argv[1])
+    s = bridge_ns["load_settings"](sys.argv[2])
 except Exception as exc:
     print("FAIL  " + str(exc), file=sys.stderr)
     sys.exit(1)
@@ -53,13 +61,19 @@ if s.transcribe is not None:
     method = s.transcribe.get("method") or ("gpu" if s.transcribe.get("gpu") else "cpu")
 else:
     method = "cpu"
+try:
+    sums = bridge_ns["recorded_sums"](sys.argv[3])
+except Exception:
+    sums = {}
 print("enabled=" + shlex.quote(enabled))
 print("whisper_cli=" + shlex.quote(str(s.whisper_cli)))
 print("models_dir=" + shlex.quote(str(s.models_dir)))
 print("model=" + shlex.quote(str(s.model)))
 print("vad_model=" + shlex.quote(str(s.vad_model)))
 print("method=" + shlex.quote(str(method)))
-' "$bridge" "$settings") || exit 1
+print("model_sum=" + shlex.quote(sums.get("ggml-" + str(s.model) + ".bin", "")))
+print("vad_model_sum=" + shlex.quote(sums.get("ggml-" + str(s.vad_model) + ".bin", "")))
+' "$bridge" "$settings" "$sums_file") || exit 1
 eval "$settings_out"
 
 if [ "$enabled" != 1 ]; then
@@ -104,6 +118,14 @@ else
     printf 'FAIL  whisper.cpp checkout %s at %s failed\n' "$whisper_ref" "$checkout"
     exit 1
   fi
+  if [ "$whisper_ref_given" = 0 ]; then
+    head=$(git -C "$checkout" rev-parse HEAD 2>/dev/null) || head=
+    if [ "$head" != "$WHISPER_REF" ]; then
+      rm -rf "$checkout"
+      printf 'FAIL  whisper.cpp at %s is %s, not the pinned %s\n' "$checkout" "$head" "$WHISPER_REF"
+      exit 1
+    fi
+  fi
   describe=$(git -C "$checkout" describe --tags --always 2>/dev/null) || describe=$whisper_ref
   [ -n "$describe" ] || describe=$whisper_ref
   printf 'ok    whisper.cpp at %s (%s)\n' "$checkout" "$describe"
@@ -126,26 +148,12 @@ elif [ "$dry_run" = 1 ]; then
     printf 'would build whisper-cli at %s\n' "$whisper_cli"
   fi
 else
-  if [ "$want_cuda" = 1 ] && [ -n "$cmake_generator" ]; then
-    if ! (cd "$checkout" && cmake -B build -DGGML_CUDA=1 -G "$cmake_generator"); then
-      printf 'FAIL  whisper-cli configure in %s failed\n' "$checkout"
-      exit 1
-    fi
-  elif [ "$want_cuda" = 1 ]; then
-    if ! (cd "$checkout" && cmake -B build -DGGML_CUDA=1); then
-      printf 'FAIL  whisper-cli configure in %s failed\n' "$checkout"
-      exit 1
-    fi
-  elif [ -n "$cmake_generator" ]; then
-    if ! (cd "$checkout" && cmake -B build -G "$cmake_generator"); then
-      printf 'FAIL  whisper-cli configure in %s failed\n' "$checkout"
-      exit 1
-    fi
-  else
-    if ! (cd "$checkout" && cmake -B build); then
-      printf 'FAIL  whisper-cli configure in %s failed\n' "$checkout"
-      exit 1
-    fi
+  set -- -B build
+  if [ "$want_cuda" = 1 ]; then set -- "$@" -DGGML_CUDA=1; fi
+  if [ -n "$cmake_generator" ]; then set -- "$@" -G "$cmake_generator"; fi
+  if ! (cd "$checkout" && cmake "$@"); then
+    printf 'FAIL  whisper-cli configure in %s failed\n' "$checkout"
+    exit 1
   fi
   if ! (cd "$checkout" && cmake --build build -j --config Release --target whisper-cli); then
     printf 'FAIL  whisper-cli build in %s failed\n' "$checkout"
@@ -166,18 +174,15 @@ fi
 
 # Models: check the recorded SHA-256, download only what is missing,
 # never overwrite a file that is already there.
-recorded_hash() {
-  awk -v target="$1" '!/^#/ && NF >= 2 { f = $2; sub(/^\*/, "", f); if (f == target) { print tolower($1); exit } }' "$sums_file"
-}
 file_hash() {
   sha256sum "$1" | cut -d' ' -f1
 }
 setup_model() {
   _name=$1
   _url=$2
+  _expected=$3
   _file="ggml-$_name.bin"
   _dest="$models_dir/$_file"
-  _expected=$(recorded_hash "$_file")
   if [ -z "$_expected" ]; then
     printf 'FAIL  model %s has no recorded SHA-256 in %s\n' "$_dest" "$sums_file"
     return 1
@@ -200,7 +205,7 @@ setup_model() {
   fi
   _tmp=$(mktemp "$models_dir/.ggml-XXXXXXXX") || { printf 'FAIL  model %s download failed\n' "$_dest"; return 1; }
   tmpfile=$_tmp
-  if ! curl -fL --proto =https -o "$_tmp" "$_url"; then
+  if ! curl -q -fL --proto =https -o "$_tmp" "$_url"; then
     rm -f "$_tmp"
     tmpfile=
     printf 'FAIL  model %s download failed\n' "$_dest"
@@ -223,7 +228,7 @@ setup_model() {
   printf 'ok    model %s downloaded (SHA-256)\n' "$_dest"
   return 0
 }
-setup_model "$model" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$model.bin" || exit 1
-setup_model "$vad_model" "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-$vad_model.bin" || exit 1
+setup_model "$model" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$model.bin" "$model_sum" || exit 1
+setup_model "$vad_model" "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-$vad_model.bin" "$vad_model_sum" || exit 1
 
 printf 'next: %s/install.sh --settings %s\n' "$pack" "$settings"

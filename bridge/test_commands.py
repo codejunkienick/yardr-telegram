@@ -103,7 +103,7 @@ class CommandCase(unittest.TestCase):
         if commands is None:
             commands = (self.command(),)
         config = dict(dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', city='test-city',
-                           user_display_name='Pat', timezone='Asia/Karachi', menu=MENU,
+                           user_display_name='Pat', timezone='Asia/Tokyo', menu=MENU,
                            commands=commands), **config)
         return b.Bridge(config, self.store, 'SECRET', 'CAPABILITY', request=self.telegram, state_dir=self.root)
 
@@ -363,7 +363,7 @@ class DispatchTests(CommandCase):
         self.assertEqual(set(record['env']), HANDLER_ENV)
         self.assertEqual(record['env']['PATH'], '/usr/local/bin:/usr/bin:/bin')
         self.assertEqual(record['env']['TELEGRAM_BRIDGE_COMMAND'], 'deploy')
-        self.assertEqual(record['env']['TZ'], 'Asia/Karachi')
+        self.assertEqual(record['env']['TZ'], 'Asia/Tokyo')
         self.assertEqual(record['env']['LANG'], 'C.UTF-8')
         self.assertEqual(record['env']['HOME'], os.environ['HOME'])
         self.assertEqual(record['cwd'], str(self.handlers))
@@ -870,7 +870,7 @@ class AgentTests(CommandCase):
         self.assertEqual(self.store.offset(), 41)
 
     def test_the_quota_notice_watches_the_agents_session(self):
-        health = self.root / 'city-health.json'
+        health = self.root / 'health.json'
         until = int(time.time() * 1000) + 3600 * 1000
         observed = datetime.datetime.now(datetime.timezone.utc).isoformat()
         def sessions(template):

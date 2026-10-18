@@ -35,14 +35,14 @@ class SettingsTests(unittest.TestCase):
         settings = b.load_settings(write_settings(self.root))
         self.assertEqual(settings.city, 'test-city')
         self.assertEqual(settings.state_dir, self.root / 'state')
-        self.assertEqual(settings.port, 18931)
+        self.assertEqual(settings.port, 18930)
         self.assertEqual(settings.lock_dir, self.root / 'private')  # the token file's directory
         self.assertEqual(settings.unit, 'test-city-telegram.service')
         self.assertEqual(settings.pairing_update_id, 5)
         self.assertIsNone(settings.transcribe)  # off unless enabled
         self.assertEqual(settings.config, dict(
             city='test-city', account_id='test_bot', gc_base_url='http://127.0.0.1:8372', user_display_name='Pat',
-            timezone='Asia/Karachi', menu=MENU, unit='test-city-telegram.service',
+            timezone='Asia/Tokyo', menu=MENU, unit='test-city-telegram.service',
             protected_paths=(str(self.root / 'private' / 'telegram-bot-token'),
                              str(self.root / 'private' / 'telegram-callback-secret'),
                              str(self.root / 'telegram-bridge.toml')),
@@ -52,10 +52,10 @@ class SettingsTests(unittest.TestCase):
                                                    conversation_id='123', kind='dm'))
 
     def test_optional_files_reach_the_config(self):
-        path = write_settings(self.root, health_file='"/srv/city/.runtime/city-health.json"',
+        path = write_settings(self.root, health_file='"/srv/city/health.json"',
                               gc_api_token_file='"~/.config/test-city/gc-token"')
         config = b.load_settings(path).config
-        self.assertEqual(config['health_file'], '/srv/city/.runtime/city-health.json')
+        self.assertEqual(config['health_file'], '/srv/city/health.json')
         self.assertEqual(config['gc_api_token_path'], str(Path.home() / '.config/test-city/gc-token'))
         self.assertEqual(config['protected_paths'], (str(self.root / 'private' / 'telegram-bot-token'),
                                                      str(self.root / 'private' / 'telegram-callback-secret'),
@@ -107,7 +107,7 @@ class SettingsTests(unittest.TestCase):
             ('state_dir must be an absolute', dict(state_dir='"/srv/%h/state"')),
             ('state_dir must be an absolute', dict(state_dir='"/srv/../etc"')),
             ('port must be an integer from 1024 to 65535', dict(port='80')),
-            ('port must be an integer', dict(port='"8931"')),
+            ('port must be an integer', dict(port='"8930"')),
             ('token_file must be a path', dict(token_file=None)),
             ('timezone is not a known time zone', dict(timezone='"Mars/Olympus"')),
             ('unit is missing or malformed', dict(unit='"bridge; rm"')),
@@ -179,7 +179,7 @@ class SettingsTests(unittest.TestCase):
     def test_a_second_city_on_the_same_host_gets_its_own_everything(self):
         first = b.load_settings(write_settings(self.root))
         other_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        second = b.load_settings(write_settings(other_root, city='"other-city"', port='18932',
+        second = b.load_settings(write_settings(other_root, city='"other-city"', port='18940',
                                                 user_display_name='"Sam"', timezone='"UTC"'))
         self.assertEqual(second.unit, 'other-city-telegram.service')
         for field in ('city', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit'):
@@ -230,7 +230,7 @@ class TranscribeSettingsTests(unittest.TestCase):
         for root, table in ((self.root, 'enabled = true\n'),
                             (second, 'enabled = true\nwhisper_cli = "/opt/w/whisper-cli"\nmodel = "small.en"\n')):
             path = write_settings(root, city='"second-city"' if root == second else '"test-city"',
-                                  port='18932' if root == second else '18931')
+                                  port='18940' if root == second else '18930')
             path.write_text(path.read_text() + '\n[transcribe]\n' + table)
             cities.append(b.load_settings(path, home=home))
         self.assertNotEqual(cities[0].state_dir, cities[1].state_dir)
@@ -243,11 +243,11 @@ class TranscribeSettingsTests(unittest.TestCase):
 
     def test_paths_and_limits_come_from_the_settings(self):
         settings = self.load('enabled = true\nwhisper_cli = "/opt/w/whisper-cli"\nmodels_dir = "/opt/w/models"\n'
-                             'model = "small.en"\nthreads = 2\ncpus = "2-7,10-15"\ntimeout = 60\ntimeout_per_minute = 90\n')
+                             'model = "small.en"\nthreads = 2\ncpus = "0-1,4-5"\ntimeout = 60\ntimeout_per_minute = 90\n')
         self.assertEqual(settings.transcribe['model'], 'small.en')
         self.assertEqual(settings.transcribe['timeout'], 60)
         self.assertEqual(settings.transcribe['timeout_per_minute'], 90)
-        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_CPUS'], '2-7,10-15')
+        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_CPUS'], '0-1,4-5')
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_WHISPER_CLI'], '/opt/w/whisper-cli')
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_MODEL_DIR'], '/opt/w/models')
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_THREADS'], '2')
@@ -269,22 +269,6 @@ class TranscribeSettingsTests(unittest.TestCase):
         check = self.check_file()
         configured = self.load(f'enabled = true\ngpu = true\ngpu_check = "{check}"\n')
         self.assertEqual(configured.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], str(check))
-
-    def test_each_removed_key_refuses_with_the_migration_line(self):
-        removed_url = 'comf' 'yui_url'
-        removed_free = 'comf' 'yui_free'
-        line = ('settings: transcribe.' + removed_url + ' and ' + removed_free + ' are no longer read; '
-                'a city that shares the GPU sets method = "auto" and its own gpu_check '
-                '(OPERATIONS.md, "The GPU check")')
-        for table in (f'enabled = true\n{removed_url} = "http://127.0.0.1:8188"\n',
-                      f'enabled = true\n{removed_free} = true\n',
-                      f'enabled = true\ngpu = true\n{removed_free} = false\n',
-                      f'enabled = true\nmethod = "auto"\n{removed_url} = "http://127.0.0.1:8188"\n',
-                      f'enabled = false\n{removed_free} = true\n'):
-            with self.subTest(table=table):
-                with self.assertRaises(b.SettingsError) as caught:
-                    self.load(table)
-                self.assertEqual(str(caught.exception), line)
 
     def test_there_is_no_language_setting_and_bad_values_refuse(self):
         for table, pattern in (('language = "ru"\n', 'unknown key transcribe.language'),

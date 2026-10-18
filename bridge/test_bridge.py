@@ -37,9 +37,9 @@ def write_settings(root, body=None, mode=0o600, **replace):
     if not token.exists():
         token.write_text('TESTTOKEN\n')
         token.chmod(0o600)
-    lines = dict(city='"test-city"', state_dir=f'"{root / "state"}"', port='18931',
+    lines = dict(city='"test-city"', state_dir=f'"{root / "state"}"', port='18930',
                  token_file=f'"{token}"', callback_secret_file=f'"{private / "telegram-callback-secret"}"',
-                 user_display_name='"Pat"', timezone='"Asia/Karachi"', pairing_update_id='5')
+                 user_display_name='"Pat"', timezone='"Asia/Tokyo"', pairing_update_id='5')
     lines.update(replace)
     text = body if body is not None else (
         ''.join(f'{key} = {value}\n' for key, value in lines.items() if value is not None)
@@ -67,7 +67,7 @@ class BridgeTests(unittest.TestCase):
         self.download_status = 200
         self.file_responses = {}
         self.config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', city='test-city',
-                           user_display_name='Pat', timezone='Asia/Karachi',
+                           user_display_name='Pat', timezone='Asia/Tokyo',
                            unit='test-city-telegram.service', menu=MENU)
         self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY',
                                 request=self.transport, request_multipart=self.multipart_transport,
@@ -546,10 +546,10 @@ class BridgeTests(unittest.TestCase):
     HEALTH_UNTIL = int(HEALTH_NOW.timestamp() * 1000) + 3600 * 1000
 
     def health_path(self):
-        health_dir = Path(self.tmp.name) / '.runtime'
+        health_dir = Path(self.tmp.name) / 'health'
         health_dir.mkdir(parents=True, exist_ok=True)
-        self.bridge.config['health_file'] = str(health_dir / 'city-health.json')
-        return health_dir / 'city-health.json'
+        self.bridge.config['health_file'] = str(health_dir / 'health.json')
+        return health_dir / 'health.json'
 
     def write_city_health(self, sessions, observed_at=None):
         if observed_at is None:
@@ -620,18 +620,18 @@ class BridgeTests(unittest.TestCase):
 
     def test_mayor_quota_episode_tolerates_malformed_health_file(self):
         health_dir = self.health_path().parent
-        (health_dir / 'city-health.json').write_text('not json')
+        (health_dir / 'health.json').write_text('not json')
         self.assertIsNone(self.bridge.mayor_quota_episode())
-        (health_dir / 'city-health.json').write_text(json.dumps({'sessions': 'not-a-list'}))
+        (health_dir / 'health.json').write_text(json.dumps({'sessions': 'not-a-list'}))
         self.assertIsNone(self.bridge.mayor_quota_episode())
-        (health_dir / 'city-health.json').write_text(json.dumps(
+        (health_dir / 'health.json').write_text(json.dumps(
             {'sessions': [{'template': 'mayor', 'status': 'quota_wait'}]}))
         self.assertIsNone(self.bridge.mayor_quota_episode())
 
     def test_format_quota_exhausted_reply_converts_to_local_time(self):
         reply = self.bridge.format_quota_exhausted_reply(1789470000000)
         self.assertIn('quota exhausted, resets at', reply)
-        self.assertRegex(reply, r'\d{2}:\d{2} \+05')
+        self.assertRegex(reply, r'\d{2}:\d{2} \+09')
 
     def test_format_quota_exhausted_reply_tolerates_bad_timestamp(self):
         reply = self.bridge.format_quota_exhausted_reply('not-a-number')
@@ -664,7 +664,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_inbound_never_raises_when_health_file_is_malformed(self):
         health_dir = self.health_path().parent
-        (health_dir / 'city-health.json').write_text('not json')
+        (health_dir / 'health.json').write_text('not json')
         self.bridge.drain([self.update(uid=10)])  # must not raise
         self.assertEqual([c for c in self.calls if '/sendMessage' in c[0]], [])
 
@@ -1023,6 +1023,15 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(args.attachment_kind)
         b._validate_attachment_flags(parser, args)  # must not raise: --attachment alone is fine
 
+    def test_cli_help_explains_the_send_flags(self):
+        help_text = ' '.join(b._build_parser().format_help().split())
+        for text in ('file holding the message text (send, reply-current)',
+                     'one stable key per logical message: a retry reuses it with the same body; '
+                     'a new message takes a new key',
+                     "optional; must equal the settings' bot.chat_id",
+                     'absolute path of a file to send, the body as its caption'):
+            self.assertIn(text, help_text)
+
     def test_cli_rejects_attachment_kind_without_attachment(self):
         parser = b._build_parser()
         args = parser.parse_args(['send', '--attachment-kind', 'video'])
@@ -1081,7 +1090,7 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn('GC_RECEIPT', log.getvalue())
 
     def test_dispatch_outbound_prints_structured_receipt_line_on_idempotency_conflict(self):
-        # Round 4 finding: the relay path used to raise a generic
+        # The relay path used to raise a generic
         # TransportError and drop Receipt.Metadata.reason entirely, so a
         # caller replaying a frozen idempotency key could never tell a
         # conflict (already delivered) from a real failure. The GC_RECEIPT

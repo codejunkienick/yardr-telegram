@@ -274,7 +274,7 @@ def utf16_units(text):
 
 
 def utc_offset_label(moment):
-    """'+05' for a whole-hour offset, '+05:30' otherwise, 'UTC' at zero."""
+    """'+09' for a whole-hour offset, '+05:30' otherwise, 'UTC' at zero."""
     offset = moment.utcoffset() or datetime.timedelta(0)
     minutes = int(offset.total_seconds()) // 60
     if not minutes:
@@ -531,8 +531,7 @@ class Bridge:
     }
     # sendVideoNote has no caption: the body must be empty for these kinds.
     CAPTIONLESS_KINDS = frozenset({'video_note'})
-    # city-health.json is rewritten every 2 minutes; an older report no longer
-    # proves the mayor is quota-blocked, so the exhaustion notice stays quiet.
+    # A health report older than HEALTH_MAX_AGE no longer proves the agent is quota-blocked, so the exhaustion notice stays quiet.
     HEALTH_MAX_AGE = datetime.timedelta(minutes=10)
     HEALTH_CLOCK_SKEW = datetime.timedelta(minutes=1)
 
@@ -569,7 +568,7 @@ class Bridge:
     INBOUND_DOWNLOAD_ATTEMPTS = 3
     _FILENAME_UNSAFE_RE = re.compile(r'[^A-Za-z0-9._-]+')
 
-    def __init__(self, config, store, token, callback_secret, port=8931, request=http_json,
+    def __init__(self, config, store, token, callback_secret, port=8930, request=http_json,
                  request_multipart=http_multipart, request_download=None, state_dir=None, transcribe=None,
                  sleep=None, monotonic=None):
         self.config, self.store, self.token = config, store, token
@@ -1371,7 +1370,7 @@ class Bridge:
         self._relay_to_gc(str(mid), relay_text, reply)
         # The message above is now durably queued for the mayor but it may be
         # quota-blocked and unable to answer it any time soon; tell the user once
-        # per exhaustion episode rather than leaving him wondering why the
+        # per exhaustion episode rather than leaving the user wondering why the
         # bridge went silent.
         self.notify_quota_exhausted()
         if transcribe_job is not None:
@@ -2183,12 +2182,16 @@ def _build_parser():
     parser.add_argument('--port', type=int, help='overrides the settings\' port')
     parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'set-commands',
                                             'render-unit', 'check-install'))
-    parser.add_argument('--body-file', type=Path)
-    parser.add_argument('--idempotency-key')
+    parser.add_argument('--body-file', type=Path,
+                        help='file holding the message text (send, reply-current)')
+    parser.add_argument('--idempotency-key',
+                        help='one stable key per logical message: a retry reuses it with the same body; a new message takes a new key')
     parser.add_argument('--session', default=os.environ.get('GC_SESSION_ID') or None,
                         help="the sending session (default: $GC_SESSION_ID, else the settings' agent)")
-    parser.add_argument('--conversation-id')
-    parser.add_argument('--attachment', type=Path)
+    parser.add_argument('--conversation-id',
+                        help="optional; must equal the settings' bot.chat_id")
+    parser.add_argument('--attachment', type=Path,
+                        help='absolute path of a file to send, the body as its caption')
     parser.add_argument('--attachment-kind', choices=tuple(Bridge.ATTACHMENT_KINDS),
                         help='voice and video_note are never inferred; video_note takes an empty body')
     parser.add_argument('--format', choices=('plain', 'html'), default='plain',
@@ -2232,13 +2235,7 @@ def _relay_outbound(bridge, outbound, unit_state=bridge_unit_state):
 
 
 def _print_gc_receipt(delivered, failure_kind, reason):
-    """One machine-readable line on stderr for every non-delivered receipt, so
-    a caller (assets/standup/send.mjs) can act on the bridge's own reason
-    instead of pattern-matching the human-readable exception text -- the
-    reply-current/send relay path used to raise a generic message and drop
-    Receipt.Metadata.reason entirely, so a caller could never tell an
-    idempotency-key replay (already delivered) from a real failure (round 4
-    finding)."""
+    """One machine-readable line on stderr for every non-delivered receipt, so a caller can act on the bridge's own reason instead of the human-readable text, and tell an idempotency-key replay from a real failure."""
     print('GC_RECEIPT ' + json.dumps({'delivered': delivered, 'failure_kind': failure_kind, 'reason': reason}),
           file=sys.stderr, flush=True)
 
@@ -2312,12 +2309,6 @@ HANDLER_WRITE_PATHS_MAX = 16
 TRANSCRIBE_KEYS = {'enabled', 'whisper_cli', 'models_dir', 'model', 'vad_model', 'threads', 'cpus', 'timeout',
                    'timeout_per_minute', 'gpu', 'gpu_min_free_mb', 'method', 'gpu_check'}
 TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
-# The two removed GPU-sharing keys, spelled in pieces so no trace of the
-# removed feature stays in the pack while the refusal still names them.
-_REMOVED_TRANSCRIBE_KEYS = ('comf' 'yui_url', 'comf' 'yui_free')
-_REMOVED_TRANSCRIBE_LINE = ('settings: transcribe.' + _REMOVED_TRANSCRIBE_KEYS[0] + ' and '
-                            + _REMOVED_TRANSCRIBE_KEYS[1] + ' are no longer read; a city that shares '
-                            'the GPU sets method = "auto" and its own gpu_check (OPERATIONS.md, "The GPU check")')
 # Neutral defaults: the whisper.cpp build and models every city on the host
 # shares (never under a city), the large turbo model with Silero VAD, every
 # CPU the bridge has, a run limit of 120 s plus 120 s per minute of audio, and
@@ -2590,9 +2581,6 @@ def load_settings(path, home=None):
     config['unit'] = unit
 
     python = _path_setting(data.get('python', '/usr/bin/python3'), 'python')
-    _raw_table = data.get('transcribe')
-    if isinstance(_raw_table, dict) and any(key in _raw_table for key in _REMOVED_TRANSCRIBE_KEYS):
-        raise SettingsError(_REMOVED_TRANSCRIBE_LINE)
     raw_transcribe = _table(data, 'transcribe', TRANSCRIBE_KEYS)
     found = dict(TRANSCRIBE_DEFAULTS, **raw_transcribe)
     gpu = _bool_setting(found['gpu'], 'transcribe.gpu')
@@ -2623,7 +2611,7 @@ def load_settings(path, home=None):
     per_minute = _int_setting(found['timeout_per_minute'], 'transcribe.timeout_per_minute', 0, 600)
     cpus = found['cpus']
     if not isinstance(cpus, str) or (cpus and not _CPU_LIST_RE.fullmatch(cpus)):
-        raise SettingsError('settings: transcribe.cpus must be a CPU list such as "2-7,10-15"')
+        raise SettingsError('settings: transcribe.cpus must be a CPU list such as "0-3"')
     gpu_min_free_mb = _int_setting(found['gpu_min_free_mb'], 'transcribe.gpu_min_free_mb', 256, 131072)
     transcribe = None
     if _bool_setting(found['enabled'], 'transcribe.enabled'):

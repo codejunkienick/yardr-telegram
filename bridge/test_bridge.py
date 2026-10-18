@@ -1,4 +1,5 @@
 import datetime
+import gc
 import http.server
 import importlib.util
 import io
@@ -14,6 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
+from contextlib import closing
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
@@ -171,6 +174,27 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(b.Store(self.path, 0).offset(), 11)
         self.bridge.drain([self.update()])
         self.assertEqual(len(delivered), 2)
+
+    def test_store_operations_close_their_connections(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always', ResourceWarning)
+            store = b.Store(self.path, 10)
+            self.assertEqual(store.offset(), 10)
+            store.advance(11)
+            self.assertEqual(store.offset(), 11)
+            self.assertIsNone(store.reserve('close-1', 'fp-1', {'delivered': False}))
+            store.finish('close-1', {'delivered': True})
+            gc.collect()
+        self.assertEqual([str(warning.message) for warning in caught], [])
+
+    def test_reserve_with_a_different_fingerprint_keeps_the_saved_receipt(self):
+        pending = {'delivered': False}
+        final = {'delivered': True}
+        self.assertIsNone(self.store.reserve('reuse-1', 'fp-1', pending))
+        self.store.finish('reuse-1', final)
+        with self.assertRaises(b.TransportError):
+            self.store.reserve('reuse-1', 'fp-2', pending)
+        self.assertEqual(self.store.reserve('reuse-1', 'fp-1', pending), final)
 
     def test_200_without_durable_entry_retains_cursor(self):
         for result in ({}, {'TargetAgentName': 'mayor', 'TranscriptEntry': None},
@@ -1022,7 +1046,7 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(result['delivered'])
         self.assertNotIn('parse_mode', self.calls[0][1])
         self.assertEqual(self.calls[0][1]['text'], '<b>not markup</b> & more')
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             stored = db.execute('SELECT fingerprint FROM deliveries WHERE key=?', ('delivery-1',)).fetchone()[0]
         # The fingerprint an existing ledger row was written with: the request
         # exactly as before the format option existed.
@@ -1090,7 +1114,7 @@ class BridgeTests(unittest.TestCase):
                 self.assertFalse(result['delivered'])
                 self.assertEqual(result['metadata']['reason'], reason)
         self.assertEqual(self.calls, [])
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0], 0)
 
     def test_html_unknown_format_is_refused(self):
@@ -1131,7 +1155,7 @@ class BridgeTests(unittest.TestCase):
         # One reservation, one receipt: a replay of the key sends nothing more.
         self.assertEqual(self.bridge.publish(request), result)
         self.assertEqual(len(self.calls), 2)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             rows = db.execute('SELECT receipt FROM deliveries').fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(json.loads(rows[0][0])['format_fallback_reason'], 'telegram_html_parse_rejected_400')

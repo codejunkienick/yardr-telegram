@@ -17,7 +17,6 @@ import tempfile
 import threading
 import time
 import unittest
-import warnings
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('bridge', Path(__file__).with_name('bridge.py'))
@@ -92,10 +91,6 @@ class FakeTelegram:
 class CommandCase(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        # Store's connections close when collected; that warning would land in
-        # the stderr the log assertions read.
-        self.enterContext(warnings.catch_warnings())
-        warnings.simplefilter('ignore', ResourceWarning)
         self.handlers = self.root / 'handlers'
         self.store = b.Store(self.root / 'state.sqlite3', 10)
         self.telegram = FakeTelegram()

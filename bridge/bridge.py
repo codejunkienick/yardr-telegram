@@ -4,6 +4,7 @@
 One process per city, configured only by that city's settings file
 (settings.example.toml in this pack); nothing city-specific lives here."""
 import argparse
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -395,10 +396,15 @@ class Store:
             db.execute('INSERT OR IGNORE INTO cursor VALUES (1, ?)', (initial_offset,))
             db.execute('CREATE TABLE IF NOT EXISTS deliveries (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL)')
 
+    @contextlib.contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=10)
-        db.execute('PRAGMA synchronous=FULL')
-        return db
+        try:
+            db.execute('PRAGMA synchronous=FULL')
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def offset(self):
         with self.connect() as db:

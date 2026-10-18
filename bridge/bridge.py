@@ -2669,9 +2669,17 @@ def render_unit(settings, template=None, bridge_path=None):
     # City command handlers run inside this unit, so the directories they
     # write come last; a URL handler is its own process and needs none.
     handler_paths = ''.join(f' {path}' for path in getattr(settings, 'handler_write_paths', ()))
+    # The credentials stay read-only inside the unit even when they sit in
+    # the writable lock directory; the leading '-' lets a missing file pass.
+    read_only = [settings.path, settings.token_file, settings.callback_secret_file]
+    gc_token = settings.config.get('gc_api_token_path')
+    if gc_token is not None:
+        read_only.append(gc_token)
+    read_only_paths = ' '.join(f'-{path}' for path in read_only)
     for name, value in (('CITY', settings.city), ('PYTHON', settings.python), ('BRIDGE', bridge_path),
                         ('SETTINGS', settings.path), ('STATE_DIR', settings.state_dir), ('LOCK_DIR', settings.lock_dir),
                         ('TRANSCRIBE_QUEUE', queue), ('HANDLER_WRITE_PATHS', handler_paths),
+                        ('READ_ONLY_PATHS', read_only_paths),
                         ('AGENT', getattr(settings, 'agent', 'mayor'))):
         text = text.replace(f'@{name}@', str(value))
     if re.search(r'@[A-Z_]+@', text):

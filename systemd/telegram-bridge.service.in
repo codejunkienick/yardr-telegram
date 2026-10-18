@@ -21,6 +21,13 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=@STATE_DIR@ @LOCK_DIR@@TRANSCRIBE_QUEUE@@HANDLER_WRITE_PATHS@
+ReadOnlyPaths=@READ_ONLY_PATHS@
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=default.target

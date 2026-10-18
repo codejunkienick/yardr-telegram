@@ -453,10 +453,35 @@ class UnitTemplateTests(unittest.TestCase):
         self.assertIn(f'WorkingDirectory={state}\n', unit)
         self.assertIn(f'ExecStart=/usr/bin/python3 /srv/pack/bridge/bridge.py --settings {path} run\n', unit)
         self.assertIn(f'ReadWritePaths={state} {private}\n', unit)  # transcription off: no queue
+        self.assertIn(f'ReadWritePaths={state} {private}\n'
+                      f'ReadOnlyPaths=-{path} -{private / "telegram-bot-token"} '
+                      f'-{private / "telegram-callback-secret"}\n', unit)
         for line in ('Restart=on-failure', 'RestartPreventExitStatus=2', 'UMask=0077', 'NoNewPrivileges=true',
-                     'PrivateTmp=true', 'ProtectSystem=strict', 'ProtectHome=read-only', 'StartLimitIntervalSec=0'):
+                     'PrivateTmp=true', 'ProtectSystem=strict', 'ProtectHome=read-only', 'StartLimitIntervalSec=0',
+                     'RestrictSUIDSGID=true', 'LockPersonality=true', 'RestrictRealtime=true',
+                     'RestrictNamespaces=true', 'SystemCallArchitectures=native',
+                     'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'):
             self.assertIn(line + '\n', unit)
         self.assertNotRegex(unit, r'@[A-Z_]+@')
+
+    def test_read_only_paths_include_the_gc_token_file_when_set(self):
+        gc_token = self.root / 'gc-token'
+        path = write_settings(self.root, gc_api_token_file=f'"{gc_token}"')
+        unit = b.render_unit(b.load_settings(path), bridge_path='/srv/pack/bridge/bridge.py')
+        private = self.root / 'private'
+        self.assertIn(f'ReadOnlyPaths=-{path} -{private / "telegram-bot-token"} '
+                      f'-{private / "telegram-callback-secret"} -{gc_token}\n', unit)
+
+    def test_the_sandbox_properties_carry_the_read_only_paths_and_hardening(self):
+        settings = b.load_settings(write_settings(self.root))
+        properties = b.unit_sandbox_properties(settings, bridge_path='/srv/pack/bridge/bridge.py')
+        private = self.root / 'private'
+        self.assertIn(f'ReadOnlyPaths=-{settings.path} -{private / "telegram-bot-token"} '
+                      f'-{private / "telegram-callback-secret"}', properties)
+        for line in ('RestrictSUIDSGID=true', 'LockPersonality=true', 'RestrictRealtime=true',
+                     'RestrictNamespaces=true', 'SystemCallArchitectures=native',
+                     'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'):
+            self.assertIn(line, properties)
 
     def test_with_transcription_the_unit_may_write_the_host_wide_queue(self):
         path = write_settings(self.root)

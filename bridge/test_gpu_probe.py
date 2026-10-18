@@ -188,7 +188,13 @@ class GpuProbeTests(ProbeFixture):
         self.assertEqual(given, rendered)
         for line in ('PrivateTmp=true', 'ProtectSystem=strict', 'ProtectHome=read-only', 'NoNewPrivileges=true',
                      'UMask=0077', f'ReadWritePaths={self.root / "state"} {self.root / "private"} '
-                                   f'{self.home / b.QUEUE_SUBDIR}'):
+                                   f'{self.home / b.QUEUE_SUBDIR}',
+                     f'ReadOnlyPaths=-{self.root / "telegram-bridge.toml"} '
+                     f'-{self.root / "private" / "telegram-bot-token"} '
+                     f'-{self.root / "private" / "telegram-callback-secret"}',
+                     'RestrictSUIDSGID=true', 'LockPersonality=true', 'RestrictRealtime=true',
+                     'RestrictNamespaces=true', 'SystemCallArchitectures=native',
+                     'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'):
             self.assertIn(line, given)
 
     def test_handler_write_paths_reach_the_probe_as_the_unit_renders_them(self):

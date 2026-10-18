@@ -276,6 +276,8 @@ class CommandUnitTests(SettingsCase):
         path = self.settings(self.entry(), handler_write_paths=f'["{out}", "{logs}"]', agent='"reviewer"')
         unit = b.render_unit(b.load_settings(path), bridge_path='/srv/bridge.py')
         self.assertIn(f'ReadWritePaths={self.root / "state"} {self.root / "private"} {out} {logs}\n', unit)
+        self.assertIn(f'ReadOnlyPaths=-{path} -{self.root / "private" / "telegram-bot-token"} '
+                      f'-{self.root / "private" / "telegram-callback-secret"}\n', unit)
         self.assertIn('Description=Private Telegram transport for the test-city reviewer\n', unit)
         default = b.render_unit(b.load_settings(self.settings()), bridge_path='/srv/bridge.py')
         self.assertIn(f'ReadWritePaths={self.root / "state"} {self.root / "private"}\n', default)

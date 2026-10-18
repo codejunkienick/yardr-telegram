@@ -4,7 +4,6 @@
 One process per city, configured only by that city's settings file
 (settings.example.toml in this pack); nothing city-specific lives here."""
 import argparse
-import concurrent.futures
 import datetime
 import fcntl
 import hashlib
@@ -329,12 +328,6 @@ def _html_attributes(tag, raw, parent):
 def html_text(value):
     """A value as Telegram HTML text: &, < and > escaped, nothing else touched."""
     return html_escape(str(value), quote=False)
-
-
-def html_inline(value):
-    """html_text on one line: whitespace runs, newlines included, become one
-    space, so markup around it never spans lines."""
-    return html_text(' '.join(str(value).split()))
 
 
 def html_visible_text(text):
@@ -1273,13 +1266,6 @@ class Bridge:
         if type(mid) is not int or mid <= 0:
             raise TransportError('authorized inbound message has invalid ID')
 
-        # /quota, when the settings enable it, is answered here without forwarding to GC
-        if attachment is None and self.config.get('quota_command') is True and text.strip() == '/quota':
-            self.handle_quota_command(mid)
-            # Short-circuit: do NOT relay to GC, do NOT create transcript entry
-            # This makes /quota work even when mayor is quota-dead
-            return
-
         transcribe_job = None
         if attachment is not None:
             kind, file_id, known_size, original_name = attachment
@@ -1920,53 +1906,6 @@ class Bridge:
             self.store.finish(key, receipt)
             return receipt
 
-    QUOTA_PROVIDERS = ('claude', 'codex', 'muse', 'antigravity', 'grok', 'deepseek')
-    QUOTA_CALL_TIMEOUT = 10
-    # A city may run Claude and Codex on two accounts each: the personal one,
-    # the default login aiquokka reads live, and a company one. The company
-    # account is shown from the city's quota gate report (the settings'
-    # quota.gate_file), never read here:
-    # its reader (cswap) needs a writable home this service does not have,
-    # and both cswap and aiquokka may rotate an OAuth token, which a
-    # read-only home would lose. The reply never carries an account email.
-    QUOTA_ORDER = ('claude', 'company:claude', 'codex', 'company:codex', 'muse', 'antigravity', 'grok', 'deepseek')
-    QUOTA_ACCOUNT = {'claude': 'personal', 'codex': 'personal', 'company:claude': 'company', 'company:codex': 'company'}
-    COMPANY_WINDOWS = {
-        'claude': ('Claude', (('5h', 'claude_5h'), ('Weekly', 'claude_weekly'), ('Weekly Fable', 'fable_weekly'))),
-        'codex': ('Codex', (('5h', 'codex_5h'), ('Weekly', 'codex_weekly'))),
-    }
-    # The gate writes every 10 minutes; an older reading is no reading.
-    COMPANY_READING_MAX_AGE = 30 * 60
-    # The gate's report is a few KiB; anything far larger is not its report.
-    QUOTA_GATE_MAX_BYTES = 1024 * 1024
-
-    def quota_environment(self):
-        """Environment for aiquokka: the service runs without the user's shell, so
-        the DeepSeek key comes from the settings' quota.deepseek_key_file. Like every
-        other credential here it must be an owner-only regular file; no setting or
-        an absent file simply means no key."""
-        env = dict(os.environ)
-        key_file = self.config.get('deepseek_key_file')
-        if not key_file:
-            return env
-        try:
-            env['DEEPSEEK_API_KEY'] = private_text(key_file)
-        except FileNotFoundError:
-            pass
-        except (TransportError, OSError):
-            print('deepseek key file ignored: must be an owner-only regular file', file=sys.stderr, flush=True)
-        return env
-
-    def quota_cache_path(self):
-        return Path(self.store.path).parent / 'quota-cache.json'
-
-    def load_quota_cache(self):
-        try:
-            cached = json.loads(self.quota_cache_path().read_text())
-        except (OSError, ValueError):
-            return {}
-        return cached if isinstance(cached, dict) else {}
-
     # Poll heartbeat for the telegram-health order: proof that getUpdates is
     # still succeeding, written at most once a minute. The order judges health
     # by its age and pid, so a failed write only costs one stderr line.
@@ -2023,274 +1962,6 @@ class Bridge:
             except OSError:
                 pass  # renamed into place, or never created
             os.close(dfd)
-
-    def save_quota_cache(self, cache):
-        path = self.quota_cache_path()
-        try:
-            tmp = path.with_suffix('.json.tmp')
-            tmp.write_text(json.dumps(cache, sort_keys=True))
-            os.replace(tmp, path)
-        except OSError:
-            print('quota cache not saved', file=sys.stderr, flush=True)
-
-    def query_quota_provider(self, provider, env):
-        """Return aiquokka's payload for one provider, or {'error': reason}."""
-        try:
-            result = subprocess.run(
-                ['aiquokka', provider, '--json'],
-                capture_output=True, text=True, timeout=self.QUOTA_CALL_TIMEOUT, env=env,
-            )
-        except subprocess.TimeoutExpired:
-            return {'error': 'timed out'}
-        except OSError:
-            return {'error': 'aiquokka not available'}
-        if result.returncode != 0:
-            reason = (result.stderr or result.stdout or '').strip().splitlines()
-            reason = reason[0] if reason else 'unavailable'
-            return {'error': reason.replace('aiquokka: ', '', 1)[:120]}
-        try:
-            parsed = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {'error': 'unreadable output'}
-        return parsed if isinstance(parsed, dict) else {'error': 'unexpected output shape'}
-
-    def company_quota(self, now=None):
-        """{'company:claude': data | {'error': reason}, 'company:codex': ...} from the
-        quota gate's reading of the company account (QUOTA_ORDER above), or {} when
-        the settings name no gate report. Never raises."""
-        families = tuple(self.COMPANY_WINDOWS)
-        def failed(reason):
-            return {f'company:{family}': {'error': reason} for family in families}
-        gate = self.config.get('quota_gate_file')
-        if not gate:
-            return {}
-        gate = Path(gate)
-        try:
-            raw = self._read_runtime_file(gate.parent, gate.name, self.QUOTA_GATE_MAX_BYTES)
-        except FileNotFoundError:
-            return failed('no quota gate reading')
-        except (OSError, TransportError):
-            return failed('the quota gate reading was refused')
-        try:
-            report = json.loads(raw.decode('utf-8'))
-        except ValueError:
-            return failed('no quota gate reading')
-        company = report.get('company') if isinstance(report, dict) else None
-        if not isinstance(company, dict):
-            return failed('no company reading in the quota gate')
-        current = now or datetime.datetime.now(datetime.timezone.utc)
-        try:
-            observed = datetime.datetime.fromisoformat(str(report.get('observed_at')).replace('Z', '+00:00'))
-            age = (current - observed).total_seconds() if observed.tzinfo else None
-        except ValueError:
-            age = None
-        if age is None or age < -300 or age > self.COMPANY_READING_MAX_AGE:
-            return failed('the quota gate reading is stale')
-        unread = company.get('unread') if isinstance(company.get('unread'), list) else []
-        errors = company.get('read_errors') if isinstance(company.get('read_errors'), dict) else {}
-        data = {}
-        for family, (name, windows) in self.COMPANY_WINDOWS.items():
-            key = f'company:{family}'
-            if family in unread:
-                data[key] = {'error': 'not read: no company account recorded'}
-                continue
-            if errors.get(family):
-                data[key] = {'error': self._company_reason(errors[family])}
-                continue
-            listed = []
-            for label, field in windows:
-                reading = company.get(field)
-                if isinstance(reading, dict) and isinstance(reading.get('used'), (int, float)) and not isinstance(reading.get('used'), bool):
-                    listed.append({'label': label, 'used_percent': reading['used'], 'resets_at': reading.get('resets_at') or ''})
-            data[key] = {'provider': name, 'windows': listed} if listed else {'error': 'no reading'}
-        return data
-
-    @staticmethod
-    def _read_runtime_file(runtime, name, max_bytes):
-        """The bytes of one file in the city's runtime directory, read through the
-        same fence as _write_heartbeat: the directory must be its own canonical
-        path and is pinned by an O_NOFOLLOW descriptor, the file is opened in it
-        with O_NOFOLLOW and must be a plain file of at most max_bytes, so neither
-        a symlink nor a swapped directory can feed the reply another file.
-        FileNotFoundError when it is absent; TransportError when refused."""
-        if os.path.realpath(runtime) != str(runtime):
-            raise TransportError('runtime directory is not its own canonical path')
-        dfd = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            pinned, named = os.fstat(dfd), os.lstat(runtime)
-            if (pinned.st_dev, pinned.st_ino) != (named.st_dev, named.st_ino):
-                raise TransportError('runtime directory changed while opening')
-            try:
-                fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dfd)
-            except FileNotFoundError:
-                raise
-            except OSError as error:
-                raise TransportError(f'{name} refused (not a plain file)') from error
-            try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    raise TransportError(f'{name} refused (not a plain file)')
-                chunks, size = [], 0
-                while size <= max_bytes:
-                    chunk = os.read(fd, max_bytes + 1 - size)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    size += len(chunk)
-                if size > max_bytes:
-                    raise TransportError(f'{name} is too large')
-                return b''.join(chunks)
-            finally:
-                os.close(fd)
-        finally:
-            os.close(dfd)
-
-    @staticmethod
-    def _company_reason(text):
-        """The first line of a company read error, without host paths or account
-        emails, at most 120 characters."""
-        line = (str(text).strip().splitlines() or ['unavailable'])[0]
-        line = re.sub(r'\S+@\S+', '<account>', line)
-        line = re.sub(r'(?:~|\$HOME)?/[^\s`\'"]+', '<path>', line)
-        return (line.replace('aiquokka: ', '', 1).strip() or 'unavailable')[:120]
-
-    def fetch_quota(self, now=None):
-        """Query aiquokka per provider in parallel and return {provider: data | {'error': reason}}.
-
-        The bulk `aiquokka --json` call silently omits some providers (Antigravity), so
-        each provider is asked individually. Antigravity is only readable while an agy
-        process runs, so the last successful payload per provider and account is cached
-        and shown with an 'as of' stamp when the live read fails; errors are never cached.
-        The company account's Claude and Codex come from company_quota().
-        """
-        env = self.quota_environment()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.QUOTA_PROVIDERS)) as pool:
-            results = list(pool.map(lambda p: self.query_quota_provider(p, env), self.QUOTA_PROVIDERS))
-        read = dict(zip(self.QUOTA_PROVIDERS, results))
-        read.update(self.company_quota(now))
-        data = {key: read[key] for key in self.QUOTA_ORDER if key in read}
-        cache = self.load_quota_cache()
-        stamp = (now or datetime.datetime.now(datetime.timezone.utc)).isoformat(timespec='seconds')
-        changed = False
-        for provider, payload in data.items():
-            if payload.get('error'):
-                cached = cache.get(provider)
-                if isinstance(cached, dict) and isinstance(cached.get('data'), dict):
-                    data[provider] = dict(cached['data'], stale_as_of=cached.get('at'), stale_reason=payload['error'])
-            else:
-                cache[provider] = {'data': payload, 'at': stamp}
-                changed = True
-        if changed:
-            self.save_quota_cache(cache)
-        return data
-
-    def format_quota_reply(self, quota_data):
-        """Format quota data as a Telegram message, in the settings' time zone.
-
-        Tolerates any malformed shape from aiquokka: a non-dict root, a scalar
-        provider entry, non-list windows, a non-dict window, or a missing
-        resets_at all degrade to skipping that entry rather than raising.
-        """
-        if not isinstance(quota_data, dict) or not quota_data:
-            return "⚠️ Unable to fetch quota data"
-
-        lines = ["📊 <b>Quota Status</b>"]
-        local_tz = self.local_tz
-
-        for provider_key, provider in quota_data.items():
-            if not isinstance(provider, dict):
-                continue  # Skip malformed entries
-            # Claude and Codex name their account: personal or company (never an email).
-            account = self.QUOTA_ACCOUNT.get(provider_key)
-            suffix = f" ({html_inline(account)})" if account else ''
-            if provider.get('error'):
-                reason = str(provider['error']).strip() or 'unavailable'
-                lines.append(f"\n<b>{html_inline(str(provider_key).split(':')[-1].capitalize())}{suffix}</b>\n  ⚪ unavailable: {html_text(reason)}")
-                continue
-
-            provider_name = html_inline(provider.get('provider') or str(provider_key).split(':')[-1].capitalize())
-            plan = provider.get('plan', '')
-            windows = provider.get('windows')
-            if not isinstance(windows, list):
-                windows = []
-
-            header = f"\n<b>{provider_name}{suffix}</b>" + (f" ({html_text(plan)})" if plan else "")
-            if provider.get('stale_as_of'):
-                header += f"\n  ⚪ as of {html_text(self._format_local_time(provider['stale_as_of'], local_tz))} (live read failed: {html_text(provider.get('stale_reason') or 'unavailable')})"
-            lines.append(header)
-
-            if not windows:
-                lines.append("  No usage data")
-                continue
-
-            for window in windows:
-                if not isinstance(window, dict):
-                    continue
-                label = window.get('label', 'Unknown')
-                label_str = label if isinstance(label, str) else ''
-                used = window.get('used_percent')
-                remaining = window.get('remaining')
-                resets = window.get('resets_at') or ''
-                currency = window.get('currency', '')
-
-                # Format usage percentage or remaining balance
-                balance_shown = False
-                if self._is_percent(used):
-                    # Show and colour the same one-decimal number; "+ 0.0" folds -0.0 into 0.
-                    used = round(used, 1) + 0.0
-                    usage_str = f"{used:.1f}".removesuffix('.0') + '%'
-                    if used >= 90:
-                        usage_str = f"🔴 {usage_str}"
-                    elif used >= 70:
-                        usage_str = f"🟡 {usage_str}"
-                    else:
-                        usage_str = f"🟢 {usage_str}"
-                elif isinstance(remaining, (int, float)):
-                    balance_shown = True
-                    usage_str = f"{remaining:.2f} {currency}" if currency else f"{remaining}"
-                else:
-                    usage_str = "?"
-                if not balance_shown and label_str.endswith(' Remaining'):
-                    # aiquokka words a share used as "... Limit Remaining"; only the
-                    # remaining-balance branch is a remaining amount.
-                    label = label_str.removesuffix(' Remaining')
-
-                # Format reset time in local timezone
-                reset_str = None
-                if isinstance(resets, str) and resets and resets != '0001-01-01T00:00:00Z':
-                    try:
-                        # Parse the reset time, handling both with and without timezone
-                        if resets.endswith('Z'):
-                            dt = datetime.datetime.fromisoformat(resets.replace('Z', '+00:00'))
-                        else:
-                            dt = datetime.datetime.fromisoformat(resets)
-                        reset_str = dt.astimezone(local_tz).strftime('%a %H:%M %Z')
-                    except ValueError:
-                        reset_str = resets
-
-                if reset_str:
-                    lines.append(f"  {html_text(label)}: {html_text(usage_str)} (resets {html_text(reset_str)})")
-                else:
-                    lines.append(f"  {html_text(label)}: {html_text(usage_str)}")
-
-        return '\n'.join(lines)
-
-    @staticmethod
-    def _is_percent(value):
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return False
-        try:
-            return math.isfinite(value)
-        except OverflowError:
-            # A JSON integer beyond float range is malformed, not a crash.
-            return False
-
-    @staticmethod
-    def _format_local_time(value, local_tz):
-        try:
-            dt = datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-            return dt.astimezone(local_tz).strftime('%a %H:%M')
-        except (ValueError, TypeError):
-            return 'unknown time'
 
     @staticmethod
     def _truncate_utf16(text, limit):
@@ -2376,54 +2047,6 @@ class Bridge:
             self.publish(request)
         except Exception:
             print('quota-exhaustion notice failed', file=sys.stderr, flush=True)
-
-    @staticmethod
-    def _fit_quota_html(text, limit=4096):
-        """(html, None) or (None, reason): `text` as a Telegram HTML reply whose
-        visible text is at most `limit` UTF-16 units and whose source is within
-        HTML_SOURCE_MAX_UNITS. Over either bound, whole trailing lines go (each
-        carries balanced markup) and a "…" line ends the reply."""
-        lines = text.split('\n')
-        for keep in range(len(lines), 0, -1):
-            candidate = '\n'.join(lines[:keep]) + ('\n…' if keep < len(lines) else '')
-            visible, error = html_visible_text(candidate)
-            if error and error != 'html_source_too_long':
-                return None, error
-            if not error and utf16_units(visible) <= limit:
-                return candidate, None
-        return None, 'reply_too_long'
-
-    def handle_quota_command(self, message_id):
-        """Handle /quota command: fetch quota, format a reply, and publish it
-        through the deduped outbound path.
-
-        Never raises: a malformed aiquokka payload or transport hiccup must not
-        propagate into run() and kill the daemon, since this is the user's only
-        notification channel.
-        """
-        try:
-            quota_data = self.fetch_quota()
-            reply_text = self.format_quota_reply(quota_data)
-        except Exception:
-            print('quota command failed to build reply', file=sys.stderr, flush=True)
-            reply_text = 'quota unavailable'
-        request = dict(conversation=self.conversation, idempotency_key=f'quota-{message_id}',
-                       reply_to_message_id=str(message_id))
-        try:
-            body, error = self._fit_quota_html('<b>bot:</b> ' + reply_text)
-        except Exception:
-            body, error = None, 'html_check_failed'
-        if error:
-            # Never silent: a reply the validator refuses (a bug) goes out as plain text.
-            print(f'quota reply refused: {error}', file=sys.stderr, flush=True)
-            request['text'] = f'bot: quota unavailable (format error: {error})'
-        else:
-            request.update(text=body, format='html')
-        try:
-            return self.publish(request)
-        except Exception:
-            print('quota command failed to publish reply', file=sys.stderr, flush=True)
-            return None
 
     def run(self):
         if not self.probe_with_retry():
@@ -2622,14 +2245,11 @@ _COMMAND_RE = re.compile(r'[a-z0-9_]{1,32}')
 _MODEL_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}')
 SETTINGS_KEYS = {'city', 'state_dir', 'port', 'python', 'token_file', 'callback_secret_file', 'lock_dir', 'unit',
                  'user_display_name', 'timezone', 'gc_base_url', 'gc_api_token_file', 'health_file',
-                 'pairing_update_id', 'bot', 'menu', 'quota', 'transcribe', 'agent', 'command',
+                 'pairing_update_id', 'bot', 'menu', 'transcribe', 'agent', 'command',
                  'handler_write_paths'}
 BOT_KEYS = {'bot_id', 'user_id', 'chat_id', 'account_id'}
-QUOTA_KEYS = {'enabled', 'gate_file', 'deepseek_key_file'}
 COMMAND_KEYS = {'name', 'description', 'handler', 'url', 'menu', 'callback_prefix', 'timeout'}
-# Commands the bridge itself owns: /start is never relayed. /quota is the
-# bridge's own answer only while [quota] enabled = true; with it off a city
-# may register /quota as an ordinary [[command]].
+# Commands the bridge itself owns: /start is never relayed.
 RESERVED_COMMANDS = ('start',)
 # Telegram's limit on one chat's command menu.
 MENU_MAX = 100
@@ -2811,10 +2431,9 @@ def _handler_url_setting(value, what):
     return value
 
 
-def _command_settings(data, menu, quota_enabled=False):
+def _command_settings(data, menu):
     """The validated [[command]] entries, in file order, each with its
-    defaults filled in. `quota` clashes only while the built-in /quota is
-    enabled; `start` and every [[menu]] command always clash."""
+    defaults filled in. `start` and every [[menu]] command always clash."""
     entries = data.get('command', [])
     if not isinstance(entries, list) or len(entries) > MENU_MAX or any(not isinstance(e, dict) for e in entries):
         raise SettingsError(f'settings: command must be a list of at most {MENU_MAX} [[command]] tables')
@@ -2828,8 +2447,6 @@ def _command_settings(data, menu, quota_enabled=False):
             raise SettingsError(f'settings: unknown key {unknown[0]} in {label}')
         if any(name == other['name'] for other in commands):
             raise SettingsError(f'settings: {label} repeats a command name')
-        if name == 'quota' and quota_enabled:
-            raise SettingsError(f'settings: {label} clashes with /quota, which [quota] enabled = true still answers')
         if name in RESERVED_COMMANDS or name in menu_names:
             raise SettingsError(f'settings: {label} clashes with /{name}, which the bridge or [[menu]] already has')
         command = dict(name=name, description=_text_setting(item.get('description'), f'{label} description', limit=256),
@@ -2880,6 +2497,8 @@ def load_settings(path, home=None):
         data = tomllib.loads(raw.decode('utf-8'))
     except (UnicodeError, ValueError):
         raise SettingsError(f'settings file is not valid TOML: {path}') from None
+    if 'quota' in data:
+        raise SettingsError('settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")')
     unknown = sorted(set(data) - SETTINGS_KEYS)
     if unknown:
         raise SettingsError(f'settings: unknown key {unknown[0]}')
@@ -2911,14 +2530,11 @@ def load_settings(path, home=None):
             raise SettingsError(f'settings: menu entry {index + 1} needs exactly command and description')
         menu_entries.append((_text_setting(item['command'], f'menu entry {index + 1} command', _COMMAND_RE),
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
-    quota = _table(data, 'quota', QUOTA_KEYS)
-    quota_enabled = _bool_setting(quota.get('enabled', False), 'quota.enabled')
-    city_commands = _command_settings(data, menu_entries, quota_enabled)
+    city_commands = _command_settings(data, menu_entries)
 
     config = dict(city=city, account_id=account, gc_base_url=gc_base_url,
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),
-                  timezone=timezone, menu=tuple(menu_entries),
-                  quota_command=quota_enabled, **ids)
+                  timezone=timezone, menu=tuple(menu_entries), **ids)
     # Present only when set, so a city without them gets the config it had.
     agent = _text_setting(data.get('agent', 'mayor'), 'agent', NAME_RE)
     if agent != 'mayor':
@@ -2926,9 +2542,7 @@ def load_settings(path, home=None):
     if city_commands:
         config['commands'] = city_commands
     optional = (('gc_api_token_path', data.get('gc_api_token_file'), 'gc_api_token_file'),
-                ('health_file', data.get('health_file'), 'health_file'),
-                ('quota_gate_file', quota.get('gate_file'), 'quota.gate_file'),
-                ('deepseek_key_file', quota.get('deepseek_key_file'), 'quota.deepseek_key_file'))
+                ('health_file', data.get('health_file'), 'health_file'))
     for key, value, what in optional:
         found = _path_setting(value, what, required=False)
         if found is not None:

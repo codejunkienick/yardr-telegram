@@ -42,38 +42,37 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNone(settings.transcribe)  # off unless enabled
         self.assertEqual(settings.config, dict(
             city='test-city', account_id='test_bot', gc_base_url='http://127.0.0.1:8372', user_display_name='Pat',
-            timezone='Asia/Karachi', menu=MENU, quota_command=False, unit='test-city-telegram.service',
+            timezone='Asia/Karachi', menu=MENU, unit='test-city-telegram.service',
             bot_id=999, user_id=123, chat_id=123))
         bridge = b.Bridge(settings.config, None, 'SECRET', None, state_dir=settings.state_dir)
         self.assertEqual(bridge.conversation, dict(scope_id='test-city', provider='telegram', account_id='test_bot',
                                                    conversation_id='123', kind='dm'))
 
-    def test_optional_files_and_quota_reach_the_config(self):
+    def test_optional_files_reach_the_config(self):
         path = write_settings(self.root, health_file='"/srv/city/.runtime/city-health.json"',
                               gc_api_token_file='"~/.config/test-city/gc-token"')
-        path.write_text(path.read_text() + '\n[quota]\nenabled = true\ngate_file = "/srv/city/.runtime/quota-gate.json"\n')
         config = b.load_settings(path).config
         self.assertEqual(config['health_file'], '/srv/city/.runtime/city-health.json')
         self.assertEqual(config['gc_api_token_path'], str(Path.home() / '.config/test-city/gc-token'))
-        self.assertEqual(config['quota_gate_file'], '/srv/city/.runtime/quota-gate.json')
-        self.assertTrue(config['quota_command'])
-        self.assertNotIn('deepseek_key_file', config)
 
-    def test_quota_command_loads_only_while_the_builtin_is_off(self):
+    def test_a_leftover_quota_table_refuses_with_the_migration_line(self):
+        line = 'settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")'
+        for table in ('\n[quota]\nenabled = true\n', '\n[quota]\nenabled = false\n', '\n[quota]\n'):
+            with self.subTest(table=table):
+                path = write_settings(self.root)
+                path.write_text(path.read_text() + table)
+                with self.assertRaises(b.SettingsError) as caught:
+                    b.load_settings(path)
+                self.assertEqual(str(caught.exception), line)
+
+    def test_quota_loads_as_an_ordinary_command(self):
         handler = self.root / 'quota-handler'
         handler.write_text('#!/bin/sh\n')
         handler.chmod(0o700)
         entry = f'\n[[command]]\nname = "quota"\ndescription = "Quota"\nhandler = "{handler}"\n'
         base = write_settings(self.root).read_text().split('\n[[menu]]')[0]
-        for table in ('', '\n[quota]\nenabled = false\n'):
-            with self.subTest(table=table):
-                settings = b.load_settings(write_settings(self.root, body=base + entry + table))
-                self.assertFalse(settings.config['quota_command'])
-                self.assertEqual([c['name'] for c in settings.config['commands']], ['quota'])
-        with self.assertRaisesRegex(
-                b.SettingsError,
-                r'command entry 1 \(quota\) clashes with /quota, which \[quota\] enabled = true still answers'):
-            b.load_settings(write_settings(self.root, body=base + entry + '\n[quota]\nenabled = true\n'))
+        settings = b.load_settings(write_settings(self.root, body=base + entry))
+        self.assertEqual([c['name'] for c in settings.config['commands']], ['quota'])
         menu = '\n[[menu]]\ncommand = "quota"\ndescription = "Quota"\n'
         with self.assertRaisesRegex(b.SettingsError, r'command entry 1 \(quota\) clashes with /quota'):
             b.load_settings(write_settings(self.root, body=base + menu + entry))

@@ -108,7 +108,7 @@ class CommandCase(unittest.TestCase):
         if commands is None:
             commands = (self.command(),)
         config = dict(dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', city='test-city',
-                           user_display_name='Pat', timezone='Asia/Karachi', menu=MENU, quota_command=True,
+                           user_display_name='Pat', timezone='Asia/Karachi', menu=MENU,
                            commands=commands), **config)
         return b.Bridge(config, self.store, 'SECRET', 'CAPABILITY', request=self.telegram, state_dir=self.root)
 
@@ -326,12 +326,12 @@ class DispatchTests(CommandCase):
 
     def test_anything_else_still_reaches_the_agent_as_text(self):
         for uid, text in enumerate(('/deploy@other_bot', '/deployx', '/deploy\nnext line', 'deploy', '/Deploy',
-                                    ' /deploy', '/status'), 50):
+                                    ' /deploy', '/status', '/quota'), 50):
             self.drain(self.message(text, uid * 2))
         self.assertEqual(self.records(), [])
         self.assertEqual([body['message']['text'] for body in self.telegram.of('inbound')],
                          ['/deploy@other_bot', '/deployx', '/deploy\nnext line', 'deploy', '/Deploy', ' /deploy',
-                          '/status'])
+                          '/status', '/quota'])
 
     def test_unauthorized_or_forwarded_commands_never_run_a_handler(self):
         self.drain(self.message('/deploy', 40, sender=124), self.message('/deploy', 42, chat=124))
@@ -341,19 +341,8 @@ class DispatchTests(CommandCase):
         self.assertEqual(self.records(), [])
         self.assertEqual(self.telegram.calls, [])
 
-    def test_quota_and_start_keep_their_own_paths(self):
-        with patch.object(self.bridge, 'handle_quota_command') as quota:
-            self.drain(self.message('/quota', 40), self.message('/start', 42))
-        quota.assert_called_once_with(1040)
-        self.assertEqual(self.records(), [])
-        self.assertNotIn('inbound', self.telegram.methods())
-        with patch.object(self.bridge, 'fetch_quota', return_value={}):
-            self.drain(self.message('/quota', 44))
-        self.assertIn('quota-1044', self.ledger())
-        self.assertNotIn('inbound', self.telegram.methods())
-
     def test_quota_as_a_city_command_runs_its_handler_and_never_the_builtin(self):
-        self.bridge = self.make_bridge(commands=(self.command('quota'),), quota_command=False)
+        self.bridge = self.make_bridge(commands=(self.command('quota'),))
         seen = []
 
         def fake_run(argv, *args, **kwargs):
@@ -368,7 +357,7 @@ class DispatchTests(CommandCase):
         self.assertEqual(self.telegram.methods(), ['sendMessage'])
         self.assertNotIn('inbound', self.telegram.methods())
         self.assertEqual(list(self.ledger()), ['command:40:0'])
-        self.assertEqual([argv for argv in seen if argv and argv[0] == 'aiquokka'], [])
+        self.assertEqual(seen, [])  # the handler runs via Popen; nothing shells out
         self.assertEqual(log, 'command quota handled (update 40): 1 action(s)\n')
 
     def test_the_handler_environment_is_fixed_and_carries_no_secret(self):

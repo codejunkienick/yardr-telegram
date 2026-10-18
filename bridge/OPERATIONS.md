@@ -40,7 +40,7 @@ city.
 | `unit` | no | systemd unit name; default `<city>-telegram.service` |
 | `python` | no | interpreter for the unit and the transcriber; default `/usr/bin/python3` |
 | `user_display_name` | no | the actor name on relayed messages; default `User` |
-| `timezone` | no | times in `/quota` and notices; default `UTC` |
+| `timezone` | no | times in notices; default `UTC` |
 | `gc_base_url`, `gc_api_token_file` | no | loopback GC API (default `http://127.0.0.1:8372`) and its bearer token file |
 | `health_file` | no | the city's health report; enables the quota-exhausted notice |
 | `pairing_update_id` | no | the first offset is this plus one, only for a new ledger |
@@ -48,7 +48,6 @@ city.
 | `[[menu]]` `command`, `description` | no | the chat's "/" menu, in order |
 | `[[command]]` | no | the city's own commands and buttons, run by its own handlers ("City commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
-| `[quota]` `enabled`, `gate_file`, `deepseek_key_file` | no | the built-in `/quota` (being retired); while it is off, `/quota` may be a `[[command]]` instead (below) |
 | `[transcribe]` | no | voice transcription (below); off by default |
 
 Paths may start with `~`; after that they must be absolute, normalized, and
@@ -122,16 +121,10 @@ lock, webhook or `getUpdates` call, so it is safe while the unit runs and
 needs no restart. Other chats and the bot's default menu are not set. With
 nothing to show it refuses.
 
-With `[quota] enabled = true` the bridge answers `/quota` itself, from
-`aiquokka <provider> --json` per provider (DeepSeek's key from
-`deepseek_key_file`) plus, when `gate_file` names the city's quota gate report,
-the company account's readings; it never reaches the mayor, so it works while
-the mayor is out of quota. The `/quota` reply and the quota-exhausted notice go
-out as Telegram HTML (bold headers) through the bridge's own `publish()`. This
-built-in is being retired: with `enabled = false` or no `[quota]` table, a city
-may instead register `/quota` as an ordinary `[[command]]` (below) and its
-handler answers; the built-in then never runs. A `[[command]] name = "quota"`
-together with `enabled = true` refuses to load, naming both. A city's own
+`/quota` is not built in: a city that wants it registers it as an ordinary
+`[[command]]` (below) and its handler answers; with no such command it reaches
+the mayor as an ordinary message. The quota-exhausted notice still goes out as
+Telegram HTML (bold headers) through the bridge's own `publish()`. A city's own
 commands go to their handlers (below); every other command reaches the mayor as
 an ordinary message.
 
@@ -152,13 +145,11 @@ settings and its own handler programs, without editing this pack. Each
 | `timeout` | `10` | seconds the handler may take, 1-30 |
 
 The settings refuse to load, naming the entry, on an unknown key, a repeated
-name, a name equal to `start` or a `[[menu]]` command, `quota` while
-`[quota] enabled = true` (that refusal names the setting), a missing or
+name, a name equal to `start` or a `[[menu]]` command, a missing or
 second handler, a handler that is not an owner-writable-only executable file,
 a URL off loopback, a `callback_prefix` that equals or starts another one
 (a press would have two owners), or more than 100 menu entries in all.
-`start` stays reserved always; `quota` is reserved only while the built-in
-is on.
+`start` stays reserved always.
 
 An add-on is one `[[command]]` table, with no enable flag of its own. Add one
 by adding the table (and a `handler_write_paths` entry if it writes, then

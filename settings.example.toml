@@ -15,7 +15,7 @@ callback_secret_file = "~/.config/example-city/telegram-callback-secret"
 # unit = "example-city-telegram.service"    # default: <city>-telegram.service
 # python = "/usr/bin/python3"
 user_display_name = "Alex"                  # how inbound messages name the paired user
-timezone = "Europe/Berlin"                  # times in /quota and notices; default UTC
+timezone = "Europe/Berlin"                  # times in notices; default UTC
 # gc_base_url = "http://127.0.0.1:8372"     # loopback only
 # gc_api_token_file = "~/.config/example-city/gc-api-token"
 # health_file = "/home/alex/example-city/.runtime/city-health.json"  # quota-exhausted notice
@@ -39,7 +39,7 @@ description = "What's running, what landed, what waits on you"
 # An add-on is one such table, with no enable flag: add it by adding the table
 # (and a handler_write_paths entry if it writes, then install.sh again),
 # restarting the unit and running set-commands; remove it the same way.
-# name = "quota" works here while [quota] below is off.
+# /quota is one such add-on: name = "quota" works here like any other name.
 # [[command]]
 # name = "deploy"
 # description = "Deploy a branch"
@@ -47,11 +47,6 @@ description = "What's running, what landed, what waits on you"
 # menu = true                               # in the "/" menu; default true
 # callback_prefix = "deploy:"               # default "<name>:"
 # timeout = 10                              # seconds, 1-30
-
-[quota]
-enabled = false                             # built-in /quota, being retired; true: the bridge answers /quota itself (aiquokka), and no [[command]] may be named "quota"
-# gate_file = "/home/alex/example-city/.runtime/quota-gate.json"
-# deepseek_key_file = "~/.config/example-city/deepseek-api-key"
 
 [transcribe]
 enabled = true                              # voice and audio notes get an English transcript

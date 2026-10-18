@@ -1,5 +1,6 @@
 import datetime
 import gc
+import http.client
 import http.server
 import importlib.util
 import io
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -750,6 +752,123 @@ class BridgeTests(unittest.TestCase):
         second = self.bridge.publish(request)
         self.assertEqual(first, second)
         self.assertEqual(len(self.multipart_calls), 1)
+
+    def start_callback_server(self, bridge=None, timeout=None):
+        handler = b._callback_handler(bridge or self.bridge)
+        if timeout is not None:
+            handler.timeout = timeout
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1]
+
+    def callback_post(self, port, body, bridge=None):
+        bridge = bridge or self.bridge
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        try:
+            connection.request('POST', '/' + bridge.secret + '/publish', json.dumps(body),
+                               {'X-GC-Request': '1', 'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def test_callback_refuses_attachment_without_calling_telegram(self):
+        port = self.start_callback_server()
+        path = self.attachment_file('doc.bin')
+        body = dict(conversation=self.bridge.conversation, idempotency_key='cb-attach',
+                    text='hello', attachment=dict(path=path, kind='document'))
+        status, result = self.callback_post(port, body)
+        self.assertEqual(status, 200)
+        self.assertFalse(result['delivered'])
+        self.assertEqual(result['metadata']['reason'], 'attachment_not_accepted_over_callback')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.multipart_calls, [])
+        body = dict(conversation=self.bridge.conversation, idempotency_key='cb-plain', text='hello')
+        status, result = self.callback_post(port, body)
+        self.assertEqual(status, 200)
+        self.assertTrue(result['delivered'])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_callback_idle_connection_is_dropped(self):
+        self.assertEqual(b._callback_handler(self.bridge).timeout, 5)
+        port = self.start_callback_server(timeout=0.2)
+        with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:
+            sock.settimeout(2)
+            self.assertEqual(sock.recv(1), b'')
+
+    def test_attachment_that_is_a_bridge_credential_is_refused(self):
+        root = Path(self.tmp.name)
+        state_dir = root / 'state'
+        state_dir.mkdir()
+        token = root / 'token'
+        token.write_text('token')
+        callback = root / 'callback-secret'
+        callback.write_text('secret')
+        gc_token = root / 'gc-token'
+        gc_token.write_text('gc')
+        settings_file = root / 'settings.toml'
+        settings_file.write_text('settings')
+        for name in ('telegram-bridge.sqlite3', 'telegram-bridge.sqlite3-wal'):
+            (state_dir / name).write_bytes(b'ledger')
+        config = dict(self.config, protected_paths=(str(token), str(callback), str(gc_token), str(settings_file)))
+        bridge = b.Bridge(config, self.store, 'SECRET', 'CAPABILITY',
+                          request=self.transport, request_multipart=self.multipart_transport,
+                          request_download=self.download_transport, state_dir=state_dir)
+        protected = [token, callback, gc_token, settings_file,
+                     state_dir / 'telegram-bridge.sqlite3', state_dir / 'telegram-bridge.sqlite3-wal']
+        for index, path in enumerate(protected):
+            with self.subTest(path=path):
+                request = dict(conversation=bridge.conversation, idempotency_key=f'cred-{index}',
+                               text='hello', attachment=dict(path=str(path), kind='document'))
+                result = bridge.publish(request)
+                self.assertFalse(result['delivered'])
+                self.assertEqual(result['metadata']['reason'], 'attachment_path_is_a_bridge_credential')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.multipart_calls, [])
+        request = dict(conversation=bridge.conversation, idempotency_key='cred-ok', text='hello',
+                       attachment=dict(path=self.attachment_file('ok.bin'), kind='document'))
+        self.assertTrue(bridge.publish(request)['delivered'])
+        self.assertEqual(len(self.multipart_calls), 1)
+
+    def test_private_text_refuses_a_fifo_without_blocking(self):
+        fifo = Path(self.tmp.name) / 'token-fifo'
+        os.mkfifo(fifo)
+        fifo.chmod(0o600)
+        directory = Path(self.tmp.name) / 'token-dir'
+        directory.mkdir(mode=0o700)
+        for path in (fifo, directory):
+            with self.subTest(path=path):
+                errors = []
+
+                def read():
+                    try:
+                        b.private_text(path)
+                    except Exception as error:  # captured for the assertions below
+                        errors.append(error)
+
+                thread = threading.Thread(target=read, daemon=True)
+                thread.start()
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], b.TransportError)
+                self.assertEqual(str(errors[0]), 'credential must be an owner-only regular file')
+        fd_dir = Path('/proc/self/fd')
+        if fd_dir.is_dir():
+            before = len(list(fd_dir.iterdir()))
+            for _ in range(10):
+                with self.assertRaises(b.TransportError):
+                    b.private_text(directory)
+            self.assertEqual(len(list(fd_dir.iterdir())), before)
+        real = Path(self.tmp.name) / 'real-token'
+        real.write_text('secret')
+        real.chmod(0o600)
+        link = Path(self.tmp.name) / 'token-link'
+        link.symlink_to(real)
+        self.assertEqual(b.private_text(link), 'secret')
 
     def test_multipart_argv_has_no_token_leak_and_no_forced_json_header(self):
         with patch.object(b.subprocess, 'run') as run:

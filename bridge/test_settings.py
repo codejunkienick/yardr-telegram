@@ -43,6 +43,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.config, dict(
             city='test-city', account_id='test_bot', gc_base_url='http://127.0.0.1:8372', user_display_name='Pat',
             timezone='Asia/Karachi', menu=MENU, unit='test-city-telegram.service',
+            protected_paths=(str(self.root / 'private' / 'telegram-bot-token'),
+                             str(self.root / 'private' / 'telegram-callback-secret'),
+                             str(self.root / 'telegram-bridge.toml')),
             bot_id=999, user_id=123, chat_id=123))
         bridge = b.Bridge(settings.config, None, 'SECRET', None, state_dir=settings.state_dir)
         self.assertEqual(bridge.conversation, dict(scope_id='test-city', provider='telegram', account_id='test_bot',
@@ -54,6 +57,10 @@ class SettingsTests(unittest.TestCase):
         config = b.load_settings(path).config
         self.assertEqual(config['health_file'], '/srv/city/.runtime/city-health.json')
         self.assertEqual(config['gc_api_token_path'], str(Path.home() / '.config/test-city/gc-token'))
+        self.assertEqual(config['protected_paths'], (str(self.root / 'private' / 'telegram-bot-token'),
+                                                     str(self.root / 'private' / 'telegram-callback-secret'),
+                                                     str(Path.home() / '.config/test-city/gc-token'),
+                                                     str(path)))
 
     def test_a_leftover_quota_table_refuses_with_the_migration_line(self):
         line = 'settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")'

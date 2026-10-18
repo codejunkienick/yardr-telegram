@@ -96,10 +96,12 @@ class RequestUnconfirmed(TransportFailure):
 
 def private_text(path):
     path = Path(path).expanduser()
-    with path.open() as stream:
-        st = os.fstat(stream.fileno())
-        if st.st_uid != os.getuid() or st.st_mode & 0o077 or not stat.S_ISREG(st.st_mode):
-            raise TransportError('credential must be an owner-only regular file')
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    st = os.fstat(fd)
+    if st.st_uid != os.getuid() or st.st_mode & 0o077 or not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise TransportError('credential must be an owner-only regular file')
+    with os.fdopen(fd) as stream:
         value = stream.read().strip()
     if not value or any(c.isspace() for c in value):
         raise TransportError('credential is empty or malformed')
@@ -482,6 +484,43 @@ def check_bridge_config(config, *, settings=False):
     return city, account, agent, local_tz, base
 
 
+def _callback_handler(bridge):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        timeout = 5
+
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            if (not hmac.compare_digest(self.path, '/' + bridge.secret + '/publish')
+                or self.headers.get('X-GC-Request') not in ('1', 'true')):
+                self.send_error(403)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', '-1'))
+                if not 0 < length <= 65536:
+                    raise ValueError()
+                request = json.loads(self.rfile.read(length))
+                if not isinstance(request, dict):
+                    raise ValueError()
+                if 'attachment' in request:
+                    result = bridge.receipt(reason='attachment_not_accepted_over_callback')
+                else:
+                    result = bridge.publish(request)
+                payload = json.dumps(result).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            except (ValueError, UnicodeError):
+                self.send_error(400)
+            except Exception:
+                # Never expose raw exceptions (may contain payload or secrets).
+                self.send_error(500, 'Delivery unconfirmed')
+    return Handler
+
+
 class Bridge:
     ATTACHMENT_KINDS = {
         'photo': ('sendPhoto', 'photo', 10 * 1024 * 1024),
@@ -545,6 +584,7 @@ class Bridge:
         self.request_download = request_download or http_download
         # The bridge's own directory: ledger, offset, inbound files, heartbeat.
         self.state_dir = Path(state_dir) if state_dir is not None else None
+        self.protected_paths = tuple(config.get('protected_paths', ()) or ())
         self.city, self.account, self.agent, self.local_tz, self.base = check_bridge_config(config)
         self.display_name = config.get('user_display_name') or 'User'
         self.unit = config.get('unit')
@@ -1762,6 +1802,17 @@ class Bridge:
             # curl's --form treats ';'/',' in an @file path as the start of a type=/
             # filename= directive; reject rather than risk silent reinterpretation.
             return 'attachment_path_unsupported_characters'
+        real_path = os.path.realpath(path)
+        protected = getattr(self, 'protected_paths', None)
+        if protected is None:
+            protected = self.config.get('protected_paths', ()) or ()
+        if any(real_path == os.path.realpath(candidate) for candidate in protected):
+            return 'attachment_path_is_a_bridge_credential'
+        state_dir = getattr(self, 'state_dir', None)
+        if state_dir is not None and Path(real_path).name.startswith('telegram-bridge.sqlite3'):
+            state_real = os.path.realpath(state_dir)
+            if real_path == state_real or real_path.startswith(state_real + os.sep):
+                return 'attachment_path_is_a_bridge_credential'
         try:
             file_path = Path(path)
             if not file_path.is_file():
@@ -2080,37 +2131,7 @@ class Bridge:
     def run(self):
         if not self.probe_with_retry():
             return
-        bridge = self
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *_):
-                pass
-
-            def do_POST(self):
-                self.connection.settimeout(5)
-                if (not hmac.compare_digest(self.path, '/' + bridge.secret + '/publish')
-                    or self.headers.get('X-GC-Request') not in ('1', 'true')):
-                    self.send_error(403)
-                    return
-                try:
-                    length = int(self.headers.get('Content-Length', '-1'))
-                    if not 0 < length <= 65536:
-                        raise ValueError()
-                    request = json.loads(self.rfile.read(length))
-                    if not isinstance(request, dict):
-                        raise ValueError()
-                    result = bridge.publish(request)
-                    payload = json.dumps(result).encode()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json')
-                    self.send_header('Content-Length', str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                except (ValueError, UnicodeError):
-                    self.send_error(400)
-                except Exception:
-                    # Never expose raw exceptions (may contain payload or secrets).
-                    self.send_error(500, 'Delivery unconfirmed')
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', self.port), Handler)
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', self.port), _callback_handler(self))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         registered = False
@@ -2559,6 +2580,11 @@ def load_settings(path, home=None):
         found = _path_setting(value, what, required=False)
         if found is not None:
             config[key] = str(found)
+    protected = [str(token_file), str(callback_secret_file)]
+    if config.get('gc_api_token_path') is not None:
+        protected.append(config['gc_api_token_path'])
+    protected.append(str(path))
+    config['protected_paths'] = tuple(protected)
     check_bridge_config(config, settings=True)
     unit = _text_setting(data.get('unit', f'{city}-telegram.service'), 'unit', _UNIT_RE, limit=128)
     config['unit'] = unit

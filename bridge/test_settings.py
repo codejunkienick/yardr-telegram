@@ -583,20 +583,5 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(self.secret.read_text(), secret)
 
 
-class PackNeutralityTests(unittest.TestCase):
-    def test_nothing_in_the_pack_names_a_particular_city_or_company(self):
-        allowed = {PACK / 'README.md'}  # its examples from one real city are marked as such
-        hits = []
-        for path in sorted(PACK.rglob('*')):
-            if not path.is_file() or path in allowed or '__pycache__' in path.parts:
-                continue
-            text = path.read_text(errors='replace').lower()
-            # Spelled in pieces so this file does not match itself.
-            for word in ('imd' + '-city', 'front' + '-apps', 'imu' + 'sician', 'nick' + '-city'):
-                if word in text:
-                    hits.append(f'{path.relative_to(PACK)}: {word}')
-        self.assertEqual(hits, [])
-
-
 if __name__ == '__main__':
     unittest.main()

@@ -594,6 +594,13 @@ class InstallScriptTests(unittest.TestCase):
             self.skipTest('curl not on PATH')
         dry = self.install('--dry-run')
         self.assertEqual(dry.returncode, 0, dry.stderr)
+        bridge = PACK / 'bridge' / 'bridge.py'
+        self.assertEqual(dry.stdout.strip().splitlines()[-1],
+                         f'next: python3 {bridge} --settings {self.path} probe; '
+                         'systemctl --user daemon-reload; '
+                         'systemctl --user enable --now test-city-telegram.service; '
+                         f'python3 {bridge} --settings {self.path} set-commands '
+                         '(README.md, "Adopt in a city", step 6)')
         self.assertIn(f'would create callback secret {self.secret} (mode 600)', dry.stdout)
         self.assertIn('ok    callback secret file is created by install.sh', dry.stdout)
         self.assertFalse(self.secret.parent.exists())  # a dry run writes nothing
@@ -616,6 +623,19 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('created callback secret', again.stdout)
         self.assertIn('is current', again.stdout)
         self.assertEqual(self.secret.read_text(), secret)
+
+    def test_install_with_unloadable_settings_creates_nothing(self):
+        path = write_settings(self.root, python=f'"{sys.executable}"',
+                              callback_secret_file=f'"{self.secret}"', language='"ru"')
+        path.write_text(path.read_text() + '\n[transcribe]\nenabled = true\n')
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.strip(), 'settings: unknown key language')
+        self.assertFalse(self.secret.exists())
+        self.assertFalse((self.home / '.local/state/voice-transcribe').exists())
+        self.assertFalse((self.home / '.config/systemd/user/test-city-telegram.service').exists())
+        self.assertFalse((self.home / '.local/bin/voice-transcribe').exists())
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), [])
 
 
 if __name__ == '__main__':

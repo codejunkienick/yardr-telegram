@@ -23,9 +23,24 @@ done
 [ -n "$settings" ] || { echo "install.sh: --settings <file> is required" >&2; exit 64; }
 bridge="$pack/bridge/bridge.py"
 
+# The settings are loaded once for the three values this script needs;
+# a settings error is the loader's one line on stderr and stops the
+# script (set -eu) before anything is created.
+settings_out=$(python3 -c '
+import runpy, shlex, sys
+try:
+    s = runpy.run_path(sys.argv[1])["load_settings"](sys.argv[2])
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(1)
+print("queue_dir=" + shlex.quote(str(s.queue_dir) if s.transcribe else ""))
+print("secret=" + shlex.quote(str(s.callback_secret_file)))
+print("unit_name=" + shlex.quote(s.unit))
+' "$bridge" "$settings")
+eval "$settings_out"
+
 # The host-wide transcription queue every city's bridge shares; the unit
 # cannot create it (its home is read-only), so it is made here.
-queue_dir=$(python3 -c 'import runpy, sys; s = runpy.run_path(sys.argv[1])["load_settings"](sys.argv[2]); print(s.queue_dir if s.transcribe else "")' "$bridge" "$settings")
 if [ -n "$queue_dir" ] && [ ! -d "$queue_dir" ]; then
   if [ "$dry_run" = 1 ]; then
     echo "would create $queue_dir (mode 700)"
@@ -37,7 +52,6 @@ fi
 # The callback secret: the unit may write only its state and lock
 # directories, so a missing secret is minted here, owner-only, and never
 # printed.
-secret=$(python3 -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["load_settings"](sys.argv[2]).callback_secret_file)' "$bridge" "$settings")
 if [ ! -e "$secret" ] && [ ! -L "$secret" ]; then
   if [ "$dry_run" = 1 ]; then
     echo "would create callback secret $secret (mode 600)"
@@ -51,7 +65,6 @@ python3 "$bridge" --settings "$settings" check-install
 
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 unit_text=$(python3 "$bridge" --settings "$settings" render-unit)
-unit_name=$(python3 -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["load_settings"](sys.argv[2]).unit)' "$bridge" "$settings")
 unit_file="$unit_dir/$unit_name"
 link="$HOME/.local/bin/voice-transcribe"
 target="$pack/transcriber/voice_transcribe.py"
@@ -78,4 +91,4 @@ else
   echo "linked $link -> $target"
 fi
 
-echo "next: systemctl --user daemon-reload && systemctl --user enable $unit_name && systemctl --user restart $unit_name"
+echo "next: python3 $bridge --settings $settings probe; systemctl --user daemon-reload; systemctl --user enable --now $unit_name; python3 $bridge --settings $settings set-commands (README.md, \"Adopt in a city\", step 6)"

@@ -173,7 +173,7 @@ def _curl(argv, config, url, timeout):
     curl's own message."""
     try:
         result = subprocess.run(
-            ['curl', '--silent', '--show-error', '--connect-timeout', str(CURL_CONNECT_TIMEOUT),
+            ['curl', '-q', '--silent', '--show-error', '--connect-timeout', str(CURL_CONNECT_TIMEOUT),
              '--max-time', _seconds(timeout), *argv, '--config', '-', '--write-out', _CURL_WRITE_OUT],
             input='\n'.join(config), capture_output=True, text=True, timeout=timeout + 2,
         )
@@ -245,7 +245,7 @@ def http_download(url, fd, max_bytes, timeout=60):
     config = ['url = ' + _curl_config_quote(url), 'max-filesize = ' + str(int(max_bytes))]
     try:
         result = subprocess.run(
-            ['curl', '--silent', '--show-error', '--connect-timeout', '5', '--max-time', str(timeout),
+            ['curl', '-q', '--silent', '--show-error', '--connect-timeout', '5', '--max-time', str(timeout),
              '--request', 'GET', '--config', '-', '--write-out', '%{stderr}%{http_code}'],
             input='\n'.join(config), stdout=fd, stderr=subprocess.PIPE, text=True, timeout=timeout + 2,
         )

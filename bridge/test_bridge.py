@@ -801,6 +801,55 @@ class BridgeTests(unittest.TestCase):
                         if name != 'document':
                             self.assertNotIn(b'Content-Type:', head)
 
+    def test_curl_starts_with_dash_q_for_json_multipart_and_download(self):
+        payload = json.dumps({'ok': True, 'result': {}}) + '\n200 0.010000 0.020000 0'
+        with patch.object(b.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, payload, '')
+            b.http_json('https://example.com/x', {'text': 'hi'})
+            self.assertEqual(run.call_args.args[0][:2], ['curl', '-q'])
+        with patch.object(b.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, payload, '')
+            b.http_multipart('https://example.com/x', {'caption': 'hi'}, 'photo', '/tmp/a.png')
+            self.assertEqual(run.call_args.args[0][:2], ['curl', '-q'])
+        with patch.object(b.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, '', '200')
+            with tempfile.TemporaryFile() as fd:
+                self.assertEqual(b.http_download('https://example.com/x', fd, 1024), 200)
+            self.assertEqual(run.call_args.args[0][:2], ['curl', '-q'])
+
+    @unittest.skipUnless(shutil.which('curl'), 'curl required')
+    def test_curl_ignores_user_curlrc_over_loopback(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get('Content-Length', 0))
+                self.rfile.read(length)
+                payload = json.dumps({'ok': True}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        port = server.server_address[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = Path(tmp) / 'trace.txt'
+            config = f'trace-ascii = "{trace}"\n'
+            (Path(tmp) / '.curlrc').write_text(config)
+            (Path(tmp) / 'curlrc').write_text(config)
+            env = {'CURL_HOME': tmp, 'XDG_CONFIG_HOME': tmp}
+            with patch.dict(os.environ, env):
+                status, data = b.http_json(f'http://127.0.0.1:{port}/x', {'text': 'hi'})
+            self.assertEqual((status, data.get('ok')), (200, True))
+            self.assertFalse(trace.exists())
+
     def test_infer_attachment_kind_by_extension(self):
         self.assertEqual(b.infer_attachment_kind(Path('shot.png')), 'photo')
         self.assertEqual(b.infer_attachment_kind(Path('shot.JPG')), 'photo')

@@ -8,13 +8,33 @@ accepts private text and media authored by the paired numeric user only;
 groups, other senders, bot messages, forwarded messages, and `/start` are
 skipped.
 
+README.md covers adopting the pack, this guide covers running it, and the
+skills are an agent's writing guides. Where they differ, this guide is right
+and the other is the one to fix.
+
 Every city runs its own bridge process from this one `bridge.py`, configured
 only by its own settings file. Below, `<pack>` is this pack's directory and
 `<settings>` that city's settings file.
 
+## Terms
+
+- **mayor**: the gc agent this bridge serves (`agent`, default `mayor`).
+- **The paired user** and **the paired chat**: the one Telegram account
+  (`user_id`) and its private chat with the bot (`chat_id`, equal to
+  `user_id`).
+- **The ledger**: `<state_dir>/telegram-bridge.sqlite3`, the inbound offset
+  and one receipt per outbound key ("Delivery recovery").
+- **The extmsg scope**: gc's city name (`city`), the scope of the
+  conversation binding.
+- **The adapter account**: the bot's username (`account_id`), which tells
+  two bots apart.
+- **The capability secret**: the random path in `callback_secret_file` that
+  GC's callback must use.
+
 ## Settings
 
-Prerequisites: Python 3.11+, curl, the city's GC API on loopback, a confirmed
+Prerequisites: Python 3.11+, curl, gc 1.4.1 or later (tested on 1.5.0),
+the city's GC API on loopback, a confirmed
 private bot pairing, and one native **agent-name** binding to the configured
 `agent` (default `mayor`) for the configured conversation. Do not add a
 wildcard default route. The bot must have no webhook or other poller. `probe`
@@ -42,9 +62,9 @@ city.
 | `python` | no | interpreter for the unit and the transcriber; default `/usr/bin/python3` |
 | `user_display_name` | no | the actor name on relayed messages; default `User` |
 | `timezone` | no | times in notices and the time zone passed to handlers (`TZ`); default `UTC` |
-| `gc_base_url`, `gc_api_token_file` | no | loopback GC API (default `http://127.0.0.1:8372`) and its bearer token file |
+| `gc_base_url`, `gc_api_token_file` | no | loopback GC API (default `http://127.0.0.1:8372`) and its bearer token file; anything else refuses at load |
 | `health_file` | no | the city's health report; enables the quota-exhausted notice |
-| `pairing_update_id` | no | the first offset is this plus one, only for a new ledger |
+| `pairing_update_id` | no | the `update_id` of the `/start` update; the bridge starts after it. Read only for a new ledger (README.md, step 3) |
 | `agent` | no | the gc agent this bridge serves; default `mayor`. Inbound is accepted only when GC routes it to this agent, the quota-exhausted notice watches this agent's session, and `send` without `--session` or `$GC_SESSION_ID` sends as it. "The mayor" in this guide means this agent; a second bridge for a second agent is in `<pack>/README.md`, "A second bridge for a second agent" |
 | `[[menu]]` `command`, `description` | no | the chat's "/" menu, in order |
 | `[[command]]` | no | the city's own commands and buttons, run by its own handlers ("City commands" below) |
@@ -59,7 +79,9 @@ the quota-exhausted notice), `episode` (a non-empty string) and `until`
 
 Paths may start with `~`; after that they must be absolute, normalized, and
 made of letters, digits and `._@+-` only, so they are safe in a unit file.
-No credential goes in the settings file, command arguments or Git.
+No credential goes in the settings file, command arguments or Git. curl
+runs with `-q`, so no user curl configuration applies to the bridge's
+requests.
 
 ## Install and launch
 
@@ -69,14 +91,21 @@ whisper-cli, the models and their SHA-256), creates the callback secret and
 the transcription queue when they are missing, links
 `~/.local/bin/voice-transcribe`, and renders the city's unit into
 `~/.config/systemd/user/<unit>`. It is idempotent, never starts or stops a unit
-and never contacts Telegram; `--dry-run` only reports. Then:
+and never contacts Telegram; `--dry-run` only reports. Then, in the user's
+shell (an agent asks the user, or runs it only where it may manage the
+user's units):
 
 ```sh
 python3 <pack>/bridge/bridge.py --settings <settings> probe
 systemctl --user daemon-reload
 systemctl --user enable --now <unit>
 systemctl --user status <unit>
+python3 <pack>/bridge/bridge.py --settings <settings> set-commands
 ```
+
+`probe` prints `Telegram identity and webhook checks passed` and
+`set-commands` prints `Telegram command menu set for the paired chat:
+/<command> ...`.
 
 `bridge.py --settings <settings> render-unit` prints the unit and
 `check-install` runs the checks alone (`--gpu-probe` adds the GPU probe,
@@ -84,7 +113,12 @@ below; without it no transcription runs). The unit runs
 `<python> <pack>/bridge/bridge.py --settings <settings> run` with the state
 directory and the lock directory as its only writable paths, plus the
 transcription queue with transcription on and every `handler_write_paths`
-entry.
+entry. The settings file, token, callback secret and GC API token file are
+read-only inside the unit (`ReadOnlyPaths`), even inside the lock
+directory, and the unit sets RestrictSUIDSGID, LockPersonality,
+RestrictRealtime, RestrictNamespaces, SystemCallArchitectures=native and
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK, all of which
+the GPU probe carries too.
 
 The adapter binds only `127.0.0.1:<port>`, registers its GC callback, and
 refreshes the in-memory registration every ~30 seconds. At startup the
@@ -107,6 +141,12 @@ path in the callback secret file protects the callback along with the loopback
 bind and `X-GC-Request` check. The capability is exposed through local GC
 adapter introspection, so the existing local GC API/user account is the trust
 boundary. Do not publish that API or adapter-registration output publicly.
+The bridge assumes a host whose other local accounts are trusted: loopback
+ports are reachable by every local user, so an account that binds the GC
+API port or a handler's port while that service is down receives what the
+bridge sends there (the GC Bearer token, message text or handler JSON).
+
+Removing a city's bridge: README.md, "Uninstall".
 
 ## Command menu
 
@@ -128,7 +168,6 @@ lock, webhook or `getUpdates` call, so it is safe while the unit runs and
 needs no restart. Other chats and the bot's default menu are not set. With
 nothing to show it refuses.
 
-A `/quota` with no `[[command]]` reaches the mayor as an ordinary message.
 The quota-exhausted notice goes out as Telegram HTML (bold headers) through
 the bridge's own `publish()`. A city's own commands go to their handlers
 (below); every other command reaches the mayor as an ordinary message.
@@ -143,7 +182,7 @@ settings and its own handler programs, without editing this pack. Each
 | --- | --- | --- |
 | `name` | required | the command, `/<name>`: 1-32 of `a-z`, `0-9`, `_` |
 | `description` | required | the menu text, 1-256 characters |
-| `handler` | one of the two | absolute path of an existing regular file this user may execute, writable by nobody but its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
+| `handler` | one of the two | absolute path of an existing regular file this user may execute, writable by nobody but its owner, owned by this user or root, in a directory only they can write (for a symlink, both the link's and the target's directories) |
 | `url` | one of the two | `http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`, nothing else |
 | `menu` | `true` | show it in the chat's "/" menu (`set-commands`) |
 | `callback_prefix` | `"<name>:"` | button presses whose `callback_data` starts with it go to this handler; 1-64 printable ASCII characters, no space |
@@ -183,7 +222,9 @@ update for up to its `timeout`.
 `args` is the text after the first space (`""` when none). For a press,
 `kind` is `"callback"`, `args` and `message_id` are null, `callback_data` is the
 button's data and `callback_message_id` the message carrying the button. No
-token, secret, raw update or GC data is passed. An executable handler is run
+token, secret, raw update or GC data is passed. A handler runs as the
+bridge's user and can read what that user can, the bot token included:
+install only handlers you trust. An executable handler is run
 as `argv = [handler]` (no shell) with the JSON on stdin, its own directory as
 working directory, and only `PATH=/usr/local/bin:/usr/bin:/bin`, `HOME`,
 `LANG`, `TZ` (the settings' `timezone`) and `TELEGRAM_BRIDGE_COMMAND=<name>`
@@ -243,7 +284,8 @@ a handler must leave them alone), the transcription queue, and the
 `install.sh` again and restart the unit. A URL handler is the city's own
 service and runs outside the sandbox. `check-install` lists every handler and
 fails on a handler that is no longer a safe executable or a write path that is
-not a directory.
+not a directory. The settings and credential files are read-only for a
+handler too.
 
 Example, in the settings file:
 
@@ -322,7 +364,12 @@ refused before sending (`video_note_takes_no_caption`). The bridge does not
 probe the media; a wrong format or shape is Telegram's 4xx and takes the text
 fallback. Like an HTML send it is delivered by the CLI process through the
 shared ledger, one receipt per key (sent, not sent, or ambiguous). A path
-containing `;` or `,` is refused. A file Telegram rejects falls back to one
+containing `;` or `,` is refused. Only the CLI sends files: the HTTP
+callback refuses a request carrying an attachment
+(`attachment_not_accepted_over_callback`). An attachment that is the
+settings file, the bot token, the callback secret, the GC API token
+file or the ledger is refused before Telegram is contacted
+(`attachment_path_is_a_bridge_credential`). A file Telegram rejects falls back to one
 plain text message carrying the caption (if any) and
 `[attachment rejected: <reason>]`.
 
@@ -375,7 +422,7 @@ notes one at a time and relays a second message, `[voice <m:ss> transcript
 `<id>-transcript`.
 
 The transcriber is `<python> <pack>/transcriber/adapter.py AUDIO MODEL DEVICE`,
-DEVICE `cpu` (`method = "cpu"`, the default, or legacy `gpu = false`), `check`
+DEVICE `cpu` (`method = "cpu"`, the default), `check`
 or `auto` (`method = "auto"`; `auto` is the legacy name for the same check
 path), or `gpu` (`method = "gpu"`).
 It prints `{"state": "running"}` when its turn in the host-wide queue starts,
@@ -393,7 +440,7 @@ transcript that is mostly not Latin script is refused as not English.
 The transcriber is fenced so it never takes the host from its user: before
 decoding it confines itself (and so ffmpeg and whisper-cli) to the settings'
 `cpus` with `sched_setaffinity`, runs at nice 10 with best-effort I/O level 7
-(`ionice -c 2 -n 7`), the agents' priority, and runs at most 4 whisper threads.
+(`ionice -c 2 -n 7`), and runs at most 4 whisper threads.
 Idle priority is not used: on a busy host it starves the note. A fence that
 cannot be set fails the note (`fence_failed`) rather than running unfenced.
 
@@ -425,8 +472,12 @@ The checkout is the directory the `whisper_cli` layout names
 the whisper.cpp repository and moved to the pinned ref with a detached
 checkout; a present checkout is left exactly as it is (never reset or
 pulled) and reported with its describe string. The pinned default is the
-commit `764482c3` (`v1.8.3-120-g764482c3`); `--whisper-ref` takes a tag
-or a commit instead. `whisper-cli` is built only when it is missing
+commit `764482c3175d9c3bc6089c1ec84df7d1b9537d83`
+(`v1.8.3-120-g764482c3`); a fresh clone that is not at that commit is
+removed and fails. `--whisper-ref` takes a tag or a commit instead.
+setup.sh runs curl with `-q`; when `TELEGRAM_PACK_MODELS_SHA256` (tests
+only) is set it prints a `note` line naming that list. `whisper-cli` is
+built only when it is missing
 (`cmake -B build`, then `cmake --build build -j --config Release
 --target whisper-cli`). For method `gpu` or `auto` the configure adds
 `-DGGML_CUDA=1` only when nvcc is on PATH (nvcc is no prerequisite);
@@ -458,8 +509,7 @@ mode a GPU run that fails or runs past its GPU limit (a quarter of the
 run limit, at least 30 s) is retried once on the CPU (`cpu: gpu-failed`).
 Without `method`, the legacy `gpu = true` behaves as `method = "auto"`
 (with the configured GPU check) and `gpu = false` as `method = "cpu"`;
-setting both `method` and `gpu` refuses. The two removed GPU-sharing
-keys refuse with one line telling how to migrate (below).
+setting both `method` and `gpu` refuses.
 
 #### The GPU check
 
@@ -499,9 +549,9 @@ reason, never the text: `voice transcription done (msg <id>): <s> s; device
 gpu`, `device gpu: <reason>` or `device cpu: <reason>` with a reason of
 1-32 characters of `a-z`, `0-9` or `-`; a failure line ends the same way.
 An adapter device label outside that shape makes the result `invalid output`.
-Measured with `large-v3-turbo-q5_0`: a 72 s note in
-2.4 s on the GPU at about 1.1 GB of video memory, against about 54 s per
-audio minute on 4 CPU threads.
+On one test host with a CUDA GPU, `large-v3-turbo-q5_0` ran a 72 s note
+in 2.4 s at about 1.1 GB of video memory, against about 54 s per audio
+minute on 4 CPU threads.
 
 The unit needs nothing new for the GPU: it does not restrict devices
 (`/dev/nvidia*` stay reachable).
@@ -528,11 +578,11 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `[transcribe]` key | default | meaning |
 | --- | --- | --- |
 | `enabled` | `false` | `true` transcribes voice and audio notes |
-| `whisper_cli` | `~/work/whisper.cpp/build/bin/whisper-cli` | the whisper.cpp CLI every city on the host shares |
-| `models_dir` | `~/work/whisper.cpp/models` | holds `ggml-<model>.bin` |
+| `whisper_cli` | `~/work/whisper.cpp/build/bin/whisper-cli` | the whisper.cpp CLI every city on the host shares (a default; set it to place the shared build elsewhere) |
+| `models_dir` | `~/work/whisper.cpp/models` | holds `ggml-<model>.bin` (a default; set it to place the shared build elsewhere) |
 | `model` | `large-v3-turbo-q5_0` | measured at 4 threads: about 210 core-seconds per minute of audio; `small.en` about 50 with more slips in names |
 | `vad_model` | `silero-v6.2.0` | the Silero VAD model |
-| `cpus` | `""` (every CPU the bridge has) | CPU list for the transcriber, such as `"2-7,10-15"` |
+| `cpus` | `""` (every CPU the bridge has) | CPU list for the transcriber, such as `"0-3"` |
 | `threads` | `4` | whisper-cli threads, 1-4 |
 | `timeout` | `120` | base seconds of a run, 5-300 (the decode limit, and the start of the whisper limit) |
 | `timeout_per_minute` | `120` | seconds of whisper limit added per minute of audio (the bridge uses Telegram's duration, assuming 10 minutes when it gives none) |
@@ -551,9 +601,9 @@ supported models: <list>`:
 | --- | --- | --- | --- |
 | `large-v3-turbo-q5_0` | `ggml-large-v3-turbo-q5_0.bin`, about 574 MB | about 210 core-seconds per minute of audio | multilingual, forced to English |
 | `small.en` | `ggml-small.en.bin`, about 488 MB | about 50 core-seconds per minute, with more slips in names | English-only |
-| `small.en-q5_1` | `ggml-small.en-q5_1.bin`, about 191 MB | not measured here | English-only |
-| `base.en` | `ggml-base.en.bin`, about 148 MB | not measured here | English-only |
-| `small` | `ggml-small.bin`, about 488 MB | not measured here | multilingual, forced to English |
+| `small.en-q5_1` | `ggml-small.en-q5_1.bin`, about 191 MB | not measured | English-only |
+| `base.en` | `ggml-base.en.bin`, about 148 MB | not measured | English-only |
+| `small` | `ggml-small.bin`, about 488 MB | not measured | multilingual, forced to English |
 
 `install.sh` creates the queue directory and checks `whisper-cli`, both model files and
 their SHA-256 against `<pack>/transcriber/models.sha256`.
@@ -579,8 +629,8 @@ same transcriber by hand: it writes `<name>.txt` next to each audio file and
 prints the text (`install.sh` links it into `~/.local/bin`). It runs on the
 CPU unless `VOICE_TRANSCRIBE_METHOD` is `auto` or `gpu` (with
 `VOICE_TRANSCRIBE_GPU_CHECK` and `VOICE_TRANSCRIBE_GPU_MIN_FREE_MB` for
-`auto`), or, with no method set, `VOICE_TRANSCRIBE_GPU=1` is set (then
-method auto applies: the configured GPU check decides), and prints one
+`auto`), or, with no method, `VOICE_TRANSCRIBE_GPU=1` (method `auto`),
+and prints one
 `voice-transcribe: <file>: device <label>` line per file on stderr.
 
 ### Turning the GPU on for a city
@@ -589,18 +639,15 @@ After the change is integrated, on the host:
 
 1. Add `method = "auto"` under `[transcribe]` in the city's
    `~/.config/<city>/telegram-bridge.toml` (keep it mode 0600), removing
-   any `gpu` there and any of the removed GPU-sharing keys (a file that
-   still sets one refuses to load with the migration line); or
+   any `gpu` there; or
    `method = "gpu"` for the GPU with no check at all. A city with its
-   own GPU decision also sets `gpu_check` to its own command. A file
-   without `method` keeps working: `gpu = true` behaves as
-   `method = "auto"` and `gpu = false` as `method = "cpu"`.
+   own GPU decision also sets `gpu_check` to its own command.
 2. `python3 <pack>/bridge/bridge.py --settings <file> probe` must load the
    settings without an error.
 3. `python3 <pack>/bridge/bridge.py --settings <file> check-install --gpu-probe`
    proves the GPU where the bridge runs, before the restart (below). It
-   skips with `method = "cpu"` (or legacy `gpu = false`) and probes with
-   `method = "auto"` or `"gpu"` (or legacy `gpu = true`).
+   skips with `method = "cpu"` and probes with `method = "auto"` or
+   `"gpu"`.
 4. `systemctl --user restart <city>-telegram.service`, then send a voice
    note: the journal (`journalctl --user -u <city>-telegram.service`) shows
    `voice transcription done (msg <id>): ... device gpu`. Back out with
@@ -620,7 +667,7 @@ text: `ok    gpu probe: device gpu (<seconds> s)` (or `device gpu:
 `FAIL  gpu probe: device
 cpu: gpu-failed` (the GPU failed inside the sandbox; check-install exits
 non-zero); one `skip` line with
-transcription off, legacy `gpu` off or `method = "cpu"`; and a `FAIL` line
+transcription off or `method = "cpu"`; and a `FAIL` line
 for a missing clip, a missing writable path of the unit or a transcriber error.
 With `method = "auto"` a GPU check that answers `false` is not a failure:
 any `cpu: <reason>` it gives (including `cpu: busy` without a reason and

@@ -658,9 +658,8 @@ class Bridge:
                 delay = min(delay * 2, PROBE_RETRY_MAX_DELAY)
 
     def register(self):
-        # SupportsAttachments stays False: the GC-side consumer of this capability flag
-        # lives outside this repo checkout, so how it gates/relies on the flag is
-        # unverified from here. Flip only after confirming GC tolerates it correctly.
+        # SupportsAttachments stays False until GC's handling of it is
+        # confirmed. Flip only after confirming GC tolerates it correctly.
         return self.gc('adapters', dict(provider='telegram', account_id=self.account, name='city-private-telegram',
             callback_url=f'http://127.0.0.1:{self.port}/{self.secret}',
             capabilities=dict(SupportsChildConversations=False, SupportsAttachments=False, MaxMessageLength=4096)))
@@ -1904,8 +1903,8 @@ class Bridge:
             self.store.finish(key, receipt)
             return receipt
 
-    # Poll heartbeat for the telegram-health order: proof that getUpdates is
-    # still succeeding, written at most once a minute. The order judges health
+    # Poll heartbeat for a city's health check: proof that getUpdates is
+    # still succeeding, written at most once a minute. It judges health
     # by its age and pid, so a failed write only costs one stderr line.
     HEARTBEAT_INTERVAL = 60
 
@@ -1925,8 +1924,8 @@ class Bridge:
 
     @staticmethod
     def _write_heartbeat(path, text):
-        """The heartbeat's one writer (commands/telegram-health/README.md, S3),
-        the same fence as _pending_write: the runtime directory must be its
+        """The heartbeat's one writer, the same fence as _pending_write:
+        the runtime directory must be its
         own canonical path (no symlink anywhere in it) and is pinned by an
         O_NOFOLLOW descriptor; the temp file has an unpredictable name created
         with O_EXCL|O_NOFOLLOW in it, is written whole and fsynced, then

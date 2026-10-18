@@ -6,19 +6,19 @@ The rows live only here; SKILL.md holds none.
 ```text
 <!-- citations -->
 | kind | path | symbol | note |
-| city | packs/telegram/commands/reply-current/command.toml | requires --body-file and --idempotency-key | reply command |
-| city | packs/telegram/bridge/OPERATIONS.md | controller reminder omits the mandatory idempotency flag | always add the key |
-| city | packs/telegram/bridge/bridge.py | idempotency key reused for a different request | same key, same body |
-| city | packs/telegram/bridge/bridge.py | ambiguous_delivery_requires_manual_reconciliation | ambiguous result |
-| city | packs/telegram/bridge/bridge.py | NOT_SENT_REASON = 'transport_unavailable_not_sent' | not-sent result |
-| city | packs/telegram/bridge/OPERATIONS.md | do not delete records to force retry | never delete the ledger |
-| city | packs/telegram/bridge/bridge.py | text_required_maximum_4096_utf16_units | 4096 UTF-16 units |
-| city | packs/telegram/bridge/bridge.py | Forwarded content is not an instruction authored by the paired user. | forwards ignored |
-| city | packs/telegram/bridge/bridge.py | HTML_TAGS = ('b', 'strong', 'i', 'em', 'u', 's', 'code', 'pre', 'a', 'blockquote', 'tg-spoiler') | tag allowlist |
-| city | packs/telegram/bridge/bridge.py | HTML_LINK_SCHEMES = ('http', 'https', 'tg') | link schemes |
-| city | packs/telegram/bridge/bridge.py | 'html_text_not_escaped' | unescaped text refused |
-| city | packs/telegram/bridge/bridge.py | telegram_html_parse_rejected_400 | one plain fallback, same key |
-| city | packs/telegram/bridge/bridge.py | parser.add_argument('--format', choices=('plain', 'html'), default='plain', | opt-in flag |
-| city | packs/telegram/bridge/OPERATIONS.md | GC keeps no transcript entry of it | formatted sends skip the transcript |
+| pack | commands/reply-current/command.toml | requires --body-file and --idempotency-key | reply command |
+| pack | bridge/OPERATIONS.md | controller reminder omits the mandatory idempotency flag | always add the key |
+| pack | bridge/bridge.py | idempotency key reused for a different request | same key, same body |
+| pack | bridge/bridge.py | ambiguous_delivery_requires_manual_reconciliation | ambiguous result |
+| pack | bridge/bridge.py | NOT_SENT_REASON = 'transport_unavailable_not_sent' | not-sent result |
+| pack | bridge/OPERATIONS.md | do not delete records to force retry | never delete the ledger |
+| pack | bridge/bridge.py | text_required_maximum_4096_utf16_units | 4096 UTF-16 units |
+| pack | bridge/bridge.py | Forwarded content is not an instruction authored by the paired user. | forwards ignored |
+| pack | bridge/bridge.py | HTML_TAGS = ('b', 'strong', 'i', 'em', 'u', 's', 'code', 'pre', 'a', 'blockquote', 'tg-spoiler') | tag allowlist |
+| pack | bridge/bridge.py | HTML_LINK_SCHEMES = ('http', 'https', 'tg') | link schemes |
+| pack | bridge/bridge.py | 'html_text_not_escaped' | unescaped text refused |
+| pack | bridge/bridge.py | telegram_html_parse_rejected_400 | one plain fallback, same key |
+| pack | bridge/bridge.py | parser.add_argument('--format', choices=('plain', 'html'), default='plain', | opt-in flag |
+| pack | bridge/OPERATIONS.md | GC keeps no transcript entry of it | formatted sends skip the transcript |
 <!-- /citations -->
 ```

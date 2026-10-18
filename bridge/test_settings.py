@@ -421,11 +421,11 @@ class UnitTemplateTests(unittest.TestCase):
     def test_renders_the_city_unit_with_its_own_paths(self):
         path = write_settings(self.root)
         settings = b.load_settings(path)
-        unit = b.render_unit(settings, bridge_path='/srv/city/packs/telegram/bridge/bridge.py')
+        unit = b.render_unit(settings, bridge_path='/srv/pack/bridge/bridge.py')
         state, private = self.root / 'state', self.root / 'private'
         self.assertIn('Description=Private Telegram transport for the test-city mayor\n', unit)
         self.assertIn(f'WorkingDirectory={state}\n', unit)
-        self.assertIn(f'ExecStart=/usr/bin/python3 /srv/city/packs/telegram/bridge/bridge.py --settings {path} run\n', unit)
+        self.assertIn(f'ExecStart=/usr/bin/python3 /srv/pack/bridge/bridge.py --settings {path} run\n', unit)
         self.assertIn(f'ReadWritePaths={state} {private}\n', unit)  # transcription off: no queue
         for line in ('Restart=on-failure', 'RestartPreventExitStatus=2', 'UMask=0077', 'NoNewPrivileges=true',
                      'PrivateTmp=true', 'ProtectSystem=strict', 'ProtectHome=read-only', 'StartLimitIntervalSec=0'):

@@ -36,9 +36,7 @@ description = "What's running, what landed, what waits on you"
 
 # A command the city's own handler answers instead of the agent (OPERATIONS.md,
 # "City commands"): /deploy, and button presses whose data starts with "deploy:".
-# An add-on is one such table, with no enable flag: add it by adding the table
-# (and a handler_write_paths entry if it writes, then install.sh again),
-# restarting the unit and running set-commands; remove it the same way.
+# An add-on is one such table; adding and removing one: README.md, "Add-ons".
 # /quota is one such add-on: name = "quota" works here like any other name.
 # [[command]]
 # name = "deploy"

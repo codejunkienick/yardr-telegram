@@ -11,7 +11,7 @@ build and models, never a process, a ledger or a bot.
 | --- | --- |
 | `bridge/bridge.py` | the bridge: `run`, `probe`, `send`, `reply-current`, `set-commands`, `render-unit`, `check-install` |
 | `bridge/OPERATIONS.md` | the operations guide: settings, launch, delivery recovery, transcription |
-| `bridge/test_*.py` | `python3 -m unittest discover -s bridge` (fake Telegram, GC and whisper-cli; no network) |
+| `bridge/test_*.py` | `sh scripts/test.sh` (fake Telegram, GC and whisper-cli; no network) |
 | `settings.example.toml` | every settings key, with example values |
 | `install.sh` | checks a city's settings and host, links `voice-transcribe`, renders its unit |
 | `systemd/telegram-bridge.service.in` | the unit template |
@@ -103,16 +103,35 @@ pack gets them as `telegram.<name>`.
   rewrite it without any city, person, product or path of that city, move it
   to `skills/<name>/SKILL.md` here with a citations table of the pack files it
   relies on in `citations.md` beside it (never in SKILL.md), and delete the city
-  copy in the same change. The pack's tests
-  refuse a city or company name anywhere in the pack outside this README.
+  copy in the same change. Nothing in the pack names a city, person or company.
 
-## Example: imd-city (one real adopter)
+## Add-ons
 
-This repository's own city (`imd-city`) runs the pack in place: `pack.toml`
-imports it as `./packs/telegram`, its settings are
-`~/.config/imd-city/telegram-bridge.toml` with `state_dir` at the city's
-`.runtime/attention` (the ledger, offset and inbound files of its earlier
-bridge), port 8931, `unit = "imd-city-telegram.service"`, `/quota` on with the
-quota gate report, and `[transcribe] enabled = true`. Its outage watchdog,
-`integrations/attention/telegram-bridge/city_watchdog.py`, stays the city's
-own and imports this pack's `bridge.py`.
+An add-on is one `[[command]]` table in a city's settings, with no enable
+flag. Its handler lives outside the pack: the city's own program, or one it
+installs. Add one: install the handler at an absolute path (owner-writable
+only, executable), add the table (and a `handler_write_paths` entry if it
+writes, then run `install.sh` again), restart the unit, and run
+`set-commands`. Remove one: delete the table and do the same steps. The
+handler protocol is in `bridge/OPERATIONS.md`, "City commands".
+
+The quota command (provider quota and time to each reset) is such an add-on:
+a city's settings register it like any other command, and its handler is the
+city's wrapper script for `telegram-quota`, published separately.
+
+## Example
+
+`my-city` keeps its settings at `~/.config/my-city/telegram-bridge.toml`:
+
+```toml
+state_dir = "/home/<user>/my-city/state"
+port = <port>
+unit = "my-city-telegram.service"
+[transcribe]
+enabled = true
+method = "auto"
+[[command]]
+name = "quota"
+description = "Provider quota and time to each reset"
+handler = "/home/<user>/my-city/bin/telegram-quota"
+```

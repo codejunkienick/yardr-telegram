@@ -1,11 +1,12 @@
-# Private mayor Telegram transport
+# Telegram bridge operations
 
-This adapter connects a city's existing mayor to Telegram using GC 1.4.1
-external messaging. It adds no LLM, task poller, approval authority, or
-automatic blocker detection. The mayor sends purposeful notifications and
-replies through the city. It accepts private text and media authored by the
-paired numeric user only; groups, other senders, bot messages, forwarded
-messages, and `/start` are skipped.
+This guide describes the pack's bridge for any city's agent. The bridge
+connects that agent to Telegram using GC 1.4.1 external messaging. It adds
+no LLM, task poller, approval authority, or automatic blocker detection.
+The agent sends purposeful notifications and replies through the city. It
+accepts private text and media authored by the paired numeric user only;
+groups, other senders, bot messages, forwarded messages, and `/start` are
+skipped.
 
 Every city runs its own bridge process from this one `bridge.py`, configured
 only by its own settings file. Below, `<pack>` is this pack's directory and
@@ -40,7 +41,7 @@ city.
 | `unit` | no | systemd unit name; default `<city>-telegram.service` |
 | `python` | no | interpreter for the unit and the transcriber; default `/usr/bin/python3` |
 | `user_display_name` | no | the actor name on relayed messages; default `User` |
-| `timezone` | no | times in notices; default `UTC` |
+| `timezone` | no | times in notices and the time zone passed to handlers (`TZ`); default `UTC` |
 | `gc_base_url`, `gc_api_token_file` | no | loopback GC API (default `http://127.0.0.1:8372`) and its bearer token file |
 | `health_file` | no | the city's health report; enables the quota-exhausted notice |
 | `pairing_update_id` | no | the first offset is this plus one, only for a new ledger |
@@ -49,6 +50,12 @@ city.
 | `[[command]]` | no | the city's own commands and buttons, run by its own handlers ("City commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
 | `[transcribe]` | no | voice transcription (below); off by default |
+
+The health report at `health_file` is a JSON object with `observed_at`
+(ISO-8601 with zone, at most 10 minutes old) and `sessions`, a list of
+objects with `template` (the agent name), `status` (`quota_wait` triggers
+the quota-exhausted notice), `episode` (a non-empty string) and `until`
+(epoch milliseconds, in the future).
 
 Paths may start with `~`; after that they must be absolute, normalized, and
 made of letters, digits and `._@+-` only, so they are safe in a unit file.
@@ -121,12 +128,10 @@ lock, webhook or `getUpdates` call, so it is safe while the unit runs and
 needs no restart. Other chats and the bot's default menu are not set. With
 nothing to show it refuses.
 
-`/quota` is not built in: a city that wants it registers it as an ordinary
-`[[command]]` (below) and its handler answers; with no such command it reaches
-the mayor as an ordinary message. The quota-exhausted notice still goes out as
-Telegram HTML (bold headers) through the bridge's own `publish()`. A city's own
-commands go to their handlers (below); every other command reaches the mayor as
-an ordinary message.
+A `/quota` with no `[[command]]` reaches the mayor as an ordinary message.
+The quota-exhausted notice goes out as Telegram HTML (bold headers) through
+the bridge's own `publish()`. A city's own commands go to their handlers
+(below); every other command reaches the mayor as an ordinary message.
 
 ## City commands
 
@@ -151,10 +156,8 @@ a URL off loopback, a `callback_prefix` that equals or starts another one
 (a press would have two owners), or more than 100 menu entries in all.
 `start` stays reserved always.
 
-An add-on is one `[[command]]` table, with no enable flag of its own. Add one
-by adding the table (and a `handler_write_paths` entry if it writes, then
-`install.sh` again), restarting the unit and running `set-commands`; remove
-one by deleting the table and doing the same steps.
+Adding or removing an add-on follows the procedure in `README.md`,
+"Add-ons".
 
 **Dispatch.** A message from the paired user whose text is `/<name>` or
 `/<name>@<bot username>`, alone or followed by a space and arguments, goes to
@@ -711,7 +714,7 @@ The adapter logs lifecycle/failure categories, never text, tokens, or callback U
 Validate locally with (fake Telegram, fake GC, fake whisper-cli; no network):
 
 ```sh
-python3 -m unittest discover -s <pack>/bridge
+sh scripts/test.sh
 ```
 
 Wire references: [GC v1.4.1 adapter](https://github.com/gastownhall/gascity/blob/v1.4.1/internal/extmsg/http_adapter.go),

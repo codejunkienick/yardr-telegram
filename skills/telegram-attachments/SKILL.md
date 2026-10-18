@@ -15,6 +15,8 @@ python3 <pack>/bridge/bridge.py --city-root <city> reply-current --conversation-
 (`gc telegram reply-current` takes the same flags; `<pack>` is this pack's
 directory.)
 
+Which command: `gc telegram reply-current` once the city imports this pack and its sessions were reloaded. Before that, `python3 <pack>/bridge/bridge.py --settings <settings> send ... --session <your session>` with the same flags. An agent served by a second bridge has `TELEGRAM_BRIDGE_SETTINGS` set to that bridge's settings in its environment and uses the same commands (bridge/OPERATIONS.md, "Send and receive"). The `--city-root <city> reply-current` form above is the pack command's direct form.
+
 - The kind comes from the extension: `.png`/`.jpg`/`.jpeg` photo (10 MB),
   `.webm`/`.mp4` video (50 MB), anything else document (50 MB). Override with
   `--attachment-kind photo|video|document|voice|video_note`; a `.png` sent as a

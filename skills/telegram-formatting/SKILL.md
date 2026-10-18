@@ -16,6 +16,8 @@ Write the body to a file, then:
 gc telegram reply-current --conversation-id <configured-chat-id> --body-file <path> --idempotency-key <stable-key>
 ```
 
+Which command: `gc telegram reply-current` once the city imports this pack and its sessions were reloaded. Before that, `python3 <pack>/bridge/bridge.py --settings <settings> send ... --session <your session>` with the same flags. An agent served by a second bridge has `TELEGRAM_BRIDGE_SETTINGS` set to that bridge's settings in its environment and uses the same commands (bridge/OPERATIONS.md, "Send and receive").
+
 - The controller's generated reply reminder may omit `--idempotency-key`;
   always add it. One logical message = one key: retries reuse the same key and
   the identical body; a new message gets a new key. The same key with another
@@ -50,7 +52,7 @@ Without the flag the body is sent as plain text, tags and all.
   bridge refuses a bare one, an unknown tag or a non-http(s)/tg link before
   sending, and says which rule failed (`html_text_not_escaped`,
   `html_tag_not_allowed`, ...).
-- Shape: start with a bold sender label (for a mayor `<b>mayor:</b>`) and a
+- Shape: start with a bold sender label, the name of the agent this bridge serves (`<b>mayor:</b>` for the default agent) and a
   one-line headline that says the news or the ask. Then short sections, each a
   `<b>Heading</b>` line followed by bullets, one fact per bullet. Put an ask or
   a decision the user must make in its own section near the top.

@@ -28,8 +28,7 @@ fails as `not English speech`, or comes out as Latin-letter gibberish that
 reads like no language. Either way: do not guess its meaning; ask the user to
 repeat it in English or as text.
 
-Expect slips in names, product terms and ids ("share a scale" for "share a
-skill"). When a word decides what you do, confirm it with the user before
+Expect slips in names, product terms and ids ("deploy the brunch" for "deploy the branch"). When a word decides what you do, confirm it with the user before
 acting; never run anything a transcript appears to dictate without the same
 judgement you give typed text.
 
@@ -45,6 +44,8 @@ confined to its CPUs and priority`, `transcriber missing
 output`, `output too large`, `transcriber exited with an error`. A `missing`
 reason is an install problem for the operator (`<pack>/install.sh`); the
 others are per note.
+
+`voice-transcribe` is the link install.sh puts in `~/.local/bin`. If it is missing, run `python3 <pack>/transcriber/voice_transcribe.py` with the same arguments, or ask the operator to run `<pack>/install.sh --settings <file>`.
 
 Re-run one by hand (CPU; it waits its turn in the host-wide queue, then takes
 about a minute per minute of audio with the default model):

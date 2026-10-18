@@ -7,8 +7,8 @@
 # secret stay in their own owner-only files.
 
 city = "example-city"                       # gc's city name (the extmsg scope)
-state_dir = "/home/alex/example-city/.runtime/attention"   # ledger, offset, inbound files, heartbeat
-port = 8932                                 # loopback callback port, unique per city on the host
+state_dir = "/home/alex/example-city/telegram-state"   # ledger, offset, inbound files, heartbeat
+port = 8930                                 # loopback callback port, unique per city on the host
 token_file = "~/.config/example-city/telegram-bot-token"
 callback_secret_file = "~/.config/example-city/telegram-callback-secret"
 # lock_dir = "~/.config/example-city"       # default: the token file's directory
@@ -18,26 +18,25 @@ user_display_name = "Alex"                  # how inbound messages name the pair
 timezone = "Europe/Berlin"                  # times in notices; default UTC
 # gc_base_url = "http://127.0.0.1:8372"     # loopback only
 # gc_api_token_file = "~/.config/example-city/gc-api-token"
-# health_file = "/home/alex/example-city/.runtime/city-health.json"  # quota-exhausted notice
-# pairing_update_id = 0                     # first offset is this + 1, only for a new ledger
+# health_file = "/home/alex/example-city/health.json"  # quota-exhausted notice
+# pairing_update_id = 0                     # the update_id of the /start update (README step 3): the bridge starts after it; read only for a new ledger
 # agent = "mayor"                           # the gc agent this bridge serves; default mayor
 # handler_write_paths = ["/home/alex/example-city/var/deploy"]  # dirs [[command]] handlers may write
 
 [bot]
-bot_id = 1000000001                         # numeric, from getMe
-user_id = 1000000002                        # the paired user's numeric id
-chat_id = 1000000002                        # private chat: equals user_id
-account_id = "example_city_bot"             # bot username, the GC adapter account
+bot_id = 1000000001                         # numeric: getMe's id
+user_id = 1000000002                        # the paired user's id: the /start message's from.id
+chat_id = 1000000002                        # its chat.id; a private chat, so equal to user_id
+account_id = "example_city_bot"             # getMe's username, the GC adapter account
 
 # The paired chat's "/" menu, in order (`bridge.py set-commands` registers it).
 [[menu]]
 command = "status"
-description = "What's running, what landed, what waits on you"
+description = "Show the agent's status"
 
 # A command the city's own handler answers instead of the agent (OPERATIONS.md,
 # "City commands"): /deploy, and button presses whose data starts with "deploy:".
 # An add-on is one such table; adding and removing one: README.md, "Add-ons".
-# /quota is one such add-on: name = "quota" works here like any other name.
 # [[command]]
 # name = "deploy"
 # description = "Deploy a branch"
@@ -48,11 +47,12 @@ description = "What's running, what landed, what waits on you"
 
 [transcribe]
 enabled = true                              # voice and audio notes get an English transcript
+# whisper_cli and models_dir default to ~/work/whisper.cpp, the build every city on the host shares; set both to place it elsewhere.
 # whisper_cli = "~/work/whisper.cpp/build/bin/whisper-cli"
 # models_dir = "~/work/whisper.cpp/models"
 # model = "large-v3-turbo-q5_0"
 # vad_model = "silero-v6.2.0"
-# cpus = "2-7,10-15"                        # CPUs the transcriber may use; default every CPU
+# cpus = "0-3"                              # CPUs the transcriber may use; default every CPU
 # threads = 4                               # 1-4
 # timeout = 120                             # base seconds, 5-300
 # timeout_per_minute = 120                  # added per minute of audio; killed when the total runs out

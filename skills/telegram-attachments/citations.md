@@ -17,7 +17,7 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | note = f'[attachment saved: {path} \| {kind} \| {size} bytes \| caption: {caption_display}]' | saved note |
 | pack | bridge/bridge.py | INBOUND_MAX_BYTES = 50 * 1024 * 1024 | 50 MB inbound cap |
 | pack | bridge/bridge.py | INBOUND_DOWNLOAD_ATTEMPTS = 3 | three fetch attempts |
-| pack | README.md | Re-run `gc reload` (or restart the | pack command after import and reload |
+| pack | README.md | Then run `gc reload`, and check that `gc config show` lists the telegram import. | pack command after import and reload |
 | pack | bridge/OPERATIONS.md | The direct form works before pack reload | direct form before reload |
 | pack | README.md | TELEGRAM_BRIDGE_SETTINGS | second bridge settings in the environment |
 | pack | commands/reply-current/run.sh | exec python3 "$pack/bridge/bridge.py" --city-root "$city" reply-current "$@" | city-root form is the pack command's direct form |

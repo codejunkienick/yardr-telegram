@@ -1945,7 +1945,7 @@ class HeartbeatTests(BridgeTestCase):
             self.bridge.record_poll_ok()
         self.assertEqual(err.getvalue(), 'poll heartbeat not saved\n')
 
-    # r6b1: the heartbeat write never follows a link out of the runtime.
+    # The heartbeat write never follows a link out of the runtime.
     def test_a_planted_link_at_the_old_temp_path_is_never_followed(self):
         outside = tempfile.TemporaryDirectory()
         self.addCleanup(outside.cleanup)

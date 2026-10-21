@@ -20,7 +20,7 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | telegram_html_parse_rejected_400 | one plain fallback, same key |
 | pack | bridge/bridge.py | parser.add_argument('--format', choices=('plain', 'html'), default='plain', | opt-in flag |
 | pack | bridge/OPERATIONS.md | GC keeps no transcript entry of it | formatted sends skip the transcript |
-| pack | README.md | Re-run `gc reload` (or restart the | pack command after import and reload |
+| pack | README.md | Then run `gc reload`, and check that `gc config show` lists the telegram import. | pack command after import and reload |
 | pack | bridge/OPERATIONS.md | The direct form works before pack reload | direct form before reload |
 | pack | README.md | TELEGRAM_BRIDGE_SETTINGS | second bridge settings in the environment |
 | pack | bridge/bridge.py | agent = config.get('agent', 'mayor') | sender label is the served agent, default mayor |

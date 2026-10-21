@@ -58,7 +58,7 @@ except Exception as exc:
     sys.exit(1)
 enabled = "1" if s.transcribe is not None else "0"
 if s.transcribe is not None:
-    method = s.transcribe.get("method") or ("gpu" if s.transcribe.get("gpu") else "cpu")
+    method = s.transcribe["method"]
 else:
     method = "cpu"
 try:

@@ -56,7 +56,7 @@ if [ ! -e "$secret" ] && [ ! -L "$secret" ]; then
   if [ "$dry_run" = 1 ]; then
     echo "would create callback secret $secret (mode 600)"
   else
-    python3 -c 'import runpy, sys; m = runpy.run_path(sys.argv[1]); m["capability"](m["load_settings"](sys.argv[2]).callback_secret_file)' "$bridge" "$settings" \
+    python3 -c 'import runpy, sys; m = runpy.run_path(sys.argv[1]); m["capability"](sys.argv[2])' "$bridge" "$secret" \
       && echo "created callback secret $secret (mode 600)"
   fi
 fi

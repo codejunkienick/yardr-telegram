@@ -6,6 +6,7 @@ English voice transcription), and the skills an agent needs to use it. Each
 city runs its own bridge process from this one copy of the code, configured
 only by its own settings file; cities share the code and the host's whisper.cpp
 build and models, never a process, a ledger or a bot.
+(Terms such as the mayor, the paired chat and the ledger: `bridge/OPERATIONS.md`, "Terms".)
 
 | Path | What |
 | --- | --- |
@@ -19,45 +20,100 @@ build and models, never a process, a ledger or a bot.
 | `commands/reply-current/` | `gc telegram reply-current`: reply in the paired chat |
 | `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts` |
 
+## Prerequisites
+
+- Linux: check `uname -s` prints `Linux`.
+- Python 3.11 or later: check `python3 --version`.
+- curl: check `curl --version`.
+- gc 1.4.1 or later on PATH, its city running (`gc version`; tested on 1.5.0): check `gc version`.
+- A systemd user session (`systemctl --user`): check `systemctl --user status`.
+- For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg, curl, sha256sum, and network access to clone whisper.cpp and download the models (the default model `ggml-large-v3-turbo-q5_0.bin` is about 574 MB, plus the small VAD model): check `git --version`, `cmake --version` and `ffmpeg -version`.
+
 ## Adopt in a city
+
+Each step says who does it: (you) for the Telegram app and BotFather, (shell) for a command in the user's terminal, (agent or shell) for what an agent may also do. An agent stops at a (you) step and asks the user.
 
 For a city named `<city>` (gc's `workspace_name` in `<city>/.gc/site.toml`),
 with this pack at `<pack>`:
 
-1. Import the pack in the city's `pack.toml`:
-   `[imports.telegram]` with `source = "<pack>"` (a local path) or the
-   repository URL of this pack plus a pinned `version`. This brings the
-   `reply-current` command and the skills. Re-run `gc reload` (or restart the
-   sessions) for agents to see them.
-2. Create a bot with BotFather, open a private chat with it and send `/start`.
-   Save the token owner-only, for example
-   `install -m 600 /dev/stdin ~/.config/<city>/telegram-bot-token` and paste it
-   (never in a shell argument or history).
-3. Write `~/.config/<city>/telegram-bridge.toml` from `settings.example.toml`,
-   `chmod 600`: the city name, its own `state_dir` and `port`, the bot's and the
-   user's numeric ids (`getMe`, and the `/start` update), the token file, the
-   menu, and `[transcribe] enabled = true` for voice transcription. If the
-   host has no whisper.cpp build or models yet, run
-   `<pack>/transcriber/setup.sh --settings <file>` first (`--dry-run` shows
-   what it would do): it builds whisper.cpp for the settings' method and
-   downloads the chosen models, checked against
-   `transcriber/models.sha256` (`~/work/whisper.cpp` by default). Every city on the host shares one FIFO
-   queue, `~/.local/state/voice-transcribe` (not a setting), so two bridges
-   never run whisper at once. `gpu = true` there behaves as
-   `method = "auto"`: the configured GPU check decides whether a note runs
-   on the GPU, else it runs on the CPU (`bridge/OPERATIONS.md`, "GPU or CPU").
-4. Bind the conversation to the mayor once (`gc extmsg bind`, agent-name
-   `mayor`, the private chat id, no wildcard route).
-5. `<pack>/install.sh --settings ~/.config/<city>/telegram-bridge.toml`: it
+1. (agent or shell) Import the pack in the city's `pack.toml`, either from a
+   local path:
+
+   ```toml
+   [imports.telegram]
+   source = "<pack>"
+   ```
+
+   or from the repository URL of this pack with a pinned version:
+
+   ```toml
+   [imports.telegram]
+   source = "<repository URL of this pack>"
+   version = "<tag>"
+   ```
+
+   This brings the `reply-current` command and the skills. Then run
+   `gc reload`, and check that `gc config show` lists the telegram import.
+2. (you) Create a bot with BotFather, open a private chat with it and send `/start`.
+   Save the token owner-only: first
+   `install -d -m 700 ~/.config/<city>`, then
+   `install -m 600 /dev/stdin ~/.config/<city>/telegram-bot-token`, paste the token, Enter, then Ctrl-D
+   (never in a shell argument or history). Check
+   `ls -l ~/.config/<city>/telegram-bot-token` shows `-rw-------`.
+3. (agent or shell, with the ids from step 2's chat) First read the ids without
+   putting the token in argv or history, run before the bridge's first start:
+
+   ```sh
+   python3 - ~/.config/<city>/telegram-bot-token <<'EOF'
+   import json, sys, urllib.request
+   token = open(sys.argv[1]).read().strip()
+   for method in ('getMe', 'getUpdates'):
+       with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/{method}', timeout=20) as answer:
+           print(method, json.dumps(json.load(answer)['result'], indent=1))
+   EOF
+   ```
+
+   Then write each value where it goes: getMe's `id` -> `[bot] bot_id`, its
+   `username` -> `[bot] account_id`; in the `/start` update,
+   `message.from.id` -> `[bot] user_id`, `message.chat.id` -> `[bot] chat_id`
+   (equal to user_id), and its `update_id` -> `pairing_update_id`. Then write
+   `~/.config/<city>/telegram-bridge.toml` from `settings.example.toml`,
+   `chmod 600`: the city name, its own `state_dir` and `port`, the ids above,
+   the token file, the menu, and `[transcribe] enabled = true` for voice
+   transcription. For transcription, meet the transcription prerequisites
+   above first, in this order: the settings file with
+   `[transcribe] enabled = true` first, then
+   `<pack>/transcriber/setup.sh --settings <file>` (`--dry-run` to preview).
+   It clones whisper.cpp and downloads about 600 MB into
+   `~/work/whisper.cpp` by default (set `whisper_cli` and `models_dir` to
+   place the shared build elsewhere); success is its last line
+   `next: <pack>/install.sh --settings <file>`. See
+   `bridge/OPERATIONS.md`, "Voice-note transcription", for the queue and
+   the GPU.
+4. (agent or shell) Bind the conversation to the mayor once:
+   `gc extmsg bind --provider telegram --account-id <bot username> --conversation-id <chat id> --agent mayor --json`.
+   The printed record names the conversation and the agent mayor. There is
+   no wildcard route, and `gc extmsg bind --help` lists every flag.
+5. (shell) `<pack>/install.sh --settings ~/.config/<city>/telegram-bridge.toml`: it
    creates the callback secret and the shared queue directory if they are
-   missing, every check must say
-   `ok`, and it renders `~/.config/systemd/user/<city>-telegram.service` (the
-   unit may write its state directory, its lock directory and the queue).
-6. `python3 <pack>/bridge/bridge.py --settings <file> probe`, then
+   missing, and it renders `~/.config/systemd/user/<city>-telegram.service`.
+   The unit reads the settings and credential files only (they are read-only
+   inside it) and writes its state directory, its lock directory, the queue
+   and any `handler_write_paths`. Success: every check line says `ok`, and
+   the last line is
+   `next: python3 <pack>/bridge/bridge.py --settings <file> probe; systemctl --user daemon-reload; systemctl --user enable --now <unit>; python3 <pack>/bridge/bridge.py --settings <file> set-commands (README.md, "Adopt in a city", step 6)`.
+6. (shell) `python3 <pack>/bridge/bridge.py --settings <file> probe`, then
    `systemctl --user daemon-reload && systemctl --user enable --now <city>-telegram.service`,
    then `python3 <pack>/bridge/bridge.py --settings <file> set-commands`.
-7. Send a message from the chat and check the mayor received it; reply with
-   `gc telegram reply-current` (the `telegram-formatting` skill).
+   Success: after probe, its line `Telegram identity and webhook checks passed`;
+   after `enable --now`, `systemctl --user status <city>-telegram.service`
+   shows it active and `<state_dir>/telegram-bridge-heartbeat.json` appears
+   within about a minute; after set-commands, its line
+   `Telegram command menu set for the paired chat: /<command> ...`.
+7. (you, then the agent) Send a message from the chat and check the mayor
+   received it; reply with `gc telegram reply-current` (the
+   `telegram-formatting` skill). Success: the message reaches the mayor's
+   session.
 
 ### A second bridge for a second agent
 
@@ -65,9 +121,8 @@ One city can run a second bridge so another of its agents has its own chat.
 It is a separate bot with a separate settings file, sharing nothing with the
 first bridge but the code: its own `port`, `state_dir`, `unit`, `token_file`
 and `callback_secret_file`, and `agent = "<agent>"`, the gc agent it serves.
-Bind its conversation to that agent with
-`gc extmsg bind --provider telegram --account-id <bot username>
---conversation-id <chat id> --agent <agent>` (step 4 with the second bot: the
+Bind its conversation to that agent with step 4's command, with
+`--agent <agent>` instead of `--agent mayor` (step 4 with the second bot: the
 chat id is the same user's, the account tells the two apart), install and
 start its unit as in steps 5-6 (`unit` must differ from the first bridge's,
 which the default `<city>-telegram.service` does not), and give that agent's
@@ -87,6 +142,16 @@ a city that imports it by path runs the shared one. Moving a city to this pack
 from an older bridge copy: point `state_dir` at the old state directory so the
 ledger, inbound offset and files carry over, keep the same `port`, and stop
 the old unit before starting the new one (two pollers on one bot conflict).
+
+## Uninstall
+
+1. (shell) `systemctl --user disable --now <unit>`
+2. (shell) `rm ~/.config/systemd/user/<unit> && systemctl --user daemon-reload`
+3. (agent or shell) `gc extmsg unbind --provider telegram --account-id <bot username> --conversation-id <chat id> --agent <agent>`
+4. (agent or shell) Remove the `[imports.telegram]` table and `gc reload`.
+5. (shell, optional) Delete the city's settings file, token and callback secret, and its state_dir (the ledger: keep a private copy if the bridge may return).
+6. (shell) Keep the host's shared pieces while any other city runs the pack: the queue `~/.local/state/voice-transcribe`, the whisper.cpp build and models, and `~/.local/bin/voice-transcribe`. Remove the link only when no city on the host runs the pack any more.
+7. (you, optional) Delete the bot with BotFather.
 
 ## Skills
 
@@ -112,16 +177,14 @@ flag. Its handler lives outside the pack: the city's own program, or one it
 installs. Add one: install the handler at an absolute path (owner-writable
 only, executable, owned by this user or root, in a directory owned by
 this user or root and writable by neither group nor others), add the
-table (and a `handler_write_paths` entry if it writes, then run
-`install.sh` again), restart the unit, and run
-`set-commands`. Remove one: delete the table and do the same steps. The
-handler protocol is in `bridge/OPERATIONS.md`, "City commands".
-
-The quota command (provider quota and time to each reset) is such an add-on:
-a city's settings register it like any other command, and its handler is the
-city's wrapper script for `telegram-quota`, published separately.
+table (and a `handler_write_paths` entry if it writes), then run
+`install.sh` again, `systemctl --user daemon-reload`, restart the unit, and run
+`set-commands`. Remove one: delete the table, delete the handler program if nothing else uses it, drop its `handler_write_paths` entry if no other handler writes there, run `install.sh` again, `systemctl --user daemon-reload`, restart the unit, then run `set-commands`. The menu loses the command only then.
+The handler protocol is in `bridge/OPERATIONS.md`, "City commands".
 
 ## Example
+
+This is a partial file, only the keys that differ from settings.example.toml, which holds the full list.
 
 `my-city` keeps its settings at `~/.config/my-city/telegram-bridge.toml`:
 
@@ -133,7 +196,7 @@ unit = "my-city-telegram.service"
 enabled = true
 method = "auto"
 [[command]]
-name = "quota"
-description = "Provider quota and time to each reset"
-handler = "/home/<user>/my-city/bin/telegram-quota"
+name = "deploy"
+description = "Deploy a branch"
+handler = "/home/<user>/my-city/bin/telegram-deploy"
 ```

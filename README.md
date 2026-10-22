@@ -1,12 +1,33 @@
 # telegram pack
 
-One private Telegram bridge for any Gas City: the mayor's chat with its paired
-user (inbound text and files, outbound text, HTML formatting and attachments,
-voice transcription in the language each setup configures), and the skills an agent needs to use it. Each
-city runs its own bridge process from this one copy of the code, configured
-only by its own settings file; cities share the code and the host's whisper.cpp
-build and models, never a process, a ledger or a bot.
+This pack provides a private Telegram bridge for a Gas City. It connects the
+paired chat with the mayor through a bridge process that each city runs for
+itself.
+
 (Terms such as the mayor, the paired chat and the ledger: `bridge/OPERATIONS.md`, "Terms".)
+
+## What it does
+
+- The paired user gets a private chat with the mayor for text in both
+  directions, with Telegram HTML formatting on outbound text.
+- The agent gets inbound photos, documents, videos, voice and audio files
+  saved on the host, and can send photos, videos, documents, voice notes
+  and round video notes to the chat.
+- When transcription is enabled, the mayor gets each voice and audio note
+  transcribed on the host with whisper.cpp in the configured language, with
+  no cloud service. With `method = "auto"`, it uses the GPU when one is free.
+- The mayor gets a delivery ledger that stops a retried send from posting
+  twice and reports an unknown outcome instead of resending it.
+- The paired user gets a slash command menu, and a city adds commands
+  through its own handler programs that answer with text and inline
+  buttons and need no enable flag.
+- Each city gets its own bot, settings file, bridge process and delivery
+  ledger on one host, and cities share one copy of the code and one
+  whisper.cpp build.
+- The operator gets setup checks from `install.sh` and `check-install`
+  before the bridge runs, and a systemd user unit for each city.
+- The agent gets ready-made skills for Telegram formatting, attachments
+  and voice transcripts.
 
 | Path | What |
 | --- | --- |

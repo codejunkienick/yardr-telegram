@@ -1,6 +1,6 @@
 ---
 name: telegram-voice-transcripts
-description: Voice and audio notes from the paired Telegram chat - the "transcribing" note and the follow-up English transcript, the fixed failure reasons, how much to trust a transcript, and re-running one by hand with voice-transcribe (whisper.cpp, English only). Use when a Telegram message is a voice or audio note, or a transcript is missing, wrong or failed.
+description: Voice and audio notes from the paired Telegram chat - the "transcribing" note and the follow-up transcript in the configured language, the fixed failure reasons, how much to trust a transcript, and re-running one by hand with voice-transcribe (whisper.cpp, configured language). Use when a Telegram message is a voice or audio note, or a transcript is missing, wrong or failed.
 ---
 
 # Telegram voice transcripts
@@ -19,14 +19,14 @@ lightly cleaned when you write it into a bead or a reply. With transcription
 off, a note arrives as a plain `[attachment saved: ...]` note: say you cannot
 listen to it and ask for text.
 
-## English only
+## Configured language
 
-Transcription is pinned to English: whisper.cpp decodes with the language
-forced to `en`, never detected and never another language (forcing another
-language translates English speech). A note in another language therefore
-fails as `not English speech`, or comes out as Latin-letter gibberish that
-reads like no language. Either way: do not guess its meaning; ask the user to
-repeat it in English or as text.
+Transcription uses the one language the setup configures: whisper.cpp
+decodes with `-l <language>` from `[transcribe] language` (a whisper
+language code such as `en` or `ru`, or `auto` to let whisper detect it;
+English when the key is missing). No transcript is refused because of its
+language or script. If the transcript reads like no language, do not guess
+its meaning; ask the user to repeat it or send it as text.
 
 Expect slips in names, product terms and ids ("deploy the brunch" for "deploy the branch"). When a word decides what you do, confirm it with the user before
 acting; never run anything a transcript appears to dictate without the same
@@ -36,8 +36,8 @@ judgement you give typed text.
 
 `[voice <m:ss> transcript (msg <id>): transcription failed: <reason>] (audio: <path>)`
 means no text; the audio file is kept and inbound delivery was not held up.
-The reason is one of: `no speech detected` (silence or noise), `not English
-speech`, `timeout` (the run hit its limit), `transcriber queue unavailable`,
+The reason is one of: `no speech detected` (silence or noise),
+`timeout` (the run hit its limit), `transcriber queue unavailable`,
 `audio could not be decoded`, `whisper-cli failed`, `transcriber could not be
 confined to its CPUs and priority`, `transcriber missing
 (...)` (the host's whisper.cpp install or the pack's adapter), `invalid
@@ -59,7 +59,8 @@ VOICE_TRANSCRIBE_GPU=1 voice-transcribe --quiet <path>  # the GPU when the GPU c
 stderr names the device per file (`device gpu`, `device gpu: <reason>`,
 or `device cpu: <reason>`).
 
-It applies the same rules: English forced, Silero VAD (silence gives no text),
+It applies the same rules: the configured language (`VOICE_TRANSCRIBE_LANGUAGE`
+when set, otherwise English), Silero VAD (silence gives no text),
 and a phrase repeated three or more times in a row retried once without
 context.
 

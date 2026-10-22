@@ -430,12 +430,13 @@ then, last, one JSON line: `{"text": ...}` or `{"error": <code>}`, with
 `"device": <label>` once whisper ran. It runs
 `<pack>/transcriber/voice_transcribe.py`: ffmpeg to 16 kHz mono WAV, then
 whisper.cpp's `whisper-cli` on the CPU (`-ng`) or the GPU (the same call
-without `-ng`) with the language **forced to
-English** (`-l en`; there is no auto-detect and no language setting) and Silero
+without `-ng`) with the configured language (`-l <language>`, where
+`[transcribe] language` is a whisper language code such as `en` or `ru`,
+or `auto` to let whisper detect it; `en` when the key is missing) and Silero
 VAD (`--vad -vm`), so a note without speech gives an empty text. A phrase of
 two or more words repeated three or more times in a row is retried once with
-no text context (`-mc 0`) and the result with fewer repeats is kept. A
-transcript that is mostly not Latin script is refused as not English.
+no text context (`-mc 0`) and the result with fewer repeats is kept. No
+transcript is refused because of its language or script.
 
 The transcriber is fenced so it never takes the host from its user: before
 decoding it confines itself (and so ffmpeg and whisper-cli) to the settings'
@@ -590,6 +591,7 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `gpu_check` | `<pack>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
 | `gpu` | `false` | legacy form without `method`: `true` behaves as `method = "auto"`, `false` as `method = "cpu"` |
 | `gpu_min_free_mb` | `2048` | free video memory, MiB, a GPU run needs (256-131072); whisper itself takes about 1.1 GB; also the check's `GPU_MIN_FREE_MB` |
+| `language` | `en` | whisper language code (short lowercase, such as `en` or `ru`) or `auto` to let whisper detect it; passed to whisper-cli as `-l <value>` |
 
 The supported models are the `ggml-<name>.bin` entries of
 `<pack>/transcriber/models.sha256` except the VAD model. `load_settings`
@@ -599,11 +601,15 @@ supported models: <list>`:
 
 | model | file | speed at 4 threads | language |
 | --- | --- | --- | --- |
-| `large-v3-turbo-q5_0` | `ggml-large-v3-turbo-q5_0.bin`, about 574 MB | about 210 core-seconds per minute of audio | multilingual, forced to English |
+| `large-v3-turbo-q5_0` | `ggml-large-v3-turbo-q5_0.bin`, about 574 MB | about 210 core-seconds per minute of audio | multilingual |
 | `small.en` | `ggml-small.en.bin`, about 488 MB | about 50 core-seconds per minute, with more slips in names | English-only |
 | `small.en-q5_1` | `ggml-small.en-q5_1.bin`, about 191 MB | not measured | English-only |
 | `base.en` | `ggml-base.en.bin`, about 148 MB | not measured | English-only |
-| `small` | `ggml-small.bin`, about 488 MB | not measured | multilingual, forced to English |
+| `small` | `ggml-small.bin`, about 488 MB | not measured | multilingual |
+
+An English-only model (`*.en`) with a `language` other than `en` or `auto`
+is reported by `check-install` as a `WARN` line naming the mismatch; it is
+never a failure and never a refusal at run time.
 
 `install.sh` creates the queue directory and checks `whisper-cli`, both model files and
 their SHA-256 against `<pack>/transcriber/models.sha256`.
@@ -615,7 +621,7 @@ the saved file path, where the reason is one of a fixed set: `timeout`,
 installed)`, `transcriber missing (whisper-cli not found)`, `transcriber
 missing (model not found)`, `transcriber queue unavailable`, `audio could not
 be decoded`, `whisper-cli failed`, `transcriber could not
-be confined to its CPUs and priority`, `not English speech`, or `no speech
+be confined to its CPUs and priority`, or `no speech
 detected`. A failed transcription never blocks inbound
 delivery. Nothing the child prints is relayed or logged: the bridge log line
 carries only the category, exit code, byte counts, duration and message id.
@@ -626,7 +632,9 @@ characters. Oversize audio keeps the plain skip note.
 
 `voice-transcribe [--model NAME|PATH] [--force] [--quiet] <file|dir>...` is the
 same transcriber by hand: it writes `<name>.txt` next to each audio file and
-prints the text (`install.sh` links it into `~/.local/bin`). It runs on the
+prints the text (`install.sh` links it into `~/.local/bin`). It transcribes
+in `VOICE_TRANSCRIBE_LANGUAGE` when set (the bridge sets it from
+`[transcribe] language`), otherwise English. It runs on the
 CPU unless `VOICE_TRANSCRIBE_METHOD` is `auto` or `gpu` (with
 `VOICE_TRANSCRIBE_GPU_CHECK` and `VOICE_TRANSCRIBE_GPU_MIN_FREE_MB` for
 `auto`), or, with no method, `VOICE_TRANSCRIBE_GPU=1` (method `auto`),

@@ -200,12 +200,14 @@ class TranscribeSettingsTests(unittest.TestCase):
     def test_enabled_transcription_uses_the_pack_adapter_with_neutral_defaults(self):
         settings = self.load('enabled = true\n')
         home = Path.home()
+        self.assertEqual(settings.language, 'en')
         self.assertEqual(settings.transcribe, dict(
             python='/usr/bin/python3', script=str(PACK / 'transcriber' / 'adapter.py'), model='large-v3-turbo-q5_0',
-            timeout=120, timeout_per_minute=120, gpu=False, method='cpu', env={
+            timeout=120, timeout_per_minute=120, gpu=False, method='cpu', language='en', env={
                 'VOICE_TRANSCRIBE_WHISPER_CLI': str(home / 'work/whisper.cpp/build/bin/whisper-cli'),
                 'VOICE_TRANSCRIBE_MODEL_DIR': str(home / 'work/whisper.cpp/models'),
                 'VOICE_TRANSCRIBE_VAD_MODEL': 'silero-v6.2.0',
+                'VOICE_TRANSCRIBE_LANGUAGE': 'en',
                 'VOICE_TRANSCRIBE_THREADS': '4',
                 'VOICE_TRANSCRIBE_CPUS': '',
                 'VOICE_TRANSCRIBE_TIMEOUT': '120',
@@ -287,9 +289,25 @@ class TranscribeSettingsTests(unittest.TestCase):
         configured = self.load(f'enabled = true\ngpu = true\ngpu_check = "{check}"\n')
         self.assertEqual(configured.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], str(check))
 
-    def test_there_is_no_language_setting_and_bad_values_refuse(self):
-        for table, pattern in (('language = "ru"\n', 'unknown key transcribe.language'),
-                               ('device = "cuda"\n', 'unknown key transcribe.device'),
+    def test_language_setting_accepts_codes_and_auto_and_bad_values_refuse(self):
+        for value in ('ru', 'de', 'auto', 'en'):
+            with self.subTest(value=value):
+                settings = self.load(f'enabled = true\nlanguage = "{value}"\n')
+                self.assertEqual(settings.language, value)
+                self.assertEqual(settings.transcribe['language'], value)
+                self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_LANGUAGE'], value)
+                self.assertEqual(vt.Options(environ=settings.transcribe['env']).language, value)
+        # An unlisted short lowercase code is accepted: there is no allowlist.
+        self.assertEqual(self.load('enabled = true\nlanguage = "zz"\n').language, 'zz')
+        for table in ('enabled = true\nlanguage = ""\n', 'enabled = true\nlanguage = "en; rm"\n',
+                      'enabled = true\nlanguage = "EN-US"\n', 'enabled = true\nlanguage = "EN"\n',
+                      'enabled = true\nlanguage = 1\n'):
+            with self.subTest(table=table):
+                with self.assertRaisesRegex(b.SettingsError, 'transcribe.language must be a whisper language code'):
+                    self.load(table)
+
+    def test_bad_transcribe_values_refuse(self):
+        for table, pattern in (('device = "cuda"\n', 'unknown key transcribe.device'),
                                ('enabled = "yes"\n', 'transcribe.enabled must be true or false'),
                                ('timeout = 301\n', 'transcribe.timeout must be an integer from 5 to 300'),
                                ('threads = 5\n', 'transcribe.threads must be an integer from 1 to 4'),
@@ -545,6 +563,36 @@ class InstallCheckTests(unittest.TestCase):
     def test_everything_present_and_matching_passes(self):
         sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
         self.assertEqual(self.failures(sums=sums), [])
+
+    def test_an_english_only_model_with_another_language_warns_and_still_passes(self):
+        sums = {**self.model('small.en', b'small'), **self.model('silero-v6.2.0', b'vad')}
+        settings = b.Settings(**dict(self.settings.__dict__, model='small.en', language='ru'))
+        results = b.install_problems(settings, which=lambda n: '/usr/bin/' + n, sums=sums)
+        self.assertEqual([line for ok, line in results if not ok], [])
+        warns = [line for ok, line in results if line.startswith('WARN')]
+        self.assertEqual(len(warns), 1)
+        self.assertIn('small.en', warns[0])
+        self.assertIn('"ru"', warns[0])
+        # en and auto do not warn.
+        for language in ('en', 'auto'):
+            with self.subTest(language=language):
+                other = b.Settings(**dict(self.settings.__dict__, model='small.en', language=language))
+                lines = [line for ok, line in b.install_problems(
+                    other, which=lambda n: '/usr/bin/' + n, sums=sums)]
+                self.assertFalse(any(line.startswith('WARN') for line in lines))
+
+    def test_check_install_prints_the_warn_line_and_exits_0(self):
+        import io
+        from unittest.mock import patch
+        from test_bridge import run_main
+        path = write_settings(self.root, python=f'"{sys.executable}"')
+        path.write_text(path.read_text() + '\n[transcribe]\nenabled = true\nmodel = "small.en"\nlanguage = "ru"\n')
+        warn = (True, 'WARN  transcribe model small.en is English-only (*.en) but transcribe.language is "ru"')
+        with patch.object(b, 'install_problems', return_value=[(True, 'python'), warn]), \
+                patch('sys.stdout', new_callable=io.StringIO) as out:
+            run_main(self, 'bridge.py', '--settings', str(path), 'check-install')
+        self.assertIn('WARN  transcribe model small.en', out.getvalue())
+        self.assertNotIn('ok    WARN', out.getvalue())
 
     def test_the_queue_directory_is_created_by_install_or_must_be_owner_only(self):
         sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}

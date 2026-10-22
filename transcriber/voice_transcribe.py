@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""voice-transcribe: English speech to text for voice notes and audio files,
+"""voice-transcribe: speech to text for voice notes and audio files,
 with whisper.cpp, on the GPU when it is free for it and on the CPU otherwise.
 Writes <name>.txt next to each audio file and prints the text.
 
     voice-transcribe [--model NAME|PATH] [--force] [--quiet] <file|dir>...
 
-English only: whisper decodes with the language forced to en (it never
-detects one, and never defaults to another, which would translate English
-speech). Silero VAD runs first, so a note without speech gives no text
+Whisper decodes in the configured language (VOICE_TRANSCRIBE_LANGUAGE, a
+whisper language code such as en or ru, or "auto" to detect it; en when
+unset). Silero VAD runs first, so a note without speech gives no text
 instead of a hallucinated subtitle line. A phrase repeated three or more
 times in a row is retried once without text context and the result with
-fewer repeats is kept. Text that is mostly not Latin script is refused as
-not English.
+fewer repeats is kept. No transcript is refused because of its language
+or script.
 
 Settings come from the environment (the Telegram bridge passes its city's
 settings this way):
@@ -19,6 +19,7 @@ settings this way):
   VOICE_TRANSCRIBE_MODEL_DIR    ggml models directory (~/work/whisper.cpp/models)
   VOICE_TRANSCRIBE_MODEL        model name or path (large-v3-turbo-q5_0)
   VOICE_TRANSCRIBE_VAD_MODEL    VAD model name or path (silero-v6.2.0)
+  VOICE_TRANSCRIBE_LANGUAGE     whisper language code or "auto" (en)
   VOICE_TRANSCRIBE_THREADS      CPU threads, at most 4 (4)
   VOICE_TRANSCRIBE_CPUS         CPU list such as 0-3 (unset: every CPU the caller has)
   VOICE_TRANSCRIBE_TIMEOUT      run limit in seconds, before the per-minute allowance (120)
@@ -45,13 +46,10 @@ import tempfile
 import time
 
 AUDIO_RE = re.compile(r'\.(ogg|oga|opus|mp3|m4a|wav|flac|webm|mp4)$', re.IGNORECASE)
-LANGUAGE = 'en'
+DEFAULT_LANGUAGE = 'en'
+LANGUAGE_RE = re.compile(r'(?:auto|[a-z]{2,3})')
 LOOP_MIN_REPEATS = 3
 LOOP_MAX_PHRASE_WORDS = 16
-# Share of letters that must be Latin script for a transcript to count as
-# English; forcing en on other speech gives either other scripts or Latin
-# gibberish, and only the first can be told apart here.
-ENGLISH_MIN_LATIN = 0.7
 MAX_THREADS = 4
 NICE = 10
 IONICE = ['-c', '2', '-n', '7']
@@ -88,7 +86,7 @@ class TranscribeError(Exception):
 
 
 class Options:
-    def __init__(self, environ=None, model=None, gpu=None, method=None, gpu_check=None):
+    def __init__(self, environ=None, model=None, gpu=None, method=None, gpu_check=None, language=None):
         env = os.environ if environ is None else environ
         home = Path.home()
         self.whisper_cli = Path(env.get('VOICE_TRANSCRIBE_WHISPER_CLI')
@@ -96,6 +94,7 @@ class Options:
         self.model_dir = Path(env.get('VOICE_TRANSCRIBE_MODEL_DIR') or home / 'work/whisper.cpp/models').expanduser()
         self.model = model or env.get('VOICE_TRANSCRIBE_MODEL') or 'large-v3-turbo-q5_0'
         self.vad_model = env.get('VOICE_TRANSCRIBE_VAD_MODEL') or 'silero-v6.2.0'
+        self.language = language or env.get('VOICE_TRANSCRIBE_LANGUAGE') or DEFAULT_LANGUAGE
         self.threads = min(_positive(env.get('VOICE_TRANSCRIBE_THREADS'), MAX_THREADS), MAX_THREADS)
         self.cpus = env.get('VOICE_TRANSCRIBE_CPUS') or None
         self.queue_dir = home / QUEUE_SUBDIR
@@ -177,10 +176,10 @@ def fence(options, run=subprocess.run):
 
 
 def whisper_argv(options, wav, no_context=False, gpu=False):
-    """The whisper-cli call: plain text, English forced, Silero VAD; on the
-    CPU (-ng) unless gpu, which is the same call without -ng."""
+    """The whisper-cli call: plain text in the configured language, Silero
+    VAD; on the CPU (-ng) unless gpu, which is the same call without -ng."""
     argv = [str(options.whisper_cli), '-ng', '-t', str(options.threads), '-nt', '-np',
-            '-l', LANGUAGE, '-m', str(options.model_file(options.model)), '-f', str(wav),
+            '-l', getattr(options, 'language', DEFAULT_LANGUAGE), '-m', str(options.model_file(options.model)), '-f', str(wav),
             '--vad', '-vm', str(options.model_file(options.vad_model))]
     if gpu:
         argv.remove('-ng')
@@ -314,14 +313,6 @@ def longest_repeat(text):
     return best
 
 
-def is_english(text):
-    letters = [c for c in text if c.isalpha()]
-    if not letters:
-        return True
-    latin = sum(1 for c in letters if c < 'ɐ')
-    return latin / len(letters) >= ENGLISH_MIN_LATIN
-
-
 def _run_whisper(argv, run, deadline, env=None):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -335,7 +326,17 @@ def _run_whisper(argv, run, deadline, env=None):
     if result.returncode != 0:
         lines = (result.stderr or '').strip().splitlines()
         raise TranscribeError('whisper_failed', lines[-1][:200] if lines else '')
-    return clean(result.stdout)
+    text = clean(result.stdout)
+    # whisper-cli exits 0 with an "error:" line and no output for a language
+    # it does not know: that is a failure, not silence.
+    errors = [line.strip() for line in (result.stderr or '').splitlines()
+              if line.strip().lower().startswith('error:')]
+    unknown = next((line for line in errors if 'unknown language' in line), None)
+    if unknown is not None:
+        raise TranscribeError('whisper_failed', unknown[:200])
+    if errors and not text:
+        raise TranscribeError('whisper_failed', errors[-1][:200])
+    return text
 
 
 class Queue:
@@ -453,7 +454,7 @@ def _wav_seconds(path):
 
 
 def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None):
-    """English text of one audio file ('' when it holds no speech), or
+    """Text of one audio file in the configured language ('' when it holds no speech), or
     TranscribeError. Waits for its turn in the host-wide queue, calls
     on_turn() when it starts, picks the device, and runs within
     options.run_limit() (plus the GPU allowance with options.gpu).
@@ -497,8 +498,6 @@ def transcribe(audio, options, run=subprocess.run, on_turn=None, on_device=None)
         finally:
             if on_device is not None:
                 on_device(device.label)
-    if text and not is_english(text):
-        raise TranscribeError('not_english', 'the transcript is not English')
     return text
 
 
@@ -550,7 +549,7 @@ def main(argv=None):
             print(text)
         else:
             seconds = time.monotonic() - started
-            print(f'== {audio} (en, {options.model}, {seconds:.1f} s) -> {out}\n{text or "(no speech)"}')
+            print(f'== {audio} ({options.language}, {options.model}, {seconds:.1f} s) -> {out}\n{text or "(no speech)"}')
     return status
 
 

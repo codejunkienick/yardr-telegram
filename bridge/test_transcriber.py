@@ -1,6 +1,6 @@
 """The whisper.cpp transcriber and its bridge adapter, with a fake whisper-cli
-and a fake ffmpeg: English is
-forced, VAD is on, loops are retried, non-English text is refused, the adapter
+and a fake ffmpeg: the configured language is passed to whisper, VAD is on,
+loops are retried, no text is refused for its language or script, the adapter
 speaks the bridge's JSON-line contract, every caller on the host waits its turn
 in one FIFO queue, and the GPU is used only when the GPU check allows it."""
 import importlib.util
@@ -46,6 +46,9 @@ answer = answers[min(calls, len(answers)) - 1]
 if answer == 'FAIL':
     print('whisper: model load failed', file=sys.stderr)
     sys.exit(1)
+if answer == 'UNKNOWN_LANGUAGE':
+    print("error: unknown language 'zz'", file=sys.stderr)
+    sys.exit(0)
 print(answer)
 """
 # A fake ffmpeg: writes the output file (its last argument), or fails on "bad" input.
@@ -125,7 +128,7 @@ class FakeWhisperCase(unittest.TestCase):
 
 
 class TranscriberTests(FakeWhisperCase):
-    def test_english_is_forced_with_vad_on_the_cpu(self):
+    def test_default_language_is_english_with_vad_on_the_cpu(self):
         self.assertEqual(self.result(' Ship it\n  today. '), {'text': 'Ship it today.'})
         self.assertEqual(self.device, 'cpu: gpu-off')
         self.assertEqual(self.whisper_cuda(), [''])  # the CPU run never sees a GPU
@@ -186,8 +189,36 @@ class TranscriberTests(FakeWhisperCase):
         self.assertEqual(self.result(looped, 'yes yes, go on go on go on'), {'text': looped})
         self.assertEqual(len(self.whisper_calls()), 2)
 
-    def test_non_english_text_is_refused(self):
-        self.assertEqual(self.result('Что такое? Мы обновим это до пятницы.'), {'error': 'not_english'})
+    def test_configured_language_is_passed_and_cyrillic_text_is_delivered_unchanged(self):
+        cyrillic = 'Что такое? Мы обновим это до пятницы.'
+        self.assertEqual(self.result(cyrillic, extra_env={'VOICE_TRANSCRIBE_LANGUAGE': 'ru'}),
+                         {'text': cyrillic})
+        [argv] = self.whisper_calls()
+        self.assertEqual(argv[argv.index('-l') + 1], 'ru')
+
+    def test_auto_language_is_passed_to_whisper(self):
+        self.assertEqual(self.result('Bonjour.', extra_env={'VOICE_TRANSCRIBE_LANGUAGE': 'auto'}),
+                         {'text': 'Bonjour.'})
+        [argv] = self.whisper_calls()
+        self.assertEqual(argv[argv.index('-l') + 1], 'auto')
+
+    def test_non_latin_text_is_not_refused_in_the_default_language(self):
+        cyrillic = 'Что такое? Мы обновим это до пятницы.'
+        self.assertEqual(self.result(cyrillic), {'text': cyrillic})
+
+    def test_an_unknown_language_error_with_exit_zero_is_whisper_failed(self):
+        # whisper-cli prints "error: unknown language" and exits 0 with no
+        # output for a code it does not know: that is a failure, not silence.
+        self.assertEqual(self.result('UNKNOWN_LANGUAGE', extra_env={'VOICE_TRANSCRIBE_LANGUAGE': 'zz'}),
+                         {'error': 'whisper_failed'})
+        self.assertEqual(self.device, 'cpu: gpu-off')
+
+    def test_a_transcript_starting_with_error_is_returned_unchanged(self):
+        # whisper-cli prints its own "error:" lines to stderr; stdout with
+        # -nt -np is the transcript itself, so a dictated "Error: ..." is
+        # real speech and must be delivered, not reported as a failure.
+        text = 'Error: the deploy failed on staging, can you look?'
+        self.assertEqual(self.result(text), {'text': text})
 
     def test_known_failures_are_codes_never_child_text(self):
         self.assertEqual(self.result('FAIL'), {'error': 'whisper_failed'})
@@ -604,12 +635,6 @@ class LoopAndScriptTests(unittest.TestCase):
         self.assertEqual(vt.longest_repeat('very very very good'), 1)  # one word is speech, not a loop
         self.assertEqual(vt.longest_repeat('ship the pack, ship the pack, then test'), 2)
         self.assertEqual(vt.longest_repeat(''), 1)
-
-    def test_is_english_wants_mostly_latin_letters(self):
-        self.assertTrue(vt.is_english('Deploy the shared library on Friday.'))
-        self.assertTrue(vt.is_english('42 — 17'))
-        self.assertTrue(vt.is_english('Café naïve résumé'))
-        self.assertFalse(vt.is_english('Мы обновим shared library до пятницы'))
 
 
 if __name__ == '__main__':

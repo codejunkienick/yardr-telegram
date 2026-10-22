@@ -1552,6 +1552,17 @@ class VoiceTranscriptionTests(BridgeTestCase):
         self.assertRegex(log.getvalue(), r'voice transcription failed \(msg 87\): whisper-cli failed; exit 0; '
                                          r'.* s; device cpu: gpu-failed\n')
 
+    def test_an_old_not_english_error_still_renders_without_a_crash(self):
+        # A transcriber from before the language setting could still answer
+        # with the removed code; the bridge renders it as a failure, never crashes.
+        self.write_script('print(json.dumps(dict(error="not_english")))')
+        texts = self.drain_and_wait(self.voice_message(uid=91))
+        self.assertIn('transcription failed: invalid output', texts[1])
+        # An old failure phrase carried as a reason also formats plainly.
+        self.assertEqual(
+            self.bridge._format_voice_transcript('voice', '0:07', 91, '/x/91-voice.ogg', None, 'not English speech'),
+            '[voice 0:07 transcript (msg 91): transcription failed: not English speech] (audio: /x/91-voice.ogg)')
+
     def test_an_unknown_device_line_is_invalid_output(self):
         for uid, device in ((88, 'cuda'), (89, 'cpu: ' + 'x' * 50), (90, ['gpu'])):
             with self.subTest(device=device):

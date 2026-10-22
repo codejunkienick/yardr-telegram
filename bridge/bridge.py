@@ -567,7 +567,6 @@ class Bridge:
     # The adapter's own failure codes ({"error": <code>}), each relayed as one
     # fixed phrase; any other code is 'invalid output'.
     TRANSCRIBER_ERRORS = {
-        'not_english': 'not English speech',
         'timeout': 'timeout',
         'queue_failed': 'transcriber queue unavailable',
         'decode_failed': 'audio could not be decoded',
@@ -2307,8 +2306,9 @@ _HANDLER_URL_RE = re.compile(r'http://(127\.0\.0\.1|\[::1\]):([0-9]{1,5})(/[A-Za
 _CALLBACK_PREFIX_RE = re.compile(r'[\x21-\x7e]{1,64}')
 HANDLER_WRITE_PATHS_MAX = 16
 TRANSCRIBE_KEYS = {'enabled', 'whisper_cli', 'models_dir', 'model', 'vad_model', 'threads', 'cpus', 'timeout',
-                   'timeout_per_minute', 'gpu', 'gpu_min_free_mb', 'method', 'gpu_check'}
+                   'timeout_per_minute', 'gpu', 'gpu_min_free_mb', 'method', 'gpu_check', 'language'}
 TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
+_LANGUAGE_RE = voice_transcribe.LANGUAGE_RE
 # Neutral defaults: the whisper.cpp build and models every city on the host
 # shares (never under a city), the large turbo model with Silero VAD, every
 # CPU the bridge has, a run limit of 120 s plus 120 s per minute of audio, and
@@ -2316,7 +2316,7 @@ TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
 TRANSCRIBE_DEFAULTS = dict(enabled=False, whisper_cli='~/work/whisper.cpp/build/bin/whisper-cli',
                            models_dir='~/work/whisper.cpp/models', model='large-v3-turbo-q5_0',
                            vad_model='silero-v6.2.0', threads=4, cpus='', timeout=120, timeout_per_minute=120,
-                           gpu=False, gpu_min_free_mb=2048)
+                           gpu=False, gpu_min_free_mb=2048, language='en')
 # The host-wide transcription queue, under the home directory of the user
 # every city's bridge runs as. Deliberately not a setting: two cities naming
 # different queues would run whisper at the same time.
@@ -2629,15 +2629,19 @@ def load_settings(path, home=None):
     if not isinstance(cpus, str) or (cpus and not _CPU_LIST_RE.fullmatch(cpus)):
         raise SettingsError('settings: transcribe.cpus must be a CPU list such as "0-3"')
     gpu_min_free_mb = _int_setting(found['gpu_min_free_mb'], 'transcribe.gpu_min_free_mb', 256, 131072)
+    language = found['language']
+    if not isinstance(language, str) or not _LANGUAGE_RE.fullmatch(language):
+        raise SettingsError('settings: transcribe.language must be a whisper language code '
+                            '(short lowercase letters, such as "en" or "ru") or "auto"')
     transcribe = None
     if _bool_setting(found['enabled'], 'transcribe.enabled'):
-        # English only: the adapter always decodes with the language forced to
-        # en; there is deliberately no language setting.
         transcribe = dict(python=str(python), script=str(ADAPTER), model=model, timeout=timeout,
-                          timeout_per_minute=per_minute, gpu=method in ('auto', 'gpu'), method=method, env={
+                          timeout_per_minute=per_minute, gpu=method in ('auto', 'gpu'), method=method,
+                          language=language, env={
             'VOICE_TRANSCRIBE_WHISPER_CLI': str(whisper_cli),
             'VOICE_TRANSCRIBE_MODEL_DIR': str(models_dir),
             'VOICE_TRANSCRIBE_VAD_MODEL': vad_model,
+            'VOICE_TRANSCRIBE_LANGUAGE': language,
             'VOICE_TRANSCRIBE_THREADS': str(threads),
             'VOICE_TRANSCRIBE_CPUS': cpus,
             'VOICE_TRANSCRIBE_TIMEOUT': str(timeout),
@@ -2656,6 +2660,7 @@ def load_settings(path, home=None):
         callback_secret_file=callback_secret_file,
         pairing_update_id=_int_setting(data.get('pairing_update_id', -1), 'pairing_update_id', -1, 2 ** 63 - 1),
         transcribe=transcribe, whisper_cli=whisper_cli, models_dir=models_dir, model=model, vad_model=vad_model,
+        language=language,
         queue_dir=queue_dir, agent=agent, handler_write_paths=_handler_write_paths(data))
 
 
@@ -2721,11 +2726,16 @@ def supported_models(path=None, sums=None):
 
 def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
     """[(ok, line)] for everything the bridge needs on this host; never prints
-    a credential. The transcriber checks run only when it is enabled."""
+    a credential. The transcriber checks run only when it is enabled. A line
+    starting with WARN is ok (not a failure): check-install prints it as a
+    WARN line and still exits 0."""
     results = []
 
     def check(ok, line):
         results.append((bool(ok), line))
+
+    def warn(line):
+        results.append((True, f'WARN  {line}'))
 
     check(os.access(settings.python, os.X_OK), f'python {settings.python}')
     check(which('curl'), 'curl on PATH')
@@ -2792,6 +2802,10 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
             check(False, f'model {path} is missing')
         else:
             check(hasher(path) == sums[file_name], f'model {path} SHA-256')
+    language = getattr(settings, 'language', None) or (settings.transcribe or {}).get('language') or 'en'
+    if isinstance(settings.model, str) and re.search(r'\.en(?:-|$)', settings.model) and language not in ('en', 'auto'):
+        warn(f'transcribe model {settings.model} is English-only (*.en) but transcribe.language is "{language}"; '
+             f'whisper will still run, but a multilingual model fits "{language}" better')
     return results
 
 
@@ -2942,7 +2956,7 @@ def main():
     if args.command == 'check-install':
         results = install_problems(settings)
         for ok, line in results:
-            print(('ok    ' if ok else 'FAIL  ') + line)
+            print(line if line.startswith('WARN') else ('ok    ' if ok else 'FAIL  ') + line)
         failed = sum(1 for ok, _ in results if not ok)
         if args.gpu_probe:
             status, line = gpu_probe(settings, args.clip)

@@ -2,7 +2,7 @@
 
 One private Telegram bridge for any Gas City: the mayor's chat with its paired
 user (inbound text and files, outbound text, HTML formatting and attachments,
-English voice transcription), and the skills an agent needs to use it. Each
+voice transcription in the language each setup configures), and the skills an agent needs to use it. Each
 city runs its own bridge process from this one copy of the code, configured
 only by its own settings file; cities share the code and the host's whisper.cpp
 build and models, never a process, a ledger or a bot.
@@ -16,7 +16,7 @@ build and models, never a process, a ledger or a bot.
 | `settings.example.toml` | every settings key, with example values |
 | `install.sh` | checks a city's settings and host, links `voice-transcribe`, renders its unit |
 | `systemd/telegram-bridge.service.in` | the unit template |
-| `transcriber/` | `voice_transcribe.py` (whisper.cpp, English only), `adapter.py` (the bridge's contract), `models.sha256` |
+| `transcriber/` | `voice_transcribe.py` (whisper.cpp, configured language), `adapter.py` (the bridge's contract), `models.sha256` |
 | `commands/reply-current/` | `gc telegram reply-current`: reply in the paired chat |
 | `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts` |
 

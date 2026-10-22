@@ -46,11 +46,12 @@ description = "Show the agent's status"
 # timeout = 10                              # seconds, 1-30
 
 [transcribe]
-enabled = true                              # voice and audio notes get an English transcript
+enabled = true                              # voice and audio notes get a transcript in the configured language
 # whisper_cli and models_dir default to ~/work/whisper.cpp, the build every city on the host shares; set both to place it elsewhere.
 # whisper_cli = "~/work/whisper.cpp/build/bin/whisper-cli"
 # models_dir = "~/work/whisper.cpp/models"
 # model = "large-v3-turbo-q5_0"
+# language = "en"                           # whisper language code (en, ru, de, ...) or "auto" to detect; default "en"
 # vad_model = "silero-v6.2.0"
 # cpus = "0-3"                              # CPUs the transcriber may use; default every CPU
 # threads = 4                               # 1-4

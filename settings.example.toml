@@ -43,7 +43,7 @@ description = "Show the agent's status"
 # handler = "/home/alex/example-city/bin/telegram-deploy"   # or url = "http://127.0.0.1:8095/deploy"
 # menu = true                               # in the "/" menu; default true
 # callback_prefix = "deploy:"               # default "<name>:"
-# timeout = 10                              # seconds, 1-30
+# timeout = 10                              # seconds, 1-3600
 
 [transcribe]
 enabled = true                              # voice and audio notes get a transcript in the configured language
@@ -54,8 +54,8 @@ enabled = true                              # voice and audio notes get a transc
 # language = "en"                           # whisper language code (en, ru, de, ...) or "auto" to detect; default "en"
 # vad_model = "silero-v6.2.0"
 # cpus = "0-3"                              # CPUs the transcriber may use; default every CPU
-# threads = 4                               # 1-4
-# timeout = 120                             # base seconds, 5-300
+# threads = 4                               # 1-64
+# timeout = 120                             # base seconds, 1-3600
 # timeout_per_minute = 120                  # added per minute of audio; killed when the total runs out
 # method = "cpu"                            # auto, cpu or gpu (default cpu); set method instead of gpu below
 # gpu_check = "/home/alex/example-city/bin/gpu-check"  # method auto only; default the pack's transcriber/gpu_check.py

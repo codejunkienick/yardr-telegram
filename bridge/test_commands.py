@@ -178,6 +178,10 @@ class CommandSettingsTests(SettingsCase):
         self.assertEqual(settings.handler_write_paths, (self.root / 'out',))
         self.assertEqual(settings.agent, 'mayor')
 
+    def test_a_command_timeout_of_120_loads(self):
+        settings = b.load_settings(self.settings(self.entry(timeout=120)))
+        self.assertEqual(settings.config['commands'][0]['timeout'], 120)
+
     def test_without_commands_the_config_is_unchanged(self):
         settings = b.load_settings(self.settings())
         self.assertNotIn('commands', settings.config)
@@ -214,8 +218,8 @@ class CommandSettingsTests(SettingsCase):
              self.entry(handler=str(shared))),
             (r'command entry 1 \(deploy\) description is missing', self.entry(description=long_text)),
             (r'command entry 1 \(deploy\) description is missing', self.entry(description='')),
-            (r'command entry 1 \(deploy\) timeout must be an integer from 1 to 30', self.entry(timeout=0)),
-            (r'command entry 1 \(deploy\) timeout must be an integer from 1 to 30', self.entry(timeout=31)),
+            (r'command entry 1 \(deploy\) timeout must be an integer from 1 to 3600', self.entry(timeout=0)),
+            (r'command entry 1 \(deploy\) timeout must be an integer from 1 to 3600', self.entry(timeout=3601)),
             (r'command entry 1 \(deploy\) menu must be true or false', self.entry(menu='yes')),
             (r'command entry 1 \(deploy\) callback_prefix must be', self.entry(callback_prefix='')),
             (r'command entry 1 \(deploy\) callback_prefix must be', self.entry(callback_prefix='a b')),
@@ -299,9 +303,14 @@ class CommandSettingsTests(SettingsCase):
         for value, pattern in (('"/srv/out"', 'must be a list'), ('["relative/out"]', 'entry 1 must be an absolute'),
                                ('["/srv/a b"]', 'entry 1 must be an absolute'), ('["/"]', 'entry 1 must be a distinct'),
                                ('["/srv/out", "/srv/out"]', 'entry 2 must be a distinct'),
-                               ('[' + ', '.join(f'"/srv/o{i}"' for i in range(17)) + ']', 'must be a list of at most 16')):
+                               ('[' + ', '.join(f'"/srv/o{i}"' for i in range(257)) + ']', 'must be a list of at most 256')):
             with self.subTest(value=value):
                 self.refused('handler_write_paths ' + pattern, handler_write_paths=value)
+
+    def test_handler_write_paths_accepts_256_entries(self):
+        paths = '[' + ', '.join(f'"/srv/o{i}"' for i in range(256)) + ']'
+        settings = b.load_settings(self.settings(handler_write_paths=paths))
+        self.assertEqual(len(settings.handler_write_paths), 256)
 
     def test_command_must_be_a_list_of_tables(self):
         path = self.settings()
@@ -591,8 +600,20 @@ class FailureTests(CommandCase):
         self.assertEqual(list(self.ledger())[0], f'command:{uid}:notice')
         self.assertEqual(self.store.offset(), uid + 1)
 
+    def test_32_actions_and_a_full_keyboard_are_accepted(self):
+        button = dict(text='a', callback_data='deploy:a')
+        keyboard = [[dict(button) for _ in range(8)] for _ in range(12)]
+        keyboard.append([dict(button) for _ in range(4)])
+        actions = [dict(type='send', text=str(i), keyboard=keyboard) if i == 0
+                   else dict(type='send', text=str(i)) for i in range(32)]
+        self.set_handler(answer(*actions))
+        self.drain(self.message('/deploy'))
+        sends = self.telegram.of('sendMessage')
+        self.assertEqual(len(sends), 32)
+        self.assertEqual(sends[0]['reply_markup'], {'inline_keyboard': keyboard})
+
     def test_each_bad_answer_is_a_failure_with_its_reason(self):
-        many = [dict(type='send', text=str(i)) for i in range(6)]
+        many = [dict(type='send', text=str(i)) for i in range(33)]
         cases = [
             (f'print({MARKER!r}); sys.exit(3)', 'exit_status'),
             (f'sys.stdout.write("x" * 70000 + {MARKER!r})', 'output_too_large'),
@@ -619,9 +640,14 @@ class FailureTests(CommandCase):
             (answer(dict(type='edit', message_id=True, text='x')), 'invalid_message_id'),
             (answer(dict(type='send', text='x', keyboard=[])), 'invalid_keyboard'),
             (answer(dict(type='send', text='x', keyboard=[[]])), 'invalid_keyboard'),
-            (answer(dict(type='send', text='x', keyboard=[[dict(text='a', callback_data='deploy:a')]] * 9)),
+            (answer(dict(type='send', text='x',
+                          keyboard=[[dict(text='a', callback_data='deploy:a') for _ in range(9)]])),
              'invalid_keyboard'),
-            (answer(dict(type='send', text='x', keyboard=[[dict(text='a', callback_data='deploy:a')] * 9])),
+            (answer(dict(type='send', text='x',
+                          keyboard=[[dict(text='a', callback_data='deploy:a')] for _ in range(101)])),
+             'invalid_keyboard'),
+            (answer(dict(type='send', text='x',
+                          keyboard=[[dict(text='a', callback_data='deploy:a') for _ in range(101)]])),
              'invalid_keyboard'),
             (answer(dict(type='send', text='x', keyboard=[[dict(text='a', callback_data='deploy:' + 'y' * 58)]])),
              'invalid_keyboard'),
@@ -868,8 +894,13 @@ class SetCommandsTests(CommandCase):
                                                                                     description='Deploy')]))
         self.assertEqual(self.bridge.set_commands(), [dict(command='deploy', description='Deploy')])
         self.bridge = self.make_bridge((self.command(menu=False),), menu=())
-        with self.assertRaisesRegex(b.TransportError, 'no command menu'):
-            self.bridge.set_commands()
+        self.telegram.calls.clear()
+        self.telegram.answers['setMyCommands'] = (200, dict(ok=True, result=True))
+        self.telegram.answers['getMyCommands'] = (200, dict(ok=True, result=[]))
+        self.assertEqual(self.bridge.set_commands(), [])
+        self.assertEqual(self.telegram.calls, [
+            ('setMyCommands', dict(commands=[], scope=dict(type='chat', chat_id=123))),
+            ('getMyCommands', dict(scope=dict(type='chat', chat_id=123)))])
 
 
 class NoCommandsTests(CommandCase):

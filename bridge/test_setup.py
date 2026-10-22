@@ -307,6 +307,35 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(
             (self.models_dir / "ggml-large-v3-turbo-q5_0.bin").exists())
 
+    def test_an_unlisted_local_model_is_reused_instead_of_failing(self):
+        self.sums.write_text(
+            f"{hashlib.sha256(FAKE_BYTES).hexdigest()}  "
+            "ggml-silero-v6.2.0.bin\n")
+        self.models_dir.mkdir(parents=True)
+        target = self.models_dir / "ggml-large-v3-turbo-q5_0.bin"
+        target.write_bytes(b"local model bytes")
+        settings = self.settings("cpu")
+        result = self.run_setup(settings, self.make_bin())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("local file, no recorded SHA-256; skipping hash check", result.stdout)
+        self.assertEqual(target.read_bytes(), b"local model bytes")
+        curls = [ln for ln in self.log_text().splitlines() if ln.startswith("curl ")]
+        self.assertEqual(len(curls), 1)  # only the VAD model is downloaded
+
+    def test_an_unlisted_local_vad_model_still_fails(self):
+        self.sums.write_text(
+            f"{hashlib.sha256(FAKE_BYTES).hexdigest()}  "
+            "ggml-large-v3-turbo-q5_0.bin\n")
+        self.models_dir.mkdir(parents=True)
+        vad = self.models_dir / "ggml-silero-v6.2.0.bin"
+        vad.write_bytes(b"local vad bytes")
+        settings = self.settings("cpu")
+        result = self.run_setup(settings, self.make_bin())
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL  model", result.stdout)
+        self.assertIn("no recorded SHA-256", result.stdout)
+        self.assertEqual(vad.read_bytes(), b"local vad bytes")
+
     def test_failed_detach_removes_fresh_clone_and_retry_clones(self):
         settings = self.settings("cpu")
         bin_dir = self.make_bin()

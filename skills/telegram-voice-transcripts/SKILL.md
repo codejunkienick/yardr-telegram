@@ -39,7 +39,7 @@ means no text; the audio file is kept and inbound delivery was not held up.
 The reason is one of: `no speech detected` (silence or noise),
 `timeout` (the run hit its limit), `transcriber queue unavailable`,
 `audio could not be decoded`, `whisper-cli failed`, `transcriber could not be
-confined to its CPUs and priority`, `transcriber missing
+confined to its configured CPUs`, `transcriber missing
 (...)` (the host's whisper.cpp install or the pack's adapter), `invalid
 output`, `output too large`, `transcriber exited with an error`. A `missing`
 reason is an install problem for the operator (`<pack>/install.sh`); the

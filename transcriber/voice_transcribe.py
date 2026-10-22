@@ -20,7 +20,7 @@ settings this way):
   VOICE_TRANSCRIBE_MODEL        model name or path (large-v3-turbo-q5_0)
   VOICE_TRANSCRIBE_VAD_MODEL    VAD model name or path (silero-v6.2.0)
   VOICE_TRANSCRIBE_LANGUAGE     whisper language code or "auto" (en)
-  VOICE_TRANSCRIBE_THREADS      CPU threads, at most 4 (4)
+  VOICE_TRANSCRIBE_THREADS      CPU threads, at most 64 (4)
   VOICE_TRANSCRIBE_CPUS         CPU list such as 0-3 (unset: every CPU the caller has)
   VOICE_TRANSCRIBE_TIMEOUT      run limit in seconds, before the per-minute allowance (120)
   VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE  seconds added per minute of audio (120)
@@ -50,7 +50,8 @@ DEFAULT_LANGUAGE = 'en'
 LANGUAGE_RE = re.compile(r'(?:auto|[a-z]{2,3})')
 LOOP_MIN_REPEATS = 3
 LOOP_MAX_PHRASE_WORDS = 16
-MAX_THREADS = 4
+MAX_THREADS = 64
+DEFAULT_THREADS = 4
 NICE = 10
 IONICE = ['-c', '2', '-n', '7']
 # The queue: one file per waiting or running transcription, named by its
@@ -95,7 +96,7 @@ class Options:
         self.model = model or env.get('VOICE_TRANSCRIBE_MODEL') or 'large-v3-turbo-q5_0'
         self.vad_model = env.get('VOICE_TRANSCRIBE_VAD_MODEL') or 'silero-v6.2.0'
         self.language = language or env.get('VOICE_TRANSCRIBE_LANGUAGE') or DEFAULT_LANGUAGE
-        self.threads = min(_positive(env.get('VOICE_TRANSCRIBE_THREADS'), MAX_THREADS), MAX_THREADS)
+        self.threads = min(_positive(env.get('VOICE_TRANSCRIBE_THREADS'), DEFAULT_THREADS), MAX_THREADS)
         self.cpus = env.get('VOICE_TRANSCRIBE_CPUS') or None
         self.queue_dir = home / QUEUE_SUBDIR
         self.timeout = _positive(env.get('VOICE_TRANSCRIBE_TIMEOUT'), 120)
@@ -153,9 +154,10 @@ def parse_cpus(text):
 
 def fence(options, run=subprocess.run):
     """Confine this process, and so ffmpeg and whisper-cli, to its CPUs at
-    nice 10 and best-effort I/O level 7. A fence that cannot be set is an
-    error: the transcription must not run unfenced. A caller already nicer
-    than 10 keeps its niceness."""
+    nice 10 and best-effort I/O level 7. An explicitly configured CPU list
+    that cannot be applied is an error; nice and ionice are best-effort
+    only and never fail the transcription. A caller already nicer than 10
+    keeps its niceness."""
     try:
         if options.cpus:
             os.sched_setaffinity(0, parse_cpus(options.cpus))
@@ -164,15 +166,13 @@ def fence(options, run=subprocess.run):
     try:
         if os.getpriority(os.PRIO_PROCESS, 0) < NICE:
             os.setpriority(os.PRIO_PROCESS, 0, NICE)
-    except OSError as error:
-        raise TranscribeError('fence_failed', f'nice {NICE}: {error}') from None
+    except OSError:
+        pass
     try:
-        done = run(['ionice', *IONICE, '-p', str(os.getpid())], stdin=subprocess.DEVNULL,
-                   capture_output=True, text=True, timeout=10)
+        run(['ionice', *IONICE, '-p', str(os.getpid())], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
-        raise TranscribeError('fence_failed', 'ionice is not available') from None
-    if done.returncode != 0:
-        raise TranscribeError('fence_failed', 'ionice refused the best-effort class')
+        pass
 
 
 def whisper_argv(options, wav, no_context=False, gpu=False):
@@ -331,7 +331,7 @@ def _run_whisper(argv, run, deadline, env=None):
     # it does not know: that is a failure, not silence.
     errors = [line.strip() for line in (result.stderr or '').splitlines()
               if line.strip().lower().startswith('error:')]
-    unknown = next((line for line in errors if 'unknown language' in line), None)
+    unknown = next((line for line in errors if 'unknown language' in line.lower()), None)
     if unknown is not None:
         raise TranscribeError('whisper_failed', unknown[:200])
     if errors and not text:

@@ -171,9 +171,16 @@ class SettingsTests(unittest.TestCase):
                 with self.assertRaisesRegex(b.SettingsError, pattern):
                     b.load_settings(write_settings(self.root, body=base.replace(old, new)))
         settings = b.load_settings(write_settings(self.root, body=base.split('\n[[menu]]')[0]))
-        bridge = b.Bridge(settings.config, None, 'SECRET', None)
-        with self.assertRaisesRegex(b.TransportError, 'no command menu'):
-            bridge.set_commands()
+        calls = []
+        def fake(url, body, *args, **kwargs):
+            calls.append((url.rsplit('/', 1)[1], body))
+            if url.endswith('setMyCommands'):
+                return 200, dict(ok=True, result=True)
+            return 200, dict(ok=True, result=[])
+        bridge = b.Bridge(settings.config, None, 'SECRET', None, request=fake)
+        self.assertEqual(bridge.set_commands(), [])
+        self.assertEqual(calls, [('setMyCommands', dict(commands=[], scope=dict(type='chat', chat_id=123))),
+                                 ('getMyCommands', dict(scope=dict(type='chat', chat_id=123)))])
 
     def test_a_second_city_on_the_same_host_gets_its_own_everything(self):
         first = b.load_settings(write_settings(self.root))
@@ -273,6 +280,13 @@ class TranscribeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_TIMEOUT'], '60')
         self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_TIMEOUT_PER_MINUTE'], '90')
 
+    def test_raised_transcribe_limits_are_accepted(self):
+        settings = self.load('enabled = true\nthreads = 16\ntimeout = 1200\ntimeout_per_minute = 1200\n')
+        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_THREADS'], '16')
+        self.assertEqual(settings.transcribe['timeout'], 1200)
+        self.assertEqual(settings.transcribe['timeout_per_minute'], 1200)
+        self.assertEqual(vt.Options(environ=settings.transcribe['env']).threads, 16)
+
     def test_legacy_gpu_true_behaves_as_method_auto(self):
         settings = self.load('enabled = true\ngpu = true\ngpu_min_free_mb = 3072\n')
         default_check = str(PACK / 'transcriber' / 'gpu_check.py')
@@ -309,8 +323,10 @@ class TranscribeSettingsTests(unittest.TestCase):
     def test_bad_transcribe_values_refuse(self):
         for table, pattern in (('device = "cuda"\n', 'unknown key transcribe.device'),
                                ('enabled = "yes"\n', 'transcribe.enabled must be true or false'),
-                               ('timeout = 301\n', 'transcribe.timeout must be an integer from 5 to 300'),
-                               ('threads = 5\n', 'transcribe.threads must be an integer from 1 to 4'),
+                               ('timeout = 3601\n', 'transcribe.timeout must be an integer from 1 to 3600'),
+                               ('timeout = 0\n', 'transcribe.timeout must be an integer from 1 to 3600'),
+                               ('threads = 65\n', 'transcribe.threads must be an integer from 1 to 64'),
+                               ('timeout_per_minute = 3601\n', 'transcribe.timeout_per_minute must be an integer from 0 to 3600'),
                                ('queue_dir = "/var/tmp/q"\n', 'unknown key transcribe.queue_dir'),
                                ('cpus = "0-3; rm"\n', 'transcribe.cpus must be a CPU list'),
                                ('cpus = [2, 3]\n', 'transcribe.cpus must be a CPU list'),
@@ -645,6 +661,37 @@ class InstallCheckTests(unittest.TestCase):
         self.assertEqual([line for ok, line in b.install_problems(settings, which=lambda n: '/usr/bin/' + n,
                                                                   sums=sums) if not ok],
                          ['transcribe model tiny is not one of the supported models: large-v3-turbo-q5_0'])
+
+    def test_an_unlisted_model_present_on_disk_warns_and_passes(self):
+        sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
+        (self.models / 'ggml-tiny.bin').write_bytes(b'tiny-model')
+        settings = b.Settings(**dict(self.settings.__dict__, model='tiny'))
+        results = b.install_problems(settings, which=lambda n: '/usr/bin/' + n, sums=sums)
+        self.assertEqual([line for ok, line in results if not ok], [])
+        warns = [line for ok, line in results if line.startswith('WARN')]
+        self.assertEqual(warns, ['WARN  model ggml-tiny.bin is not in transcriber/models.sha256; skipping hash check'])
+        # An empty unlisted file does not pass.
+        (self.models / 'ggml-tiny.bin').write_bytes(b'')
+        results = b.install_problems(settings, which=lambda n: '/usr/bin/' + n, sums=sums)
+        self.assertEqual([line for ok, line in results if not ok],
+                         ['transcribe model tiny is not one of the supported models: large-v3-turbo-q5_0'])
+
+    def test_a_listed_vad_name_as_model_fails_as_unsupported(self):
+        sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
+        settings = b.Settings(**dict(self.settings.__dict__, model='silero-v6.2.0'))
+        results = b.install_problems(settings, which=lambda n: '/usr/bin/' + n, sums=sums)
+        self.assertEqual([line for ok, line in results if not ok],
+                         ['transcribe model silero-v6.2.0 is not one of the supported models: '
+                          'large-v3-turbo-q5_0'])
+        self.assertFalse(any(line.startswith('WARN') for ok, line in results))
+
+    def test_a_listed_model_with_a_mismatched_hash_still_fails(self):
+        sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), 'ggml-silero-v6.2.0.bin': '0' * 64}
+        self.model('silero-v6.2.0', b'vad')
+        # The main model is listed, so its hash is checked even though it passes;
+        # tamper with it and the check must fail, not warn.
+        (self.models / 'ggml-large-v3-turbo-q5_0.bin').write_bytes(b'tampered')
+        self.assertIn(f'model {self.models}/ggml-large-v3-turbo-q5_0.bin SHA-256', self.failures(sums=sums))
 
     def test_the_pack_records_the_handed_over_model_sums(self):
         sums = b.recorded_sums()

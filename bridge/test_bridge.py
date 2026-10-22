@@ -2033,6 +2033,16 @@ class SetCommandsTests(unittest.TestCase):
             ('https://api.telegram.org/botSECRET/getMyCommands', dict(scope=self.SCOPE)),
         ])
 
+    def test_an_empty_menu_clears_the_paired_chats_menu(self):
+        config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', city='test-city', menu=())
+        bridge = b.Bridge(config, None, 'SECRET', None, request=self.transport)
+        self.answers['getMyCommands'] = 200, dict(ok=True, result=[])
+        self.assertEqual(bridge.set_commands(), [])
+        self.assertEqual(self.calls, [
+            ('https://api.telegram.org/botSECRET/setMyCommands', dict(commands=[], scope=self.SCOPE)),
+            ('https://api.telegram.org/botSECRET/getMyCommands', dict(scope=self.SCOPE)),
+        ])
+
     def test_running_it_again_sets_the_same_list_again(self):
         self.bridge.set_commands()
         self.bridge.set_commands()
@@ -2062,11 +2072,19 @@ class SetCommandsTests(unittest.TestCase):
         for command in ('run', 'probe', 'send', 'reply-current', 'set-commands'):
             self.assertEqual(parser.parse_args([command]).command, command)
 
-    def run_cli(self, readback):
+    def run_cli(self, readback, empty_menu=False):
         """Run bridge.py set-commands as a process, with curl faked on PATH."""
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         fake_bin = root / 'bin'
-        settings = write_settings(root)
+        if empty_menu:
+            body = (f'city = "test-city"\nstate_dir = "{root / "state"}"\nport = 18930\n'
+                    f'token_file = "{root / "private" / "telegram-bot-token"}"\n'
+                    f'callback_secret_file = "{root / "private" / "telegram-callback-secret"}"\n'
+                    'user_display_name = "Pat"\ntimezone = "Asia/Tokyo"\npairing_update_id = 5\n'
+                    '\n[bot]\nbot_id = 999\nuser_id = 123\nchat_id = 123\naccount_id = "test_bot"\n')
+            settings = write_settings(root, body=body)
+        else:
+            settings = write_settings(root)
         log = root / 'curl-calls.jsonl'
         write_fake_curl(fake_bin, f"""#!{sys.executable}
 import json, sys
@@ -2097,12 +2115,20 @@ print(json.dumps(answer) + '\\n200 0.010000 0.020000 0', end='')
     def test_cli_sets_the_menu_and_touches_no_bridge_state(self):
         result, calls, state = self.run_cli(self.MENU)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, 'Telegram command menu set for the paired chat: /quota /status /waiting\n')
+        self.assertEqual(result.stdout, 'commands set: 3 (/quota /status /waiting) for chat 123\n')
         self.assert_token_only_on_curl_stdin(result, calls)
         sent = json.loads(json.loads(calls[0]['stdin'].split('data = ', 1)[1].splitlines()[0]))
         self.assertEqual(sent, dict(commands=self.MENU, scope=self.SCOPE))
         # No ledger, callback secret, bot lock or heartbeat: those belong to the running unit.
         self.assertEqual(state, ['private', 'private/telegram-bot-token', 'telegram-bridge.toml'])
+
+    def test_cli_with_an_empty_menu_clears_it_and_reports_count_and_chat(self):
+        result, calls, _ = self.run_cli([], empty_menu=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'commands set: 0 () for chat 123\n')
+        self.assert_token_only_on_curl_stdin(result, calls)
+        sent = json.loads(json.loads(calls[0]['stdin'].split('data = ', 1)[1].splitlines()[0]))
+        self.assertEqual(sent, dict(commands=[], scope=self.SCOPE))
 
     def test_cli_exits_non_zero_without_the_token_when_the_read_back_differs(self):
         result, calls, _ = self.run_cli(self.MENU[:2])

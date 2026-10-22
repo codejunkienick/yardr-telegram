@@ -104,8 +104,8 @@ python3 <pack>/bridge/bridge.py --settings <settings> set-commands
 ```
 
 `probe` prints `Telegram identity and webhook checks passed` and
-`set-commands` prints `Telegram command menu set for the paired chat:
-/<command> ...`.
+`set-commands` prints `commands set: <count> (/<command> ...) for chat
+<chat_id>` (`commands set: 0 () for chat <chat_id>` when the menu is empty).
 
 `bridge.py --settings <settings> render-unit` prints the unit and
 `check-install` runs the checks alone (`--gpu-probe` adds the GPU probe,
@@ -134,7 +134,10 @@ After each successful `getUpdates` the bridge records
 `<state_dir>/telegram-bridge-heartbeat.json`
 (`{"last_poll_ok_at": <ISO-8601 UTC>, "pid": <int>}`), atomically and at most
 once per 60 s; a failed write prints `poll heartbeat not saved` and polling
-continues. A city's health check can judge the bridge by its age.
+continues. A city's health check can judge the bridge by its age, but the
+age can grow by up to the longest configured `[[command]]` timeout (up to
+3600 s) while a healthy bridge runs a handler in its poll loop, so a
+health check must allow for that before flagging or restarting it.
 
 GC 1.4.1 cannot send a bearer header to adapter callbacks. A random capability
 path in the callback secret file protects the callback along with the loopback
@@ -160,13 +163,14 @@ python3 <pack>/bridge/bridge.py --settings <settings> set-commands
 
 It calls `setMyCommands` with scope `{"type": "chat", "chat_id": <chat_id>}`,
 reads the list back with `getMyCommands` for that scope, and prints
-`Telegram command menu set for the paired chat: /<command> ...` only when the
+`commands set: <count> (/<command> ...) for chat <chat_id>` only when the
 read-back equals the list exactly. A Telegram rejection or a different
 read-back exits 1 with a message that carries no token or response body. It
 reads the token and the settings only: no SQLite store, callback secret, bot
 lock, webhook or `getUpdates` call, so it is safe while the unit runs and
 needs no restart. Other chats and the bot's default menu are not set. With
-nothing to show it refuses.
+nothing to show it sends an empty list, clearing the paired chat's menu, and
+verifies the read-back is empty.
 
 The quota-exhausted notice goes out as Telegram HTML (bold headers) through
 the bridge's own `publish()`. A city's own commands go to their handlers
@@ -186,7 +190,7 @@ settings and its own handler programs, without editing this pack. Each
 | `url` | one of the two | `http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`, nothing else |
 | `menu` | `true` | show it in the chat's "/" menu (`set-commands`) |
 | `callback_prefix` | `"<name>:"` | button presses whose `callback_data` starts with it go to this handler; 1-64 printable ASCII characters, no space |
-| `timeout` | `10` | seconds the handler may take, 1-30 |
+| `timeout` | `10` | seconds the handler may take, 1-3600 |
 
 The settings refuse to load, naming the entry, on an unknown key, a repeated
 name, a name equal to `start` or a `[[menu]]` command, a missing or
@@ -209,7 +213,13 @@ registered prefix goes to that prefix's handler. Any other press is answered
 empty, logged as `callback dropped (update <id>): <reason>` and dropped; it
 never reaches the mayor. With no `[[command]]` every press is dropped so.
 Handlers run one at a time in the poll loop: a slow handler holds the next
-update for up to its `timeout`.
+update for up to its `timeout`. A `timeout` above the unit's
+`TimeoutStopSec` (45 s) can outlive a stop or restart: the bridge is killed
+before it advances the offset past that update, so after the restart the
+same `update_id` is delivered again. A URL handler runs outside the unit,
+so a stop cannot end its wait either. Handlers, URL handlers above all,
+must therefore dedupe on the `update_id` in their input and treat a repeat
+of an update they already handled as already done.
 
 **Handler input** is one JSON object; a field that does not apply is `null`:
 
@@ -234,7 +244,7 @@ redirect followed, the same timeout over the whole exchange, and a 200 answer
 read up to 64 KiB.
 
 **Handler output** is exactly one JSON object `{"actions": [...]}`, at most
-64 KiB and five actions, each exactly one of:
+64 KiB and 32 actions, each exactly one of:
 
 - `{"type": "send", "text": ..., "format": "plain"|"html", "keyboard": ...}`
 - `{"type": "edit", "message_id": <int>, "text": ..., "format": ..., "keyboard": ...}`
@@ -243,8 +253,10 @@ read up to 64 KiB.
   most once; `text` up to 200 characters, both optional)
 
 `format` defaults to `plain`; `html` follows "Formatted messages" below and
-the text limit is 4096 UTF-16 units of visible text. A `keyboard` is 1-8 rows of
-1-8 buttons `{"text": ..., "callback_data": ...}`; `callback_data` is 1-64
+the text limit is 4096 UTF-16 units of visible text. A `keyboard` is rows of
+buttons `{"text": ..., "callback_data": ...}`, at most 8 buttons per row and
+at most 100 buttons in total;
+`callback_data` is 1-64
 bytes and starts with one of the city's registered prefixes. The JSON is read
 strictly (no duplicate keys, no `NaN`, no string escaping a lone UTF-16
 surrogate). Anything else, a non-zero exit, a timeout, a handler that cannot
@@ -441,9 +453,10 @@ transcript is refused because of its language or script.
 The transcriber is fenced so it never takes the host from its user: before
 decoding it confines itself (and so ffmpeg and whisper-cli) to the settings'
 `cpus` with `sched_setaffinity`, runs at nice 10 with best-effort I/O level 7
-(`ionice -c 2 -n 7`), and runs at most 4 whisper threads.
-Idle priority is not used: on a busy host it starves the note. A fence that
-cannot be set fails the note (`fence_failed`) rather than running unfenced.
+(`ionice -c 2 -n 7`), and runs at most 64 whisper threads.
+Idle priority is not used: on a busy host it starves the note. An explicitly
+configured `cpus` list that cannot be applied fails the note (`fence_failed`);
+nice and `ionice` are best-effort only and never fail the note.
 
 ### Setting up whisper.cpp
 
@@ -486,7 +499,9 @@ without nvcc it builds for the CPU and reports that the GPU is tried and
 falls back to the CPU.
 
 Each model file (`<models_dir>/ggml-<name>.bin` for `model` and for
-`vad_model`) must be named in `transcriber/models.sha256`. A present file
+`vad_model`) is normally named in `transcriber/models.sha256`; a present,
+non-empty local transcribe `model` file with no recorded entry is reused
+as-is instead of failing (the `vad_model` file must be listed). A present file
 with the recorded SHA-256 is `ok`; with any other hash it fails and is
 never overwritten. A missing file is downloaded over HTTPS into a
 temporary file in `models_dir`, checked, and only then moved into place;
@@ -584,9 +599,9 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `model` | `large-v3-turbo-q5_0` | measured at 4 threads: about 210 core-seconds per minute of audio; `small.en` about 50 with more slips in names |
 | `vad_model` | `silero-v6.2.0` | the Silero VAD model |
 | `cpus` | `""` (every CPU the bridge has) | CPU list for the transcriber, such as `"0-3"` |
-| `threads` | `4` | whisper-cli threads, 1-4 |
-| `timeout` | `120` | base seconds of a run, 5-300 (the decode limit, and the start of the whisper limit) |
-| `timeout_per_minute` | `120` | seconds of whisper limit added per minute of audio (the bridge uses Telegram's duration, assuming 10 minutes when it gives none) |
+| `threads` | `4` | whisper-cli threads, 1-64 |
+| `timeout` | `120` | base seconds of a run, 1-3600 (the decode limit, and the start of the whisper limit) |
+| `timeout_per_minute` | `120` | seconds of whisper limit added per minute of audio, 0-3600 (the bridge uses Telegram's duration, assuming 10 minutes when it gives none) |
 | `method` | `cpu` | `auto`, `cpu` or `gpu` (above); with it, `gpu` is refused |
 | `gpu_check` | `<pack>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
 | `gpu` | `false` | legacy form without `method`: `true` behaves as `method = "auto"`, `false` as `method = "cpu"` |
@@ -595,9 +610,12 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 
 The supported models are the `ggml-<name>.bin` entries of
 `<pack>/transcriber/models.sha256` except the VAD model. `load_settings`
-accepts any well-formed `model` name, but `check-install` fails an
-unlisted one with `FAIL  transcribe model <name> is not one of the
-supported models: <list>`:
+accepts any well-formed `model` name. `check-install` keeps the SHA-256
+check for a listed model (a mismatch still fails), warns
+`WARN  model ggml-<name>.bin is not in transcriber/models.sha256; skipping
+hash check` and passes for an unlisted model present on disk as a non-empty
+regular file, and otherwise fails an unlisted one with
+`FAIL  transcribe model <name> is not one of the supported models: <list>`:
 
 | model | file | speed at 4 threads | language |
 | --- | --- | --- | --- |
@@ -611,8 +629,10 @@ An English-only model (`*.en`) with a `language` other than `en` or `auto`
 is reported by `check-install` as a `WARN` line naming the mismatch; it is
 never a failure and never a refusal at run time.
 
-`install.sh` creates the queue directory and checks `whisper-cli`, both model files and
-their SHA-256 against `<pack>/transcriber/models.sha256`.
+`install.sh` creates the queue directory and checks `whisper-cli` and both model
+files; a listed model's SHA-256 is checked against
+`<pack>/transcriber/models.sha256`, an unlisted local transcribe `model` file
+is accepted with a warning and no hash check (the VAD model must be listed).
 
 On failure the second message carries `transcription failed: <reason>` with
 the saved file path, where the reason is one of a fixed set: `timeout`,
@@ -621,7 +641,7 @@ the saved file path, where the reason is one of a fixed set: `timeout`,
 installed)`, `transcriber missing (whisper-cli not found)`, `transcriber
 missing (model not found)`, `transcriber queue unavailable`, `audio could not
 be decoded`, `whisper-cli failed`, `transcriber could not
-be confined to its CPUs and priority`, or `no speech
+be confined to its configured CPUs`, or `no speech
 detected`. A failed transcription never blocks inbound
 delivery. Nothing the child prints is relayed or logged: the bridge log line
 carries only the category, exit code, byte counts, duration and message id.

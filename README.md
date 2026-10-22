@@ -109,7 +109,7 @@ with this pack at `<pack>`:
    after `enable --now`, `systemctl --user status <city>-telegram.service`
    shows it active and `<state_dir>/telegram-bridge-heartbeat.json` appears
    within about a minute; after set-commands, its line
-   `Telegram command menu set for the paired chat: /<command> ...`.
+   `commands set: <count> (/<command> ...) for chat <chat_id>`.
 7. (you, then the agent) Send a message from the chat and check the mayor
    received it; reply with `gc telegram reply-current` (the
    `telegram-formatting` skill). Success: the message reaches the mayor's

@@ -573,7 +573,7 @@ class Bridge:
         'whisper_missing': 'transcriber missing (whisper-cli not found)',
         'model_missing': 'transcriber missing (model not found)',
         'whisper_failed': 'whisper-cli failed',
-        'fence_failed': 'transcriber could not be confined to its CPUs and priority',
+        'fence_failed': 'transcriber could not be confined to its configured CPUs',
     }
     PENDING_SUFFIX = '-transcript.pending'
     PENDING_RELAY_ATTEMPTS = 3
@@ -703,8 +703,6 @@ class Bridge:
         unit polls; running it again sets the same list again.
         """
         entries = list(self.menu) + [(c['name'], c['description']) for c in self.commands.values() if c['menu']]
-        if not entries:
-            raise TransportError('the settings define no command menu ([[menu]], or [[command]] with menu = true)')
         commands = [dict(command=name, description=text) for name, text in entries]
         scope = dict(type='chat', chat_id=self.config['chat_id'])
         status, data = self.telegram('setMyCommands', dict(commands=commands, scope=scope))
@@ -1428,8 +1426,9 @@ class Bridge:
 
     COMMAND_PATH = '/usr/local/bin:/usr/bin:/bin'
     COMMAND_OUTPUT_MAX_BYTES = 64 * 1024
-    COMMAND_MAX_ACTIONS = 5
-    COMMAND_KEYBOARD_MAX = 8
+    COMMAND_MAX_ACTIONS = 32
+    COMMAND_KEYBOARD_MAX_BUTTONS = 100
+    COMMAND_KEYBOARD_MAX_PER_ROW = 8
     COMMAND_BUTTON_TEXT_MAX = 256
     COMMAND_ANSWER_MAX = 200
     CALLBACK_DATA_MAX_BYTES = 64
@@ -1601,8 +1600,10 @@ class Bridge:
         return text, plain
 
     def _command_keyboard(self, keyboard):
-        if (not isinstance(keyboard, list) or not 1 <= len(keyboard) <= self.COMMAND_KEYBOARD_MAX
-                or any(not isinstance(row, list) or not 1 <= len(row) <= self.COMMAND_KEYBOARD_MAX for row in keyboard)):
+        if (not isinstance(keyboard, list) or not keyboard
+                or any(not isinstance(row, list) or not 1 <= len(row) <= self.COMMAND_KEYBOARD_MAX_PER_ROW
+                       for row in keyboard)
+                or sum(len(row) for row in keyboard) > self.COMMAND_KEYBOARD_MAX_BUTTONS):
             raise self._HandlerFailure('invalid_keyboard')
         rows = []
         for row in keyboard:
@@ -1623,7 +1624,7 @@ class Bridge:
     def parse_handler_output(self, raw, kind):
         """The validated action list of one handler answer, or _HandlerFailure.
         Exactly {"actions": [...]}, strict JSON (no duplicate keys, no NaN),
-        at most five actions; answer_callback only for a callback, once."""
+        at most 32 actions; answer_callback only for a callback, once."""
         if len(raw) > self.COMMAND_OUTPUT_MAX_BYTES:
             raise self._HandlerFailure('output_too_large')
         try:
@@ -2304,7 +2305,7 @@ MENU_MAX = 100
 _HANDLER_URL_RE = re.compile(r'http://(127\.0\.0\.1|\[::1\]):([0-9]{1,5})(/[A-Za-z0-9._~/-]{0,200})')
 # A callback prefix: printable ASCII without spaces, at most callback_data's 64 bytes.
 _CALLBACK_PREFIX_RE = re.compile(r'[\x21-\x7e]{1,64}')
-HANDLER_WRITE_PATHS_MAX = 16
+HANDLER_WRITE_PATHS_MAX = 256
 TRANSCRIBE_KEYS = {'enabled', 'whisper_cli', 'models_dir', 'model', 'vad_model', 'threads', 'cpus', 'timeout',
                    'timeout_per_minute', 'gpu', 'gpu_min_free_mb', 'method', 'gpu_check', 'language'}
 TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
@@ -2497,7 +2498,7 @@ def _command_settings(data, menu):
             raise SettingsError(f'settings: {label} clashes with /{name}, which the bridge or [[menu]] already has')
         command = dict(name=name, description=_text_setting(item.get('description'), f'{label} description', limit=256),
                        menu=_bool_setting(item.get('menu', True), f'{label} menu'),
-                       timeout=_int_setting(item.get('timeout', 10), f'{label} timeout', 1, 30))
+                       timeout=_int_setting(item.get('timeout', 10), f'{label} timeout', 1, 3600))
         if ('handler' in item) == ('url' in item):
             raise SettingsError(f'settings: {label} needs exactly one of handler and url')
         if 'handler' in item:
@@ -2621,10 +2622,10 @@ def load_settings(path, home=None):
     models_dir = _path_setting(found['models_dir'], 'transcribe.models_dir')
     model = _text_setting(found['model'], 'transcribe.model', _MODEL_RE, limit=80)
     vad_model = _text_setting(found['vad_model'], 'transcribe.vad_model', _MODEL_RE, limit=80)
-    threads = _int_setting(found['threads'], 'transcribe.threads', 1, 4)
+    threads = _int_setting(found['threads'], 'transcribe.threads', 1, 64)
     queue_dir = _path_setting(str((Path(home) if home else Path.home()) / QUEUE_SUBDIR), 'the home directory')
-    timeout = _int_setting(found['timeout'], 'transcribe.timeout', 5, 300)
-    per_minute = _int_setting(found['timeout_per_minute'], 'transcribe.timeout_per_minute', 0, 600)
+    timeout = _int_setting(found['timeout'], 'transcribe.timeout', 1, 3600)
+    per_minute = _int_setting(found['timeout_per_minute'], 'transcribe.timeout_per_minute', 0, 3600)
     cpus = found['cpus']
     if not isinstance(cpus, str) or (cpus and not _CPU_LIST_RE.fullmatch(cpus)):
         raise SettingsError('settings: transcribe.cpus must be a CPU list such as "0-3"')
@@ -2788,11 +2789,19 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
     except (OSError, ValueError):
         supported = []
     unsupported = bool(supported) and settings.model not in supported
-    if unsupported:
+    model_file = settings.models_dir / f'ggml-{settings.model}.bin'
+    try:
+        local_unlisted = (unsupported and f'ggml-{settings.model}.bin' not in sums
+                          and model_file.is_file() and model_file.stat().st_size > 0)
+    except OSError:
+        local_unlisted = False
+    if unsupported and not local_unlisted:
         check(False, f'transcribe model {settings.model} is not one of the supported models: '
                      f'{", ".join(supported)}')
     for index, name in enumerate((settings.model, settings.vad_model)):
         if index == 0 and unsupported:
+            if local_unlisted:
+                warn(f'model ggml-{name}.bin is not in transcriber/models.sha256; skipping hash check')
             continue
         file_name = f'ggml-{name}.bin'
         path = settings.models_dir / file_name
@@ -2802,7 +2811,7 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256):
             check(False, f'model {path} is missing')
         else:
             check(hasher(path) == sums[file_name], f'model {path} SHA-256')
-    language = getattr(settings, 'language', None) or (settings.transcribe or {}).get('language') or 'en'
+    language = getattr(settings, 'language', 'en')
     if isinstance(settings.model, str) and re.search(r'\.en(?:-|$)', settings.model) and language not in ('en', 'auto'):
         warn(f'transcribe model {settings.model} is English-only (*.en) but transcribe.language is "{language}"; '
              f'whisper will still run, but a multilingual model fits "{language}" better')
@@ -2970,7 +2979,8 @@ def main():
     if args.command == 'set-commands':
         # No Store, callback secret or lock: the running unit owns those.
         commands = Bridge(settings.config, None, token, None, port, state_dir=settings.state_dir).set_commands()
-        print('Telegram command menu set for the paired chat: ' + ' '.join('/' + c['command'] for c in commands))
+        names = ' '.join('/' + c['command'] for c in commands)
+        print(f"commands set: {len(commands)} ({names}) for chat {settings.config['chat_id']}")
         return
     settings.state_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     store = Store(settings.state_dir / 'telegram-bridge.sqlite3', settings.pairing_update_id + 1)

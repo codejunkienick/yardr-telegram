@@ -2,9 +2,10 @@
 # Install one city's Telegram bridge from this pack, idempotently:
 #   install.sh --settings <file> [--dry-run]
 # 1. checks the settings and the host (python, curl, owner-only credentials,
-#    and with transcription on: ffmpeg, whisper-cli, the models and their
-#    SHA-256 against transcriber/models.sha256), creating the callback
-#    secret and the host-wide transcription queue directory first;
+#    and with transcription on: ffmpeg, whisper-cli and the models — a listed
+#    model's SHA-256 against transcriber/models.sha256, an unlisted local
+#    transcribe model accepted with a warning and no hash check), creating
+#    the callback secret and the host-wide transcription queue directory first;
 # 2. links ~/.local/bin/voice-transcribe to this pack's transcriber;
 # 3. renders the city's systemd user unit into ~/.config/systemd/user/.
 # It never starts, stops or restarts a unit and never contacts Telegram:

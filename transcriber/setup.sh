@@ -2,7 +2,9 @@
 # Set up the transcriber's host side for one city's settings, idempotently:
 #   transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>]
 # Builds whisper.cpp for the settings' method, then downloads the chosen
-# model and the VAD model and checks them against transcriber/models.sha256,
+# model and the VAD model and checks listed models against
+# transcriber/models.sha256 (a present, non-empty unlisted transcribe model
+# file is reused as-is; the VAD model must be listed),
 # so install.sh can say ok without guessing. The whisper.cpp build and the
 # models are shared by every city on the host (never under a city). It
 # installs nothing system-wide, uses no sudo and starts nothing; a missing
@@ -181,8 +183,13 @@ setup_model() {
   _name=$1
   _url=$2
   _expected=$3
+  _allow_local=${4:-}
   _file="ggml-$_name.bin"
   _dest="$models_dir/$_file"
+  if [ -z "$_expected" ] && [ "$_allow_local" = 1 ] && [ -f "$_dest" ] && [ -s "$_dest" ]; then
+    printf 'ok    model %s (local file, no recorded SHA-256; skipping hash check)\n' "$_dest"
+    return 0
+  fi
   if [ -z "$_expected" ]; then
     printf 'FAIL  model %s has no recorded SHA-256 in %s\n' "$_dest" "$sums_file"
     return 1
@@ -228,7 +235,7 @@ setup_model() {
   printf 'ok    model %s downloaded (SHA-256)\n' "$_dest"
   return 0
 }
-setup_model "$model" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$model.bin" "$model_sum" || exit 1
+setup_model "$model" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$model.bin" "$model_sum" 1 || exit 1
 setup_model "$vad_model" "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-$vad_model.bin" "$vad_model_sum" || exit 1
 
 printf 'next: %s/install.sh --settings %s\n' "$pack" "$settings"

@@ -26,8 +26,12 @@ spec.loader.exec_module(vt)
 FAKE_WHISPER = """#!{python}
 import json, os, sys
 log = os.environ['FAKE_WHISPER_LOG']
+try:
+    _ionice = __import__('subprocess').run(['ionice', '-p', str(os.getpid())], capture_output=True, text=True).stdout.strip()
+except Exception:
+    _ionice = ''
 fence = dict(cpus=sorted(os.sched_getaffinity(0)), nice=os.getpriority(os.PRIO_PROCESS, 0),
-             ionice=__import__('subprocess').run(['ionice', '-p', str(os.getpid())], capture_output=True, text=True).stdout.strip())
+             ionice=_ionice)
 with open(os.environ['FAKE_WHISPER_LOG'] + '.fence', 'w') as stream:
     json.dump(fence, stream)
 with open(log, 'a') as stream:
@@ -155,11 +159,45 @@ class TranscriberTests(FakeWhisperCase):
         self.assertEqual(fence['nice'], max(10, os.getpriority(os.PRIO_PROCESS, 0)))
         self.assertEqual(fence['ionice'], 'best-effort: prio 7')
 
+    def test_unset_threads_defaults_to_four(self):
+        self.assertEqual(vt.Options(environ={}).threads, 4)
+        self.assertEqual(vt.Options(environ={'VOICE_TRANSCRIBE_THREADS': '16'}).threads, 16)
+        self.assertEqual(vt.Options(environ={'VOICE_TRANSCRIBE_THREADS': '100'}).threads, 64)
+
     def test_more_than_four_threads_is_capped(self):
         self.env['VOICE_TRANSCRIBE_THREADS'] = '12'
         self.result('Fine.')
         argv = self.whisper_calls()[0]
-        self.assertEqual(argv[argv.index('-t') + 1], '4')
+        self.assertEqual(argv[argv.index('-t') + 1], '12')
+        self.env['VOICE_TRANSCRIBE_THREADS'] = '100'
+        self.result('Fine.')
+        argv = self.whisper_calls()[-1]
+        self.assertEqual(argv[argv.index('-t') + 1], '64')
+
+    def test_transcription_succeeds_when_ionice_is_absent(self):
+        bin_only = self.env['PATH'].split(os.pathsep)[0]
+        self.assertFalse((Path(bin_only) / 'ionice').exists())
+        self.assertEqual(self.result('Fine.', extra_env={'PATH': bin_only}), {'text': 'Fine.'})
+
+    def test_nice_and_ionice_failures_never_fail_the_fence(self):
+        options = vt.Options(environ={})
+        def missing(*args, **kwargs):
+            raise FileNotFoundError('ionice')
+        vt.fence(options, run=missing)
+        def refused(*args, **kwargs):
+            return subprocess.CompletedProcess(args, 1)
+        vt.fence(options, run=refused)
+        with patch('os.getpriority', return_value=0), \
+                patch('os.setpriority', side_effect=PermissionError('nice')):
+            vt.fence(options, run=refused)
+
+    def test_unknown_language_is_matched_case_insensitively(self):
+        def run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout='Some text',
+                                               stderr="Error: Unknown language 'zz'\n")
+        with self.assertRaises(vt.TranscribeError) as caught:
+            vt._run_whisper(['whisper-cli'], run, time.monotonic() + 10)
+        self.assertEqual(caught.exception.code, 'whisper_failed')
 
     def test_a_fence_that_cannot_be_set_stops_the_transcription(self):
         for cpus in ('99999', '3-1', 'all'):

@@ -25,7 +25,7 @@ import bridge as b  # noqa: E402
 import test_bridge  # noqa: E402
 import test_topics  # noqa: E402
 from test_bridge import BridgeTestCase, run_main, write_fake_curl, write_settings  # noqa: E402
-from test_topic_inbound import OPS, TOPICS, in_topic, record_topics  # noqa: E402
+from test_topic_inbound import OPS, WEB, TOPICS, in_topic, record_topics  # noqa: E402
 
 PACK = Path(__file__).resolve().parents[1]
 HTML_REJECTED = 400, dict(ok=False, error_code=400, description="Bad Request: can't parse entities: x")
@@ -407,16 +407,57 @@ class TopicAskTests(TopicOutboundCase):
 
 
 class TopicQuotaTests(TopicOutboundCase):
-    def waiting(self, episode):
+    def accepted(self, message):
+        result = super().accepted(message)
+        if message['conversation']['conversation_id'] == f'123:topic:{WEB}':
+            result['TargetAgentName'] = 'ops-agent'
+        return result
+
+    def waiting(self, episode, template='mayor'):
+        self.waiting_sessions([dict(template=template, status='quota_wait', episode=episode,
+                                     until=int(time.time() * 1000) + 3600 * 1000)])
+
+    def waiting_sessions(self, sessions):
         health = Path(self.tmp.name) / 'health.json'
         self.config['health_file'] = str(health)
+        self.bridge.config['health_file'] = str(health)
         health.write_text(json.dumps(dict(
             observed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            sessions=[dict(template='mayor', status='quota_wait', episode=episode,
-                           until=int(time.time() * 1000) + 3600 * 1000)])))
+            sessions=sessions)))
 
     def notices(self):
         return [body for body in self.sent('sendMessage') if 'quota exhausted' in body['text']]
+
+    def test_a_mayor_episode_posts_nothing_in_a_helper_topic(self):
+        self.waiting('ep-mayor-only')
+        self.bridge.drain([in_topic(self.update(10), WEB)])
+        self.assertEqual(self.notices(), [])
+        self.assertEqual(len(self.relays()), 1)
+        self.bridge.drain([self.update(11)])
+        [notice] = self.notices()
+        self.assertNotIn('message_thread_id', notice)
+        self.assertIn('mayor', notice['text'])
+
+    def test_a_helper_episode_posts_once_in_its_topic_and_names_it(self):
+        self.waiting('ep-helper', template='ops-agent')
+        self.bridge.drain([in_topic(self.update(10), WEB), in_topic(self.update(11), WEB),
+                           self.update(12)])
+        [notice] = self.notices()
+        self.assertEqual(notice['message_thread_id'], WEB)
+        self.assertIn('ops-agent', notice['text'])
+        self.assertIn('quota-exhausted-9-ops-agent-ep-helper', self.ledger())
+
+    def test_two_agents_with_the_same_episode_id_do_not_suppress_each_other(self):
+        until = int(time.time() * 1000) + 3600 * 1000
+        self.waiting_sessions([
+            dict(template='mayor', status='quota_wait', episode='ep-shared', until=until),
+            dict(template='ops-agent', status='quota_wait', episode='ep-shared', until=until)])
+        self.bridge.drain([in_topic(self.update(10), WEB), self.update(11)])
+        helper_notice, mayor_notice = self.notices()
+        self.assertEqual(helper_notice['message_thread_id'], WEB)
+        self.assertIn('ops-agent', helper_notice['text'])
+        self.assertNotIn('message_thread_id', mayor_notice)
+        self.assertIn('mayor', mayor_notice['text'])
 
     def test_the_notice_follows_a_topic_message_once_per_episode(self):
         self.waiting('ep-topic')

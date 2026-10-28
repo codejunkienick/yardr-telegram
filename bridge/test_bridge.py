@@ -812,6 +812,26 @@ class BridgeTests(BridgeTestCase):
         self.assertEqual(len(notice_calls), 1)
         self.assertIn('quota exhausted', notice_calls[0][1]['text'])
 
+    def test_quota_key_separates_colliding_agent_and_episode_pairs(self):
+        self.assertNotEqual(b.Bridge._quota_key('alpha', 'beta-gamma'),
+                            b.Bridge._quota_key('alpha-beta', 'gamma'))
+        self.assertEqual(b.Bridge._quota_key('alpha', 'beta-gamma'),
+                         b.Bridge._quota_key('alpha', 'beta-gamma'))
+
+    def test_quota_key_stays_within_the_publish_limit_for_a_long_episode(self):
+        episode = 'e' * 240
+        for agent in ('mayor', 'ops-agent'):
+            self.assertLessEqual(len(b.Bridge._quota_key(agent, episode)), 256)
+        self.assertNotEqual(b.Bridge._quota_key('mayor', episode),
+                            b.Bridge._quota_key('ops-agent', episode))
+
+    def test_inbound_notifies_for_a_long_episode(self):
+        self.write_city_health(self.mayor_waiting(self.future_until(), 'e' * 240))
+        self.bridge.drain([self.update(uid=10)])
+        notice_calls = [c for c in self.calls if '/sendMessage' in c[0]]
+        self.assertEqual(len(notice_calls), 1)
+        self.assertIn('quota exhausted', notice_calls[0][1]['text'])
+
     def test_inbound_sends_no_notice_when_mayor_is_not_quota_blocked(self):
         self.write_city_health([{'template': 'mayor', 'status': 'running'}])
         self.bridge.drain([self.update(uid=10)])

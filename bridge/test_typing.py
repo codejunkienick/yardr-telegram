@@ -210,7 +210,7 @@ class TypingTests(BridgeTestCase):
         until = int((time.time() + 3600) * 1000)
         with patch.object(self.bridge, 'mayor_quota_episode', return_value=('episode-1', until)):
             self.bridge.drain([self.update(uid=10)])
-        self.assertEqual(self.ledger_rows(), ['quota-exhausted-episode-1'])
+        self.assertEqual(self.ledger_rows(), ['quota-exhausted-5-mayor-episode-1'])
         self.work(5)
         self.assertEqual(self.actions, [])
         self.assertIsNone(self.bridge.typing_windows.get(None))

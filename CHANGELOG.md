@@ -61,6 +61,11 @@ sees and does, not how the code is organised.
   sent or recorded. Send it again with buttons, or use the deliberate
   text-only override when a plain list is really meant. A send already
   confirmed under the same key keeps its saved receipt.
+- The quota-exhausted notice follows the agent of the conversation it
+  is posted in: in a topic set up in settings it watches that topic's
+  agent, names it, and is keyed by it, so one agent's episode neither
+  posts in another agent's topic nor is hidden by it. In the paired
+  chat it watches the settings' agent, as before.
 
 ### Upgrade notes
 

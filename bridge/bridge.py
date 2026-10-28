@@ -2060,7 +2060,7 @@ class Bridge:
             reply = None  # in a topic, a reply to its root message is no reply
         conversation = self._relay(mid, str(mid), relay_text, reply, thread_id)
         self._accepted(mid, conversation['conversation_id'], thread_id)
-        # The message above is now durably queued for the mayor but it may be
+        # The message above is now durably queued for its agent but it may be
         # quota-blocked and unable to answer it any time soon; tell the user once
         # per exhaustion episode, on the conversation the message was accepted
         # on, rather than leaving the user wondering why the bridge went silent.
@@ -3983,15 +3983,15 @@ class Bridge:
         budget = max(limit - len(ellipsis), 0) * 2
         return encoded[:budget].decode('utf-16-le', 'ignore') + ellipsis
 
-    def mayor_quota_episode(self, now=None):
+    def mayor_quota_episode(self, now=None, agent=None):
         """Return (episode_key, until_ms) when a fresh health report (the
         settings' health_file, rewritten by the city every few minutes)
-        records the served agent's session (the settings' agent, default mayor)
-        as quota_wait until a future time, else None.
+        records `agent`'s session (default the served agent: the settings'
+        agent, default mayor) as quota_wait until a future time, else None.
 
         Read-only and fail-closed: no health_file setting, a missing/malformed health
         file (not written yet, or mid-rewrite), a missing, unparseable or stale
-        observed_at, or a mayor entry lacking the episode field or a finite,
+        observed_at, or an entry for the agent lacking the episode field or a finite,
         still-future until all degrade to "no episode" rather than raising or
         blocking relay.
         """
@@ -4015,7 +4015,7 @@ class Bridge:
                 or not now - self.HEALTH_MAX_AGE <= observed <= now + self.HEALTH_CLOCK_SKEW):
             return None
         for session in health['sessions']:
-            if not isinstance(session, dict) or session.get('template') != self.agent:
+            if not isinstance(session, dict) or session.get('template') != (agent or self.agent):
                 continue
             if session.get('status') != 'quota_wait':
                 return None
@@ -4027,38 +4027,72 @@ class Bridge:
             return episode, until
         return None
 
-    def format_quota_exhausted_reply(self, until_ms):
-        """Render the mayor's quota-exhaustion notice. Never raises: a bad
-        timestamp degrades to 'unknown time' rather than blocking the reply."""
+    def format_quota_exhausted_reply(self, until_ms, agent=None):
+        """Render the quota-exhaustion notice of `agent` (default the
+        settings' agent), naming it. Never raises: a bad timestamp degrades
+        to 'unknown time' rather than blocking the reply."""
         try:
             dt = datetime.datetime.fromtimestamp(until_ms / 1000, tz=datetime.timezone.utc).astimezone(self.local_tz)
             reset_str = dt.strftime('%H:%M ') + utc_offset_label(dt)
         except (TypeError, ValueError, OSError, OverflowError):
             reset_str = 'unknown time'
-        return f'<b>bot:</b> quota exhausted, resets at {html_text(reset_str)}'
+        return f'<b>bot:</b> quota exhausted, resets at {html_text(reset_str)} ({html_text(agent or self.agent)})'
+
+    @staticmethod
+    def _quota_key(agent, episode):
+        """The ledger key of one agent's episode: the agent's length, the
+        agent and the episode, so pairs whose names and episodes join
+        ambiguously under a plain hyphen (alpha with beta-gamma, alpha-beta
+        with gamma) still get different keys. When that key would pass the
+        publish limit of 256 characters (a long episode), the key is the
+        SHA-256 of the JSON pair instead, so a previously sendable episode
+        stays sendable for any agent."""
+        key = f'quota-exhausted-{len(agent)}-{agent}-{episode}'
+        if len(key) <= 256:
+            return key
+        digest = hashlib.sha256(json.dumps([agent, episode], ensure_ascii=False).encode()).hexdigest()
+        return f'quota-exhausted-h-{digest}'
+
+    def _quota_agent(self, conversation):
+        """The agent a quota notice on `conversation` watches and names: the
+        recorded [[topic]]'s agent for that topic's conversation, else the
+        settings' agent (the paired chat, General, the fallbacks and the
+        auto topics, which are bound to the settings' agent)."""
+        if conversation is None or conversation == self.conversation:
+            return self.agent
+        topic = next((topic for topic in self._recorded_topics()
+                      if topic['conversation'] == conversation), None)
+        return topic['agent'] if topic is not None else self.agent
 
     def notify_quota_exhausted(self, conversation=None):
-        """Tell the user once per quota-exhaustion episode that the mayor cannot
-        answer right now, instead of leaving the bridge silently unresponsive.
-        The notice goes on `conversation`, the one the triggering message was
-        accepted on (default the paired chat's).
+        """Tell the user once per quota-exhaustion episode that the agent of
+        `conversation` cannot answer right now, instead of leaving the bridge
+        silently unresponsive. The notice goes on `conversation`, the one the
+        triggering message was accepted on (default the paired chat's), and
+        watches and names that conversation's agent (the recorded topic's,
+        else the settings' agent): an episode of any other agent posts
+        nothing there.
 
-        The idempotency key is derived from the episode alone (not the
-        triggering message), so every inbound message during the same episode
-        on one conversation publishes the identical request and the store's
-        dedup delivers it exactly once; one on another conversation meets the
-        key's idempotency_key_conflict and sends nothing. A new episode (new
-        reset time) gets its own key. Never raises: this runs inline in
-        inbound() and must not break message relay.
+        The idempotency key is derived from the agent and the episode (not
+        the triggering message), so every inbound message during the same
+        episode on one conversation publishes the identical request and the
+        store's dedup delivers it exactly once; one on another conversation
+        of the same agent meets the key's idempotency_key_conflict and sends
+        nothing, while another agent's episode, even with the same episode
+        id, gets its own key. A new episode (new reset time) gets its own
+        key. Never raises: this runs inline in inbound() and must not break
+        message relay.
         """
         try:
-            found = self.mayor_quota_episode()
+            conversation = conversation or self.conversation
+            agent = self._quota_agent(conversation)
+            found = self.mayor_quota_episode(agent=agent)
             if not found:
                 return
             episode, until = found
-            request = dict(conversation=conversation or self.conversation,
-                           idempotency_key=f'quota-exhausted-{episode}',
-                           text=self.format_quota_exhausted_reply(until), format='html')
+            request = dict(conversation=conversation,
+                           idempotency_key=self._quota_key(agent, episode),
+                           text=self.format_quota_exhausted_reply(until, agent), format='html')
             self.publish(request)
         except Exception:
             print('quota-exhaustion notice failed', file=sys.stderr, flush=True)

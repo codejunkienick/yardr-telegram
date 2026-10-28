@@ -69,7 +69,7 @@ city.
 | `gc_base_url`, `gc_api_token_file` | no | loopback GC API (default `http://127.0.0.1:8372`) and its bearer token file; anything else refuses at load |
 | `health_file` | no | the city's health report; enables the quota-exhausted notice |
 | `pairing_update_id` | no | the `update_id` of the `/start` update; the bridge starts after it. Read only for a new ledger (README.md, step 3) |
-| `agent` | no | the gc agent this bridge serves; default `mayor`. Inbound is accepted only when GC routes it to this agent, except a message in a `[[topic]]`, which is accepted only when GC routes it on that topic's conversation to that topic's `agent` (default this agent) ("Topics"). The quota-exhausted notice watches this agent's session, and `send` without `--session` or `$GC_SESSION_ID` sends as it. "The mayor" in this guide means this agent; a second bridge for a second agent is in `<pack>/README.md`, "A second bridge for a second agent" |
+| `agent` | no | the gc agent this bridge serves; default `mayor`. Inbound is accepted only when GC routes it to this agent, except a message in a `[[topic]]`, which is accepted only when GC routes it on that topic's conversation to that topic's `agent` (default this agent) ("Topics"). The quota-exhausted notice watches this agent's session (except in a recorded `[[topic]]` for another agent, where it watches that topic's agent), and `send` without `--session` or `$GC_SESSION_ID` sends as it. "The mayor" in this guide means this agent; a second bridge for a second agent is in `<pack>/README.md`, "A second bridge for a second agent" |
 | `[[menu]]` `command`, `description` | no | the chat's "/" menu, in order |
 | `[[command]]` | no | the city's own commands and buttons, run by its own handlers ("City commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
@@ -1039,9 +1039,15 @@ identity, so one key in two conversations is `idempotency_key_conflict`.
   and `ask-close` act by message id and are unchanged.
 - The quota-exhausted notice goes on the conversation its triggering message
   was accepted on: the topic's, or the paired chat's for General and both
-  fallbacks. Its key is the episode's alone, so one episode still sends one
-  notice: a message on another conversation in the same episode meets the
-  key's conflict and sends nothing.
+  fallbacks. It watches the session of that conversation's agent — the
+  recorded topic's `agent`, else the settings' `agent` (the paired chat,
+  the fallbacks and the auto topics) — and names that agent; an episode of
+  any other agent posts nothing there. Its key is the agent's length, the
+  agent and the episode (a hash of the pair when that would exceed the
+  publish key limit), so one episode of one agent still sends one notice:
+  a message on another conversation of the same agent in the same episode
+  meets the key's conflict and sends nothing, while another agent's episode never
+  suppresses it.
 - A pinned slot's message stays in General ("Pinned messages"). Edits,
   reactions, callback answers, pins and unpins act by message id and take no
   thread.

@@ -20,6 +20,9 @@ only by its own settings file. Below, `<pack>` is this pack's directory and
 ## Terms
 
 - **mayor**: the gc agent this bridge serves (`agent`, default `mayor`).
+  A `[[topic]]` may name another agent for its own conversation; inbound
+  in that topic is accepted for that topic's agent, not the mayor
+  ("Topics").
 - **The paired user** and **the paired chat**: the one Telegram account
   (`user_id`) and its private chat with the bot (`chat_id`, equal to
   `user_id`).
@@ -66,7 +69,7 @@ city.
 | `gc_base_url`, `gc_api_token_file` | no | loopback GC API (default `http://127.0.0.1:8372`) and its bearer token file; anything else refuses at load |
 | `health_file` | no | the city's health report; enables the quota-exhausted notice |
 | `pairing_update_id` | no | the `update_id` of the `/start` update; the bridge starts after it. Read only for a new ledger (README.md, step 3) |
-| `agent` | no | the gc agent this bridge serves; default `mayor`. Inbound is accepted only when GC routes it to this agent, the quota-exhausted notice watches this agent's session, and `send` without `--session` or `$GC_SESSION_ID` sends as it. "The mayor" in this guide means this agent; a second bridge for a second agent is in `<pack>/README.md`, "A second bridge for a second agent" |
+| `agent` | no | the gc agent this bridge serves; default `mayor`. Inbound is accepted only when GC routes it to this agent, except a message in a `[[topic]]`, which is accepted only when GC routes it on that topic's conversation to that topic's `agent` (default this agent) ("Topics"). The quota-exhausted notice watches this agent's session, and `send` without `--session` or `$GC_SESSION_ID` sends as it. "The mayor" in this guide means this agent; a second bridge for a second agent is in `<pack>/README.md`, "A second bridge for a second agent" |
 | `[[menu]]` `command`, `description` | no | the chat's "/" menu, in order |
 | `[[command]]` | no | the city's own commands and buttons, run by its own handlers ("City commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
@@ -729,14 +732,18 @@ objects that were sent is returned". Its parameters include
 
 Inbound must receive a matching durable native GC transcript entry and a route
 to the configured `agent` (default `mayor`) before advancing the SQLite offset.
-HTTP 200 alone is insufficient: unrouted or hydration-pending responses retain
-the cursor. Retried inbound retains the same provider message ID for
-deduplication. GC is responsible for routing and waking that agent. This
-confirms durable acceptance, not that the agent has answered. Initially the
-cursor begins after the pairing message. A failed GC call retains the cursor,
-even for a permanent rejection or an entry routed to any other agent, so an
-operator can fix the binding without losing an authorized message. Diagnose
-repeated transport failures instead of erasing state.
+For a message in a `[[topic]]`, the entry must be on that topic's conversation
+and routed to that topic's `agent` (which may differ from the settings agent)
+instead ("Topics"). HTTP 200 alone is insufficient: unrouted or
+hydration-pending responses retain the cursor. Retried inbound retains the
+same provider message ID for deduplication. GC is responsible for routing and
+waking the applicable agent. This confirms durable acceptance, not that the
+agent has answered. Initially the cursor begins after the pairing message. A
+failed GC call retains the cursor, even for a permanent rejection or an entry
+routed to any agent other than the applicable one (the settings agent, or a
+topic's agent for a message in its topic), so an operator can fix the binding
+without losing an authorized message. Diagnose repeated transport failures
+instead of erasing state.
 
 ## Pinned messages
 
@@ -1202,17 +1209,19 @@ auto topics on, but users may not create topics (BotFather setting)
 
 An authorized private photo, document, video, voice, or audio message is
 downloaded (photo: the largest size) via Telegram's `getFile` before the
-message is relayed to the mayor, the same durable-inbound-before-cursor-
-advance guarantee as text. Files land under
+message is relayed to the applicable agent (the settings agent, or a
+topic's agent for a message in its topic; "Topics"), the same durable-
+inbound-before-cursor-advance guarantee as text. Files land under
 `<state_dir>/telegram-inbound/<YYYYMMDD>/<message_id>-<name>` (directory
 mode 0700, file mode 0600); `<name>` is the original filename sanitized to a
 safe basename (no path separators, no leading dot, ASCII-safe, length-capped)
 or a kind-default (`photo.jpg`, `video.mp4`, `voice.ogg`, `audio.mp3`,
 `document.bin`) when none is usable. Files over 50 MB are never downloaded; the
-mayor gets a skip note with the reason and `file_id` instead. A download is
-retried up to 3 times; if it still fails the mayor gets a "could not be
-fetched" note with the `file_id` rather than the bridge retrying forever. The
-relayed text is `[attachment saved: <absolute path> | <kind> | <size> bytes |
+applicable agent gets a skip note with the reason and `file_id` instead. A
+download is retried up to 3 times; if it still fails the applicable agent
+gets a "could not be fetched" note with the `file_id` rather than the bridge
+retrying forever. The relayed text is
+`[attachment saved: <absolute path> | <kind> | <size> bytes |
 caption: <caption or (none)>]`, with the caption text itself appended as the
 message body when present. The adapter never executes, opens, or logs
 attachment content. The inbound root and each date directory are refused

@@ -146,6 +146,24 @@ class TopicRelayTests(TopicInboundCase):
         self.assertEqual(self.store.offset(), 11)
         self.assertEqual([ref for ref, *_ in self.relays()], [self.topic_ref(WEB)] * 2)
 
+    def test_a_topic_bound_to_helper_accepts_a_helper_route_and_rejects_the_settings_agent(self):
+        # A [[topic]] with agent = "helper": GC answering TargetAgentName
+        # helper with a transcript entry accepts the inbound on the topic's
+        # conversation and advances the cursor; nothing goes to the main chat.
+        self.config['topics'] = TOPICS + (dict(name='help', agent='helper'),)
+        self.store.record_topic('help', 11, 'recorded')
+        self.bridge = self.make_bridge(self.config)
+        self.routes['123:topic:11'] = 'helper'
+        self.drain(in_topic(self.update(10), 11))
+        self.assertEqual(self.relays(), [(self.topic_ref(11), '10', None, '[topic: help]\nhello')])
+        self.assertEqual(self.store.offset(), 11)
+        # A GC answer naming the settings agent (mayor) instead keeps the cursor.
+        self.routes['123:topic:11'] = 'mayor'
+        with self.assertRaises(b.TransportError):
+            self.drain(in_topic(self.update(11), 11))
+        self.assertEqual(self.store.offset(), 11)
+        self.assertEqual([ref for ref, *_ in self.relays()], [self.topic_ref(11)] * 2)
+
     def test_an_unbound_topic_relays_again_on_the_paired_chat_labelled_and_advances(self):
         self.answers['123:topic:7'] = 'unbound'
         update = in_topic(self.update(), OPS, reply_to_message=dict(message_id=5))

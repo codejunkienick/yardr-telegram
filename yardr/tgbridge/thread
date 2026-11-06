@@ -1,0 +1,111 @@
+#!/usr/bin/env -S python3 -I
+"""What the yard does in a thread of the bridge: reply, posted, read.
+
+One JSON object on stdin, one on stdout, as the thread key of
+tgbridge.yaml says. TGBRIDGE_SECRET and YARDR_SOURCE_BASE (the bridge's
+loopback address) are in the environment. The secret goes in a header,
+never in argv; the base must be plain HTTP on a loopback address.
+"""
+import ipaddress
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from urllib.parse import urlsplit
+
+TIMEOUT = 25  # under the yard's 30 s for a command
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def base():
+    value = os.environ.get('YARDR_SOURCE_BASE', '').rstrip('/')
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname or ''
+        loopback = host == 'localhost' or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if parsed.scheme != 'http' or not loopback or parsed.path or parsed.username:
+        fail('YARDR_SOURCE_BASE must be the bridge on a loopback address (http://127.0.0.1:<port>)')
+    return value
+
+
+def call(path, payload):
+    secret = os.environ.get('TGBRIDGE_SECRET', '')
+    if not secret:
+        fail('TGBRIDGE_SECRET is not set for the caller: yardr crew show <crew> names its env file')
+    request = urllib.request.Request(base() + path, data=json.dumps(payload).encode(), method='POST',
+                                     headers={'Content-Type': 'application/json',
+                                              'Authorization': 'Bearer ' + secret})
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as answer:
+            return json.loads(answer.read(1_000_000))
+    except urllib.error.HTTPError as error:
+        try:
+            detail = json.loads(error.read(65536)).get('error', '')
+        except (ValueError, AttributeError):
+            detail = ''
+        fail(f'the bridge refused {path}: HTTP {error.code}' + (f': {detail}' if detail else ''))
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        fail(f'the bridge did not answer {path} ({type(error).__name__}): is its unit running?')
+
+
+def reply(given):
+    thread, key = given.get('thread'), given.get('key')
+    if not isinstance(thread, str) or not thread or not isinstance(key, str) or not key:
+        fail('reply needs thread and key')
+    payload = {'conversation': thread, 'text': given.get('body') or '', 'key': key, 'format': 'auto'}
+    files = given.get('files') or []
+    if files:
+        payload['attachments'] = files
+    answer = call('/v1/send', payload)
+    if answer.get('delivered') is not True:
+        fail(f"the bridge did not deliver the reply: {answer.get('reason', 'delivery not confirmed')} "
+             f"({answer.get('failure_kind', 'permanent')})")
+    return {'id': str(answer.get('message_id', ''))}
+
+
+def posted(given):
+    key = given.get('key')
+    if not isinstance(key, str) or not key:
+        fail('posted needs key')
+    answer = call('/v1/posted', {'key': key})
+    return {'id': str(answer['message_id'])} if answer.get('message_id') else {}
+
+
+def read(given):
+    thread = given.get('thread')
+    if not isinstance(thread, str) or not thread:
+        fail('read needs thread')
+    answer = call('/v1/read', {'conversation': thread, 'limit': 50})
+    messages = []
+    for message in answer.get('messages') or []:
+        sender = message.get('from', '')
+        messages.append({'id': str(message.get('id', '')), 'parent': '',
+                         'author': {'id': sender, 'name': sender},
+                         'at': message.get('at', ''), 'body': message.get('text', ''), 'url': ''})
+    return {'messages': messages}
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in ('reply', 'posted', 'read'):
+        print('usage: thread reply|posted|read', file=sys.stderr)
+        return 2
+    try:
+        given = json.loads(sys.stdin.read(1_000_000))
+    except (ValueError, UnicodeError):
+        fail('stdin is not JSON')
+    if not isinstance(given, dict):
+        fail('stdin is not a JSON object')
+    out = {'reply': reply, 'posted': posted, 'read': read}[sys.argv[1]](given)
+    json.dump(out, sys.stdout, separators=(',', ':'))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

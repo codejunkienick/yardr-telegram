@@ -1,0 +1,188 @@
+"""The yardr pack's two programs, run as the yard runs them: one JSON
+object on stdin, one on stdout, with only the environment the yard hands a
+source's command. thread talks to a fake bridge on loopback; nothing
+reaches the network."""
+import http.server
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import unittest
+from pathlib import Path
+
+PACK = Path(__file__).resolve().parent.parent
+NORMALIZE = PACK / 'tgbridge' / 'normalize'
+THREAD = PACK / 'tgbridge' / 'thread'
+SECRET = 'test-callback-secret'
+
+
+def run(program, args, stdin, env=None):
+    base_env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': os.environ.get('HOME', '/tmp')}
+    base_env.update(env or {})
+    return subprocess.run([str(program), *args], input=json.dumps(stdin), capture_output=True, text=True,
+                          env=base_env, timeout=30)
+
+
+def entry(**overrides):
+    body = {
+        'id': '999:123:topic:7:41', 'kind': 'message', 'chat': '123', 'conversation': '123:topic:7',
+        'topic': 'homelab', 'thread_id': 7, 'message_id': '41', 'reply_to': None,
+        'from': {'id': '123', 'name': 'Pat'}, 'text': '[topic: homelab]\nIs the NAS up?',
+        'forwarded': False, 'received_at': '2026-11-06T10:00:00+00:00',
+    }
+    body.update(overrides)
+    return {'headers': {'X-Tgbridge-Secret': ['never-handed-to-normalize']}, 'body': body}
+
+
+class NormalizeTests(unittest.TestCase):
+    def test_topic_entry_becomes_the_envelope(self):
+        result = run(NORMALIZE, [], entry())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads(result.stdout)
+        self.assertEqual(envelope, {
+            'type': 'message', 'action': 'create', 'actor': {'id': '123', 'name': 'Pat'},
+            'thread': {'id': '123:topic:7', 'title': 'Telegram: homelab'},
+            'text': '[topic: homelab]\nIs the NAS up?', 'mentions': [], 'message': '41', 'parent': '',
+            'fields': {'chat': ['123'], 'topic': ['homelab'], 'kind': ['message'], 'sender': ['123'],
+                       'thread': ['7']}})
+
+    def test_general_transcript_with_a_reply(self):
+        result = run(NORMALIZE, [], entry(conversation='123', topic='general', thread_id=None, kind='transcript',
+                                          message_id='41-transcript', reply_to='40'))
+        envelope = json.loads(result.stdout)
+        self.assertEqual(envelope['thread'], {'id': '123', 'title': 'Telegram'})
+        self.assertEqual(envelope['fields']['kind'], ['transcript'])
+        self.assertEqual(envelope['parent'], '40')
+        self.assertEqual(envelope['message'], '41-transcript')
+        self.assertNotIn('thread', envelope['fields'])  # General has no thread id to route by
+
+    def test_refuses_without_a_body_and_never_echoes_it(self):
+        for given in ({'headers': {}}, {'body': 'text'}, {'body': {'text': 'secret words'}}):
+            result = run(NORMALIZE, [], given)
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn('secret words', result.stderr)
+            self.assertEqual(result.stdout, '')
+
+
+class FakeBridge:
+    """A loopback stand-in for the bridge's yard API: records each request
+    and answers from `answers` by path."""
+
+    def __init__(self):
+        self.requests, self.answers = [], {}
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                fake.requests.append((self.path, dict(self.headers), body))
+                status, answer = fake.answers.get(self.path, (200, {}))
+                payload = json.dumps(answer).encode()
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.base = f'http://127.0.0.1:{self.server.server_address[1]}'
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class ThreadTests(unittest.TestCase):
+    def setUp(self):
+        self.bridge = FakeBridge()
+        self.addCleanup(self.bridge.close)
+        self.env = {'TGBRIDGE_SECRET': SECRET, 'YARDR_SOURCE_BASE': self.bridge.base}
+
+    def test_reply_sends_auto_format_with_the_key_and_answers_the_id(self):
+        self.bridge.answers['/v1/send'] = (200, {'delivered': True, 'message_id': '77', 'conversation': '123'})
+        result = run(THREAD, ['reply'], {'thread': '123:topic:7', 'parent': '41', 'body': '<b>Up</b>', 'key': 'k1'},
+                     self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'id': '77'})
+        [(path, headers, body)] = self.bridge.requests
+        self.assertEqual(path, '/v1/send')
+        self.assertEqual(headers['Authorization'], 'Bearer ' + SECRET)
+        self.assertEqual(body, {'conversation': '123:topic:7', 'text': '<b>Up</b>', 'key': 'k1', 'format': 'auto'})
+
+    def test_reply_carries_files_as_attachments(self):
+        self.bridge.answers['/v1/send'] = (200, {'delivered': True, 'message_id': '78'})
+        result = run(THREAD, ['reply'], {'thread': '123', 'parent': '', 'body': 'shot', 'key': 'k2',
+                                         'files': ['/tmp/a/shot.png']}, self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.bridge.requests[0][2]['attachments'], ['/tmp/a/shot.png'])
+
+    def test_reply_not_delivered_fails_with_the_reason(self):
+        self.bridge.answers['/v1/send'] = (200, {'delivered': False, 'reason': 'options_need_keyboard',
+                                                 'failure_kind': 'permanent'})
+        result = run(THREAD, ['reply'], {'thread': '123', 'body': 'A: x\nB: y', 'key': 'k3'}, self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('options_need_keyboard', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_reply_refused_names_the_bridge_error(self):
+        self.bridge.answers['/v1/send'] = (400, {'error': 'conversation ID is not the paired private chat'})
+        result = run(THREAD, ['reply'], {'thread': '9', 'body': 'x', 'key': 'k4'}, self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('HTTP 400: conversation ID is not the paired private chat', result.stderr)
+
+    def test_posted_finds_the_ledger_send_or_nothing(self):
+        self.bridge.answers['/v1/posted'] = (200, {'message_id': '77'})
+        found = run(THREAD, ['posted'], {'thread': '123', 'key': 'k1'}, self.env)
+        self.assertEqual(json.loads(found.stdout), {'id': '77'})
+        self.bridge.answers['/v1/posted'] = (200, {})
+        none = run(THREAD, ['posted'], {'thread': '123', 'key': 'k9'}, self.env)
+        self.assertEqual(json.loads(none.stdout), {})
+        self.assertEqual([r[2] for r in self.bridge.requests], [{'key': 'k1'}, {'key': 'k9'}])
+
+    def test_read_maps_the_log_to_messages(self):
+        self.bridge.answers['/v1/read'] = (200, {'messages': [
+            {'id': '41', 'direction': 'in', 'from': 'Pat', 'text': 'long ' * 200, 'at': '2026-11-06T10:00:00+00:00'},
+            {'id': '77', 'direction': 'out', 'from': 'test_bot', 'text': 'Up', 'at': '2026-11-06T10:01:00+00:00'}]})
+        result = run(THREAD, ['read'], {'thread': '123:topic:7'}, self.env)
+        messages = json.loads(result.stdout)['messages']
+        self.assertEqual([m['id'] for m in messages], ['41', '77'])
+        self.assertEqual(messages[0]['body'], 'long ' * 200)
+        self.assertEqual(messages[1]['author'], {'id': 'test_bot', 'name': 'test_bot'})
+        self.assertEqual(self.bridge.requests[0][2], {'conversation': '123:topic:7', 'limit': 50})
+
+    def test_refuses_a_base_off_this_machine_and_a_missing_secret(self):
+        for base in ('https://127.0.0.1:8941', 'http://example.com:8941', 'http://10.0.0.2:8941'):
+            result = run(THREAD, ['posted'], {'thread': '1', 'key': 'k'}, dict(self.env, YARDR_SOURCE_BASE=base))
+            self.assertEqual(result.returncode, 1, base)
+            self.assertIn('loopback', result.stderr)
+        result = run(THREAD, ['posted'], {'thread': '1', 'key': 'k'}, dict(self.env, TGBRIDGE_SECRET=''))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('TGBRIDGE_SECRET', result.stderr)
+        self.assertEqual(self.bridge.requests, [])
+
+    def test_a_bridge_that_is_down_is_named(self):
+        self.bridge.close()
+        result = run(THREAD, ['read'], {'thread': '123'}, self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('is its unit running', result.stderr)
+
+
+class DeclarationTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('yardr'), 'yardr is not on PATH')
+    def test_yardr_reads_the_pack(self):
+        # pack check reads the yard's state; YARDR_HOME is left as the
+        # caller has it, and nothing is written.
+        result = subprocess.run(['yardr', 'pack', 'check', str(PACK)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('declared source tgbridge', result.stdout)
+        self.assertIn('runs 2 programs of the pack as you: tgbridge/normalize, tgbridge/thread', result.stdout)
+
+
+if __name__ == '__main__':
+    unittest.main()

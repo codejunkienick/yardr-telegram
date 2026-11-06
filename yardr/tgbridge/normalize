@@ -1,0 +1,62 @@
+#!/usr/bin/env -S python3 -I
+"""One relayed entry of the yardr-telegram bridge to the yard's envelope.
+
+stdin {"headers": {...}, "body": {...}}, the body as YARDR.md ("Inbound")
+gives it; stdout the envelope. The yard has verified the secret before
+this runs, and sets source and delivery itself and truncates the text.
+Handed no credential; reads and writes no file; never prints the body to
+stderr.
+"""
+import json
+import sys
+
+
+def text(value):
+    return value if isinstance(value, str) else ('' if value is None else str(value))
+
+
+def main():
+    raw = sys.stdin.read(1_100_000)
+    request = json.loads(raw)
+    body = request.get('body') if isinstance(request, dict) else None
+    if not isinstance(body, dict):
+        print('the bridge entry is not an object', file=sys.stderr)
+        return 1
+    sender = body.get('from') if isinstance(body.get('from'), dict) else {}
+    topic = text(body.get('topic')) or 'general'
+    kind = text(body.get('kind')) or 'message'
+    conversation = text(body.get('conversation'))
+    if not conversation:
+        print('the bridge entry names no conversation', file=sys.stderr)
+        return 1
+    envelope = {
+        'type': 'message',
+        'action': 'create',
+        'actor': {'id': text(sender.get('id')), 'name': text(sender.get('name'))},
+        'thread': {'id': conversation,
+                   'title': 'Telegram' if topic == 'general' else f'Telegram: {topic}'},
+        'text': text(body.get('text')),
+        'mentions': [],
+        'message': text(body.get('message_id')),
+        'parent': text(body.get('reply_to')),
+        'fields': {
+            'chat': [text(body.get('chat'))],
+            'topic': [topic],
+            'kind': [kind],
+            'sender': [text(sender.get('id'))],
+        },
+    }
+    # A topic's thread id: the key a topic the user created is routed by,
+    # since a rename changes its name. General has none.
+    if body.get('thread_id') is not None:
+        envelope['fields']['thread'] = [text(body.get('thread_id'))]
+    json.dump(envelope, sys.stdout, separators=(',', ':'))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (ValueError, UnicodeError):
+        print('the bridge entry is not JSON', file=sys.stderr)
+        sys.exit(1)

@@ -1,0 +1,164 @@
+# The yardr-telegram bridge as a declared source (YARDR.md in the
+# repository). The bridge polls Telegram, transcribes voice notes, runs
+# the chat's / commands and keeps the delivery ledger; the yard reaches it
+# on loopback, and it reaches the yard's hook listener on loopback.
+#
+# One bridge serves one yard with one bot, each on its own port: base is
+# the personal yard's bridge, and `yardr source set tgbridge base=imd`
+# points the company yard at its own.
+name: tgbridge
+about: The operator's Telegram chat and its topics, through the yardr-telegram bridge on this machine.
+base: http://127.0.0.1:8941
+bases:
+  odyssey: http://127.0.0.1:8941
+  imd: http://127.0.0.1:8942
+credential:
+  env: TGBRIDGE_SECRET                     # the bridge's callback secret: the name, never the value
+  header: "Authorization: Bearer {credential}"
+# Every update call carries the yard's key, and the bridge's ledger sends
+# a message under one key once: a call run again after a lost answer
+# finds the first send instead of making a second.
+idempotency: Idempotency-Key
+
+calls:
+  health:
+    kind: read
+    about: Whether the bridge is up, its bot, and its last good poll
+    request: { method: GET, path: /v1/health }
+  send:
+    kind: update
+    about: One message to the chat or one of its topics (Telegram HTML or plain, buttons, silent, one file)
+    params:
+      text:         { type: string, max: 16000 }
+      topic:        { type: string, max: 128, optional: true }
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$", optional: true }
+      format:       { type: enum, values: [auto, plain, html], optional: true }
+      silent:       { type: bool, optional: true }
+      keyboard:     { type: string, max: 8000, optional: true }
+      text_options: { type: bool, optional: true }
+      # A path on this machine the bridge reads, as bridge.py send
+      # --attachment does: a file parameter would make the body a
+      # multipart upload, and the bridge takes JSON.
+      attachment:   { type: string, pattern: "^/", max: 4096, optional: true }
+      # The send's own key, which wins over the yard's: an ask's buttons
+      # carry ask:<first 16 hex of sha256(key)>:<choice>, so the caller
+      # must know the key before it sends. Without it the yard's key is used.
+      key:          { type: string, pattern: "^[A-Za-z0-9._:@-]{1,200}$", optional: true }
+    request:
+      method: POST
+      path: /v1/send
+      body:
+        key: "{key}"
+        text: "{text}"
+        topic: "{topic}"
+        conversation: "{conversation}"
+        format: "{format}"
+        silent: "{silent}"
+        keyboard: "{keyboard}"
+        text_options: "{text_options}"
+        attachments: "{attachment}"
+  react:
+    kind: update
+    about: React to one of the operator's messages (seen, done, none or an emoji)
+    params:
+      reaction:     { type: string, max: 16 }
+      message_id:   { type: string, pattern: "^[0-9]+$", optional: true }
+      topic:        { type: string, max: 128, optional: true }
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$", optional: true }
+    request:
+      method: POST
+      path: /v1/react
+      body: { reaction: "{reaction}", message_id: "{message_id}", topic: "{topic}", conversation: "{conversation}" }
+  pin:
+    kind: update
+    about: Keep one pinned message per slot at the top of the chat, edited in place
+    params:
+      slot:   { type: string, pattern: "^[a-z0-9_-]{1,32}$" }
+      text:   { type: string, max: 16000 }
+      format: { type: enum, values: [auto, plain, html], optional: true }
+    request:
+      method: POST
+      path: /v1/pin
+      body: { slot: "{slot}", text: "{text}", format: "{format}" }
+  unpin:
+    kind: update
+    about: Unpin one slot's message
+    params:
+      slot: { type: string, pattern: "^[a-z0-9_-]{1,32}$" }
+    request:
+      method: POST
+      path: /v1/pin
+      body: { slot: "{slot}", unpin: true }
+  ask_close:
+    kind: update
+    about: Close an open button ask with the decision made some other way
+    params:
+      decision:   { type: string, max: 200 }
+      message_id: { type: string, pattern: "^[0-9]+$", optional: true }
+      ask_key:    { type: string, max: 256, optional: true }
+    request:
+      method: POST
+      path: /v1/ask-close
+      body: { decision: "{decision}", message_id: "{message_id}", ask_key: "{ask_key}" }
+  tell:
+    kind: update
+    about: Tell the operator what landed in their inbox (the notify call)
+    params:
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$" }
+      title:        { type: string, max: 250 }
+      text:         { type: string, max: 3500 }
+      link:         { type: string, max: 512, optional: true }
+    request:
+      method: POST
+      path: /v1/tell
+      body: { conversation: "{conversation}", title: "{title}", text: "{text}", link: "{link}" }
+check: health
+
+# Telling: what lands in the operator's inbox reaches the chat, in the
+# conversation their env file names (the paired chat's id, or a topic's
+# <chat id>:topic:<thread id>): yardr user key <user> tgbridge.
+notify:
+  call: tell
+  address: { param: conversation, env: TGBRIDGE_CONVERSATION }
+  title: title
+  text: text
+  link: link
+
+# ---- what it sends us ----------------------------------------------------
+
+hook:
+  # The bridge sends the hook's secret itself in the header, as Telegram
+  # does; it never leaves the machine (both ends are loopback). Each entry
+  # names its own id, the bot, the conversation and the message, so a
+  # relay retried after a lost answer is told by it.
+  verify:
+    scheme: secret
+    signature: { header: X-Tgbridge-Secret }
+    delivery: { body: id }
+  bodies: unique
+  normalize: [tgbridge/normalize]
+  # chat: the paired chat's id; topic: general or the topic's name; kind:
+  # message, transcript or answer (a tapped ask button); sender: the
+  # operator's Telegram id, which hear maps to a user of the yard; thread:
+  # a topic's thread id, which a topic the user created is routed by.
+  keys: [chat, topic, kind, sender, thread]
+
+# Only the operator writes to the bridge (it drops every other chat), and
+# the yard hears them by identity: yardr user identity <user> --source
+# tgbridge --id <their Telegram user id>. A delivery then carries
+# speaker=<user>, and the yardmaster takes it as that user's word.
+hear:
+  field: sender
+  by: identity
+
+# ---- what the yard does in its threads ------------------------------------
+# A thread is a conversation: the paired chat's id, or a topic's
+# <chat id>:topic:<thread id>. reply sends through the bridge's ledger
+# under the yard's key, so posted finds a reply whose answer was lost;
+# read is the bridge's message log, each message whole (the yard keeps
+# 500 characters of a delivery).
+thread:
+  reply:  [tgbridge/thread, reply]      # in  {thread, parent, body, key, files?}  out {id}
+  posted: [tgbridge/thread, posted]     # in  {thread, key}                       out {id} or {}
+  read:   [tgbridge/thread, read]       # in  {thread}                            out {messages: [...]}
+  files: true

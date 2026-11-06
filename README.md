@@ -1,320 +1,159 @@
-# telegram pack
+# yardr-telegram
 
-This pack provides a private Telegram bridge for a Gas City. It connects the
-paired chat with the mayor through a bridge process that each city runs for
-itself.
+A private Telegram bridge for a [yardr](https://github.com/yardr-dev/yardr)
+yard: one paired chat with the yard's crew, its topics, tap-button asks,
+pins, reactions, typing and on-host voice transcription. It is a fork of
+the Gas City telegram pack (YARDR.md says what changed and why). The
+bridge runs as a service of its own, and the yard reaches it as the
+declared source `tgbridge` (`yardr/`).
 
-(Terms such as the mayor, the paired chat and the ledger: `bridge/OPERATIONS.md`, "Terms".)
+(Terms such as the paired chat and the ledger: `bridge/OPERATIONS.md`, "Terms".)
 
 Release history: `CHANGELOG.md`.
 
 ## What it does
 
-- The paired user gets a private chat with the mayor for text in both
-  directions, with Telegram HTML formatting on outbound text. A message
-  the user forwards reaches the mayor marked as forwarded, its content
+- The paired user gets a private chat with the yard's crew (the
+  yardmaster by default) for text in both directions, with Telegram HTML formatting on outbound text. A message
+  the user forwards reaches the yard marked as forwarded, its content
   quoted as material rather than the user's instruction.
 - The agent gets inbound photos, documents, videos, voice and audio files
   saved on the host, and can send photos, videos, documents, voice notes
   and round video notes to the chat.
 - The agent sends several screenshots as one album (`--attachment` given
   2-10 times) under one key, captioned by the body.
-- When transcription is enabled, the mayor gets each voice and audio note
+- When transcription is enabled, the yard gets each voice and audio note
   transcribed on the host with whisper.cpp in the configured language, with
   no cloud service. With `method = "auto"`, it uses the GPU when one is free.
   An English-only (`.en`) model requires `language = "en"`.
-- The mayor gets a delivery ledger that stops a retried send from posting
-  twice and reports an unknown outcome instead of resending it.
-- The mayor sends an update that needs no action silently (`--silent`): it
+- The yard gets a delivery ledger that stops a retried send from posting
+  twice and reports an unknown outcome instead of resending it, and a
+  message log that `yardr thread show` reads whole.
+- A crew member sends an update that needs no action silently: it
   still notifies, but with no sound, so only asks and problems ring.
-- A city keeps one pinned message per slot at the top of the chat,
-  edited in place (`gc telegram pin`), such as a list of what waits on
-  the user.
-- A city gives the paired chat topics, one per subject beside General,
-  each its own GC conversation: `gc telegram topics` creates the topics its
-  settings list (`[[topic]]`) once and prints the line that binds each.
-- The paired user gets a slash command menu, and a city adds commands
+- A yard keeps one pinned message per slot at the top of the chat,
+  edited in place (`yardr call tgbridge pin`), such as a list of what
+  waits on the user.
+- A yard gives the paired chat topics, one per subject beside General,
+  each its own conversation: `bridge.py topics` creates the topics its
+  settings list (`[[topic]]`) once and prints the `yardr subscribe` line
+  that routes each to a crew member.
+- The paired user gets a slash command menu, and a yard adds commands
   through its own handler programs that answer with text and inline
   buttons and need no enable flag.
-- The paired user sees a reaction on a message once the mayor has it
-  (`seen`, when the city turns it on) and another when the work it asked
-  for is done (`gc telegram react --reaction done`).
-- The paired user sees "typing..." after a message the mayor has, until
-  the mayor's next send, when the city turns it on (`[typing]`).
-- The paired user answers a mayor ask on a text message or on one photo
+- The paired user sees a reaction on a message once the yard has it
+  (`seen`, when the settings turn it on) and another when the work it
+  asked for is done (`yardr call tgbridge react reaction=done`).
+- The paired user sees "typing..." after a message the yard has, until
+  the bridge's next send, when the settings turn it on (`[typing]`).
+- The paired user answers an ask on a text message or on one photo
   message (the caption is the question) by tapping one of its inline
-  buttons instead of typing: one tap reaches the mayor once as one
+  buttons instead of typing: one tap reaches the yard once as one
   actionable message, and the ask message then shows the choice. When the
-  user answers some other way, the mayor closes the ask with the decision
-  made (`gc telegram ask-close`): its buttons go and it shows the decision.
-- Each city gets its own bot, settings file, bridge process and delivery
-  ledger on one host, and cities share one copy of the code and one
+  user answers some other way, the crew member closes the ask with the
+  decision made (`yardr call tgbridge ask_close`): its buttons go and it
+  shows the decision.
+- Each yard gets its own bot, settings file, bridge process and delivery
+  ledger on one host, and the bridges share one copy of the code and one
   whisper.cpp build.
 - The operator gets setup checks from `install.sh` and `check-install`
-  before the bridge runs, and a service for each city: a systemd user
+  before the bridge runs, and a service for each yard: a systemd user
   unit on Linux and WSL 2, a launchd agent on macOS.
 - The agent gets ready-made skills for Telegram formatting, attachments
   and voice transcripts.
 
 | Path | What |
 | --- | --- |
-| `bridge/bridge.py` | the bridge: `run`, `probe`, `send`, `reply-current`, `ask-close`, `react`, `pin`, `topics`, `set-commands`, `render-unit`, `check-install` |
+| `bridge/bridge.py` | the bridge: `run`, `probe`, `send`, `reply-current`, `ask-close`, `react`, `pin`, `topics`, `set-commands`, `render-unit`, `check-install`, and the yard API on its loopback port |
 | `bridge/OPERATIONS.md` | the operations guide: settings, launch, delivery recovery, transcription |
-| `bridge/test_*.py` | `sh scripts/test.sh` (fake Telegram, GC and whisper-cli; no network). Set `TEST_PORT_RANGE=LOW-HIGH` to bind test servers inside that range. Pick a range that excludes ports the host's own services use. |
+| `bridge/test_*.py` | `sh scripts/test.sh` (fake Telegram, yard and whisper-cli, and the pack's tests in `yardr/tests/`; no network). Set `TEST_PORT_RANGE=LOW-HIGH` to bind test servers inside that range. Pick a range that excludes ports the host's own services use. |
 | `settings.example.toml` | every settings key, with example values |
-| `install.sh` | checks a city's settings and host, links `voice-transcribe`, renders its service |
+| `install.sh` | checks a yard's settings and host, mints the two secrets, links `voice-transcribe`, renders its service |
+| `yardr/` | the yardr pack: the declared source `tgbridge` (`tgbridge.yaml`), its `normalize` and `thread` commands, and `SETUP.md`, the steps for a yard |
+| `YARDR.md` | the contract between the bridge and a yard: the inbound body, the yard API, the settings |
 | `systemd/telegram-bridge.service.in` | the Linux unit template; on macOS the agent is rendered by `bridge.py render-unit` |
 | `transcriber/` | `voice_transcribe.py` (whisper.cpp, configured language), `adapter.py` (the bridge's contract), `models.sha256` |
-| `commands/reply-current/` | `gc telegram reply-current`: reply in the paired chat, optionally with an inline keyboard (`--keyboard-file`) |
-| `commands/ask-close/` | `gc telegram ask-close`: close an open ask with the decision made (`--message-id` or `--ask-key`, `--decision`) |
-| `commands/react/` | `gc telegram react`: react to the paired user's last accepted message (or `--message-id`) |
-| `commands/pin/` | `gc telegram pin`: keep one pinned message per slot, edited in place (`--slot`, `--body-file` or `--unpin`) |
-| `commands/topics/` | `gc telegram topics`: create the settings' topics once and print their bind lines (`--record <name> --thread-id <id>`, `--retry <name>`) |
 | `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts` |
-
-## Add-ons
-
-Separate repositories that build on this pack:
-
-- [telegram-quota](https://github.com/codejunkienick/telegram-quota): a `/quota` command that shows how much of each AI subscription's usage windows is spent.
-- [telegram-secret-drop](https://github.com/codejunkienick/telegram-secret-drop): a one-time form on the local network for handing a secret to an agent without it passing through the chat.
-- [telegram-waiting](https://github.com/codejunkienick/telegram-waiting): a `/waiting` command that shows the list of what waits on the paired user, from a snapshot the user's own job writes.
 
 ## Prerequisites
 
-On Linux:
+- Linux with a systemd user session (`systemctl --user status`). macOS
+  with launchd works as it did for the gc pack (`bridge/OPERATIONS.md`,
+  "Install and launch"), untested with yardr.
+- Python 3.11 or later (`python3 --version`), and curl.
+- yardr 0.16 or later with the yard running (`yardr version`), and the
+  yard's hook listener on a loopback address (`yardr settings get
+  hook_addr`).
+- For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
+  sha256sum, and network access to clone whisper.cpp and download the
+  models (`transcriber/setup.sh --settings <file>`; about 600 MB).
 
-- Linux: check `uname -s` prints `Linux`.
-- Python 3.11 or later: check `python3 --version`.
-- curl: check `curl --version`.
-- gc 1.4.1 or later on PATH, its city running (`gc version`; tested on 1.5.0): check `gc version`.
-- A systemd user session (`systemctl --user`): check
-  `systemctl --user status`.
-- For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg, curl, sha256sum, and network access to clone whisper.cpp and download the models (the default model `ggml-large-v3-turbo-q5_0.bin` is about 574 MB, plus the small VAD model): check `git --version`, `cmake --version` and `ffmpeg -version`.
+## Adopt in a yard
 
-On macOS:
+`yardr/SETUP.md` walks one yard through it: the bot, the settings, the
+install, the yard's hook listener, the pack and its credential, the hook,
+who writes, who answers, the start, and telling.
 
-- macOS 13 or later (Apple Silicon is the tested target): check `sw_vers`.
-- Python 3.11 or later, both as `python3` on PATH and in the settings:
-  macOS's `/usr/bin/python3` is older, and `install.sh` and the
-  commands in steps 5-6 below run bare `python3`, so install one, e.g.
-  Homebrew `brew install python`, put `/opt/homebrew/bin` first on
-  PATH so `python3` is the new interpreter, then set
-  `python = "/opt/homebrew/bin/python3"` in the settings (the
-  interpreter the service runs): check `python3 --version` and
-  `/opt/homebrew/bin/python3 --version` both show 3.11 or later.
-- curl (built in): check `curl --version`.
-- gc 1.4.1 or later on PATH, its city running (`gc version`; tested on 1.5.0): check `gc version`.
-- launchd: check `launchctl print gui/$(id -u)`.
-- For transcription also the Xcode Command Line Tools
-  (`xcode-select --install`: git, make, clang) plus
-  `brew install cmake ffmpeg`, sha256sum or the built-in shasum, and
-  network access to clone whisper.cpp and download the models (the
-  default model `ggml-large-v3-turbo-q5_0.bin` is about 574 MB, plus the
-  small VAD model): check `git --version`, `cmake --version` and
-  `ffmpeg -version`.
+To read the ids for the settings before the bridge's first start, without
+the token in argv or history:
 
-On Windows (WSL 2; untested on a real Windows host):
+```sh
+python3 - ~/.config/<yard>-telegram/telegram-bot-token <<'EOF'
+import json, sys, urllib.request
+token = open(sys.argv[1]).read().strip()
+for method in ('getMe', 'getUpdates'):
+    with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/{method}', timeout=20) as answer:
+        print(method, json.dumps(json.load(answer)['result'], indent=1))
+EOF
+```
 
-- WSL 2 with Ubuntu or Debian, systemd enabled (`[boot]` `systemd=true`
-  in `/etc/wsl.conf`, then `wsl --shutdown` in Windows): check
-  `systemctl --user status`.
-- The city and every settings path in the Linux file system (never
-  `/mnt/c`).
-- `loginctl enable-linger "$USER"`, so the bridge keeps running.
-- Everything Linux needs above.
-- For GPU transcription in WSL also NVIDIA's Windows driver with WSL
-  support and the CUDA toolkit for WSL (for `nvcc`).
+getMe's `id` goes to `[bot] bot_id`, its `username` to `[bot] account_id`.
+In the `/start` update, `message.from.id` goes to `[bot] user_id`,
+`message.chat.id` to `[bot] chat_id` (equal to user_id), and `update_id`
+to `pairing_update_id`.
 
-## Adopt in a city
-
-Each step says who does it: (you) for the Telegram app and BotFather, (shell) for a command in the user's terminal, (agent or shell) for what an agent may also do. An agent stops at a (you) step and asks the user.
-
-For a city named `<city>` (gc's `workspace_name` in `<city>/.gc/site.toml`),
-with this pack at `<pack>`:
-
-1. (agent or shell) Import the pack in the city's `pack.toml`, either from a
-   local path:
-
-   ```toml
-   [imports.telegram]
-   source = "<pack>"
-   ```
-
-   or from the repository URL of this pack with a pinned version:
-
-   ```toml
-   [imports.telegram]
-   source = "<repository URL of this pack>"
-   version = "<tag>"
-   ```
-
-   This brings the `reply-current` command and the skills. Then run
-   `gc reload`, and check that `gc config show` lists the telegram import.
-2. (you) Create a bot with BotFather, open a private chat with it and send `/start`.
-   Save the token owner-only: first
-   `install -d -m 700 ~/.config/<city>`, then on Linux and WSL 2
-   `install -m 600 /dev/stdin ~/.config/<city>/telegram-bot-token`, on
-   macOS `(umask 077 && cat > ~/.config/<city>/telegram-bot-token)`,
-   paste the token, Enter, then Ctrl-D
-   (never in a shell argument or history). Check
-   `ls -l ~/.config/<city>/telegram-bot-token` shows `-rw-------`.
-3. (agent or shell, with the ids from step 2's chat) First read the ids without
-   putting the token in argv or history, run before the bridge's first start:
-
-   ```sh
-   python3 - ~/.config/<city>/telegram-bot-token <<'EOF'
-   import json, sys, urllib.request
-   token = open(sys.argv[1]).read().strip()
-   for method in ('getMe', 'getUpdates'):
-       with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/{method}', timeout=20) as answer:
-           print(method, json.dumps(json.load(answer)['result'], indent=1))
-   EOF
-   ```
-
-   Then write each value where it goes: getMe's `id` -> `[bot] bot_id`, its
-   `username` -> `[bot] account_id`; in the `/start` update,
-   `message.from.id` -> `[bot] user_id`, `message.chat.id` -> `[bot] chat_id`
-   (equal to user_id), and its `update_id` -> `pairing_update_id`. Then write
-   `~/.config/<city>/telegram-bridge.toml` from `settings.example.toml`,
-   `chmod 600`: the city name, its own `state_dir` and `port`, the ids above,
-   the token file, the menu, and `[transcribe] enabled = true` for voice
-   transcription. For transcription, meet the transcription prerequisites
-   above first, in this order: the settings file with
-   `[transcribe] enabled = true` first, then
-   `<pack>/transcriber/setup.sh --settings <file>` (`--dry-run` to preview).
-   It clones whisper.cpp and downloads about 600 MB into
-   `~/work/whisper.cpp` by default (set `whisper_cli` and `models_dir` to
-   place the shared build elsewhere); success is its last line
-   `next: <pack>/install.sh --settings <file>`. See
-   `bridge/OPERATIONS.md`, "Voice-note transcription", for the queue and
-   the GPU.
-4. (agent or shell) Bind the conversation to the mayor once:
-   `gc extmsg bind --provider telegram --account-id <bot username> --conversation-id <chat id> --agent mayor --json`.
-   The printed record names the conversation and the agent mayor. There is
-   no wildcard route, and `gc extmsg bind --help` lists every flag.
-
-   Topics (optional): (you) in BotFather's settings for the bot, turn topic
-   mode on and leave users creating topics off; (agent or shell) add one
-   `[[topic]]` table per topic to the settings (`settings.example.toml`),
-   run `gc telegram topics`, and run each `bind:` line it prints, before
-   anyone writes in that topic. Success: a `topic <name>: thread <id>` line
-   for every topic and exit status 0. When the user may create topics too,
-   leave that BotFather setting on and add `[auto_topics]` with
-   `enabled = true`: the bridge then binds and serves each topic the user
-   creates, with no step per topic. See `bridge/OPERATIONS.md`, "Topics".
-5. (shell) `<pack>/install.sh --settings ~/.config/<city>/telegram-bridge.toml`: it
-   creates the callback secret and the shared queue directory if they are
-   missing. On Linux and WSL 2 it renders
-   `~/.config/systemd/user/<city>-telegram.service`; the unit reads the
-   settings and credential files only (they are read-only inside it)
-   and writes its state directory, its lock directory, the queue and any
-   `handler_write_paths`. Success: no check line says `FAIL` (a
-   `WARN` line still succeeds: on WSL 2 a missing linger, and on
-   macOS a protected folder or a `handler_write_paths` entry that is
-   not enforced there; see `bridge/OPERATIONS.md`, "Install and
-   launch"), and the last line is
-   `next: python3 <pack>/bridge/bridge.py --settings <file> probe; systemctl --user daemon-reload; systemctl --user enable --now <unit>; python3 <pack>/bridge/bridge.py --settings <file> set-commands (README.md, "Adopt in a city", step 6)`.
-   On macOS it writes the LaunchAgent plist at
-   `~/Library/LaunchAgents/<label>.plist`, where `<label>` is the unit
-   name without its `.service` suffix, and its last line is
-   `next: python3 <pack>/bridge/bridge.py --settings <file> probe; launchctl bootout gui/$(id -u)/<label> 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist; python3 <pack>/bridge/bridge.py --settings <file> set-commands (README.md, "Adopt in a city", step 6)`.
-6. (shell) `python3 <pack>/bridge/bridge.py --settings <file> probe`, then
-   on Linux and WSL 2
-   `systemctl --user daemon-reload && systemctl --user enable --now <city>-telegram.service`,
-   on macOS
-   `launchctl bootout gui/$(id -u)/<label> 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist`,
-   then `python3 <pack>/bridge/bridge.py --settings <file> set-commands`.
-   Success: after probe, its line `Telegram identity and webhook checks passed`;
-   after `enable --now`, `systemctl --user status <city>-telegram.service`
-   shows it active (on macOS, `launchctl print gui/$(id -u)/<label>`
-   shows `state = running`, and the log is
-   `~/Library/Logs/<label>.log`) and
-   `<state_dir>/telegram-bridge-heartbeat.json` appears
-   within about a minute; after set-commands, its line
-   `commands set: <count> (/<command> ...) for chat <chat_id>`. On macOS
-   keep the city, the settings and the state out of `~/Desktop`,
-   `~/Documents`, `~/Downloads` and iCloud Drive; the agent runs while
-   the user is logged in. On WSL 2 the bridge runs while the
-   distribution runs, like the city.
-
-   On macOS, launchd has no equivalent of the unit's sandbox: the
-   bridge and every command handler run with the user's full rights.
-   The write limit to the state, lock, queue and handler directories,
-   the read-only credentials, the private `/tmp` and the
-   address-family and syscall restrictions do not apply, and
-   `handler_write_paths` is accepted but not enforced. The settings,
-   token and secret stay owner-only and are refused otherwise; other
-   local accounts must be trusted, as on Linux.
-7. (you, then the agent) Send a message from the chat and check the mayor
-   received it; reply with `gc telegram reply-current` (the
-   `telegram-formatting` skill). Success: the message reaches the mayor's
-   session.
-
-### A second bridge for a second agent
-
-One city can run a second bridge so another of its agents has its own chat.
-It is a separate bot with a separate settings file, sharing nothing with the
-first bridge but the code: its own `port`, `state_dir`, `unit`, `token_file`
-and `callback_secret_file`, and `agent = "<agent>"`, the gc agent it serves.
-Bind its conversation to that agent with step 4's command, with
-`--agent <agent>` instead of `--agent mayor` (step 4 with the second bot: the
-chat id is the same user's, the account tells the two apart), install and
-start its unit as in steps 5-6 (`unit` must differ from the first bridge's,
-which the default `<city>-telegram.service` does not), and give that agent's
-sessions `TELEGRAM_BRIDGE_SETTINGS=<its settings file>` in their
-environment so their `gc telegram reply-current` answers through its bot. The
-bridge accepts inbound only when GC routes it to its `agent`, and its
-quota-exhausted notice watches that agent's session.
-
-A city that transcribes some other way today (its own whisper.cpp command)
-joins the host-wide queue only once it runs this pack's transcriber: the
-bridge, or `voice-transcribe`, which `install.sh` links into `~/.local/bin`.
-Until then the two do not wait for each other.
-
-Run `install.sh` and the unit from a checkout path that stays put: the unit
-names `bridge.py` by absolute path. A city that copies the pack runs its copy;
-a city that imports it by path runs the shared one. Moving a city to this pack
-from an older bridge copy: point `state_dir` at the old state directory so the
-ledger, inbound offset and files carry over, keep the same `port`, and stop
-the old unit before starting the new one (two pollers on one bot conflict).
+Run `install.sh` and the unit from a checkout that stays put: the unit
+names `bridge.py` by absolute path. To move a bot from a Gas City bridge,
+stop that bridge's unit first (two pollers on one bot conflict), and point
+`state_dir` at a copy of its state directory, so the ledger, the offset,
+the pins and the topics carry over.
 
 ## Uninstall
 
-1. (shell) On Linux and WSL 2 `systemctl --user disable --now <unit>`; on
-   macOS `launchctl bootout gui/$(id -u)/<label>`.
-2. (shell) On Linux and WSL 2
-   `rm ~/.config/systemd/user/<unit> && systemctl --user daemon-reload`;
-   on macOS `rm ~/Library/LaunchAgents/<label>.plist`, and optionally
-   the log file `~/Library/Logs/<label>.log`.
-3. (agent or shell) `gc extmsg unbind --provider telegram --account-id <bot username> --conversation-id <chat id> --agent <agent>`
-4. (agent or shell) Remove the `[imports.telegram]` table and `gc reload`.
-5. (shell, optional) Delete the city's settings file, token and callback secret, and its state_dir (the ledger: keep a private copy if the bridge may return).
-6. (shell) Keep the host's shared pieces while any other city runs the pack: the queue `~/.local/state/voice-transcribe`, the whisper.cpp build and models, and `~/.local/bin/voice-transcribe`. Remove the link only when no city on the host runs the pack any more.
-7. (you, optional) Delete the bot with BotFather.
+1. (shell) `systemctl --user disable --now <unit>`, then
+   `rm ~/.config/systemd/user/<unit> && systemctl --user daemon-reload`.
+2. (shell) In the yard: `yardr hook rm tgbridge`, then
+   `yardr unsubscribe <crew> tgbridge` for each subscribed crew member, then
+   `yardr source rm tgbridge`.
+3. (shell, optional) Delete the settings file, the token, both secrets and
+   the state directory. That directory holds the ledger and the message log,
+   so keep a private copy if the bridge may return.
+4. (shell) Keep the host's shared pieces while another bridge runs: the
+   queue `~/.local/state/voice-transcribe`, the whisper.cpp build and models,
+   and `~/.local/bin/voice-transcribe`.
+5. (you, optional) Delete the bot with BotFather.
 
 ## Skills
 
-The pack's skills are the shared base set: universal, written for any city
-and any bot, naming no city, person or product. Every city that imports the
-pack gets them as `telegram.<name>`.
+The skills are the shared base set, written for any yard and any bot,
+naming no yard, person or product. A yard links each into its crew's
+skill folders.
 
-- **A city adds its own skill** in its own `skills/<name>/SKILL.md` (or its own
-  pack), never by editing this pack: for example its menu commands' meaning,
+- **A yard adds its own skill** in its own pack, never by editing these: for example its menu commands' meaning,
   who reads the chat, or its message house style. Its skill may point at these
   ones by name.
-- **Promoting a skill into the shared set**: when a city skill turns out to be
-  true for every city (a Telegram rule, not a habit of one city or user),
-  rewrite it without any city, person, product or path of that city, move it
+- **Promoting a skill into the shared set**: when a yard's skill turns out to be
+  true for every yard (a Telegram rule, not a habit of one yard or user),
+  rewrite it without any yard, person, product or path of that yard, move it
   to `skills/<name>/SKILL.md` here with a citations table of the pack files it
-  relies on in `citations.md` beside it (never in SKILL.md), and delete the city
-  copy in the same change. Nothing in the pack names a city, person or company.
+  relies on in `citations.md` beside it (never in SKILL.md), and delete the yard's
+  copy in the same change. Nothing here names a yard, person or company.
 
 ## Add-ons
 
-An add-on is one `[[command]]` table in a city's settings, with no enable
-flag. Its handler lives outside the pack: the city's own program, or one it
-installs. Add one: install the handler at an absolute path (owner-writable
+An add-on is one `[[command]]` table in a yard's bridge settings, with no
+enable flag. Its handler lives outside this repository: a program of your
+own, or one you install. Add one: install the handler at an absolute path (owner-writable
 only, executable, owned by this user or root, in a directory owned by
 this user or root and writable by neither group nor others), add the
 table (and a `handler_write_paths` entry if it writes), then run
@@ -322,7 +161,7 @@ table (and a `handler_write_paths` entry if it writes), then run
 `systemctl --user daemon-reload` and restart the unit, on macOS
 `launchctl bootout gui/$(id -u)/<label> 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist`, and run
 `set-commands`. Remove one: delete the table, delete the handler program if nothing else uses it, drop its `handler_write_paths` entry if no other handler writes there, run `install.sh` again, restart the service the same way, then run `set-commands`. The menu loses the command only then.
-The handler protocol is in `bridge/OPERATIONS.md`, "City commands".
+The handler protocol is in `bridge/OPERATIONS.md`, "Commands".
 Three ready add-ons are
 [telegram-quota](https://github.com/codejunkienick/telegram-quota), which adds
 a `/quota` command that shows how much of each AI subscription's usage
@@ -336,19 +175,22 @@ paired user.
 
 ## Example
 
-This is a partial file, only the keys that differ from settings.example.toml, which holds the full list.
-
-`my-city` keeps its settings at `~/.config/my-city/telegram-bridge.toml`:
+A partial file, with only the keys that differ from settings.example.toml:
 
 ```toml
-state_dir = "/home/<user>/my-city/state"
-port = <port>
-unit = "my-city-telegram.service"
+yard = "odyssey"
+state_dir = "/home/<user>/.local/state/odyssey-telegram"
+port = 8941
+[yardr]
+hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
+hook_secret_file = "~/.config/odyssey-telegram/hook-secret"
 [transcribe]
 enabled = true
 method = "auto"
+[[topic]]
+name = "homelab"
 [[command]]
 name = "deploy"
 description = "Deploy a branch"
-handler = "/home/<user>/my-city/bin/telegram-deploy"
+handler = "/home/<user>/bin/telegram-deploy"
 ```

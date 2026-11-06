@@ -6,101 +6,110 @@ The rows live only here; SKILL.md holds none.
 ```text
 <!-- citations -->
 | kind | path | symbol | note |
-| pack | bridge/OPERATIONS.md | ## Topics | topics follow this section |
-| pack | bridge/bridge.py | f"[topic: {topic['name']}]\n{text}" | the topic line first |
-| pack | bridge/OPERATIONS.md | `--conversation-id <chat_id>:topic:<thread_id>`, exactly as the agent's | answer with the notice's id |
-| pack | bridge/OPERATIONS.md | or `--topic <name>`, a `[[topic]]`'s exact name | post into a topic by name |
-| pack | bridge/bridge.py | parser.error('--topic and --conversation-id are exclusive') | never both flags |
-| pack | bridge/OPERATIONS.md | Without either, a send lands in General as before. | no flag is the main chat |
-| pack | bridge/OPERATIONS.md | not bound: reply lands in the main chat | not bound answers in the main chat |
-| pack | bridge/OPERATIONS.md | not configured: reply lands in the main chat | not configured answers in the main chat |
-| pack | bridge/bridge.py | is not configured or not created (run gc telegram topics) | an uncreated topic is refused |
-| pack | bridge/OPERATIONS.md | ### Topics the user creates | topics the user created follow this section |
-| pack | bridge/bridge.py | or f"thread {row['thread_id']}" | an unnamed topic is thread <id> |
-| pack | bridge/OPERATIONS.md | `--topic` names only `[[topic]]` tables | --topic names configured topics only |
-| pack | bridge/OPERATIONS.md | retried and never resent into General | a deleted topic's send is rejected |
-| pack | bridge/OPERATIONS.md | send there, through GC's relay or directly (HTML, silent, a keyboard, | every send kind takes the flags |
-| pack | bridge/OPERATIONS.md | the `[topic: <name>]` line comes before the `[ask answer \| ...]` | a topic ask's answer keeps its line |
-| pack | commands/reply-current/command.toml | --topic <name> sends into a configured topic | reply command flag |
-| pack | bridge/OPERATIONS.md | "Mayor asks" | asks with buttons follow this section |
+| pack | yardr/tgbridge.yaml | name: tgbridge | the yard reaches the chat as the source tgbridge |
+| pack | yardr/tgbridge/normalize | 'title': 'Telegram' if topic == 'general' else f'Telegram: {topic}' | the delivery's line in the inbox names the topic |
+| pack | yardr/tgbridge.yaml | and the yardmaster takes it as that user's word. | the text is the operator's word |
+| pack | YARDR.md | The yard keeps at most 500 characters of a delivery's text | the inbox keeps 500 characters |
+| pack | yardr/tgbridge.yaml | read:   [tgbridge/thread, read] | yardr thread show reads it whole |
+| pack | yardr/tgbridge/thread | payload = {'conversation': thread, 'text': given.get('body') or '', 'key': key, 'format': 'auto'} | yardr reply answers in the delivery's own conversation, format auto |
+| pack | bridge/bridge.py | def auto_format(text): | valid HTML goes formatted, anything else plain |
+| pack | yardr/tgbridge/thread | payload['attachments'] = files | --file sends files with the reply |
+| pack | bridge/bridge.py | def infer_attachment_kind(path): | pictures as photos, anything else as documents |
+| pack | yardr/tgbridge.yaml | posted: [tgbridge/thread, posted] | a reply run again finds the first one |
+| pack | bridge/bridge.py | def api_posted(self, request, key_header=None): | the bridge finds a confirmed send by its key |
+| pack | yardr/tgbridge.yaml | about: One message to the chat or one of its topics (Telegram HTML or plain, buttons, silent, one file) | the send call |
+| pack | bridge/bridge.py | def _api_conversation(self, request): | topic=<name>, general or conversation=<id> |
+| pack | bridge/OPERATIONS.md | With neither, a send lands in General. | neither is the main chat |
+| pack | bridge/bridge.py | fmt = request.get('format') or 'auto' | format=auto is the default |
+| pack | yardr/tgbridge.yaml | silent:       { type: bool, optional: true } | silent=true |
+| pack | bridge/OPERATIONS.md | Silent messages (`--silent`) | silent sends follow this section |
+| pack | bridge/OPERATIONS.md | Users will receive a notification with no sound | a silent notification still appears |
+| pack | bridge/bridge.py | body['silent'] = True | the yard API's silent |
+| pack | bridge/bridge.py | extra['disable_notification'] = True | notification with no sound |
+| pack | bridge/OPERATIONS.md | the same key with and without it is `idempotency_key_conflict` | silent is part of the key's identity |
+| pack | yardr/tgbridge.yaml | keyboard:     { type: string, max: 8000, optional: true } | keyboard= adds tap buttons |
+| pack | yardr/tgbridge.yaml | attachment:   { type: string, pattern: "^/", max: 4096, optional: true } | attachment= sends one file |
 | pack | bridge/bridge.py | text_offers_lettered_options | lettered text lines offering a choice |
 | pack | bridge/bridge.py | reason='options_need_keyboard' | text options without buttons refused |
-| pack | bridge/bridge.py | parser.add_argument('--text-options', action='store_true', | deliberate text-only list flag |
 | pack | bridge/OPERATIONS.md | options_need_keyboard | the refusal and its override |
+| pack | yardr/tgbridge.yaml | text_options: { type: bool, optional: true } | text_options=true for a deliberate text-only list |
+| pack | bridge/bridge.py | def _api_answer(receipt, conversation=None): | --json prints delivered, message_id, reason |
+| pack | yardr/tgbridge.yaml | idempotency: Idempotency-Key | the yard sends each call with a key |
+| pack | bridge/bridge.py | key = request.get('key') or key_header | key=<key> wins over the yard's key |
+| pack | bridge/bridge.py | idempotency key reused for a different request | same key, same body |
+| pack | bridge/bridge.py | ambiguous_delivery_requires_manual_reconciliation | ambiguous result |
+| pack | bridge/bridge.py | NOT_SENT_REASON = 'transport_unavailable_not_sent' | not-sent result |
+| pack | bridge/OPERATIONS.md | do not delete records to force retry | never delete the ledger |
+| pack | bridge/bridge.py | text_required_maximum_4096_utf16_units | 4096 UTF-16 units |
+| pack | bridge/bridge.py | forwarded material, not the user's instruction] | forwarded entry header |
+| pack | bridge/bridge.py | return '\n'.join('> ' + line for line in text.splitlines()) | forwarded text quoted line by line |
+| pack | bridge/OPERATIONS.md | A forward never runs a command | forwards are material, never commands |
+| pack | bridge/OPERATIONS.md | ## Topics | topics follow this section |
+| pack | bridge/bridge.py | f"[topic: {topic['name']}]\n{text}" | the topic line first |
+| pack | bridge/bridge.py | def subscribe_line(self, crew, topic): | the yard routes each topic by subscription |
+| pack | bridge/OPERATIONS.md | ### Topics the user creates | topics the user created follow this section |
+| pack | bridge/bridge.py | (t for t in self.served_auto_topics() if t['display_name'] == topic), None) | topic=<name> also names a topic the operator created |
+| pack | bridge/bridge.py | is not configured, created or served | an unknown topic is refused |
+| pack | bridge/OPERATIONS.md | not configured: reply lands in the main chat | not configured answers in the main chat |
+| pack | bridge/OPERATIONS.md | retried and never resent into General | a deleted topic's send is rejected |
+| pack | bridge/OPERATIONS.md | the `[topic: <name>]` line comes before the `[ask answer \| ...]` | a topic ask's answer keeps its line |
+| pack | bridge/OPERATIONS.md | "Reactions" | reactions follow this section |
+| pack | bridge/OPERATIONS.md | the emoji for "the yard has the message" (received, not read) | seen means received, not read |
+| pack | bridge/bridge.py | REACTIONS_DEFAULTS = dict(on_accept=False, seen='\U0001F440', done='\U0001F44C') | 👀 and 👌 defaults, off unless on_accept |
+| pack | bridge/bridge.py | def _accepted(self, mid, conversation_id, thread_id): | the bridge sets seen at the accept point |
+| pack | yardr/tgbridge.yaml | about: React to one of the operator's messages (seen, done, none or an emoji) | the react call |
+| pack | bridge/OPERATIONS.md | the emoji for "the work this message asked for is finished or answered" | react done when finished or answered |
+| pack | yardr/tgbridge.yaml | body: { reaction: "{reaction}", message_id: "{message_id}", topic: "{topic}", conversation: "{conversation}" } | react takes topic, conversation or message_id |
+| pack | bridge/bridge.py | message_id = self.store.last_accepted_in(conversation['conversation_id']) | topic= targets that topic's last accepted message |
+| pack | bridge/bridge.py | message_id = self.store.last_accepted() | with neither, the last accepted message anywhere |
+| pack | bridge/OPERATIONS.md | ✅ and ✔ are not on it | no check mark reaction |
+| pack | bridge/bridge.py | reaction=[dict(type='emoji', emoji=emoji)] if emoji else [] | none clears the reaction |
+| pack | bridge/bridge.py | HTML_TAGS = ('b', 'strong', 'i', 'em', 'u', 's', 'code', 'pre', 'a', 'blockquote', 'tg-spoiler') | tag allowlist |
+| pack | bridge/bridge.py | HTML_LINK_SCHEMES = ('http', 'https', 'tg') | link schemes |
+| pack | bridge/bridge.py | 'html_text_not_escaped' | unescaped text refused |
+| pack | bridge/bridge.py | agent = _text_setting(data.get('crew', 'yardmaster'), 'crew') | the yard's crew member, default yardmaster |
+| pack | bridge/bridge.py | telegram_html_parse_rejected_400 | one plain fallback, same key |
+| pack | bridge/bridge.py | def _log_sent(self, conversation, request, receipt): | the message log records the send |
+| pack | bridge/OPERATIONS.md | ## Asks | asks with buttons follow this section |
 | pack | bridge/OPERATIONS.md | each question of a multi-question ask goes out as its own message with its own key and keyboard | one message per question |
-| pack | bridge/OPERATIONS.md | --keyboard-file <path> holding the rows as JSON | keyboard file rows |
+| pack | bridge/bridge.py | raise ApiError('keyboard must be JSON rows') from None | keyboard= takes the rows as JSON |
 | pack | bridge/bridge.py | _ask_id_for_key | first 16 hex of the SHA-256 of the key |
 | pack | bridge/OPERATIONS.md | ask:<ask-id>:<choice> within 64 bytes | callback data shape |
-| pack | bridge/OPERATIONS.md | Every ask button names the send's own derived id | id from another key refused |
+| pack | bridge/OPERATIONS.md | An ask button whose id is not the send's derived id refuses the send | id from another key refused |
 | pack | bridge/OPERATIONS.md | at most 8 buttons per row and at most 100 buttons in total | keyboard size limits |
 | pack | bridge/bridge.py | CALLBACK_DATA_MAX_BYTES = 64 | 64-byte callback data |
-| pack | bridge/bridge.py | '|' in text or ']' in text | label holds no pipe or bracket |
+| pack | bridge/bridge.py | '\|' in text or ']' in text | label holds no pipe or bracket |
 | pack | bridge/bridge.py | _ask_text_breaks_answer_line | no line break or control in a label |
 | pack | bridge/OPERATIONS.md | Two buttons sharing one callback_data refuse the send | no shared callback data |
 | pack | bridge/bridge.py | utf16_units(visible + '\n✓ ' + longest) > limit | room for the choice suffix |
 | pack | bridge/OPERATIONS.md | 1024 UTF-16 units of caption for a photo ask | photo room limit |
 | pack | bridge/OPERATIONS.md | An ask question is never refused for its characters | free-text question |
-| pack | bridge/OPERATIONS.md | a keyboard may go with no attachment or with exactly one photo | text or one photo only |
+| pack | bridge/OPERATIONS.md | A keyboard may go with no attachment or with exactly one photo | text or one photo only |
 | pack | bridge/OPERATIONS.md | A keyboard on a photo holds only ask buttons | photo keyboard ask-only |
+| pack | bridge/bridge.py | thread_id=thread_id, kind='answer') | the tap's delivery is kind answer |
 | pack | bridge/bridge.py | f'[ask answer \| choice: {label} \| message: {mid}]\nquestion: {visible}' | relayed answer shape |
 | pack | bridge/OPERATIONS.md | A6 Closing with a decision | closing an ask follows this section |
-| pack | commands/ask-close/command.toml | Close an open ask with the decision made | ask-close command |
-| pack | bridge/bridge.py | print('Telegram delivery confirmed; message ID ' + str(message_id)) | the ask's message id |
-| pack | bridge/OPERATIONS.md | selects it instead when only the key is known | --ask-key instead of --message-id |
+| pack | yardr/tgbridge.yaml | about: Close an open button ask with the decision made some other way | the ask_close call |
+| pack | bridge/bridge.py | def api_ask_close(self, request, key_header=None): | the close through the yard API |
+| pack | bridge/bridge.py | answer['message_id'] = str(receipt['message_id']) | the ask send's message_id |
+| pack | yardr/tgbridge.yaml | ask_key:    { type: string, max: 256, optional: true } | ask_key= instead of message_id= |
+| pack | bridge/OPERATIONS.md | selects it instead when only the key is known | the ask send's key selects it |
 | pack | bridge/bridge.py | ASK_DECIDED_PREFIX = '\n✓ Decided: ' | decided line under the ask |
 | pack | bridge/OPERATIONS.md | then the `Already answered` answer; nothing is relayed. | a later tap is refused |
 | pack | bridge/bridge.py | reason='decision_breaks_line' | one-line decision |
 | pack | bridge/bridge.py | utf16_units(visible + self.ASK_DECIDED_PREFIX + decision) > limit | room for the decision |
 | pack | bridge/bridge.py | reason='ask_already_answered' | a tap came first |
 | pack | bridge/OPERATIONS.md | never a second edit | a repeat never edits twice |
-| pack | commands/reply-current/command.toml | requires --body-file and --idempotency-key | reply command |
-| pack | bridge/OPERATIONS.md | controller reminder omits the mandatory idempotency flag | always add the key |
-| pack | bridge/bridge.py | idempotency key reused for a different request | same key, same body |
-| pack | bridge/bridge.py | ambiguous_delivery_requires_manual_reconciliation | ambiguous result |
-| pack | bridge/bridge.py | NOT_SENT_REASON = 'transport_unavailable_not_sent' | not-sent result |
-| pack | bridge/OPERATIONS.md | do not delete records to force retry | never delete the ledger |
-| pack | bridge/bridge.py | text_required_maximum_4096_utf16_units | 4096 UTF-16 units |
-| pack | bridge/OPERATIONS.md | Silent messages (`--silent`) | silent sends follow this section |
-| pack | bridge/OPERATIONS.md | Users will receive a notification with no sound | a silent notification still appears |
-| pack | bridge/bridge.py | parser.add_argument('--silent', action='store_true', | opt-in silent flag |
-| pack | bridge/bridge.py | extra['disable_notification'] = True | notification with no sound |
-| pack | bridge/OPERATIONS.md | the same key with and without it is `idempotency_key_conflict` | silent is part of the key's identity |
-| pack | bridge/OPERATIONS.md | a silent send is delivered by the CLI process itself | silent sends skip the transcript |
-| pack | commands/reply-current/command.toml | --silent delivers with a notification that makes no sound | reply command flag |
-| pack | bridge/bridge.py | forwarded material, not the user's instruction] | forwarded entry header |
-| pack | bridge/bridge.py | return '\n'.join('> ' + line for line in text.splitlines()) | forwarded text quoted line by line |
-| pack | bridge/OPERATIONS.md | A forward never runs a city command | forwards are material, never commands |
-| pack | bridge/OPERATIONS.md | "Reactions" | reactions follow this section |
-| pack | bridge/OPERATIONS.md | the emoji for "GC has the message" (received, not read) | seen means received, not read |
-| pack | bridge/bridge.py | REACTIONS_DEFAULTS = dict(on_accept=False, seen='\U0001F440', done='\U0001F44C') | 👀 and 👌 defaults, off unless on_accept |
-| pack | bridge/bridge.py | def _accepted(self, mid, conversation_id, thread_id): | the bridge sets seen at the accept point |
-| pack | commands/react/command.toml | --reaction done when the work it asked for is finished | react done when finished or answered |
-| pack | bridge/bridge.py | bridge.store.last_accepted() | default target is the last accepted message |
-| pack | bridge/bridge.py | bridge.store.last_accepted_in(conversation['conversation_id']) | --conversation-id targets that conversation's last accepted message |
-| pack | bridge/bridge.py | parser.error('react takes at most one of --message-id, --conversation-id and --topic') | never both flags |
-| pack | commands/react/command.toml | --conversation-id <chat id, or chat id:topic:thread id> or --topic <name> | react command flags |
-| pack | bridge/OPERATIONS.md | the conversation its notice names | the notice's id names the recorded conversation |
-| pack | bridge/OPERATIONS.md | ✅ and ✔ are not on it | no check mark reaction |
-| pack | bridge/bridge.py | reaction=[dict(type='emoji', emoji=emoji)] if emoji else [] | none clears the reaction |
-| pack | bridge/bridge.py | HTML_TAGS = ('b', 'strong', 'i', 'em', 'u', 's', 'code', 'pre', 'a', 'blockquote', 'tg-spoiler') | tag allowlist |
-| pack | bridge/bridge.py | HTML_LINK_SCHEMES = ('http', 'https', 'tg') | link schemes |
-| pack | bridge/bridge.py | 'html_text_not_escaped' | unescaped text refused |
-| pack | bridge/bridge.py | telegram_html_parse_rejected_400 | one plain fallback, same key |
-| pack | bridge/bridge.py | parser.add_argument('--format', choices=('plain', 'html'), default='plain', | opt-in flag |
-| pack | bridge/OPERATIONS.md | GC keeps no transcript entry of it | formatted sends skip the transcript |
-| pack | README.md | Then run `gc reload`, and check that `gc config show` lists the telegram import. | pack command after import and reload |
-| pack | bridge/OPERATIONS.md | The direct form works before pack reload | direct form before reload |
-| pack | README.md | TELEGRAM_BRIDGE_SETTINGS | second bridge settings in the environment |
-| pack | bridge/bridge.py | agent = config.get('agent', 'mayor') | sender label is the served agent, default mayor |
 | pack | bridge/OPERATIONS.md | ## Pinned messages | pinned slots follow this section |
-| pack | commands/pin/command.toml | Keep one pinned message per slot, edited in place | pin command |
+| pack | yardr/tgbridge.yaml | about: Keep one pinned message per slot at the top of the chat, edited in place | the pin call |
 | pack | bridge/bridge.py | PIN_SLOT_RE = re.compile(r'[a-z0-9_-]{1,32}') | slot names |
 | pack | bridge/OPERATIONS.md | The body follows the `sendMessage` rules | body follows the send rules |
-| pack | bridge/bridge.py | print(f'pin {slot} unchanged; message ID {receipt["message_id"]}') | same text changes nothing |
+| pack | bridge/bridge.py | answer['changed'] = bool(receipt['changed']) | same text changes nothing (changed: false) |
 | pack | bridge/OPERATIONS.md | Another body: the revision goes up by one and the live message is edited | new text edits in place |
 | pack | bridge/bridge.py | extra={'disable_notification': True} | the first update sends silently |
 | pack | bridge/OPERATIONS.md | Each new pin (a new generation) adds Telegram's one "pinned" | one pinned line per new pin |
 | pack | bridge/OPERATIONS.md | an edit adds nothing and never notifies | edits never notify |
+| pack | yardr/tgbridge.yaml | body: { slot: "{slot}", unpin: true } | the unpin call |
 | pack | bridge/OPERATIONS.md | is attempted again by the next update | rerun after a failure |
 | pack | bridge/OPERATIONS.md | one generation never sends a second message | no second message per slot |
 | pack | bridge/OPERATIONS.md | Reconciling an unconfirmed first send: check the chat for that message | unpin after checking the chat |

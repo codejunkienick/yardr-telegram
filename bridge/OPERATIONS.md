@@ -1,89 +1,112 @@
 # Telegram bridge operations
 
-This guide describes the pack's bridge for any city's agent. The bridge
-connects that agent to Telegram using GC 1.4.1 external messaging. It adds
-no LLM, task poller, approval authority, or automatic blocker detection.
-The agent sends purposeful notifications and replies through the city. It
-accepts private text and media authored by the paired numeric user only;
-groups, other senders, bot messages, and `/start` are skipped. A message the
-paired user forwards reaches the agent marked and quoted as material, never
-as the user's instruction ("Forwarded messages").
+This guide describes the bridge between one yardr yard and one Telegram
+bot. It adds no LLM, task poller, approval authority, or automatic blocker
+detection. The yard's crew sends purposeful notifications and replies
+through the yard (`yardr reply`, `yardr call tgbridge …`), and a process on
+the host through the bridge's command line. It accepts private text and
+media authored by the paired numeric user only; groups, other senders, bot
+messages, and `/start` are skipped. A message the paired user forwards
+reaches the yard marked and quoted as material, never as the user's
+instruction ("Forwarded messages").
 
-README.md covers adopting the pack, this guide covers running it, and the
-skills are an agent's writing guides. Where they differ, this guide is right
-and the other is the one to fix.
+README.md covers adopting the bridge, `yardr/SETUP.md` setting it up in one
+yard, `YARDR.md` the contract between the bridge and a yard, this guide
+running it, and the skills are an agent's writing guides. Where README.md or
+a skill differs from this guide, this guide is right and the other is the
+one to fix; where this guide differs from `bridge/bridge.py`, the code is.
 
-Every city runs its own bridge process from this one `bridge.py`, configured
-only by its own settings file. Below, `<pack>` is this pack's directory and
-`<settings>` that city's settings file.
+Every yard runs its own bridge process, with its own bot, from this one
+`bridge.py`, configured only by its own settings file. Below, `<repo>` is
+this repository's directory and `<settings>` that bridge's settings file.
 
 ## Terms
 
-- **mayor**: the gc agent this bridge serves (`agent`, default `mayor`).
-  A `[[topic]]` may name another agent for its own conversation; inbound
-  in that topic is accepted for that topic's agent, not the mayor
-  ("Topics").
+- **The yard**: the yardr yard this bridge serves (`yard`). The bridge
+  reaches it through a hook ("Inbound"), and the yard reaches the bridge as
+  the declared source `tgbridge` (`<repo>/yardr/tgbridge.yaml`, "The yard
+  API").
+- **The crew member**: the yard's crew member this bridge names (`crew`,
+  default `yardmaster`). It routes nothing: the yard's subscriptions decide
+  who gets each message ("Topics").
 - **The paired user** and **the paired chat**: the one Telegram account
   (`user_id`) and its private chat with the bot (`chat_id`, equal to
   `user_id`).
-- **The ledger**: `<state_dir>/telegram-bridge.sqlite3`, the inbound offset
-  and one receipt per outbound key ("Delivery recovery").
-- **The extmsg scope**: gc's city name (`city`), the scope of the
-  conversation binding.
-- **The adapter account**: the bot's username (`account_id`), which tells
-  two bots apart.
-- **The capability secret**: the random path in `callback_secret_file` that
-  GC's callback must use.
+- **A conversation**: the paired chat, `<chat_id>` (General), or one of its
+  topics, `<chat_id>:topic:<thread_id>`. A thread of the yard is a
+  conversation.
+- **The ledger**: `<state_dir>/telegram-bridge.sqlite3`, the inbound offset,
+  one receipt per outbound key ("Delivery recovery") and the message log
+  ("The message log").
+- **The accept point**: the yard's 2xx answer with a positive `seq` to a
+  relayed message ("Inbound").
+- **The account**: the bot's username (`account_id`), in the ledger's
+  conversation records, which tells two bots apart.
+- **The callback secret**: the random value in `callback_secret_file` that
+  every request to the yard API carries as a bearer token; the yard holds it
+  as the source's credential `TGBRIDGE_SECRET`.
+- **The hook secret**: the random value in `[yardr] hook_secret_file` that
+  the bridge sends to the yard's hook, which was added with it.
 
 ## Settings
 
-Prerequisites: Python 3.11+, curl, gc 1.4.1 or later (tested on 1.5.0),
-the city's GC API on loopback, a confirmed
-private bot pairing, and one native **agent-name** binding to the configured
-`agent` (default `mayor`) for the configured conversation. Do not add a
-wildcard default route. The bot must have no webhook or other poller. `probe`
-checks identity and webhook without consuming messages.
+Prerequisites: Python 3.11+, curl, and a yardr yard set up for the bridge
+(`yardr/SETUP.md`): its hook listener on a loopback address (`hook_addr`),
+the pack in `<repo>/yardr` applied with the callback secret as the source's
+credential, a hook added with the hook secret, and the paired user's
+Telegram id as their identity in the source. Do not apply yardr's own
+`telegram` pack to this bot: its webhook stops `getUpdates` polling. The bot
+must have no webhook or other poller. `probe` checks identity and webhook
+without consuming messages; it checks nothing in the yard.
 
 The settings file is TOML, owner-only (mode 0600), outside any repository;
-`<pack>/settings.example.toml` lists every key. Without `--settings` the bridge
-reads `$TELEGRAM_BRIDGE_SETTINGS`, else
-`~/.config/<workspace_name>/telegram-bridge.toml`, where `workspace_name` is
-gc's name for the city in `<city>/.gc/site.toml` and `<city>` is `--city-root`
-(default `$GC_CITY_PATH`, `$GC_CITY`, else the working directory). A missing
-file, a file others can read, an unknown key or a bad value refuses every
-command with one line naming the problem; nothing falls back to a default
-city.
+`<repo>/settings.example.toml` lists every key. Without `--settings` the
+bridge reads `$TELEGRAM_BRIDGE_SETTINGS`; with neither, every command refuses
+with `no settings file: pass --settings or set TELEGRAM_BRIDGE_SETTINGS`. A
+missing file, a file others can read, an unknown key or a bad value refuses
+every command with one line naming the problem; nothing falls back to a
+default yard.
+
+A settings file of the gc pack does not load as it is. Its keys are refused
+by name, each with the key that replaced it:
+`settings: city is the gc pack's key; this bridge reads yard (YARDR.md)`,
+and so for `agent` (`crew`), `gc_base_url` (`[yardr] hook_url`) and
+`gc_api_token_file` (`[yardr] hook_secret_file`); a `[[topic]]` `agent`
+refuses as `settings: topic entry <n>: agent is the gc pack's key: name the
+crew member with crew`.
 
 | key | required | meaning |
 | --- | --- | --- |
-| `city` | yes | gc's city name, the extmsg scope |
-| `state_dir` | yes | ledger, inbound offset, inbound files, heartbeat |
-| `port` | yes | loopback callback port, unique per city on a host |
-| `token_file`, `callback_secret_file` | yes | owner-only credential files (`install.sh` creates a missing callback secret: the unit cannot write outside its state and lock directories) |
-| `[bot]` `bot_id`, `user_id`, `chat_id`, `account_id` | yes | positive numeric ids (`chat_id` equals `user_id`: a private chat), the bot username as the adapter account |
+| `yard` | yes | the yard's name: in the default unit name, the unit's description and every conversation record in the ledger |
+| `state_dir` | yes | ledger, message log, inbound offset, inbound files, heartbeat |
+| `port` | yes | the yard API's loopback port, 1024-65535, unique per bridge on a host; the source's `base` names it (`yardr/SETUP.md`, step 5) |
+| `token_file`, `callback_secret_file` | yes | owner-only credential files; the callback secret is the yard API's bearer token (`install.sh` creates a missing callback secret: the unit cannot write outside its state and lock directories) |
+| `[yardr]` `hook_url` | yes | the yard's hook: `http://<host>:<port>/hooks/<name>`, the host `127.0.0.1`, `::1` or `localhost`, with no user, query or fragment, at most 256 characters |
+| `[yardr]` `hook_secret_file` | yes | owner-only file holding the hook's secret, sent as `X-Tgbridge-Secret`; a file other than the token and the callback secret (`install.sh` creates a missing one, as for the callback secret) |
+| `[yardr]` `source` | no | the declared source's name in the yard, in the lines `topics` prints; default `tgbridge` |
+| `[bot]` `bot_id`, `user_id`, `chat_id`, `account_id` | yes | positive numeric ids (`chat_id` equals `user_id`: a private chat), the bot username as the account |
 | `lock_dir` | no | where the per-bot lock lives; default the token file's directory |
-| `unit` | no | service name: the systemd unit name on Linux and WSL 2, and on macOS the source of the launchd label (this name without its `.service` suffix); default `<city>-telegram.service` |
+| `unit` | no | service name: the systemd unit name on Linux and WSL 2, and on macOS the source of the launchd label (this name without its `.service` suffix); default `<yard>-telegram.service` |
 | `python` | no | interpreter for the unit and the transcriber; default `/usr/bin/python3` |
-| `user_display_name` | no | the actor name on relayed messages; default `User` |
+| `user_display_name` | no | the name of the paired user on relayed messages (`from.name`) and in the message log; default `User` |
 | `timezone` | no | times in notices and the time zone passed to handlers (`TZ`); default `UTC` |
-| `gc_base_url`, `gc_api_token_file` | no | loopback GC API (default `http://127.0.0.1:8372`) and its bearer token file; anything else refuses at load |
-| `health_file` | no | the city's health report; enables the quota-exhausted notice |
-| `pairing_update_id` | no | the `update_id` of the `/start` update; the bridge starts after it. Read only for a new ledger (README.md, step 3) |
-| `agent` | no | the gc agent this bridge serves; default `mayor`. Inbound is accepted only when GC routes it to this agent, except a message in a `[[topic]]`, which is accepted only when GC routes it on that topic's conversation to that topic's `agent` (default this agent) ("Topics"). The quota-exhausted notice watches this agent's session (except in a recorded `[[topic]]` for another agent, where it watches that topic's agent), and `send` without `--session` or `$GC_SESSION_ID` sends as it. "The mayor" in this guide means this agent; a second bridge for a second agent is in `<pack>/README.md`, "A second bridge for a second agent" |
+| `health_file` | no | a health report the bridge only reads; enables the quota-exhausted notice |
+| `pairing_update_id` | no | the `update_id` of the `/start` update; the bridge starts after it. Read only for a new ledger (README.md, "Adopt in a yard") |
+| `crew` | no | the crew member this bridge names; default `yardmaster`. It is the crew member in the `subscribe:` line of each `[[topic]]` that names none of its own and of each topic the user creates ("Topics"), the one in the unit's description, and the session the quota-exhausted notice watches (on a recorded `[[topic]]`'s conversation, that topic's `crew`). It routes nothing |
 | `[[menu]]` `command`, `description` | no | the chat's "/" menu, in order |
-| `[[command]]` | no | the city's own commands and buttons, run by its own handlers ("City commands" below) |
+| `[[command]]` | no | the yard's own commands and buttons, run by its own handlers ("Commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
 | `[transcribe]` | no | voice transcription (below); off by default |
 | `[reactions]` | no | `on_accept`, `seen`, `done`: the `seen` reaction on each accepted message and the emoji `react` sets ("Reactions" below); no reaction ever without `on_accept = true` or a `react` call |
 | `[typing]` | no | `seconds` (0-900, default 0): "typing..." in the chat after each accepted message until the next send, at most this long ("Typing" below); no chat action ever with 0 |
-| `[[topic]]` `name`, `agent` | no | topics of the paired chat, each its own GC conversation, created once by `topics` ("Topics" below); at most 50 |
-| `[auto_topics]` | no | `enabled` (default false): serve the topics the paired user creates in the chat, each bound to the settings' `agent` ("Topics" below); without it only the `[[topic]]` tables are served |
+| `[[topic]]` `name`, `crew` | no | topics of the paired chat, each its own conversation, created once by `topics` ("Topics" below); at most 50 |
+| `[auto_topics]` | no | `enabled` (default false): serve the topics the paired user creates in the chat ("Topics the user creates" below); without it only the `[[topic]]` tables are served |
 
 The health report at `health_file` is a JSON object with `observed_at`
 (ISO-8601 with zone, at most 10 minutes old) and `sessions`, a list of
-objects with `template` (the agent name), `status` (`quota_wait` triggers
-the quota-exhausted notice), `episode` (a non-empty string) and `until`
-(epoch milliseconds, in the future).
+objects with `template` (the crew member's name), `status` (`quota_wait`
+triggers the quota-exhausted notice), `episode` (a non-empty string) and
+`until` (epoch milliseconds, in the future). The bridge never writes it.
 
 Paths may start with `~`; after that they must be absolute, normalized, and
 made of letters, digits and `._@+-` only, so they are safe in a unit file.
@@ -93,26 +116,28 @@ requests.
 
 ## Install and launch
 
-`<pack>/install.sh --settings <settings>` checks the settings and the host
+`<repo>/install.sh --settings <settings>` checks the settings and the host
 (python, curl, owner-only credentials, and with transcription on: ffmpeg,
-whisper-cli, the models and their SHA-256), creates the callback secret and
-the transcription queue when they are missing, links
+whisper-cli, the models and their SHA-256), creates the callback secret,
+the hook secret and the transcription queue when they are missing (each
+secret owner-only and never printed), links
 `~/.local/bin/voice-transcribe`, and on Linux and WSL 2 renders the systemd
 unit into `~/.config/systemd/user/<unit>`. On macOS it writes the
 LaunchAgent plist into `~/Library/LaunchAgents/<label>.plist`, where
 `<label>` is the `unit` name without its `.service` suffix, and prints
 the launchctl next line. It is
-idempotent, never starts or stops a service and never contacts Telegram;
-`--dry-run` only reports.
+idempotent, never starts or stops a service and never contacts Telegram or
+the yard; `--dry-run` only reports. The yard's side, from its hook listener
+to the subscriptions, is `yardr/SETUP.md`, steps 4 to 8.
 Then, in the user's shell (an agent asks the user, or runs it only where
 it may manage the user's services), on Linux and WSL 2:
 
 ```sh
-python3 <pack>/bridge/bridge.py --settings <settings> probe
+python3 <repo>/bridge/bridge.py --settings <settings> probe
 systemctl --user daemon-reload
 systemctl --user enable --now <unit>
 systemctl --user status <unit>
-python3 <pack>/bridge/bridge.py --settings <settings> set-commands
+python3 <repo>/bridge/bridge.py --settings <settings> set-commands
 ```
 
 On macOS (in a shell whose `python3` on PATH is 3.11 or later, e.g.
@@ -121,50 +146,55 @@ On macOS (in a shell whose `python3` on PATH is 3.11 or later, e.g.
 settings' `python` is the interpreter the agent itself runs):
 
 ```sh
-python3 <pack>/bridge/bridge.py --settings <settings> probe
+python3 <repo>/bridge/bridge.py --settings <settings> probe
 launchctl bootout gui/$(id -u)/<label> 2>/dev/null
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist
 launchctl print gui/$(id -u)/<label>
-python3 <pack>/bridge/bridge.py --settings <settings> set-commands
+python3 <repo>/bridge/bridge.py --settings <settings> set-commands
 ```
 
 `probe` prints `Telegram identity and webhook checks passed` and
 `set-commands` prints `commands set: <count> (/<command> ...) for chat
 <chat_id>` (`commands set: 0 () for chat <chat_id>` when the menu is empty).
+Once the service runs, `yardr source check tgbridge` checks the yard's side
+(`GET /v1/health`, "The yard API").
 
 `bridge.py --settings <settings> render-unit` prints the service for
 this host: the systemd unit text on Linux and WSL 2, the launchd
 LaunchAgent plist on macOS, and `check-install` runs the checks alone
 (`--gpu-probe` adds the GPU probe, below; without it no transcription
 runs). On Linux and WSL 2 the unit runs
-`<python> <pack>/bridge/bridge.py --settings <settings> run` with the state
+`<python> <repo>/bridge/bridge.py --settings <settings> run` with the state
 directory and the lock directory as its only writable paths, plus the
 transcription queue with transcription on and every `handler_write_paths`
-entry. The settings file, token, callback secret and GC API token file are
+entry. The settings file, token, callback secret and hook secret are
 read-only inside the unit (`ReadOnlyPaths`), even inside the lock
 directory, and the unit sets RestrictSUIDSGID, LockPersonality,
 RestrictRealtime, RestrictNamespaces, SystemCallArchitectures=native and
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK, all of which
 the GPU probe carries too. On macOS the plist runs
-`<python> <pack>/bridge/bridge.py --settings <settings> run --conflict-exit-status 0`
+`<python> <repo>/bridge/bridge.py --settings <settings> run --conflict-exit-status 0`
 with the state directory as its working directory, loads at login, restarts after 15 s, allows 45 s to stop, sets `PATH` to `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`, and writes its output to `~/Library/Logs/<label>.log`. `run` accepts `--conflict-exit-status <0-255>` (default 2, a `run` flag only): on Linux and WSL 2 a polling conflict exits 2 and the unit does not restart it, while the macOS agent passes 0 (below).
 
-The adapter binds only `127.0.0.1:<port>`, registers its GC callback, and
-refreshes the in-memory registration every ~30 seconds. At startup the
+`run` serves the yard API on `127.0.0.1:<port>` only ("The yard API") and
+polls Telegram; it registers nothing with the yard, which reaches it at the
+source's `base`. Only `run` reads the hook secret. At startup the
 Telegram probe is retried with backoff for up to 10 minutes, so a short network
 outage does not exit the process; an identity mismatch or an existing webhook
 still exits at once. Other failures exit and the service restarts it
 every 15 s without a start limit (systemd on Linux and WSL 2; on macOS
 launchd restarts the agent after an unsuccessful exit, throttled to
-15 s), so an outage can never leave it permanently failed. When the
-service is down, `reply-current` says so and names the restart command:
-`systemctl --user restart <unit>` on Linux and WSL 2; on macOS
+15 s), so an outage can never leave it permanently failed. While the
+service is down nothing from the chat reaches the yard and the yard API
+does not answer: `yardr reply` fails with `the bridge did not answer
+/v1/send (<error>): is its unit running?` (`<repo>/yardr/tgbridge/thread`),
+and `yardr source check tgbridge` fails. The command line keeps working:
+every command but `run` delivers directly through the ledger ("Send and
+receive"). Restart the service with `systemctl --user restart <unit>` on
+Linux and WSL 2; on macOS with
 `launchctl bootstrap gui/<uid> ~/Library/LaunchAgents/<label>.plist`
 when the agent is not loaded, otherwise
-`launchctl kickstart -k gui/<uid>/<label>`. The service state comes from
-`systemctl --user is-active` on Linux and WSL 2 and from
-`launchctl print gui/<uid>/<label>` on macOS (`state = running` is
-reported as active, a missing agent as not loaded). A bot polling
+`launchctl kickstart -k gui/<uid>/<label>`. A bot polling
 conflict on Linux and WSL 2 exits with status 2 and disables automatic
 restart; stop the other poller/webhook, then start the unit explicitly.
 On macOS the agent passes `--conflict-exit-status 0`, so a polling
@@ -180,27 +210,189 @@ running, fails any checked path under `/mnt/`, and warns without
 linger. On macOS it warns for a checked path in `~/Desktop`,
 `~/Documents`, `~/Downloads` or iCloud Drive, fails `transcribe.cpus`
 (below), marks each handler `(runs with your user's full rights: no sandbox on macOS)`, and warns that each `handler_write_paths` entry `is not enforced on macOS (no sandbox)`; `curl` and `ffmpeg` are looked up on the launchd `PATH` above.
+The hook secret is checked like the callback secret: owner-only, or `is
+created by install.sh` when it is missing.
 
 After each successful `getUpdates` the bridge records
 `<state_dir>/telegram-bridge-heartbeat.json`
 (`{"last_poll_ok_at": <ISO-8601 UTC>, "pid": <int>}`), atomically and at most
 once per 60 s; a failed write prints `poll heartbeat not saved` and polling
-continues. A city's health check can judge the bridge by its age, but the
+continues. `GET /v1/health`, the source's check, answers its
+`last_poll_ok_at` as `last_poll_ok`. A health check can judge the bridge by
+its age, but the
 age can grow by up to the longest configured `[[command]]` timeout (up to
 3600 s) while a healthy bridge runs a handler in its poll loop, so a
 health check must allow for that before flagging or restarting it.
 
-GC 1.4.1 cannot send a bearer header to adapter callbacks. A random capability
-path in the callback secret file protects the callback along with the loopback
-bind and `X-GC-Request` check. The capability is exposed through local GC
-adapter introspection, so the existing local GC API/user account is the trust
-boundary. Do not publish that API or adapter-registration output publicly.
-The bridge assumes a host whose other local accounts are trusted: loopback
-ports are reachable by every local user, so an account that binds the GC
-API port or a handler's port while that service is down receives what the
-bridge sends there (the GC Bearer token, message text or handler JSON).
+The yard API is protected by the loopback bind and the callback secret.
+The yard holds that secret as the source's credential, and so does each
+crew member that replies, in its env file (`yardr/SETUP.md`, steps 5 and
+8). Whoever holds it can send to the chat as the bot, read the message log,
+set reactions and pins, close asks, and have the bridge send any file its
+user can read, except the bridge's credentials and ledger (`attachments`
+are host paths). The bridge assumes a host whose other local accounts are
+trusted: loopback ports are reachable by every local user, so an account
+that binds the yard's hook port or a handler's port while that service is
+down receives what the bridge sends there (the hook secret and the message
+text, or the handler JSON).
 
-Removing a city's bridge: README.md, "Uninstall".
+Removing a yard's bridge: README.md, "Uninstall".
+
+## Inbound
+
+The bridge relays each message of the paired user to the yard as one POST
+to the yard's hook, after its own handling: a command goes to its handler
+instead ("Commands"), a button press is an ask answer or a handler's
+("Asks"), a file is downloaded first ("Inbound media relay"), and a voice
+or audio note is relayed at once and its transcript later ("Voice-note
+transcription"). The request goes through curl with the URL, the headers
+and the body on curl's stdin, never in argv:
+
+```text
+POST <[yardr] hook_url>
+X-Tgbridge-Secret: <the contents of [yardr] hook_secret_file>
+Content-Type: application/json
+```
+
+The body is one JSON object (`YARDR.md`, "Inbound: bridge → yard"):
+
+| field | value |
+| --- | --- |
+| `id` | `<bot_id>:<conversation>:<message_id>`, which the yard dedupes on |
+| `kind` | `message`; `transcript` for a voice or audio note's transcript; `answer` for a tapped ask |
+| `chat` | the paired chat's id |
+| `conversation` | the conversation it is relayed on ("Topics") |
+| `topic` | `general`, or the topic's name: a `[[topic]]`'s name, or the display name of a topic the user created ("Topics") |
+| `thread_id` | the conversation's thread id, or `null` on the paired chat's conversation |
+| `message_id` | the provider message id: Telegram's message id, `<id>-transcript` or `ask-<ask-id>` |
+| `reply_to` | the id of the message it replies to, or `null` |
+| `from` | `{"id": "<user_id>", "name": "<user_display_name>"}` |
+| `text` | the whole relay text: the topic line, a forward's header, a file's note, the text or caption, a transcript |
+| `forwarded` | `true` for a forwarded message and its transcript, else `false` |
+| `received_at` | when the bridge relayed it, ISO 8601 UTC |
+
+The yard keeps at most 500 characters of the text; the message log keeps
+it whole for `yardr thread show <seq>` ("The message log").
+
+**The accept point.** The bridge waits up to 20 s for the yard's answer. A
+message is accepted only when the yard answers 2xx with a JSON object whose
+`seq` is a positive integer: the yard has recorded it, new or as a
+duplicate of an earlier delivery of the same `id` (`{"duplicate": true,
+"seq": <n>}`). Only then does the bridge go on: it adds the text to the
+message log; for a message of the paired user (not a transcript or an ask
+answer) it records the message as the last accepted one ("Reactions"),
+sets `seen` and opens typing when the settings say so, and may post the
+quota-exhausted notice; then the inbound cursor moves past the update.
+The accept point is the yard's record, not its routing and not an answer:
+a message that no subscription matches is accepted all the same.
+Initially the cursor begins after the pairing message.
+
+Everything else keeps the cursor: an answer outside 2xx (a wrong secret,
+an unknown hook), `{"dropped": true}` (the yard verified the secret and
+set the delivery aside, as it does for a sender it does not hear:
+`yardr/SETUP.md`, steps 6 and 7), a 2xx without a positive `seq`, no answer
+within 20 s, and a request that never left the host (the yard's hook
+listener is down). The
+message is not lost: the poll loop logs `Transport unavailable; inbound
+cursor retained`, waits 2 s times the failures in a row (at most 10 s),
+and reads the same update again, and every later update waits behind it.
+After 10 failures in a row the process exits 1 with `transport failed
+repeatedly; restarting preserves cursor`, and the service restarts it
+("Install and launch"). The bridge's log carries no reason for a refusal;
+the yard's side does (`yardr hook show tgbridge`, `yardr events`). A
+retried relay carries the same `id`, so the yard records it once. Diagnose
+repeated failures instead of erasing state.
+
+A transcript is relayed by the transcription worker, not the poll loop,
+with retries of its own ("Durable transcript queue").
+
+## The yard API
+
+`run` serves the yard on `http://127.0.0.1:<port>`, the source's `base`.
+The yard's calls (`<repo>/yardr/tgbridge.yaml`, `calls` and `notify`) and
+its thread commands (`<repo>/yardr/tgbridge/thread`) use it; so may any
+process on the host that holds the callback secret. Every request carries
+`Authorization: Bearer <the callback secret>`, and every answer is one JSON
+object.
+
+| route | body | answer |
+| --- | --- | --- |
+| `POST /v1/send` | `text`; `key`, else the `Idempotency-Key` header (required); `conversation` (an id) or `topic` (a name), default the paired chat; `format` (`auto`, `plain` or `html`; default `auto`); `silent`; `keyboard` (rows, or rows as a JSON string); `text_options`; `reply_to`; `attachments` (a host path, or a list of them); `attachment_kind` | `{delivered, message_id, conversation}`, with `reason` and `failure_kind` when not delivered |
+| `POST /v1/tell` | `title`, `text`, optional `link`, `conversation` or `topic` | as `/v1/send` |
+| `POST /v1/posted` | `key`, else the `Idempotency-Key` header | `{"message_id": "<id>"}` when the ledger holds a confirmed send under the key, else `{}` |
+| `POST /v1/read` | `conversation` or `topic`; optional `limit`, 1-200, default 50 | `{"messages": [{id, direction, from, text, at}, ...]}`, oldest first ("The message log") |
+| `POST /v1/react` | `reaction`; optional `message_id`, or `topic` or `conversation`; optional `key` | `{delivered, message_id}`, with `reason` and `failure_kind` when not delivered ("Reactions") |
+| `POST /v1/pin` | `slot`; `text` and optional `format` (default `auto`), or `unpin: true` | `{delivered, message_id}`, with `changed` for a pin, as above when not delivered ("Pinned messages") |
+| `POST /v1/ask-close` | `decision`, and one of `message_id` and `ask_key` | `{delivered, message_id}`, as above when not delivered ("Asks", A6) |
+| `GET /v1/health` | | `{"ok": true, "bot": "<account_id>", "last_poll_ok": <ISO-8601 or null>}` |
+
+- **200** carries the answer above, also for a send that is refused or not
+  confirmed: `delivered: false` with the receipt's `reason` and
+  `failure_kind` ("Delivery recovery"), so a caller can tell a replayed key
+  from a failure.
+- **400** `{"error": "<what is wrong>"}`, before anything is sent: a body
+  that is not one JSON object of at most 256 KiB, a missing or malformed
+  field, a `topic` or `conversation` this bridge does not serve (`topic
+  <name> is not configured, created or served`, `conversation ID is not the
+  paired private chat or a configured topic`), and a reaction with no
+  accepted message to react to.
+- **403** `{"error": "forbidden"}` for a missing or wrong secret, on every
+  path; **404** `{"error": "not found"}` for any other path.
+- **500** `{"error": "delivery unconfirmed"}` for anything unexpected: treat
+  the send as ambiguous and never resend it blind ("Delivery recovery").
+
+`silent`, `text_options` and `unpin` read `true`, `"true"`, `"1"` or `1` as
+true and `false`, `"false"`, `"0"`, `0`, an empty string or no value as
+false; anything else is a 400. In `/v1/send`, `/v1/react`, `/v1/pin` and
+`/v1/ask-close` an empty string reads as an absent optional field. `topic`
+names a `[[topic]]` with a ledger row, or a served topic the user created
+by its display name, and wins over `conversation`; `topic` `general` reads
+as no topic, so `conversation`, else the paired chat, applies.
+
+`/v1/tell` is the yard's `notify`: plain text, the title on its own first
+line, then the text, then the link, each stripped, at most 250, 3500 and
+512 characters. Its key is the request's `key`, else its `Idempotency-Key`
+header, else `tell:` and 32 hex characters of the SHA-256 of the
+conversation, the text and the minute, so the same tell retried within the
+minute is sent once and the same words a minute later are a new message
+(YARDR.md: the yard tells with no key).
+
+The daemon serves each request on its own thread. Its sends queue behind
+its `publish_lock`, and they meet the poll loop's and the command line's in
+the ledger ("Delivery recovery"). The yard holds each caller to 60 calls of
+a source an hour, 10 of them updates, unless the source says otherwise
+(YARDR.md, "The yardr pack"); `yardr reply` is not a call.
+
+`yardr reply <seq>` runs the thread command `reply`: `/v1/send` on the
+delivery's conversation, with the reply's `key`, `format: auto` and its
+files as `attachments`. A `delivered: false` fails it with `the bridge did
+not deliver the reply: <reason> (<failure_kind>)`. The thread command
+`posted` (`/v1/posted`) lets the yard find a reply whose answer was lost,
+and `read` (`/v1/read`, `limit` 50) is what `yardr thread show <seq>` shows.
+
+## The message log
+
+The ledger's `messages` table keeps the newest 500 messages of each
+conversation, whole, for `/v1/read` and so for `yardr thread show`. A row
+is one of:
+
+- **in**: a relay the yard accepted ("Inbound"), written after the accept
+  point, never before: its whole text under its provider message id
+  (`<id>`, `<id>-transcript`, `ask-<ask-id>`), from `user_display_name`, at
+  its `received_at`. A message relayed on the paired chat's conversation
+  from a topic the bridge does not serve is logged there.
+- **out**: a send Telegram confirmed through `publish()` (`/v1/send`, so
+  `yardr reply`; `/v1/tell`; `send` and `reply-current`; the
+  quota-exhausted notice), under its message id (an album's first), from
+  the account, with its visible text (tags removed for HTML) and, when it
+  carried files, a first line `[<file name>, ...]`.
+
+Handler sends and edits, ask edits, pins, reactions and chat actions are
+not logged. A row is added once per conversation, direction and message id,
+so a replayed relay or send adds nothing. A row that cannot be written logs
+`inbound message not logged (msg <id>)` or `sent message not logged` and
+changes nothing else: the yard already has the message, or Telegram has
+already shown it.
 
 ## Command menu
 
@@ -209,7 +401,7 @@ The paired private chat shows the settings' `[[menu]]` entries, then the
 Register it once after a change, and again at any time with the same result:
 
 ```sh
-python3 <pack>/bridge/bridge.py --settings <settings> set-commands
+python3 <repo>/bridge/bridge.py --settings <settings> set-commands
 ```
 
 It calls `setMyCommands` with scope `{"type": "chat", "chat_id": <chat_id>}`,
@@ -224,14 +416,15 @@ nothing to show it sends an empty list, clearing the paired chat's menu, and
 verifies the read-back is empty.
 
 The quota-exhausted notice goes out as Telegram HTML (bold headers) through
-the bridge's own `publish()`. A city's own commands go to their handlers
-(below); every other command reaches the mayor as an ordinary message.
+the bridge's own `publish()`. A command a `[[command]]` registers goes to
+its handler (below); every other command reaches the yard as an ordinary
+message.
 
-## City commands
+## Commands
 
-A city brings its own slash commands and inline-keyboard buttons through its
-settings and its own handler programs, without editing this pack. Each
-`[[command]]` table registers one:
+A yard brings its own slash commands and inline-keyboard buttons through the
+bridge's settings and its own handler programs, without editing this
+repository. Each `[[command]]` table registers one:
 
 | key | default | meaning |
 | --- | --- | --- |
@@ -257,14 +450,14 @@ Adding or removing an add-on follows the procedure in `README.md`,
 
 **Dispatch.** A message from the paired user whose text is `/<name>` or
 `/<name>@<bot username>`, alone or followed by a space and arguments, goes to
-that command's handler and never to GC. The bridge polls for `message` and
-`callback_query` updates. A button press from the paired user (`from.id` is
-`user_id`, not a bot, in the paired chat) whose `callback_data` starts with a
-registered prefix goes to that prefix's handler. A press under the
-bridge-owned `ask:` prefix is a mayor ask answer ("Mayor asks" below), never
-a command. Any other press is answered
+that command's handler and never to the yard. The bridge polls for `message`
+and `callback_query` updates. A button press from the paired user (`from.id`
+is `user_id`, not a bot, in the paired chat) whose `callback_data` starts
+with a registered prefix goes to that prefix's handler. A press under the
+bridge-owned `ask:` prefix is an ask answer ("Asks" below), never a
+command. Any other press is answered
 empty, logged as `callback dropped (update <id>): <reason>` and dropped; it
-never reaches the mayor. With no `[[command]]` every non-ask press is dropped so.
+never reaches the yard. With no `[[command]]` every non-ask press is dropped so.
 Handlers run one at a time in the poll loop: a slow handler holds the next
 update for up to its `timeout`. A `timeout` above the unit's
 `TimeoutStopSec` (45 s) can outlive a stop or restart: the bridge is killed
@@ -285,7 +478,7 @@ of an update they already handled as already done.
 `args` is the text after the first space (`""` when none). For a press,
 `kind` is `"callback"`, `args` and `message_id` are null, `callback_data` is the
 button's data and `callback_message_id` the message carrying the button. No
-token, secret, raw update or GC data is passed. A handler runs as the
+token, secret, raw update or yard data is passed. A handler runs as the
 bridge's user and can read what that user can, the bot token included:
 install only handlers you trust. An executable handler is run
 as `argv = [handler]` (no shell) with the JSON on stdin, its own directory as
@@ -314,8 +507,8 @@ the text limit is 4096 UTF-16 units of visible text. A `keyboard` is rows of
 buttons `{"text": ..., "callback_data": ...}`, at most 8 buttons per row and
 at most 100 buttons in total;
 `callback_data` is 1-64
-bytes and starts with one of the city's registered prefixes. The JSON is read
-strictly (no duplicate keys, no `NaN`, no string escaping a lone UTF-16
+bytes and starts with one of the settings' registered prefixes. The JSON is
+read strictly (no duplicate keys, no `NaN`, no string escaping a lone UTF-16
 surrogate). Anything else, a non-zero exit, a timeout, a handler that cannot
 start or be reached, or a non-200 answer is a **handler failure**: the bridge
 acts on none of the answer, sends the fixed notice `command <name> failed`,
@@ -350,8 +543,8 @@ paths only the bridge's state and lock directories (which hold the ledger:
 a handler must leave them alone), the transcription queue, and the
 `handler_write_paths` directories, which the rendered unit appends to
 `ReadWritePaths`. Add a directory there for each place a handler writes, run
-`install.sh` again and restart the unit. A URL handler is the city's own
-service and runs outside the sandbox. `check-install` lists every handler and
+`install.sh` again and restart the unit. A URL handler is a service of your
+own and runs outside the sandbox. `check-install` lists every handler and
 fails on a handler that is no longer a safe executable or a write path that is
 not a directory. The settings and credential files are read-only for a
 handler too. On macOS, launchd has no equivalent of the unit's sandbox: the
@@ -359,43 +552,51 @@ bridge and every command handler run with the user's full rights; the write
 limit to the state, lock, queue and handler directories, the read-only
 credentials, the private `/tmp` and the address-family and syscall
 restrictions do not apply, and `handler_write_paths` is accepted but not
-enforced. The settings, token and secret stay owner-only and are refused
+enforced. The settings, token and secrets stay owner-only and are refused
 otherwise; other local accounts must be trusted, as on Linux.
 
 Example, in the settings file:
 
 ```toml
-handler_write_paths = ["/home/alex/example-city/var/deploy"]
+handler_write_paths = ["/home/alex/example/var/deploy"]
 
 [[command]]
 name = "deploy"
 description = "Deploy a branch"
-handler = "/home/alex/example-city/bin/telegram-deploy"
+handler = "/home/alex/example/bin/telegram-deploy"
 ```
 
-## Mayor asks
+## Asks
 
-A mayor ask is a message with tap-to-answer buttons: the paired user taps
-instead of typing, one tap reaches the mayor at most once as one actionable
-message, and the ask message then shows the choice.
+An ask is a message with tap-to-answer buttons: the paired user taps
+instead of typing, one tap reaches the yard at most once as one actionable
+message (a delivery of kind `answer`), and the ask message then shows the
+choice.
 
 **Sending.** `publish()` accepts an optional `keyboard`: rows of
 `{"text": ..., "callback_data": ...}` with the row, button-count, text and
 size limits of a handler keyboard. The keyboard joins the idempotency
 fingerprint like `format` does: the same key with another keyboard is
 `idempotency_key_conflict`, and no `keyboard` field sends byte-identically to
-before. `send` and `reply-current` take `--keyboard-file <path>` holding the
-rows as JSON; a keyboard send publishes directly in this process through the
-shared ledger, never through GC's relay (like an attachment or HTML send).
+before. `/v1/send` takes `keyboard` as rows or as rows in a JSON string
+(`yardr call tgbridge send key=<key> keyboard="$(cat rows.json)" …`; an
+empty string or `[]` is no keyboard), and `send` and `reply-current` take
+`--keyboard-file <path>` holding the rows as JSON (a JSON `null` refuses:
+`keyboard file must hold JSON rows`). The caller chooses the send's key
+before it sends, since every button carries an id made from it (below):
+`key=` on the yard's call, `--idempotency-key` on the command line.
+`yardr reply` sends no keyboard.
 An ask sent in a topic records that topic's conversation, and its answer
 relays there under the topic's line; any other ask's answer relays on the
 paired chat's conversation with no topic line ("Topics").
 
-**Lettered options need buttons.** A `send` or `reply-current` whose
+**Lettered options need buttons.** A send (`/v1/send`, so also `yardr
+reply`, and `send` and `reply-current`) whose
 visible text (tags removed, entities decoded) offers a choice as lettered
-text lines without `--keyboard-file` is refused before anything is sent
-or recorded, with the receipt reason `options_need_keyboard` and a
-one-line message naming `--keyboard-file` and "Asks with buttons". An
+text lines without a keyboard is refused before anything is sent
+or recorded, with the receipt reason `options_need_keyboard`; the command
+line prints a one-line message naming `--keyboard-file` and "Asks with
+buttons". An
 option line's first visible characters, after optional whitespace and a
 bullet (`•`, `-`, `*`), are one capital A-D followed by `:`, `)` or a
 spaced dash (`A -`, `A —`); the refusal needs two such lines carrying
@@ -404,14 +605,15 @@ or a mid-line `Plan A` never refuses. The same key with the same body
 refuses again, and stays free for the buttoned resend; a send already
 confirmed under that key and body replays its saved receipt instead
 ("Delivery recovery"). With
-`--keyboard-file` the check is skipped (the keyboard rules above apply).
-The override is `--text-options` (`text_options: true` on `publish()`):
+a keyboard the check is skipped (the keyboard rules above apply).
+The override is `--text-options` (`text_options: true` on `/v1/send` and
+`publish()`):
 a deliberate text-only list goes out, the delivered receipt records
 `text_options: true`, and the flag joins the idempotency fingerprint
 only when true; any other value refuses as
 `text_options_must_be_boolean`.
 
-A mayor ask may be one photo whose caption is the question, with the same
+An ask may be one photo whose caption is the question, with the same
 buttons; a tap answers it exactly as a text ask is answered, and the caption
 then shows the choice.
 
@@ -423,25 +625,28 @@ out as its own message with its own key and keyboard.
 
 A1 A valid press names an existing ask, the message the ask was sent as, an
 authorised user and one of the ask's options; anything else keeps the
-drop-and-answer-empty behaviour and never reaches the mayor.
+drop-and-answer-empty behaviour and never reaches the yard.
 
 A2 On the first valid press, in order: (1) answer the callback once (key
 `ask:<update_id>:answer`); (2) in one ledger write mark the ask answered with
-the choice and the update id, only while it is unanswered (A6); (3) relay exactly one durable inbound entry
-with provider message id `ask-<ask-id>` and the text
+the choice and the update id, only while it is unanswered (A6); (3) relay
+exactly one entry, kind `answer`, with provider message id `ask-<ask-id>`
+and the text
 `[ask answer | choice: <label> | message: <id>]`, then a newline and
 `question: ` followed by the visible question verbatim as the last field,
-and record the ask as relayed once GC confirms it; (4) only then attempt the
+and record the ask as relayed once the yard accepts it ("Inbound"); (4) only
+then attempt the
 edit that appends `\n✓ <label>` to the text or caption and removes the
 buttons, under the per-ask key `ask:<ask-id>:edit` (editMessageText for a
 text ask, editMessageCaption for a photo ask). Both edits carry an empty
 inline keyboard (`{"inline_keyboard": []}`). The offset advances once the
-relay is confirmed; the edit outcome (confirmed, rejected or ambiguous) never
-holds it, un-answers or relays again.
+yard accepts the relay; the edit outcome (confirmed, rejected or ambiguous)
+never holds it, un-answers or relays again.
 
-A3 When GC does not confirm the relay the offset is retained and the retry
-relays once under the same provider id, records relayed, then edits; the
-callback is answered no second time and the edit happens at most once.
+A3 When the yard does not accept the relay the offset is retained and the
+retry relays once under the same provider id (the yard records the same
+`id` once), records relayed, then edits; the callback is answered no second
+time and the edit happens at most once.
 
 A4 A later press on an answered and relayed ask runs the pending edit once
 before the already-answered answer (a no-op when the edit already ran, under
@@ -462,9 +667,10 @@ for `\n✓ <label>` of its longest option within 4096 UTF-16 units of text, or
 
 P1 A keyboard may go with no attachment or with exactly one photo; any other
 attachment kind (or more than one) refuses the send as `invalid_keyboard`
-before anything is recorded or sent, through `publish()` and through `send`
-and `reply-current` with `--keyboard-file` plus `--attachment`. A keyboard on
-a photo holds only ask buttons: any other callback data on a photo refuses
+before anything is recorded or sent, through `publish()`, `/v1/send` and
+`send` and `reply-current` with `--keyboard-file` plus `--attachment`. A
+keyboard on a photo holds only ask buttons: any other callback data on a
+photo refuses
 the send as `invalid_keyboard` (a handler edit of that photo would go through
 editMessageText, which Telegram rejects for media). Every other attachment
 kind stays refused.
@@ -507,21 +713,29 @@ can send a second copy of an answer.
 
 A replayed update changes nothing: saved receipts stand. Unregistered,
 malformed or unauthorised presses keep the drop-and-answer-empty behaviour
-and never reach the mayor. The HTML parse-rejection fallback re-sends once
+and never reach the yard. The HTML parse-rejection fallback re-sends once
 without `parse_mode` under the same key and keeps the keyboard (the photo
 once without `parse_mode`, keeping the keyboard, for a photo ask); an ask
 edit rejected the same way falls back to the plain question with the choice
 appended.
 
 A6 Closing with a decision. When the paired user answers an open ask by
-typing, or decides something other than its options, the mayor closes it
-with the decision made: `gc telegram ask-close --message-id <id> --decision
-"<text>"` (the pack command runs `bridge.py ask-close`). `<id>` is the
-message ID the ask send printed; `--ask-key <key>`, the ask send's
-idempotency key, selects it instead when only the key is known (exactly one
-of the two). The close runs in the CLI process through the shared ledger,
-needs no `--session` and never calls GC: nothing is relayed, since the mayor
-made the decision. In order:
+typing, or decides something other than its options, the crew member closes
+it with the decision made:
+
+```sh
+yardr call tgbridge ask_close message_id=<id> decision="<text>" --json
+python3 <repo>/bridge/bridge.py --settings <settings> ask-close --message-id <id> --decision "<text>"
+```
+
+`<id>` is the message ID the ask send gave (`message_id` in the yard's
+answer, the last word of `Telegram delivery confirmed; message ID <id>` on
+the command line); the ask send's idempotency key (`ask_key=`,
+`--ask-key <key>`) selects it instead when only the key is known (exactly
+one of the two). The close runs through the shared ledger in the process
+that takes it, the daemon for `/v1/ask-close` and the CLI process for
+`ask-close`, and relays nothing to the yard, since the crew member made the
+decision. In order:
 
 (1) Refusals before any ledger write, each a receipt reason:
 `ask_not_found` (no ask was sent as that message id, which covers an unknown
@@ -557,15 +771,17 @@ stderr and exits 1. After the write the ask stays closed and the message
 says so (`ask closed; Telegram edit not confirmed: <reason>`). A not-sent
 edit is sent by running the same command again; a rejected edit (the user
 deleted the message, say) stays rejected, and an ambiguous one is reconciled
-by hand.
+by hand. `/v1/ask-close` answers `{"delivered": true, "message_id": "<id>"}`,
+or `delivered: false` with the same reasons.
 
 (6) The ledger's asks table carries `decided` (0 or 1, default 0) after
 `kind`. An existing ledger opens unchanged and gains the column once
 when the bridge opens it, so every recorded ask reads decided=0 and keeps its
 meaning. No settings key is involved.
 
-The CLI and the daemon are separate processes; the guarded writes (a tap's
-mark and a close's write each change the row only while it is unanswered)
+A close and a tap run in separate processes or threads (the CLI process or
+a yard API request, and the poll loop); the guarded writes (a tap's mark
+and a close's write each change the row only while it is unanswered)
 are their only serialisation. When a close wins between a tap's read and its
 mark, that tap's callback was already answered empty (A2 step 1), so its
 toast is empty rather than `Already answered`; the tap relays nothing and
@@ -573,33 +789,67 @@ runs the edit step, which shows the decision, so the edit happens once.
 
 ## Send and receive
 
-Use `gc telegram reply-current --body-file <path> --idempotency-key <stable-key>`.
-`--keyboard-file <path>` attaches an inline keyboard ("Mayor asks" above);
-`--silent` notifies with no sound ("Silent messages" below).
-`gc telegram pin` keeps one pinned message per slot ("Pinned messages" below).
-Optional `--conversation-id` is the paired chat's id or a configured
-topic's `<chat_id>:topic:<thread_id>`, exactly as the message notice names
-it, and `--topic <name>` names a configured topic instead: the reply lands
-in that topic. Without either it lands in General ("Topics"). The native
-controller reminder omits the mandatory idempotency flag; add it. This pack
-command delegates to the same transport CLI and native GC outbound endpoint.
-The direct form works before pack reload:
+In the yard, a crew member answers a delivery with `yardr reply <seq>
+"<text>"` (files with `--file`), in the delivery's own conversation, and
+sends anything else with a call:
 
 ```sh
-python3 <pack>/bridge/bridge.py --settings <settings> send --body-file <path> --idempotency-key <stable-key> --session mayor
+yardr call tgbridge send text="<text>" topic=<name> format=html silent=true --json
 ```
 
-The caller needs the native binding. There is no separate direct Telegram send
-command. Plain text is limited to 4096 UTF-16 units, with link previews disabled;
-split longer updates into separately keyed messages. Plain text is the default
-and is sent as is: no Markdown or HTML parsing occurs. The `telegram-formatting`
-skill is the writer's guide.
+`send` takes `text`, `topic` or `conversation`, `format`, `silent`,
+`keyboard`, `text_options`, `attachment` and `key`; `react`, `pin`,
+`unpin` and `ask_close` are calls too (`<repo>/yardr/tgbridge.yaml`), and
+a crew member makes those it is granted (`yardr/SETUP.md`, step 8). On the
+host, outside the yard (the operator, an add-on), the bridge's command line
+does the same:
 
-### Formatted messages (`--format html`)
+```sh
+python3 <repo>/bridge/bridge.py --settings <settings> send --body-file <path> --idempotency-key <stable-key>
+```
 
-`--format html` (on `send` and `reply-current`, so also `gc telegram
-reply-current`) sends the body with Telegram's HTML `parse_mode`. It is an
-explicit opt-in; without it nothing changes for a caller or its ledger rows.
+`reply-current` is the same command as `send`, under the gc pack's name.
+`--keyboard-file <path>` attaches an inline keyboard ("Asks" above);
+`--silent` notifies with no sound ("Silent messages" below).
+`pin` keeps one pinned message per slot ("Pinned messages" below).
+Optional `--conversation-id` is the paired chat's id or a configured
+topic's `<chat_id>:topic:<thread_id>`, exactly as the delivery names its
+conversation, and `--topic <name>` names a configured topic instead: the
+message lands in that topic. With neither, a send lands in General
+("Topics"). `--session` is accepted and ignored: the gc pack's sending
+session, which some add-ons still pass.
+
+Every send is direct: the process that takes it, the daemon for the yard
+API and the CLI process for the command line, delivers it through the
+shared ledger (`publish()`), one receipt per key, whatever it carries
+("Delivery recovery"). Nothing is relayed through the yard, and the yard
+keeps no copy of a send; the bridge's message log does, once Telegram
+confirms it ("The message log").
+
+The command line prints `Telegram delivery confirmed; message ID <id>`. A
+send that is not delivered prints one
+`GC_RECEIPT {"delivered": false, "failure_kind": ..., "reason": ...}` line on
+stderr and exits 1; the line keeps the gc pack's name because the sysmon
+watch and pricewatch add-ons parse it. The yard API answers `delivered`,
+`message_id`, `conversation` and, when not delivered, `reason` and
+`failure_kind` ("The yard API").
+
+Plain text is limited to 4096 UTF-16 units, with link previews disabled;
+split longer updates into separately keyed messages. On the command line
+plain text is the default and is sent as is: no Markdown or HTML parsing
+occurs. The yard API's default is `format: auto` ("Formatted messages").
+The `telegram-formatting` skill is the writer's guide.
+
+### Formatted messages (`html` and `auto`)
+
+`--format html` (on `send` and `reply-current`) and `format: html` (on
+`/v1/send` and `/v1/pin`) send the body with Telegram's HTML `parse_mode`.
+On the command line it is an explicit opt-in; without it nothing changes for
+a caller or its ledger rows. The yard API's `format` defaults to `auto`, and
+`yardr reply` always sends `auto`: HTML when the body holds a `<` or `&` and
+is valid under the rules below, plain text otherwise, so `auto` never
+refuses a body for an HTML rule, and one with a stray `<` goes as the words
+it is. `pin --format` takes `plain` or `html` only.
 
 - Allowed tags, lowercase, attribute values in double quotes: `b`, `strong`,
   `i`, `em`, `u`, `s`, `code`, `pre` (a `<code class="language-x">` directly
@@ -624,20 +874,18 @@ explicit opt-in; without it nothing changes for a caller or its ledger rows.
   the usual receipts below. A rejected HTML attachment caption retries the file
   once with the plain caption; the attachment text fallback is always plain.
 - The format is part of the idempotency identity: the same key with another
-  format is `idempotency_key_conflict`, like another body.
-- GC's outbound relay carries no format, so an HTML send is delivered by the
-  CLI process itself through the same `publish()` and ledger the daemon uses,
-  like an attachment send. GC keeps no transcript entry of it; a health check
-  that counts replies must read the delivery ledger too.
+  format is `idempotency_key_conflict`, like another body. `auto` is resolved
+  first, so the ledger holds `html` or plain.
+- The message log keeps an HTML send's visible text.
 
 ### Silent messages (`--silent`)
 
-`--silent` (on `send` and `reply-current`, so also `gc telegram
-reply-current`) delivers the message silently: Telegram's
+`--silent` (on `send` and `reply-current`) and `silent: true` (on
+`/v1/send`) deliver the message silently: Telegram's
 `disable_notification` ("Users will receive a notification with no sound"),
 so the message still shows in the user's notifications but makes no sound
 and does not ring the phone. It combines
-with `--format html`, `--attachment` and `--keyboard-file`; without it nothing
+with HTML, attachments and a keyboard; without it nothing
 changes for a caller or its ledger rows.
 
 - The request carries `silent: true`. Every Telegram request of that publish
@@ -650,29 +898,27 @@ changes for a caller or its ledger rows.
   Telegram is contacted (`silent_must_be_boolean`).
 - Silent is part of the idempotency identity: the same key with and without
   it is `idempotency_key_conflict`, like another body.
-- GC's outbound relay carries no silent field, so a silent send is delivered
-  by the CLI process itself through the same `publish()` and ledger, like an
-  HTML send. GC keeps no transcript entry of it.
-- Edits never notify, so city command edits and ask answers are unaffected.
+- Edits never notify, so command edits and ask answers are unaffected.
 
 ### Outbound attachments
 
-`--attachment <absolute path>` (with optional
+`--attachment <absolute path>` on `send` and `reply-current` (with optional
 `--attachment-kind photo|video|document|voice|video_note`, inferred from the
-extension otherwise: photo, video or document, never voice or video_note) sends
+extension otherwise: photo, video or document, never voice or video_note),
+and `attachments` on `/v1/send` (a host path, or a list of them, with
+`attachment_kind` likewise; `yardr reply --file` and `yardr call tgbridge
+send attachment=` fill it), send
 a file with the body as its caption: photos up to 10 MB, videos, documents,
 voice notes (`sendVoice`, OGG/Opus) and round video notes (`sendVideoNote`, a
 square MP4 of at most 60 s) up to 50 MB, a caption of at most 1024 UTF-16
 units. A video note has no caption: its body must be empty and any text is
 refused before sending (`video_note_takes_no_caption`). The bridge does not
 probe the media; a wrong format or shape is Telegram's 4xx and takes the text
-fallback. Like an HTML send it is delivered by the CLI process through the
-shared ledger, one receipt per key (sent, not sent, or ambiguous). A path
-containing `;` or `,` is refused. Only the CLI sends files: the HTTP
-callback refuses a request carrying an attachment
-(`attachment_not_accepted_over_callback`). An attachment that is the
-settings file, the bot token, the callback secret, the GC API token
-file or the ledger is refused before Telegram is contacted
+fallback. It goes through the shared ledger like any send, one receipt per
+key (sent, not sent, or ambiguous). A path
+containing `;` or `,` is refused. An attachment that is the
+settings file, the bot token, the callback secret, the hook secret or the
+ledger is refused before Telegram is contacted
 (`attachment_path_is_a_bridge_credential`). A file Telegram rejects falls back to one
 plain text message carrying the caption (if any) and
 `[attachment rejected: <reason>]`; the send carries no keyboard (P1). A photo
@@ -681,17 +927,20 @@ send instead, so the ask is never recorded as sent without its buttons.
 Nor does a file sent into a topic the user created ("Renamed and deleted
 topics").
 
-**Albums.** `--attachment` given 2-10 times (on `send` and `reply-current`)
+**Albums.** `--attachment` given 2-10 times (on `send` and `reply-current`),
+or 2-10 `attachments` on `/v1/send` (`yardr reply` with 2-10 `--file`),
 sends the files as one Telegram album (sendMediaGroup) under one idempotency
 key, with one receipt: `message_id` is the first message's id and
-`message_ids` lists every message in order; the CLI prints the first. One
-`--attachment` keeps today's request (`attachment`) and bytes exactly; two or
+`message_ids` lists every message in order; the CLI prints the first and
+the yard API answers it. One file keeps the request field `attachment` and
+its bytes exactly; two or
 more make the request field `attachments`, the ordered list of `{path, kind}`
 with resolved absolute paths, which is part of the idempotency identity
 (another file, order or kind under the same key is `idempotency_key_conflict`;
 `attachment` and `attachments` together refuse,
-`attachment_and_attachments_together`). `--attachment-kind`, when given,
-applies to every file; otherwise each kind is inferred per file.
+`attachment_and_attachments_together`). `--attachment-kind` (or
+`attachment_kind`), when given, applies to every file; otherwise each kind
+is inferred per file.
 
 - Photos and videos may mix; documents group only with documents. A voice
   note or video note refuses the album (`album_kind_not_groupable`), a
@@ -702,10 +951,10 @@ applies to every file; otherwise each kind is inferred per file.
   regular and readable, its kind's size limit); any one reason refuses the
   whole album before anything is reserved or sent.
 - The body is the caption of the first item only (at most 1024 visible
-  UTF-16 units; `--format html` sets that item's `parse_mode`); an empty
-  body sends no caption. `--silent` adds `disable_notification=true`.
-  `--keyboard-file` with an album refuses as `invalid_keyboard` (P1):
-  sendMediaGroup takes no `reply_markup`.
+  UTF-16 units; HTML sets that item's `parse_mode`); an empty
+  body sends no caption. Silent adds `disable_notification=true`.
+  `--keyboard-file` with an album refuses as `invalid_keyboard` (P1), and so
+  does a `keyboard`: sendMediaGroup takes no `reply_markup`.
 - The multipart request carries `chat_id`, `media` (a JSON array of
   `{"type": "photo"|"video"|"document", "media": "attach://file<i>"}`, the
   first with the caption) and the files as `file0`..`file9`, through curl's
@@ -730,34 +979,25 @@ an album with messages of the same type"; "On success, an Array of Message
 objects that were sent is returned". Its parameters include
 `disable_notification` and `reply_parameters`, and no `reply_markup`.
 
-Inbound must receive a matching durable native GC transcript entry and a route
-to the configured `agent` (default `mayor`) before advancing the SQLite offset.
-For a message in a `[[topic]]`, the entry must be on that topic's conversation
-and routed to that topic's `agent` (which may differ from the settings agent)
-instead ("Topics"). HTTP 200 alone is insufficient: unrouted or
-hydration-pending responses retain the cursor. Retried inbound retains the
-same provider message ID for deduplication. GC is responsible for routing and
-waking the applicable agent. This confirms durable acceptance, not that the
-agent has answered. Initially the cursor begins after the pairing message. A
-failed GC call retains the cursor, even for a permanent rejection or an entry
-routed to any agent other than the applicable one (the settings agent, or a
-topic's agent for a message in its topic), so an operator can fix the binding
-without losing an authorized message. Diagnose repeated transport failures
-instead of erasing state.
-
 ## Pinned messages
 
-`gc telegram pin --slot <name> --body-file <path> [--format html]` (the
-pack command runs `bridge.py pin`) keeps one pinned bot message per slot in
-the paired chat, edited in place: a city keeps a list at the top of the chat
-(say, what waits on the user) by running it whenever the list changes. The
-pack ships the mechanism only; what a slot says, and when it changes, is the
-city's. `--unpin` removes the slot's message from the pins. A slot matches
+`yardr call tgbridge pin slot=<name> text=<text> [format=auto|plain|html]`
+(`/v1/pin`), or on the host
+`bridge.py --settings <settings> pin --slot <name> --body-file <path> [--format html]`,
+keeps one pinned bot message per slot in
+the paired chat, edited in place: a yard keeps a list at the top of the chat
+(say, what waits on the user) by running it whenever the list changes. This
+repository ships the mechanism only; what a slot says, and when it changes,
+is the yard's. `yardr call tgbridge unpin slot=<name>` (`unpin: true`) and
+`pin --slot <name> --unpin` remove the slot's message from the pins. A slot
+matches
 `[a-z0-9_-]{1,32}`; anything else is refused before the body is read or
 Telegram is contacted. The body follows the `sendMessage` rules: 4096 visible
-UTF-16 units, `--format html` with its allowlist and its one plain fallback,
-refused whole when over. No setting is involved, and GC is never called: the
-CLI process works through the shared ledger. A slot's message lives in
+UTF-16 units, HTML with its allowlist and its one plain fallback (`auto`
+on the yard API, as for a send),
+refused whole when over. No setting is involved; the process that takes it,
+the daemon for `/v1/pin` and the CLI process for `pin`, works through the
+shared ledger. A slot's message lives in
 General, outside any topic: it is sent with no `message_thread_id`.
 
 The ledger's `pins` table holds per slot its generation (from 1), the live
@@ -774,10 +1014,10 @@ order:
   `pin:<slot>:g<generation>:pin`. The send's identity is the slot's
   generation, not the body, so one generation never sends a second message:
   a rerun after a crash finds the saved receipt (and edits it to the current
-  body). An ambiguous first send exits 1 with its reason and stays ambiguous:
+  body). An ambiguous first send fails with its reason and stays ambiguous:
   every later update returns that receipt and sends nothing, until the
-  operator reconciles it with `--unpin` (below); a not-sent one is sent by
-  the next update; a rejected one exits 1 and the next update starts a new
+  operator reconciles it with an unpin (below); a not-sent one is sent by
+  the next update; a rejected one fails and the next update starts a new
   generation (nothing was sent).
 - A live message whose pin is not yet delivered (a pin that failed after a
   confirmed send) is pinned again before anything else. A pin's 400
@@ -785,22 +1025,23 @@ order:
   landed) ends that generation like an edit's below: the next generation
   sends and pins a new message in the same run.
 - The same body and format as last applied: no Telegram call; the command
-  prints `pin <slot> unchanged; message ID <id>`.
+  prints `pin <slot> unchanged; message ID <id>`, and the yard API answers
+  `changed: false`.
 - Another body: the revision goes up by one and the live message is edited
   with editMessageText under `pin:<slot>:g<generation>:r<revision>`, so A,
   then B, then A again edits every time. Telegram's 400 "message is not
   modified" counts as applied. Its 400 "message to edit not found" (the user
   deleted the message) ends that generation, and the next generation sends
   and pins a new message in the same run.
-- `--unpin`: unpinChatMessage `{"chat_id", "message_id"}` for the live
+- An unpin: unpinChatMessage `{"chat_id", "message_id"}` for the live
   message under `pin:<slot>:g<generation>:unpin`; the slot then has no live
   message and keeps its generation counter, so the next update is a new
   generation. With no live message it prints `pin <slot> not pinned` and
   exits 0; otherwise `unpinned message ID <id> (slot <slot>)`.
 - Reconciling an unconfirmed first send: check the chat for that message
   (delete it if it arrived, or the slot gains a stray unpinned copy), then
-  run `--unpin`. With no live message and a generation whose send never
-  confirmed (ambiguous or not sent), `--unpin` ends that generation with no
+  unpin. With no live message and a generation whose send never
+  confirmed (ambiguous or not sent), an unpin ends that generation with no
   Telegram call and prints `pin <slot> not pinned; unconfirmed send of
   generation <g> ended, the next update sends a new message`; the next
   update then sends and pins under the next generation. This is the slot's
@@ -814,12 +1055,15 @@ its own key. Only a generation's first `sendMessage` is exactly-once.
 A pin and an unpin of one generation each mark the other's row not applied
 just before their call, since that call may undo it: an update after an
 unconfirmed unpin pins the message again before it can report the slot
-unchanged, and an `--unpin` after such a re-pin unpins again.
+unchanged, and an unpin after such a re-pin unpins again.
 
 Success prints `pinned message ID <id> (slot <slot>, revision <r>)` (revision
 0 for a new generation). A failure prints the `GC_RECEIPT` line with its
 reason on stderr and exits 1, naming the step (send, pin, edit or unpin) and
-the message id when there is one.
+the message id when there is one. The yard API answers a pin with
+`{"delivered": true, "message_id": "<id>", "changed": <bool>}`, an unpin
+with `delivered` and the message id when there was one, and a failure with
+`delivered: false` and the reason.
 
 Telegram Bot API (read 2026-10-27, Bot API 10.3): pinChatMessage says "In
 private chats and channel direct messages chats, all non-service messages can
@@ -831,21 +1075,28 @@ service line to the chat; an edit adds nothing and never notifies.
 
 ## Topics
 
-A city can give the paired chat topics: Telegram's threads in a private
+A yard can give the paired chat topics: Telegram's threads in a private
 chat with a bot, one per subject, beside General, the chat outside any
-topic. Each topic is its own GC conversation, `<chat_id>:topic:<thread_id>`,
-with the paired chat's `<chat_id>` as its parent and kind `thread`, and
-needs its own binding: GC v1.5.0 has no parent fallback, so an unbound topic
-does not inherit the paired chat's agent (`internal/extmsg/inbound.go:110-145`).
-General stays the paired chat's conversation (`<chat_id>`, kind `dm`) and
-behaves exactly as without topics. A message written in a topic reaches the
-agent on that topic's conversation, and the agent answers in the topic with
-the conversation id its notice names (both below).
+topic. Each topic is its own conversation, `<chat_id>:topic:<thread_id>`
+(in the ledger a record with the paired chat's `<chat_id>` as its parent and
+kind `thread`). General stays the paired chat's conversation (`<chat_id>`,
+kind `dm`) and behaves exactly as without topics. A message written in a
+topic reaches the yard on that topic's conversation with its name as
+`topic`, and the yard routes it by subscription:
+
+```sh
+yardr subscribe <crew> tgbridge --scope all --where type=message --where topic=<name>
+```
+
+Nothing is bound: the bridge relays every message the same way, and the
+yard's subscriptions alone decide who gets it. General is `topic=general`.
+A crew member answers in the topic with `yardr reply`, or names it by its
+conversation id or its name (both below).
 
 Prerequisites, in BotFather's settings for the bot: topic mode on (getMe's
 `has_topics_enabled`). With `[auto_topics]` off or absent, also users
 creating and deleting topics off (`allows_users_to_create_topics`), so the
-city's topics are the only ones and nobody deletes one, with all its
+settings' topics are the only ones and nobody deletes one, with all its
 messages, from the phone. With `[auto_topics]` `enabled = true`, leave that
 setting on: it is what lets the paired user create the topics the bridge
 serves.
@@ -855,17 +1106,16 @@ order `topics` creates them:
 
 | `[[topic]]` key | required | meaning |
 | --- | --- | --- |
-| `name` | yes | the topic's name in the chat: 1-128 characters, no leading or trailing whitespace, no control or line separator character (Unicode categories Cc, Zl and Zp), none of `[`, `]` and `\|`; unique ignoring case |
-| `agent` | no | the gc agent the topic's bind line names; default the settings' `agent` |
+| `name` | yes | the topic's name in the chat and its `topic` in the yard: 1-128 characters, no leading or trailing whitespace, no control or line separator character (Unicode categories Cc, Zl and Zp), none of `[`, `]` and `\|`; unique ignoring case |
+| `crew` | no | the crew member the topic's `subscribe:` line names, and whose session the quota-exhausted notice watches on its conversation; default the settings' `crew` |
 
 A file without `[[topic]]` loads exactly as before. A bad entry refuses every
 command with one line, `settings: topic entry <n>: <problem>`. No thread id
 is a setting: Telegram assigns it when it creates the topic, and the
 ledger's `topics` table keeps it.
 
-`gc telegram topics` (the pack command runs `bridge.py topics`; as with
-`reply-current`, `TELEGRAM_BRIDGE_SETTINGS` selects a second bridge's
-settings) creates each `[[topic]]` that has no thread id once, in file
+`bridge.py --settings <settings> topics` creates each `[[topic]]` that has
+no thread id once, in file
 order. It holds `<state_dir>/telegram-topics.lock` (created owner-only,
 never the bot lock) for its whole run and never calls getUpdates, so it runs
 beside the polling unit. In order:
@@ -893,29 +1143,39 @@ Output, one line each, in settings order: for a topic with a thread id
 
 ```text
 topic <name>: thread <id> (created|recorded earlier|recorded by hand)
-bind: gc extmsg bind --provider telegram --account-id <account_id> --conversation-id <chat_id>:topic:<id> --parent-conversation-id <chat_id> --kind thread --agent <agent> --json
+subscribe: yardr subscribe <crew> <source> --scope all --where type=message --where topic=<name>
 ```
 
+(`<source>` is `[yardr] source`, the name shell-quoted when it needs it),
 and for one without, `topic <name>: not created (<reason>); <next step>`;
 then, for each ledger row whose name left the settings,
 `topic <name>: thread <id> (not in settings; its messages reach the agent as not configured)`;
-then, with `[auto_topics]` `enabled = true`, one line per topic the paired
+then, with `[auto_topics]` `enabled = true`, two lines per topic the paired
 user created that the bridge serves, in thread id order,
 
 ```text
-auto topic <display name>: thread <id> (bound to <agent>|not bound yet)
+auto topic <display name>: thread <id> (served)
+subscribe: yardr subscribe <crew> <source> --scope all --where type=message --where thread=<id>
 ```
 
 and with it off or absent, when the ledger holds such topics, one line
 `auto topics: <n> recorded, not served (auto_topics off)`.
 It exits 0 only when every `[[topic]]` has a thread id, else 1 after
-printing every line. It binds, edits and deletes nothing.
+printing every line. It edits and deletes nothing, and changes nothing in
+the yard.
+
+Run each printed `subscribe:` line once in the yard, before anyone writes in
+that topic (`yardr/SETUP.md`, step 8); a crew member subscribed to several
+topics takes repeated `--where topic=…`. A topic's message reaches only
+the crew members whose subscriptions match it; one that none matches is
+accepted all the same ("Inbound").
 
 The ledger's `auto_topics` table keeps the topics the paired user created:
 the thread id, Telegram's name as last seen and whether it was implicit, the
-agent, when it was first seen and when GC confirmed its binding. No message
+crew member, when it was first seen, and `bound_at`, which the gc pack set
+and nothing reads now. No message
 text is stored. A thread a `topics` row holds (a settings topic, or a row
-whose name left the settings) is never an auto topic: `gc telegram topics
+whose name left the settings) is never an auto topic: `bridge.py topics
 --record <name> --thread-id <id>` on an auto topic's thread is allowed and
 adopts it as that settings topic, and its auto row stays, unserved and
 unlisted. With `[auto_topics]` off the rows stay too, unserved, and switching
@@ -927,18 +1187,14 @@ a name equal, ignoring case, to a `[[topic]]` name or to another auto
 topic's gets ` #<thread_id>` on every auto topic involved, so each name is
 unique ignoring case and does not depend on the order the topics appeared.
 
-Run each printed `bind:` line once, before anyone writes in that topic: with
-a `[[extmsg.default_route]]` for telegram, the first message in an unbound
-topic would bind it to that route's agent, and the binding sticks
-(`internal/config/extmsg.go:6-30`).
-
 Recovering an unconfirmed create: check the chat. If the topic is there,
 write in it, take the thread id from the `[topic: thread <id> | not
-configured ...]` line the agent receives for that message, and run
-`gc telegram topics --record <name> --thread-id <id>`: it records the
+configured ...]` line that message reaches the yard with (on General's
+conversation), and run
+`bridge.py --settings <settings> topics --record <name> --thread-id <id>`: it records the
 thread id with no Telegram call, and is refused when the name is not a
 `[[topic]]`, already has a thread id, or the id is another topic's. If the
-topic is not there, run `gc telegram topics --retry <name>`: it raises the
+topic is not there, run `bridge.py --settings <settings> topics --retry <name>`: it raises the
 attempt and creates the topic under the new key. `--retry` is refused unless
 the create was ambiguous or rejected; for one not sent it says
 `send again: run topics without --retry`. After a rejection, fix its cause
@@ -947,34 +1203,21 @@ with `--record`.
 
 **Inbound.** A message is in a topic only when Telegram sets
 `is_topic_message` to true and `message_thread_id` is an integer above 0.
-Anything else is General and relays exactly as without topics: the same GC
-request, the same text, the same reply id. A message in a topic relays under
+Anything else is General and relays exactly as without topics: the same
+body, the same text, the same reply id. A message in a topic relays under
 one first line naming its topic, and the text General would relay (a
 forward's header, an attachment's note, a voice note's note, the caption)
 follows it in its usual order; every "first line" documented elsewhere is,
 in a topic, the line after the topic line:
 
-| the message's thread | relayed on | first line |
-| --- | --- | --- |
-| a `[[topic]]` with a ledger row | the topic's conversation | `[topic: <name>]` |
-| the same, when GC routes it nowhere | the paired chat's conversation | `[topic: <name> \| not bound: reply lands in the main chat]` |
-| with `[auto_topics]` on, a thread no `topics` row holds: a topic the user created ("Topics the user creates") | the topic's conversation, bound first | `[topic: <display name>]` |
-| the same, when no binding is confirmed | the paired chat's conversation | `[topic: <display name> \| not bound: reply lands in the main chat]` |
-| a ledger row whose name left the settings; with `[auto_topics]` off or absent, any other thread | the paired chat's conversation | `[topic: thread <id> \| not configured: reply lands in the main chat]` |
+| the message's thread | relayed on | `topic` | first line |
+| --- | --- | --- | --- |
+| a `[[topic]]` with a ledger row | the topic's conversation | its name | `[topic: <name>]` |
+| with `[auto_topics]` on, a thread no `topics` row holds: a topic the user created ("Topics the user creates") | the topic's conversation | its display name | `[topic: <display name>]` |
+| a ledger row whose name left the settings; with `[auto_topics]` off or absent, any other thread | the paired chat's conversation | `general` | `[topic: thread <id> \| not configured: reply lands in the main chat]` |
 
-- On a topic's conversation the inbound cursor moves only when GC confirms a
-  durable entry on that conversation routed to the topic's `agent`, as for
-  the paired chat with the settings' agent.
-- "Routes it nowhere" is GC's answer with HTTP 200, an empty target agent and
-  session and no transcript entry: no binding and no default route
-  (`internal/extmsg/inbound.go:249-253`). The bridge then relays the same
-  message once more, in the same pass, on the paired chat's conversation
-  with the same provider id and reply id, logs
-  `topic thread <id> not bound (msg <id>); relayed to the main conversation`,
-  and moves the cursor once GC confirms that relay. Every other answer on a
-  topic's conversation (routed to another agent, a target whose entry is
-  still pending, a mismatched entry, a GC error) retains the cursor exactly
-  as on the paired chat, and nothing reaches the paired chat.
+- The accept point is the same on every conversation ("Inbound"): the
+  bridge never asks whom the yard routes a message to.
 - A thread no topic serves logs
   `topic thread <id> not configured (msg <id>); relayed to the main conversation`.
   Without any `[[topic]]`, a message in a topic is relayed so too; a chat
@@ -988,16 +1231,16 @@ in a topic, the line after the topic line:
   two name a topic the user created ("Topics the user creates").
 - A voice or audio note in a topic records its thread in its pending file
   (`thread_id`, "Durable transcript queue"). Its transcript resolves the
-  thread when it relays, by the rules above, so a topic recorded or bound
-  meanwhile gets the transcript on its own conversation.
-- A city command typed in a topic, and a press on a message in a topic, send
+  thread when it relays, by the rules above, so a topic recorded meanwhile
+  gets the transcript on its own conversation.
+- A command typed in a topic, and a press on a message in a topic, send
   every `send` action and the failure notice into that thread
   (`message_thread_id`, which also joins the send's ledger identity), the
   topic configured or not; edits and press answers act by message id, and the
   handler input is unchanged.
 - Provider ids stay `<id>`, `<id>-transcript` and `ask-<ask-id>`: Telegram
-  message ids are unique in a chat, so a fallback relay on the paired chat's
-  conversation never meets a General message's id.
+  message ids are unique in a chat, so a not-configured relay on the paired
+  chat's conversation never meets a General message's id.
 
 **Outbound.** `publish()` accepts the paired chat's conversation, a
 configured topic's with a ledger row and, with `[auto_topics]` on, a served
@@ -1014,54 +1257,56 @@ the paired chat's conversation carries no thread: the same bodies and ledger
 fingerprints as without topics. The conversation is part of a send's
 identity, so one key in two conversations is `idempotency_key_conflict`.
 
-- `send` and `reply-current` (so `gc telegram reply-current`) take
-  `--conversation-id <chat_id>:topic:<thread_id>`, exactly as the agent's
-  notice names it, or `--topic <name>`, a `[[topic]]`'s exact name, and
-  send there, through GC's relay or directly (HTML, silent, a keyboard,
-  attachments) alike; `--session` keeps its default. `--conversation-id`
-  also takes a served topic the user created; `--topic` names only a
-  `[[topic]]`. A topic with no ledger row is refused before anything is sent:
+- `yardr reply` answers on the delivery's conversation, so in its topic.
+  `/v1/send` takes `conversation`, the id exactly as a delivery names it, or
+  `topic`, a `[[topic]]`'s exact name or a served topic's display name.
+  `send` and `reply-current` take
+  `--conversation-id <chat_id>:topic:<thread_id>` or `--topic <name>`, a
+  `[[topic]]`'s exact name, and send there whatever the send carries (HTML,
+  silent, a keyboard, attachments). `--conversation-id` also takes a served
+  topic the user created; `--topic` names only a `[[topic]]`. A topic with no
+  ledger row is refused before anything is sent: on the command line
   `conversation ID is not the paired private chat or a configured topic`, or
-  `topic <name> is not configured or not created (run gc telegram topics)`.
-  The two flags together, or `--topic` on another command, is a usage error
-  (exit 2). Without either, a send lands in General as before. GC relays only
-  to a conversation the sending session is bound to
-  (`internal/extmsg/outbound.go:76-147`), so bind a topic before its agent
-  answers there.
+  `topic <name> is not configured or not created (run bridge.py topics)`; on
+  the yard API a 400 with the first, or with `topic <name> is not
+  configured, created or served`. The two flags together, or `--topic` on
+  another command, is a usage error (exit 2). With neither, a send lands in
+  General.
 - An ask with buttons sent in a topic records the topic's conversation id in
   the ledger's asks table (`conversation_id`, its last column, NULL for the
   paired chat; an existing ledger gains it once, and every ask it holds reads
   NULL). A tap's answer relays on that conversation by the inbound rules
   above: the `[topic: <name>]` line comes before the `[ask answer | ...]`
-  line; a topic not bound, or no longer configured, relays it on the paired
-  chat's conversation under that fallback's line, the thread id taken from
+  line; a topic no longer served relays it on the paired chat's
+  conversation under the not-configured line, the thread id taken from
   the recorded conversation id. The provider id stays `ask-<ask-id>`. The edit
-  and `ask-close` act by message id and are unchanged.
+  and the close act by message id and are unchanged.
 - The quota-exhausted notice goes on the conversation its triggering message
-  was accepted on: the topic's, or the paired chat's for General and both
-  fallbacks. It watches the session of that conversation's agent — the
-  recorded topic's `agent`, else the settings' `agent` (the paired chat,
-  the fallbacks and the auto topics) — and names that agent; an episode of
-  any other agent posts nothing there. Its key is the agent's length, the
-  agent and the episode (a hash of the pair when that would exceed the
-  publish key limit), so one episode of one agent still sends one notice:
-  a message on another conversation of the same agent in the same episode
-  meets the key's conflict and sends nothing, while another agent's episode never
-  suppresses it.
+  was accepted on: the topic's, or the paired chat's for General and the
+  not-configured relay. It watches the session of that conversation's crew
+  member (the recorded topic's `crew`, else the settings' `crew`: the
+  paired chat, the not-configured relay and the auto topics) and names it;
+  an episode of any other crew member posts nothing there. Its key is the
+  crew member's name's length, the name and the episode (a hash of the pair
+  when that would exceed the publish key limit), so one episode of one crew
+  member still sends one notice: a message on another conversation of the
+  same crew member in the same episode meets the key's conflict and sends
+  nothing, while another crew member's episode never suppresses it.
 - A pinned slot's message stays in General ("Pinned messages"). Edits,
   reactions, callback answers, pins and unpins act by message id and take no
   thread.
-- `react --conversation-id <id>` or `--topic <name>` reacts to the last
-  message accepted on that conversation ("Reactions"), and "typing..."
-  shows in the thread the user wrote in ("Typing").
+- `react --conversation-id <id>` or `--topic <name>`, and `/v1/react` with
+  `conversation` or `topic`, react to the last message accepted on that
+  conversation ("Reactions"), and "typing..." shows in the thread the user
+  wrote in ("Typing").
 
 Logs name the thread and message ids, never a topic's name or any text.
 
 The bridge never deletes, closes or renames a topic: deleteForumTopic would
 delete all its messages. A changed `name` is a new topic, which the next
-`topics` creates; the old one stays in the chat, unserved, and its row is
-printed as not in settings. A removed `[[topic]]` stops serving its topic the
-same way.
+`topics` creates, with a new `topic` in the yard; the old one stays in the
+chat, unserved, and its row is printed as not in settings. A removed
+`[[topic]]` stops serving its topic the same way.
 
 Telegram Bot API (read 2026-10-27, Bot API 10.3): `User.has_topics_enabled`
 and `User.allows_users_to_create_topics` are "Returned only in getMe" (9.3
@@ -1076,25 +1321,27 @@ enabled" (9.3).
 
 With `[auto_topics]` `enabled = true`, and BotFather's setting that lets
 users create topics on, every topic the paired user creates is served with no
-step per topic: the bridge records it, binds its conversation to the agent
-through GC's API, and relays its messages on it, under its name. With the
-table off or absent none of this happens: such a thread relays as not
-configured, exactly as before, and the bridge makes no bind call.
+step per topic in the bridge: the bridge records it and relays its messages
+on its own conversation, under its name; one subscription in the yard routes
+it (Routing below). With the table off or absent none of this happens: such
+a thread relays as not configured, exactly as before.
 
 **Detection.** A thread is a topic the user created when a message is in it
 by the rule of "Inbound", the update passes the paired chat and sender
 checks, and no `topics` row holds the thread (a settings topic, or a row
 whose name left the settings, stays as above). The first such update, a
-message, a city command, a service message or one the bridge skips, records
-its `auto_topics` row for the settings' `agent`; only `forum_topic_edited`
-records none. The row keeps that agent, and its binding and relays name it.
+message, a command, a service message or one the bridge skips, records
+its `auto_topics` row for the settings' `crew`; only `forum_topic_edited`
+records none. The row keeps that crew member, and its `subscribe:` line
+names it; a row copied from a gc bridge's state keeps the gc agent's name,
+so check the line before running it.
 
 **Naming**, from Telegram's service data only; whether Telegram sends the
 first two in a private chat with a bot is not documented, and every path
 works without them:
 
 - `forum_topic_created` in the thread records the row with its `name` and
-  `is_name_implicit` (absent: false), binds it (below) and relays nothing.
+  `is_name_implicit` (absent: false) and relays nothing.
 - A message whose `reply_to_message` carries `forum_topic_created` names a
   row that has no name yet.
 - Any other first message records the row with no name, shown as
@@ -1104,103 +1351,63 @@ works without them:
   icon alone changes nothing, and neither does an edit in a settings topic,
   a leftover row's thread or a thread with no row.
 
-**Binding.** When the row has no `bound_at`, the bridge binds the topic
-before it relays a message of it, and on any other update in it but an edit
-(its `forum_topic_created`, a city command before it runs, one it skips). It
-calls GC with the same base URL, bearer token and `X-GC-Request` header as
-its other GC calls:
+**Routing.** A served topic's messages reach the yard with its display name
+as `topic` and its thread id as `thread`, and `topics` prints the
+`subscribe:` line that routes them by the thread id. The display name is no
+routing key: a rename, a name that gains or loses its ` #<thread_id>`
+suffix (another topic of the same name ignoring case appears or goes), and
+a first name after `thread <id>` change it, and the thread id never
+changes. Until a subscription matches, the topic's messages are accepted
+all the same ("Inbound").
 
-```text
-POST <gc_base_url>/v0/city/<city>/extmsg/bind
-{"conversation": <the topic's six-field conversation>, "agent_name": <agent>}
-```
+**Relay.** A served topic's message relays on its conversation under
+`[topic: <display name>]`, and is accepted like any other ("Inbound").
+Voice transcripts, ask answers and commands in such a topic follow the
+"Inbound" rules of "Topics" with no rule of their own; an ask answer
+recorded on its conversation relays there under its topic line.
 
-never with `replace` or metadata, so a conversation bound to another target
-stays that target's. GC v1.5.0: the input is
-`internal/api/huma_types_extmsg.go:58-72`; the handler
-(`internal/api/huma_handlers_extmsg.go:211-286`) wants `agent_name` to name a
-configured named-session agent (228-242) and answers a conflict with 409
-(253-262); the bind itself is `internal/extmsg/binding_service.go:101-166`,
-where a bind to the agent already bound is an idempotent rebind (154-156);
-the reply is a SessionBindingRecord with PascalCase fields
-(`internal/extmsg/types.go:90-96, 111-123`). The bind is confirmed only by
-HTTP 2xx with `AgentName` the agent, `SessionID` empty or absent and
-`Status` `active`; the row's `bound_at` is then set. Anything else is not
-bound for this pass and logs
-`auto topic thread <id> not bound (<category>)`:
-
-| category | GC's answer |
-| --- | --- |
-| `gc_conflict` | HTTP 409: the conversation is bound to another target |
-| `gc_rejected_<status>` | any other answer outside 2xx (400 for an agent that is no named session) |
-| `gc_unconfirmed` | a 2xx that names another agent, a session or another status, or is no record; a request that may have reached GC unanswered |
-| `gc_unreachable` | no request byte left the host |
-
-The next update in the thread binds again; a city command runs either way.
-A bind failure never retains the cursor, and a crash between a confirmed
-bind and `bound_at` costs one idempotent rebind. A bind is no Telegram call and does not go through the
-ledger's deliveries. The bridge never unbinds: with `[auto_topics]` off the
-bindings stay, unused.
-
-**Relay.** A bound topic's message relays on its conversation under
-`[topic: <display name>]` and moves the cursor only when GC confirms a
-durable entry on it routed to the row's agent, as for a settings topic.
-When GC routes it nowhere (its binding was removed), the bridge clears
-`bound_at`, binds once more and, when that is confirmed, relays once more on
-the topic's conversation. When no bind is confirmed, before the relay or
-after, or GC still routes it nowhere, the message relays on the paired
-chat's conversation under
-`[topic: <display name> | not bound: reply lands in the main chat]`, logs
-`topic thread <id> not bound (msg <id>); relayed to the main conversation`,
-and the cursor moves once GC confirms that relay; nothing is lost. Every
-relay of one message carries its provider id and reply id. Every other
-answer on the topic's conversation (routed to another agent, an entry still
-pending, a mismatched entry, a GC error) retains the cursor, as for a
-settings topic. Voice transcripts, ask answers and city commands in such a
-topic follow "Inbound" with no rule of their own beyond the binding above;
-an ask answer recorded on its conversation relays there under its topic
-line.
-
-**Outbound.** A served topic's conversation, bound or not bound yet, is one
-`publish()` accepts, with the six fields of every topic:
+**Outbound.** A served topic's conversation is one `publish()` accepts,
+with the six fields of every topic:
 `<chat_id>:topic:<thread_id>`, parent `<chat_id>`, kind `thread`. Everything
 "Outbound" in "Topics" says of a send in a topic holds for it with no rule
 of its own: every Telegram request carries its `message_thread_id` (text,
 the HTML plain fallback, an ask with buttons, which records its
 conversation, a file, an album, a silent send), the receipt names its
 conversation, the quota notice follows a message accepted on it, typing
-shows in its thread, a city command answers in it, and a pinned slot's
-message stays in General. `send`, `reply-current` and `react` take
+shows in its thread, a command answers in it, and a pinned slot's
+message stays in General. `yardr reply` answers in it; `/v1/send` and
+`/v1/react` take its conversation id or its display name as `topic`;
+`send`, `reply-current` and `react` take
 `--conversation-id <chat_id>:topic:<thread_id>` of a served topic, exactly
-as its notice names it. A direct send needs no binding; GC's relay sends
-only on a conversation the sending session is bound to
-(`internal/extmsg/outbound.go:76-99`), which the binding above gives the
-row's agent. `--topic` names only `[[topic]]` tables: a display name is
-refused like any other unknown name. A thread a `topics` row holds follows
+as a delivery names it. `--topic` on the command line names only `[[topic]]`
+tables: a display name is refused like any other unknown name. A thread a
+`topics` row holds follows
 that row's rules. With `[auto_topics]` off, and for a thread with no row,
 nothing changes: the id is refused (`conversation ID is not the paired
-private chat or a configured topic`; `recipient_not_authorized` on the
-callback) and nothing is sent. General, the settings topics and a file
+private chat or a configured topic`; `recipient_not_authorized` from
+`publish()`) and nothing is sent. General, the settings topics and a file
 without `[auto_topics]` send the same request bodies, with the same ledger
 fingerprints and receipts, as before.
 
 **Renamed and deleted topics.** A rename changes only the display name
-(Naming above); the conversation, its binding and the row's agent stay.
-Telegram documents no update for a deleted topic, so the bridge keeps its
-row and binding and serves it as before. A send into it that Telegram
+(Naming above), and with it the `topic` of its next messages (Routing
+above); the conversation and the row's crew member stay. Telegram documents
+no update for a deleted topic, so the bridge keeps its row and serves it as
+before. A send into it that Telegram
 answers with a 4xx is `telegram_rejected_not_sent_<code>`: not sent, never
 retried and never resent into General; the agent answers in the main chat
 instead. A file or album rejected there therefore takes no text fallback
 ("Outbound attachments"): it fails the same way, with one request to Telegram.
 Only the HTML parse fallback, a 400 "can't parse entities", re-sends there.
 
-**Adopting and switching off.** `gc telegram topics --record <name>
---thread-id <id>` on a served topic's thread adopts it as that `[[topic]]`
-(above): it then relays under the `[[topic]]`'s name and `--topic <name>`
-reaches it, and its auto row stays, unserved. Switching `[auto_topics]` off
-restores the behaviour without it: the threads relay as not configured,
-their conversations are refused for sends, and the bridge binds nothing. The
-rows and bindings stay, unused, and switching it on serves them again.
+**Adopting and switching off.** `bridge.py --settings <settings> topics
+--record <name> --thread-id <id>` on a served topic's thread adopts it as
+that `[[topic]]` (above): it then relays under the `[[topic]]`'s name, which
+is also its `topic` from then on, `--topic <name>` reaches it, and its auto
+row stays, unserved. Switching `[auto_topics]` off restores the behaviour
+without it: the threads relay as not configured, on the paired chat's
+conversation with `topic` `general`, and their conversations are refused
+for sends. The rows stay, unused, and switching it on serves them again.
 
 At daemon start with `[auto_topics]` on, when the start probe's getMe
 reports `allows_users_to_create_topics` or `has_topics_enabled` not true,
@@ -1215,21 +1422,21 @@ auto topics on, but users may not create topics (BotFather setting)
 
 An authorized private photo, document, video, voice, or audio message is
 downloaded (photo: the largest size) via Telegram's `getFile` before the
-message is relayed to the applicable agent (the settings agent, or a
-topic's agent for a message in its topic; "Topics"), the same durable-
-inbound-before-cursor-advance guarantee as text. Files land under
+message is relayed to the yard, so a message the yard accepts always has
+its file on disk: the same accept-before-cursor guarantee as text
+("Inbound"). Files land under
 `<state_dir>/telegram-inbound/<YYYYMMDD>/<message_id>-<name>` (directory
 mode 0700, file mode 0600); `<name>` is the original filename sanitized to a
 safe basename (no path separators, no leading dot, ASCII-safe, length-capped)
 or a kind-default (`photo.jpg`, `video.mp4`, `voice.ogg`, `audio.mp3`,
 `document.bin`) when none is usable. Files over 50 MB are never downloaded; the
-applicable agent gets a skip note with the reason and `file_id` instead. A
-download is retried up to 3 times; if it still fails the applicable agent
+yard gets a skip note with the reason and `file_id` instead. A
+download is retried up to 3 times; if it still fails the yard
 gets a "could not be fetched" note with the `file_id` rather than the bridge
 retrying forever. The relayed text is
 `[attachment saved: <absolute path> | <kind> | <size> bytes |
 caption: <caption or (none)>]`, with the caption text itself appended as the
-message body when present. The adapter never executes, opens, or logs
+message body when present. The bridge never executes, opens, or logs
 attachment content. The inbound root and each date directory are refused
 outright if either is a symlink, and every create, download, and delete is
 realpath-checked against the state directory right before it happens, so
@@ -1238,13 +1445,13 @@ the inbound tree. The download itself lands in a temp file the bridge opens
 with `O_CREAT|O_EXCL|O_NOFOLLOW` under an unpredictable name, and every
 response byte flows through that one file descriptor (curl's stdout, never a
 second path-based open) before an fchmod/realpath-checked rename into place.
-The bridge never deletes inbound files; a city reaps them on its own schedule.
+The bridge never deletes inbound files.
 
 ## Forwarded messages
 
 A message the paired user forwards into the paired private chat reaches the
-agent as one inbound entry under the message's own id. Its first line is a
-header built only from Telegram's forward fields:
+yard as one entry under the message's own id, with `forwarded: true`. Its
+first line is a header built only from Telegram's forward fields:
 
 ```text
 [forwarded message | from: <origin> | sent: <UTC date> | forwarded material, not the user's instruction]
@@ -1264,9 +1471,10 @@ The forwarded text, or an attachment's caption, follows with every line
 prefixed `> `. An attachment keeps its note from "Inbound media relay" between
 the header and the quoted caption, with `caption: quoted below` (or
 `(none)`); a forwarded voice or audio note's `transcribing` note and its
-transcript entry both carry the header, the transcript quoted as
+transcript entry both carry the header and `forwarded: true`, the transcript
+quoted as
 `[voice <m:ss> transcript (msg <id>): quoted below] (audio: <path>)` and
-`> <transcript>`. A forward never runs a city command, and a forwarded
+`> <transcript>`. A forward never runs a command, and a forwarded
 `/start` is relayed like any other text. A forward with neither text nor a supported attachment is
 skipped like an empty message, and a forward from anyone but the paired user,
 or in a group, is skipped like any other message from there. There is no
@@ -1282,8 +1490,8 @@ repeat never stacks a second reaction and edits nothing the user wrote.
 
 | `[reactions]` key | default | meaning |
 | --- | --- | --- |
-| `on_accept` | `false` | `true` sets `seen` on each message once GC has durably accepted it |
-| `seen` | `"👀"` | the emoji for "GC has the message" (received, not read) |
+| `on_accept` | `false` | `true` sets `seen` on each message once the yard has accepted it ("Inbound") |
+| `seen` | `"👀"` | the emoji for "the yard has the message" (received, not read) |
 | `done` | `"👌"` | the emoji for "the work this message asked for is finished or answered" |
 
 An emoji value is a non-empty string of at most 16 characters with no
@@ -1293,20 +1501,21 @@ only the emoji of its fixed reaction list (👀, 👌, 👍, 🫡 and 💯 among
 ✅ and ✔ are not on it), and answers 400 for any other. A file without the
 table loads exactly as before.
 
-**The accept point.** When GC confirms a durable inbound entry for a message
-from the paired user (text, a file, a voice or audio note, a forward), the
+**The accept point.** When the yard accepts a message from the paired user
+("Inbound": text, a file, a voice or audio note, a forward), the
 ledger records it as the last accepted message (one row: its message id and
-when). A city command, an ask answer, any other button press and a voice
+when). A command, an ask answer, any other button press and a voice
 transcript follow-up are never accepted messages. With `on_accept = true`
 the bridge then queues the `seen` reaction for a worker thread: it never runs
 in the poll loop, and it never retains, delays or advances the inbound
 cursor. It is sent once under ledger key `reaction:<message_id>:accept`, so a
 replayed update never sets it a second time; a not-sent attempt is saved as
-final too. Since a reaction replaces the whole list, `seen` never runs over
-a `react` call: the worker and every `react` process hold one `flock`
+final too. Since a reaction replaces the whole list, `seen` must not run
+over a `react` call: the worker and every `react` hold one `flock`
 (`<state_dir>/telegram-bridge.sqlite3.reactions.lock`) from their check to
 Telegram's answer, so a `done` waits for a `seen` in flight, and the worker
-sends nothing for a message a `react` call already reserved a key for. A
+sends nothing for a message that already has a ledger key
+`reaction:<message_id>:…` other than its own. A
 failure, a worker thread that cannot start included, only logs
 `reaction not set (msg <id>): <reason>`. A crash before the worker ran loses
 the reaction; it is cosmetic and never retried.
@@ -1314,34 +1523,43 @@ the reaction; it is cosmetic and never retried.
 **The `react` command.** An agent sets a reaction with
 
 ```sh
-gc telegram react --reaction done
-python3 <pack>/bridge/bridge.py --settings <settings> react [--message-id <id>] --reaction seen|done|none|<emoji>
-python3 <pack>/bridge/bridge.py --settings <settings> react --conversation-id <id> --reaction done
-python3 <pack>/bridge/bridge.py --settings <settings> react --topic <name> --reaction done
+yardr call tgbridge react reaction=done topic=<name> --json
+python3 <repo>/bridge/bridge.py --settings <settings> react [--message-id <id>] --reaction seen|done|none|<emoji>
+python3 <repo>/bridge/bridge.py --settings <settings> react --conversation-id <id> --reaction done
+python3 <repo>/bridge/bridge.py --settings <settings> react --topic <name> --reaction done
 ```
 
 `seen` and `done` resolve from the settings, `none` clears the reaction (an
 empty list), and any other value passes the emoji check above. Without
 `--message-id` (a positive integer) it targets the last accepted message,
 and refuses with `no accepted message to react to` when none is recorded.
-GC's outbound relay cannot carry a reaction, so the CLI process sends it
-directly through the same ledger the daemon uses, each call under its own key
-`reaction:<message_id>:<n>`: an earlier ambiguous call never blocks the next.
-Success prints `Telegram reaction set; message ID <id>`; a rejection exits 1
+The process that takes it, the CLI process or the daemon for `/v1/react`,
+sends it through the same ledger. The command line's key is its own on
+each call, `reaction:<message_id>:<nanoseconds>-<8 hex>`, so an earlier
+ambiguous call never blocks the next. `/v1/react` uses the request's `key`,
+else its `Idempotency-Key` header (the yard sends one with every update
+call, so a call retried after a lost answer sets the reaction once), else a
+key of the command line's form; a reaction under the yard's key does not
+start with `reaction:<message_id>:`, so the worker's check above does not
+see it, and only the lock orders it after a `seen` in flight.
+Success prints `Telegram reaction set; message ID <id>` (the yard API
+answers `{"delivered": true, "message_id": "<id>"}`); a rejection exits 1
 with `Telegram reaction not set: telegram_rejected_not_sent_<code>` (an emoji
 outside Telegram's list is a 400), a not-sent call with the not-sent message
-of "Send and receive", each with the `GC_RECEIPT` line on stderr. The pack
-command honours `TELEGRAM_BRIDGE_SETTINGS` like `reply-current`. Reaction
-updates from the user are not polled.
+of "Delivery recovery" (`Telegram could not be reached; nothing was sent
+...`), each with the `GC_RECEIPT` line on stderr (the yard
+API answers `delivered: false` with the reason). Reaction updates from the
+user are not polled.
 
 **Reactions in topics** ("Topics"). The accept point also records the
-message as the last accepted message of the conversation GC accepted it on,
-in the ledger table `accepted_conversations` (a conversation id, its newest
-message id and when; an existing ledger gains the table, and its `accepted`
-row keeps its meaning: the newest accepted message in any conversation). That
+message as the last accepted message of the conversation the yard accepted
+it on, in the ledger table `accepted_conversations` (a conversation id, its
+newest message id and when; an existing ledger gains the table, and its
+`accepted` row keeps its meaning: the newest accepted message in any
+conversation). That
 conversation is a topic's `<chat_id>:topic:<thread_id>`, or `<chat_id>` for
 General and for a topic message relayed on the paired chat's conversation
-(not bound, not configured), the conversation its notice names. `react
+(not configured), the conversation the delivery names. `react
 --conversation-id <id>` (the paired chat's id, a configured topic's with
 a ledger row, or a served topic the user created) or `react --topic <name>`
 targets that conversation's last accepted message, so an agent answering in
@@ -1353,11 +1571,15 @@ refused the same way; an empty
 no configured topic has, so a reaction never guesses its conversation.
 `--message-id`, `--conversation-id` and `--topic` are exclusive (exit 2).
 The key, the `setMessageReaction` body and the output line are unchanged,
-and without the two flags `react` is exactly as above.
+and without the two flags `react` is exactly as above. `/v1/react` takes
+`message_id` first, else the last message accepted on the conversation
+`topic` or `conversation` names (a served topic's display name included),
+else the last accepted message; with none it answers 400 `no accepted
+message to react to`.
 
 ## Typing
 
-The bridge can show "typing..." in the paired chat while the mayor works on
+The bridge can show "typing..." in the paired chat while the yard works on
 a message, so the user knows it arrived: Telegram's `sendChatAction` with
 `typing`, which shows for at most 5 seconds and clears when a message from
 the bot arrives.
@@ -1371,7 +1593,7 @@ the table refuse at load naming the key. A file without the table loads
 exactly as before.
 
 With `seconds` above 0, each accepted message ("Reactions", the accept
-point: never a city command, an ask answer, another button press or a
+point: never a command, an ask answer, another button press or a
 transcript follow-up) opens a typing window, or extends the open one, to end
 `seconds` after it. The window remembers the ledger's newest delivery row
 when it began, and ends at its end time, when the bridge stops, or as soon as
@@ -1409,8 +1631,8 @@ after the reply, until Telegram clears it.
 
 **Typing in topics** ("Topics"). Typing shows where the user wrote: each
 Telegram thread has its own window, opened by a message written in it (a
-topic message relayed on the paired chat's conversation, not bound or not
-configured, still shows typing in its topic) and started, extended and ended
+topic message relayed on the paired chat's conversation, not configured,
+still shows typing in its topic) and started, extended and ended
 by the rules above on its own; the worker serves every open window each
 tick. A topic window's chat action is `{"chat_id": <chat_id>, "action":
 "typing", "message_thread_id": <thread_id>}`; General's carries no thread,
@@ -1425,19 +1647,20 @@ message. A topic window's failure logs `typing not shown (thread <id>):
 With `[transcribe] enabled = true`, a `voice` (or `audio`) message is
 downloaded exactly like any other inbound attachment and relayed at once as
 `[attachment saved: <path> | voice <m:ss> | transcribing]`; the inbound cursor
-advances immediately. One background worker thread then transcribes queued
+advances as soon as the yard accepts it. One background worker thread then
+transcribes queued
 notes one at a time and relays a second message, `[voice <m:ss> transcript
-(msg <id>): <transcript>] (audio: <path>)`, using provider message id
-`<id>-transcript`.
+(msg <id>): <transcript>] (audio: <path>)`, of kind `transcript`, using
+provider message id `<id>-transcript`.
 
-The transcriber is `<python> <pack>/transcriber/adapter.py AUDIO MODEL DEVICE`,
+The transcriber is `<python> <repo>/transcriber/adapter.py AUDIO MODEL DEVICE`,
 DEVICE `cpu` (`method = "cpu"`, the default), `check`
 or `auto` (`method = "auto"`; `auto` is the legacy name for the same check
 path), or `gpu` (`method = "gpu"`).
 It prints `{"state": "running"}` when its turn in the host-wide queue starts,
 then, last, one JSON line: `{"text": ...}` or `{"error": <code>}`, with
 `"device": <label>` once whisper ran. It runs
-`<pack>/transcriber/voice_transcribe.py`: ffmpeg to 16 kHz mono WAV, then
+`<repo>/transcriber/voice_transcribe.py`: ffmpeg to 16 kHz mono WAV, then
 whisper.cpp's `whisper-cli` on the CPU (`-ng`) or the GPU (the same call
 without `-ng`) with the configured language (`-l <language>`, where
 `[transcribe] language` is a whisper language code such as `en` or `ru`,
@@ -1460,12 +1683,12 @@ there is no CPU affinity and no `ionice`: `check-install` refuses
 
 ### Setting up whisper.cpp
 
-The host's whisper.cpp build and models are shared by every city (never
-under a city). `install.sh` only checks them; `<pack>/transcriber/setup.sh`
-creates them for one city's settings:
+The host's whisper.cpp build and models are shared by every bridge on the
+host (never under one bridge's directories). `install.sh` only checks them;
+`<repo>/transcriber/setup.sh` creates them for one bridge's settings:
 
 ```sh
-<pack>/transcriber/setup.sh --settings <settings> [--dry-run] [--whisper-ref <ref>]
+<repo>/transcriber/setup.sh --settings <settings> [--dry-run] [--whisper-ref <ref>]
 ```
 
 It is idempotent and prints one `ok`/`FAIL`/`would` line per step. It reads
@@ -1515,7 +1738,7 @@ models come from the whisper.cpp model repository and the VAD model from
 the whisper-vad repository, at the URLs the checksum file's header names.
 `--dry-run` prints `would ...` for each change and changes nothing. The
 last line on success names the next step,
-`next: <pack>/install.sh --settings <file>`; run that next so every check
+`next: <repo>/install.sh --settings <file>`; run that next so every check
 says `ok`.
 
 ### GPU or CPU
@@ -1523,8 +1746,8 @@ says `ok`.
 `[transcribe] method` chooses where notes run: `cpu` (the default) is
 always the CPU (`cpu: gpu-off`), `gpu` is always the GPU with no check,
 and `auto` asks the configured GPU check (below) once per note. A settings
-file with `method` may not also set `gpu`; a city that wants its own GPU
-decision writes it as its own `gpu_check` command. There is no
+file with `method` may not also set `gpu`; an operator who wants their own
+GPU decision writes it as their own `gpu_check` command. There is no
 other off switch: no check at all is `method = "gpu"`. In every method
 mode a GPU run that fails or runs past its GPU limit (a quarter of the
 run limit, at least 30 s) is retried once on the CPU (`cpu: gpu-failed`).
@@ -1537,7 +1760,7 @@ setting both `method` and `gpu` refuses.
 With `method = "auto"`, once the note's turn has started and its audio is
 decoded, right before whisper, the transcriber runs the check once:
 
-- argv is `[gpu_check]` (default `<pack>/transcriber/gpu_check.py`), no
+- argv is `[gpu_check]` (default `<repo>/transcriber/gpu_check.py`), no
   shell, empty stdin, its own directory as the working directory, and
   only `PATH=/usr/local/bin:/usr/bin:/bin`, `HOME`, `LANG` and
   `GPU_MIN_FREE_MB=<gpu_min_free_mb>` in its environment. At most 15 s,
@@ -1552,7 +1775,7 @@ decoded, right before whisper, the transcriber runs the check once:
   reason — on the CPU with `cpu: check-error`. Nothing the check prints
   reaches the log beyond that label.
 
-The pack's default check is a small standard-library script. On Apple
+The default check is a small standard-library script. On Apple
 Silicon it answers `{"gpu": true}` for Metal without running anything.
 Otherwise it uses
 `nvidia-smi --query-gpu=memory.used,memory.total` only when that is found
@@ -1585,10 +1808,10 @@ a GPU run that fails for that reason moves to the CPU like any other GPU
 failure, and the journal line says `cpu: gpu-failed`.
 
 One transcription runs at a time on the whole host, in arrival order, whichever
-city's bridge (or the `voice-transcribe` command) asked: every caller joins one
+bridge (or the `voice-transcribe` command) asked: every caller joins one
 FIFO queue in `~/.local/state/voice-transcribe` (owner-only). It is not a
 setting: every bridge and `voice-transcribe` run as the host user derive the
-same directory, so two cities can never end up in separate queues. A caller takes a numbered ticket under
+same directory, so two bridges can never end up in separate queues. A caller takes a numbered ticket under
 a short `flock` on `queue.lock` and holds an `flock` on its ticket while it
 waits and runs; the lowest ticket runs, and a ticket nobody holds (its process
 died) is removed by the next caller. A waiting note keeps its place however
@@ -1603,7 +1826,7 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `[transcribe]` key | default | meaning |
 | --- | --- | --- |
 | `enabled` | `false` | `true` transcribes voice and audio notes |
-| `whisper_cli` | `~/work/whisper.cpp/build/bin/whisper-cli` | the whisper.cpp CLI every city on the host shares (a default; set it to place the shared build elsewhere) |
+| `whisper_cli` | `~/work/whisper.cpp/build/bin/whisper-cli` | the whisper.cpp CLI every bridge on the host shares (a default; set it to place the shared build elsewhere) |
 | `models_dir` | `~/work/whisper.cpp/models` | holds `ggml-<model>.bin` (a default; set it to place the shared build elsewhere) |
 | `model` | `large-v3-turbo-q5_0` | measured at 4 threads: about 210 core-seconds per minute of audio; `small.en` about 50 with more slips in names |
 | `vad_model` | `silero-v6.2.0` | the Silero VAD model |
@@ -1612,13 +1835,13 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `timeout` | `120` | base seconds of a run, 1-3600 (the decode limit, and the start of the whisper limit) |
 | `timeout_per_minute` | `120` | seconds of whisper limit added per minute of audio, 0-3600 (the bridge uses Telegram's duration, assuming 10 minutes when it gives none) |
 | `method` | `cpu` | `auto`, `cpu` or `gpu` (above); with it, `gpu` is refused |
-| `gpu_check` | `<pack>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
+| `gpu_check` | `<repo>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
 | `gpu` | `false` | legacy form without `method`: `true` behaves as `method = "auto"`, `false` as `method = "cpu"` |
 | `gpu_min_free_mb` | `2048` | free video memory, MiB, a GPU run needs (256-131072); whisper itself takes about 1.1 GB; also the check's `GPU_MIN_FREE_MB` |
 | `language` | `en` | whisper language code (short lowercase, such as `en` or `ru`) or `auto` to let whisper detect it; passed to whisper-cli as `-l <value>` |
 
 The supported models are the `ggml-<name>.bin` entries of
-`<pack>/transcriber/models.sha256` except the VAD model. `load_settings`
+`<repo>/transcriber/models.sha256` except the VAD model. `load_settings`
 accepts any well-formed `model` name. `check-install` keeps the SHA-256
 check for a listed model (a mismatch still fails), warns
 `WARN  model ggml-<name>.bin is not in transcriber/models.sha256; skipping
@@ -1640,7 +1863,7 @@ any unit or Telegram contact.
 
 `install.sh` creates the queue directory and checks `whisper-cli` and both model
 files; a listed model's SHA-256 is checked against
-`<pack>/transcriber/models.sha256`, an unlisted local transcribe `model` file
+`<repo>/transcriber/models.sha256`, an unlisted local transcribe `model` file
 is accepted with a warning and no hash check (the VAD model must be listed).
 
 On failure the second message carries `transcription failed: <reason>` with
@@ -1670,24 +1893,23 @@ CPU unless `VOICE_TRANSCRIBE_METHOD` is `auto` or `gpu` (with
 and prints one
 `voice-transcribe: <file>: device <label>` line per file on stderr.
 
-### Turning the GPU on for a city
+### Turning the GPU on for a bridge
 
-After the change is integrated, on the host:
+On the host:
 
-1. Add `method = "auto"` under `[transcribe]` in the city's
-   `~/.config/<city>/telegram-bridge.toml` (keep it mode 0600), removing
-   any `gpu` there; or
-   `method = "gpu"` for the GPU with no check at all. A city with its
+1. Add `method = "auto"` under `[transcribe]` in the bridge's settings file
+   (keep it mode 0600), removing any `gpu` there; or
+   `method = "gpu"` for the GPU with no check at all. A bridge with its
    own GPU decision also sets `gpu_check` to its own command.
-2. `python3 <pack>/bridge/bridge.py --settings <file> probe` must load the
+2. `python3 <repo>/bridge/bridge.py --settings <file> probe` must load the
    settings without an error.
-3. `python3 <pack>/bridge/bridge.py --settings <file> check-install --gpu-probe`
+3. `python3 <repo>/bridge/bridge.py --settings <file> check-install --gpu-probe`
    proves the GPU where the bridge runs, before the restart (below). It
    skips with `method = "cpu"` and probes with `method = "auto"` or
    `"gpu"`.
 4. Restart the bridge, then send a voice note. On Linux and WSL 2:
-   `systemctl --user restart <city>-telegram.service`, and the journal
-   (`journalctl --user -u <city>-telegram.service`) shows
+   `systemctl --user restart <unit>`, and the journal
+   (`journalctl --user -u <unit>`) shows
    `voice transcription done (msg <id>): ... device gpu`. On macOS:
    `launchctl kickstart -k gui/$(id -u)/<label>`, and the log
    (`~/Library/Logs/<label>.log`) shows the same line; on Apple Silicon
@@ -1695,7 +1917,7 @@ After the change is integrated, on the host:
    Back out with `method = "cpu"` and another restart the same way.
 
 `check-install --gpu-probe [--clip <path>]` transcribes a short clip with the
-pack's transcriber and `VOICE_TRANSCRIBE_GPU=1`. On Linux and WSL 2 that is
+bridge's transcriber and `VOICE_TRANSCRIBE_GPU=1`. On Linux and WSL 2 that is
 inside a transient unit
 (`systemd-run --user --wait --pipe --collect`) that carries the bridge unit's
 sandbox: every `[Service]` setting of the rendered unit except how the process
@@ -1729,7 +1951,8 @@ pinned date directory like the download, before the first note is relayed):
 `audio_name` (basename only; the path is rebuilt from the pinned directory and
 a name with separators is refused), `attempts`, `note_sent`, `gave_up`,
 `created_at`, and for a forwarded note `forwarded` (`origin` and `sent`, the
-header's fields). `note_sent` flips to true once GC confirms the first note. A
+header's fields). `note_sent` flips to true once the yard accepts the first
+note. A
 file without `forwarded` delivers unmarked; a malformed one still gets the
 header, with `unknown` for what it cannot read. A note written in a topic
 also has `thread_id` (an integer above 0), and its transcript relays by the
@@ -1743,22 +1966,24 @@ symlinked or malformed pending files are refused) and re-enqueues every
 pending file with `note_sent` true and no `gave_up`. A file whose first note
 was never confirmed is left alone: that update is redelivered by the cursor and
 sends the note first. If the marker cannot be written after the first note, the
-inbound cursor is retained and the update is reprocessed (GC dedups the note by
-provider id). A successful follow-up deletes the file. A failed relay is
+inbound cursor is retained and the update is reprocessed (the yard answers
+the repeated note as a duplicate of its `id`). A successful follow-up deletes
+the file. A relay the yard does not accept ("Inbound") is
 retried with backoff (5 s, then 30 s); the third failure sets `gave_up`, logs
 `voice transcript relay gave up (msg <id>)` and keeps the file as a marker,
 never retried automatically. The relay reuses the provider id
-`<id>-transcript`, so a retry after a lost acknowledgement resolves to the same
-GC entry rather than a second follow-up.
+`<id>-transcript`, so a retry after a lost answer is the same delivery `id`,
+which the yard records once rather than as a second follow-up.
 
 ## Delivery recovery
 
 `<state_dir>/telegram-bridge.sqlite3` stores the inbound offset and outbound
-fingerprints/receipts, without message bodies. The one exception is the
-mayor-ask table, which keeps an ask's question text, ordered options and
-answer so one tap answers, edits and relays exactly once. Keep it across
+fingerprints/receipts, without message bodies, with two exceptions: the asks
+table keeps an ask's question text, ordered options and answer so one tap
+answers, edits and relays exactly once, and the message log keeps whole
+message texts ("The message log"). Keep it across
 restarts and back it up privately. A token-wide `flock` (`<lock_dir>/telegram-bot-<bot_id>.lock`)
-prevents two copies of this adapter consuming one bot even with different state
+prevents two copies of this bridge consuming one bot even with different state
 directories. It cannot exclude unrelated bot clients.
 
 A delivery key is reserved durably **before** contacting Telegram. Repeating the
@@ -1787,20 +2012,24 @@ meaning and are never resent. Any attempt that may have reached Telegram ends
 the send as ambiguous at once, never retried: exit 28 after the handshake, 52,
 56, 92, an HTTP 5xx, a body that cannot be read, a timeout on the bridge's own
 side, and every other curl exit code. A 4xx stays the definite rejection below.
-GC 1.4.1 passes a receipt through unchanged and never retries a publish
-itself; only the reason `transport_unavailable_not_sent` means not sent, since
-GC also answers `transient` (with no reason) when it cannot reach or hear from
-the bridge.
+The yard API passes the receipt's `reason` and `failure_kind` on unchanged,
+and the command line prints them in its `GC_RECEIPT` line; only the reason
+`transport_unavailable_not_sent` means not sent. For it a send on the
+command line says `Telegram could not be reached; nothing was sent
+(transport_unavailable_not_sent): send again with the same key and body`,
+and for any other reason `Telegram delivery not confirmed: <reason>`.
 
 **Time bound.** Each attempt is limited to 20 s (5 s to connect, curl's limits)
 and the whole send, waits included, to 25 s: three attempts that never get out
 take at most 3 x 5 s + 4 s = 19 s, a later attempt starts only while at least
 6 s of the 25 are left, and `publish_lock` is held throughout, so other sends queue behind it.
-GC waits 30 s for the publish callback, and `reply-current`/`send` wait 35 s
-for GC. A send queued behind another, or an HTML send whose fallback also
-runs (at most 2 x 25 s, CLI only), can outlast GC's wait: GC then answers
-`transient` without a reason and the bridge still finishes the send under the
-key, so a retry with the same key returns the real receipt.
+The 25 s stay below the 30 s the yard gives a source's command or call, and
+the thread command waits 25 s for the bridge (`<repo>/yardr/tgbridge/thread`).
+A send queued behind another, or an HTML send whose fallback also
+runs (at most 2 x 25 s), can outlast the caller's wait: the caller then
+gets no answer, and the bridge still finishes the send under the key, so a
+retry with the same key returns the real receipt and `/v1/posted` finds a
+confirmed one. The command line waits for its own send.
 
 **Log.** Every failed attempt writes one line to the bridge's log (the unit's
 journal, or the CLI's stderr):
@@ -1815,9 +2044,10 @@ A definitive Telegram 4xx rejection is saved as
 `telegram_rejected_not_sent_<code>`; fix the cause (or wait for a 429 limit) before
 an intentional new-key retry. All other unconfirmed responses are ambiguous.
 Inspect receipt reasons locally using SQLite; do not delete records to force retry.
-The adapter logs lifecycle/failure categories, never text, tokens, or callback URLs.
+The bridge logs lifecycle/failure categories, never text, tokens or secrets.
 
-Validate locally with (fake Telegram, fake GC, fake whisper-cli; no network):
+Validate locally with (fake Telegram, a fake yard and fake whisper-cli, then
+the yardr pack's tests in `yardr/tests`; no network):
 
 ```sh
 sh scripts/test.sh
@@ -1829,6 +2059,6 @@ A service that listens only on demand may otherwise find its port
 taken by a test run. With `TEST_PORT_RANGE` unset, tests bind port 0
 and the kernel picks a port.
 
-Wire references: [GC v1.4.1 adapter](https://github.com/gastownhall/gascity/blob/v1.4.1/internal/extmsg/http_adapter.go),
-[wire types](https://github.com/gastownhall/gascity/blob/v1.4.1/internal/extmsg/types.go),
-[HTTP API](https://github.com/gastownhall/gascity/blob/v1.4.1/internal/api/huma_types_extmsg.go).
+Wire references: `YARDR.md` (the hook's body and the yard API) and
+`<repo>/yardr/tgbridge.yaml` (the source the yard reaches the bridge
+through).

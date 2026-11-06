@@ -1,78 +1,85 @@
-# EXAMPLE settings for one city's Telegram bridge. Copy it to
-# ~/.config/<workspace_name>/telegram-bridge.toml (workspace_name is in the
-# city's .gc/site.toml), chmod 600, and replace every value: the names, ids
-# and paths below are examples, not defaults. The bridge refuses to start on
+# EXAMPLE settings for one yard's Telegram bridge. Copy it to
+# ~/.config/<yard>-telegram/telegram-bridge.toml, chmod 600, and replace
+# every value: the names, ids and paths below are examples, not defaults.
+# Commands find it by --settings or $TELEGRAM_BRIDGE_SETTINGS. The bridge refuses to start on
 # a missing file, a file readable by others, an unknown key or a bad value,
 # and says which. Nothing here is a credential: the token and the callback
 # secret stay in their own owner-only files.
 
-city = "example-city"                       # gc's city name (the extmsg scope)
-state_dir = "/home/alex/example-city/telegram-state"   # ledger, offset, inbound files, heartbeat
-port = 8930                                 # loopback callback port, unique per city on the host
-token_file = "~/.config/example-city/telegram-bot-token"
-callback_secret_file = "~/.config/example-city/telegram-callback-secret"
-# lock_dir = "~/.config/example-city"       # default: the token file's directory
-# unit = "example-city-telegram.service"    # default: <city>-telegram.service; on macOS the launchd label's source (this name without its .service suffix)
+yard = "example"                            # the yard's name: the default unit's, and the conversations' scope
+state_dir = "/home/alex/.local/state/example-telegram"   # ledger, offset, message log, inbound files, heartbeat
+port = 8941                                 # the yard API's loopback port, unique per bridge on the host; the source's base
+token_file = "~/.config/example-telegram/telegram-bot-token"
+callback_secret_file = "~/.config/example-telegram/callback-secret"   # the yard API's secret: the source's TGBRIDGE_SECRET; install.sh mints it
+# lock_dir = "~/.config/example-telegram"   # default: the token file's directory
+# unit = "example-telegram.service"         # default: <yard>-telegram.service; on macOS the launchd label's source (this name without its .service suffix)
 # python = "/usr/bin/python3"               # must be Python 3.11 or later; on macOS e.g. "/opt/homebrew/bin/python3"
 user_display_name = "Alex"                  # how inbound messages name the paired user
 timezone = "Europe/Berlin"                  # times in notices; default UTC
-# gc_base_url = "http://127.0.0.1:8372"     # loopback only
-# gc_api_token_file = "~/.config/example-city/gc-api-token"
-# health_file = "/home/alex/example-city/health.json"  # quota-exhausted notice
+# health_file = "/home/alex/example/health.json"  # quota-exhausted notice: {"sessions": [{"template", "status": "quota_wait", "episode", "until"}]}
 # pairing_update_id = 0                     # the update_id of the /start update (README step 3): the bridge starts after it; read only for a new ledger
-# agent = "mayor"                           # the gc agent this bridge serves; default mayor
-# handler_write_paths = ["/home/alex/example-city/var/deploy"]  # dirs [[command]] handlers may write
+# crew = "yardmaster"                       # the crew member the topics' subscribe lines name, and the quota notice watches; default yardmaster
+# handler_write_paths = ["/home/alex/example/var/deploy"]  # dirs [[command]] handlers may write
+
+# The yard this bridge relays to (YARDR.md): its hook listener on loopback
+# (the yard's hook_addr) and the hook's name, and the secret the hook was
+# added with (yardr hook add tgbridge --source tgbridge --secret-file <it>).
+[yardr]
+hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
+hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints it
+# source = "tgbridge"                       # the declared source's name, in printed lines
 
 [bot]
 bot_id = 1000000001                         # numeric: getMe's id
 user_id = 1000000002                        # the paired user's id: the /start message's from.id
 chat_id = 1000000002                        # its chat.id; a private chat, so equal to user_id
-account_id = "example_city_bot"             # getMe's username, the GC adapter account
+account_id = "example_yard_bot"             # getMe's username
 
 # The paired chat's "/" menu, in order (`bridge.py set-commands` registers it).
 [[menu]]
 command = "status"
 description = "Show the agent's status"
 
-# A command the city's own handler answers instead of the agent (OPERATIONS.md,
-# "City commands"): /deploy, and button presses whose data starts with "deploy:".
+# A command a handler of your own answers instead of the yard (OPERATIONS.md,
+# "Commands"): /deploy, and button presses whose data starts with "deploy:".
 # An add-on is one such table; adding and removing one: README.md, "Add-ons".
 # [[command]]
 # name = "deploy"
 # description = "Deploy a branch"
-# handler = "/home/alex/example-city/bin/telegram-deploy"   # or url = "http://127.0.0.1:8095/deploy"
+# handler = "/home/alex/example/bin/telegram-deploy"   # or url = "http://127.0.0.1:8095/deploy"
 # menu = true                               # in the "/" menu; default true
 # callback_prefix = "deploy:"               # default "<name>:"
 # timeout = 10                              # seconds, 1-3600
 
 # Reactions on the paired user's messages (OPERATIONS.md, "Reactions").
 # [reactions]
-# on_accept = true                          # set `seen` once GC has a message; default false: no reaction unless an agent runs react
+# on_accept = true                          # set `seen` once the yard has a message; default false: no reaction unless an agent runs react
 # seen = "👀"                               # default 👀
-# done = "👌"                               # `gc telegram react --reaction done`; default 👌 (✅ is not an allowed reaction)
+# done = "👌"                               # `yardr call tgbridge react reaction=done`; default 👌 (✅ is not an allowed reaction)
 
-# "typing..." in the chat after each message GC accepts, until the agent's next
+# "typing..." in the chat after each message the yard accepts, until the next
 # send (OPERATIONS.md, "Typing").
 # [typing]
 # seconds = 300                             # the longest it shows after the latest accepted message, 0-900; default 0: never
 
-# Topics in the paired private chat, each its own GC conversation (OPERATIONS.md,
-# "Topics"): `gc telegram topics` creates each once and prints the line that binds it.
+# Topics in the paired private chat, each its own conversation (OPERATIONS.md,
+# "Topics"): `bridge.py topics` creates each once and prints the yardr subscribe
+# line that routes it to a crew member.
 # [[topic]]
 # name = "ops"                              # the topic's name in the chat, 1-128 characters, unique ignoring case
-# agent = "mayor"                           # the gc agent its bind line names; default the settings' agent
+# crew = "secretary"                        # the crew member its subscribe line names; default the settings' crew
 # [[topic]]
 # name = "web"
 
 # Topics the paired user creates in the chat, when BotFather lets users create
-# topics (OPERATIONS.md, "Topics"): each is served on its own GC conversation,
-# bound to the settings' agent.
+# topics (OPERATIONS.md, "Topics"): each is served on its own conversation;
+# the yard routes it by its name (yardr subscribe … --where topic=<name>).
 # [auto_topics]
 # enabled = true                            # default false: only the [[topic]] tables are served
 
 [transcribe]
 enabled = true                              # voice and audio notes get a transcript in the configured language
-# whisper_cli and models_dir default to ~/work/whisper.cpp, the build every city on the host shares; set both to place it elsewhere.
+# whisper_cli and models_dir default to ~/work/whisper.cpp, the build every bridge on the host shares; set both to place it elsewhere.
 # whisper_cli = "~/work/whisper.cpp/build/bin/whisper-cli"
 # models_dir = "~/work/whisper.cpp/models"
 # model = "large-v3-turbo-q5_0"
@@ -83,8 +90,8 @@ enabled = true                              # voice and audio notes get a transc
 # timeout = 120                             # base seconds, 1-3600
 # timeout_per_minute = 120                  # added per minute of audio; killed when the total runs out
 # method = "cpu"                            # auto, cpu or gpu (default cpu); set method instead of gpu below
-# gpu_check = "/home/alex/example-city/bin/gpu-check"  # method auto only; default the pack's transcriber/gpu_check.py
+# gpu_check = "/home/alex/example/bin/gpu-check"  # method auto only; default the pack's transcriber/gpu_check.py
 # gpu = false                               # legacy form without method: true behaves as method = "auto", false as method = "cpu"
 # gpu_min_free_mb = 2048                    # free video memory a GPU run needs, MiB
-# Every city on the host waits in one transcription queue,
+# Every bridge on the host waits in one transcription queue,
 # ~/.local/state/voice-transcribe; it is deliberately not a setting.

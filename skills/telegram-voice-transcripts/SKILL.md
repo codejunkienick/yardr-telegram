@@ -1,23 +1,26 @@
 ---
 name: telegram-voice-transcripts
-description: Voice and audio notes from the paired Telegram chat - the "transcribing" note and the follow-up transcript in the configured language, the fixed failure reasons, how much to trust a transcript, and re-running one by hand with voice-transcribe (whisper.cpp, configured language). Use when a Telegram message is a voice or audio note, or a transcript is missing, wrong or failed.
+description: Voice and audio notes from the operator's Telegram chat - the "transcribing" note and the follow-up transcript in the configured language, the fixed failure reasons, how much to trust a transcript, and re-running one by hand with voice-transcribe (whisper.cpp, configured language). Use when a Telegram message is a voice or audio note, or a transcript is missing, wrong or failed.
 ---
 
 # Telegram voice transcripts
 
-With transcription on in the city's settings, a voice or audio note arrives as
-two messages:
+With transcription on in the bridge's settings, a voice or audio note arrives
+as two deliveries:
 
 1. At once: `[attachment saved: <path> | voice <m:ss> | transcribing]` (and the
    caption, if any). The file is already saved; wait for the second message
    before acting on the note.
-2. Seconds to a few minutes later, from the same chat:
+2. Seconds to a few minutes later, from the same chat (its `kind` is
+   `transcript`):
    `[voice <m:ss> transcript (msg <id>): <text>] (audio: <path>)`.
+   The inbox keeps 500 characters of it: a longer note's transcript is
+   cut there, so read it whole with `yardr thread show <seq>`.
 
 A note written in a topic of the chat has a topic line first,
-`[topic: <name>]` (or a `not bound` or `not configured` label), on both
-messages; the lines above follow it, and the transcript arrives on the same
-conversation as its note.
+`[topic: <name>]` (or a `not configured` label), on both messages; the lines
+above follow it, and the transcript arrives on the same conversation as its
+note.
 
 The transcript is the user's message. Act on it as if typed, and quote it
 lightly cleaned when you write it into a bead or a reply. With transcription
@@ -48,10 +51,10 @@ The reason is one of: `no speech detected` (silence or noise),
 confined to its configured CPUs`, `transcriber missing
 (...)` (the host's whisper.cpp install or the pack's adapter), `invalid
 output`, `output too large`, `transcriber exited with an error`. A `missing`
-reason is an install problem for the operator (`<pack>/install.sh`); the
-others are per note.
+reason is an install problem for the operator
+(`~/work/yardr-telegram/install.sh`); the others are per note.
 
-`voice-transcribe` is the link install.sh puts in `~/.local/bin`. If it is missing, run `python3 <pack>/transcriber/voice_transcribe.py` with the same arguments, or ask the operator to run `<pack>/install.sh --settings <file>`.
+`voice-transcribe` is the link install.sh puts in `~/.local/bin`. If it is missing, run `python3 ~/work/yardr-telegram/transcriber/voice_transcribe.py` with the same arguments, or ask the operator to run `~/work/yardr-telegram/install.sh --settings <file>`.
 
 Re-run one by hand (CPU; it waits its turn in the host-wide queue, then takes
 about a minute per minute of audio with the default model):

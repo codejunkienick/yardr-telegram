@@ -1,7 +1,7 @@
-"""Closing a mayor ask with the decision made (OPERATIONS.md A6): the guarded
-ledger write, the shared edit step, a tap racing a close, the decided column
-of an existing ledger, the ask-close CLI and the gc telegram ask-close
-command, all with the fake Telegram and temporary directories."""
+"""Closing an agent's ask with the decision made (OPERATIONS.md A6): the
+guarded ledger write, the shared edit step, a tap racing a close, the decided
+column of an existing ledger and the ask-close CLI, run in-process and as
+bridge.py itself, all with the fake Telegram and temporary directories."""
 from contextlib import closing
 import io
 import json
@@ -20,7 +20,6 @@ import test_bridge  # noqa: E402
 from test_bridge import BridgeTestCase, run_main, write_fake_curl, write_settings  # noqa: E402
 
 PACK = Path(__file__).resolve().parents[1]
-INBOUND = '/v0/city/test-city/extmsg/inbound'
 HTML_REJECTED = 400, dict(ok=False, error_code=400, description="Bad Request: can't parse entities: x")
 
 
@@ -42,8 +41,9 @@ class AskCloseTests(BridgeTestCase):
         self.bridge.request = self.ask_transport
         self.bridge.sleep = lambda delay: None
 
-    def gc_calls(self):
-        return [url for url, _ in self.calls if url.startswith(self.bridge.base)]
+    def yard_calls(self):
+        """The deliveries posted to the yard's hook."""
+        return [url for url, _ in self.calls if url == self.bridge.hook_url]
 
     def edits(self):
         return self.sent('editMessageText') + self.sent('editMessageCaption')
@@ -67,7 +67,7 @@ class AskCloseTests(BridgeTestCase):
         self.assertEqual(edit['reply_markup'], {'inline_keyboard': []})
         self.assertNotIn('parse_mode', edit)
         self.assertEqual(self.sent('editMessageCaption'), [])
-        self.assertEqual(self.gc_calls(), [])
+        self.assertEqual(self.yard_calls(), [])
         ask = self.store.get_ask(self.ask_id())
         self.assertTrue(ask['answered'])
         self.assertTrue(ask['decided'])
@@ -158,7 +158,7 @@ class AskCloseTests(BridgeTestCase):
         self.bridge.drain([self.press(uid=41)])
         self.assertEqual(self.sent('answerCallbackQuery'),
                          [dict(callback_query_id='query-41', text='Already answered')])
-        self.assertEqual(self.gc_calls(), [])
+        self.assertEqual(self.yard_calls(), [])
         self.assertEqual(len(self.edits()), 1)
         self.assertEqual(self.store.get_ask(self.ask_id())['answer'], 'Later')
         self.assertEqual(self.store.offset(), 42)
@@ -190,7 +190,7 @@ class AskCloseTests(BridgeTestCase):
             self.bridge.drain([self.press(uid=41)])
         # The race note: this callback was answered empty before the mark.
         self.assertEqual(self.sent('answerCallbackQuery'), [dict(callback_query_id='query-41')])
-        self.assertEqual(self.gc_calls(), [])
+        self.assertEqual(self.yard_calls(), [])
         [edit] = self.sent('editMessageText')
         self.assertEqual(edit['text'], 'Pick one?\n✓ Decided: Later')
         self.assertEqual(edit['reply_markup'], {'inline_keyboard': []})
@@ -270,7 +270,7 @@ class AskCloseTests(BridgeTestCase):
         self.assertEqual(log.getvalue().splitlines(), ['ask edit not confirmed (update 41)'])
         self.assertEqual(len(self.sent('editMessageText')), 1)
         self.assertEqual(self.sent('answerCallbackQuery')[-1]['text'], 'Already answered')
-        self.assertEqual(self.gc_calls(), [])
+        self.assertEqual(self.yard_calls(), [])
 
     def test_a_not_sent_edit_is_retried_by_a_repeat(self):
         state = dict(down=True)
@@ -322,7 +322,7 @@ class AskCloseTests(BridgeTestCase):
         self.bridge.drain([self.press(uid=41)])
         [edit] = self.sent('editMessageText')
         self.assertEqual(edit['text'], 'Old question?\n✓ Yes')
-        self.assertEqual(len([url for url in self.gc_calls() if url.endswith(INBOUND)]), 1)
+        self.assertEqual(len(self.yard_calls()), 1)
         ask = self.store.get_ask(ask_id)
         self.assertEqual((ask['answered'], ask['decided'], ask['relayed'], ask['answer']), (True, False, True, 'Yes'))
 
@@ -430,16 +430,16 @@ class AskCloseCliTests(unittest.TestCase):
         args = parser.parse_args(['ask-close', '--ask-key', 'k', '--decision', ''])
         b._validate_attachment_flags(parser, args)  # an empty decision is the bridge's decision_required
 
-    def test_the_pack_command_closes_a_recorded_ask(self):
+    def test_bridge_py_with_the_settings_from_the_environment_closes_a_recorded_ask(self):
         store, ask_id = self.record_ask()
         bin_dir = self.root / 'bin'
         write_fake_curl(bin_dir, f'#!{sys.executable}\nimport json, sys, uuid\nfrom pathlib import Path\n'
                         f'Path({str(self.root)!r}, "curl-" + uuid.uuid4().hex).write_text(sys.stdin.read())\n'
                         'print(json.dumps({"ok": True, "result": {"message_id": 42, "chat": {"id": 123}}}))\n'
                         'print("200 0.010000 0.020000 0", end="")\n')
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GC_')}
+        env = dict(os.environ)
         env.update(PATH=f'{bin_dir}:{env["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
-        result = subprocess.run(['sh', str(PACK / 'commands' / 'ask-close' / 'run.sh'),
+        result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), 'ask-close',
                                  '--message-id', '42', '--decision', 'Typed: merge it'],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)

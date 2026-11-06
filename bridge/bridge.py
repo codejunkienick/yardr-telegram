@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private Telegram transport for GC 1.4.1; no agent or decision engine.
+"""Private Telegram transport for a yardr yard; no agent or decision engine.
 
 One process per city, configured only by that city's settings file
 (settings.example.toml in this pack); nothing city-specific lives here."""
@@ -47,8 +47,8 @@ CURL_CONNECT_TIMEOUT = 5
 # failed before any request byte left this host are tried again inside the
 # send's reservation, SEND_ATTEMPTS in all with SEND_RETRY_DELAYS seconds
 # between them, each limited to SEND_ATTEMPT_TIMEOUT. Every attempt and wait
-# of the send fits in SEND_BUDGET seconds, below GC's 30 s wait on the publish
-# callback; an attempt after the first starts only with SEND_MIN_ATTEMPT
+# of the send fits in SEND_BUDGET seconds, below the 30 s the yard gives a
+# source's command or call; an attempt after the first starts only with SEND_MIN_ATTEMPT
 # seconds left, so a short limit never cuts a request that already went out
 # into an ambiguous one.
 SEND_ATTEMPTS = 3
@@ -56,9 +56,16 @@ SEND_RETRY_DELAYS = (1, 3)
 SEND_ATTEMPT_TIMEOUT = 20
 SEND_BUDGET = 25
 SEND_MIN_ATTEMPT = 6
-# GC waits 30 s for the bridge's publish callback; the CLI's relay to GC waits
-# longer, so it reads GC's verdict instead of timing out first.
-GC_OUTBOUND_TIMEOUT = 35
+# The yard's hook listener answers a delivery once it is durable; the bridge
+# waits this long for that answer before it keeps the cursor and retries.
+YARD_HOOK_TIMEOUT = 20
+# The yard API's request bound (OPERATIONS.md, "The yard API"), and the
+# messages /v1/read returns at most and by default.
+YARD_API_MAX_BODY = 262144
+READ_LIMIT_MAX = 200
+READ_LIMIT_DEFAULT = 50
+# The newest messages the message log keeps per conversation.
+MESSAGE_LOG_KEEP = 500
 # The receipt of a send whose every attempt failed before sending: delivered
 # false, failure_kind transient. Its ledger row is not final.
 NOT_SENT_REASON = 'transport_unavailable_not_sent'
@@ -391,6 +398,16 @@ def html_text(value):
     return html_escape(str(value), quote=False)
 
 
+def auto_format(text):
+    """The format `auto` sends (YARDR.md, "Outbound"): html when the text is
+    valid under the HTML subset and holds a tag or an entity, else plain, so
+    a body with a stray < or & goes as the words it is."""
+    if not isinstance(text, str) or ('<' not in text and '&' not in text):
+        return 'plain'
+    _, error = html_visible_text(text)
+    return 'plain' if error else 'html'
+
+
 def html_visible_text(text):
     """Validate Telegram HTML; return (visible text, None) or (None, reason).
 
@@ -542,6 +559,14 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS auto_topics (thread_id INTEGER PRIMARY KEY, name TEXT, '
                        'name_implicit INTEGER NOT NULL DEFAULT 0, agent TEXT NOT NULL, detected_at TEXT NOT NULL, '
                        'bound_at TEXT)')
+            # The message log (YARDR.md, "Inbound"): each message the yard
+            # recorded and each send Telegram confirmed, whole, per
+            # conversation, the newest MESSAGE_LOG_KEEP of each; /v1/read
+            # serves it, since the yard keeps 500 characters of a delivery.
+            db.execute('CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, '
+                       'conversation_id TEXT NOT NULL, direction TEXT NOT NULL, message_id TEXT NOT NULL, '
+                       'sender TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL, '
+                       'UNIQUE (conversation_id, direction, message_id))')
 
     @contextlib.contextmanager
     def connect(self):
@@ -556,6 +581,24 @@ class Store:
     def offset(self):
         with self.connect() as db:
             return db.execute('SELECT offset FROM cursor WHERE id=1').fetchone()[0]
+
+    def log_message(self, conversation_id, direction, message_id, sender, text, at):
+        """Add one message to the log once (a replayed send or relay adds
+        nothing) and keep the newest MESSAGE_LOG_KEEP of its conversation."""
+        with self.connect() as db:
+            db.execute('INSERT OR IGNORE INTO messages (conversation_id, direction, message_id, sender, text, at) '
+                       'VALUES (?, ?, ?, ?, ?, ?)', (conversation_id, direction, str(message_id), sender, text, at))
+            db.execute('DELETE FROM messages WHERE conversation_id=? AND seq NOT IN '
+                       '(SELECT seq FROM messages WHERE conversation_id=? ORDER BY seq DESC LIMIT ?)',
+                       (conversation_id, conversation_id, MESSAGE_LOG_KEEP))
+
+    def read_messages(self, conversation_id, limit):
+        """The newest `limit` messages of a conversation, oldest first, each
+        {id, direction, from, text, at}."""
+        with self.connect() as db:
+            rows = db.execute('SELECT message_id, direction, sender, text, at FROM messages '
+                              'WHERE conversation_id=? ORDER BY seq DESC LIMIT ?', (conversation_id, limit)).fetchall()
+        return [dict(id=row[0], direction=row[1], **{'from': row[2]}, text=row[3], at=row[4]) for row in reversed(rows)]
 
     def advance(self, offset):
         with self.connect() as db:
@@ -811,11 +854,13 @@ class Store:
 
 def check_bridge_config(config, *, settings=False):
     """The one validation of a bridge config's identity: the bot, user and
-    chat ids are positive integers in a private pairing, the city and agent
+    chat ids are positive integers in a private pairing, the yard and crew
     names match NAME_RE, an account is present, the timezone is known and
-    the GC URL is plain HTTP on 127.0.0.1 without a path or user. Returns
-    (city, account, agent, local_tz, base). With settings=True every refusal
-    is a SettingsError naming its key; otherwise a TransportError."""
+    the yard's hook URL, when set, is plain HTTP on a loopback address with
+    a /hooks/<name> path and no user. Returns (yard, account, agent,
+    local_tz, hook_url); agent is the crew member, hook_url None when unset.
+    With settings=True every refusal is a SettingsError naming its key;
+    otherwise a TransportError."""
     def fail(bridge_message, settings_message):
         raise SettingsError(settings_message) if settings else TransportError(bridge_message)
 
@@ -827,67 +872,110 @@ def check_bridge_config(config, *, settings=False):
     if config['chat_id'] != config['user_id']:
         fail('private chat ID must match authorized user ID',
              'settings: bot.chat_id must equal bot.user_id (a private chat with the paired user)')
-    city = config.get('city')
-    if not isinstance(city, str) or not NAME_RE.fullmatch(city):
-        fail('city name required', 'settings: city is missing or malformed')
+    yard = config.get('yard')
+    if not isinstance(yard, str) or not NAME_RE.fullmatch(yard):
+        fail('yard name required', 'settings: yard is missing or malformed')
     account = config.get('account_id', config.get('bot_username'))
     if not account:
         fail('account_id required', 'settings: bot.account_id is missing or malformed')
-    agent = config.get('agent', 'mayor')
+    agent = config.get('agent', 'yardmaster')
     if not isinstance(agent, str) or not NAME_RE.fullmatch(agent):
-        fail('agent name required', 'settings: agent is missing or malformed')
+        fail('crew name required', 'settings: crew is missing or malformed')
     try:
         local_tz = zoneinfo.ZoneInfo(config.get('timezone') or 'UTC')
     except (ValueError, TypeError, zoneinfo.ZoneInfoNotFoundError):
         fail('timezone is not a known time zone', 'settings: timezone is not a known time zone')
-    base_value = config.get('gc_base_url', 'http://127.0.0.1:8372')
-    base = base_value.rstrip('/') if isinstance(base_value, str) else ''
+    hook_url = config.get('hook_url')
+    if hook_url is not None and not valid_hook_url(hook_url):
+        fail('the yard hook URL must be plain HTTP on a loopback address, path /hooks/<name>',
+             'settings: yardr.hook_url must be http://<loopback address>:<port>/hooks/<name>, with no user, query or fragment')
+    return yard, account, agent, local_tz, hook_url
+
+
+HOOK_PATH_RE = re.compile(r'/hooks/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
+
+
+def valid_hook_url(value):
+    """True for http://<loopback>:<port>/hooks/<name>: the yard's hook
+    listener on this machine, never another host and never https (the
+    listener speaks plain HTTP, and the secret must not leave the host)."""
+    if not isinstance(value, str) or len(value) > 256 or '?' in value or '#' in value:
+        return False
     try:
-        parsed = urlsplit(base)
-        bad_gc_url = (not base or parsed.scheme != 'http' or parsed.hostname != '127.0.0.1'
-                      or parsed.path or parsed.username)
+        parsed = urlsplit(value)
+        port = parsed.port
     except ValueError:
-        bad_gc_url = True
-    if bad_gc_url:
-        fail('GC URL must be plain HTTP on 127.0.0.1 without a path',
-             'settings: gc_base_url must be plain HTTP on 127.0.0.1 without a path or user')
-    return city, account, agent, local_tz, base
+        return False
+    host = parsed.hostname or ''
+    return (parsed.scheme == 'http' and port is not None and 1 <= port <= 65535
+            and host in ('127.0.0.1', '::1', 'localhost')
+            and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+            and HOOK_PATH_RE.fullmatch(parsed.path) is not None)
+
+
+class ApiError(Exception):
+    """A yard API request refused before anything was sent: HTTP 400 with
+    {"error": <the message>}."""
 
 
 def _callback_handler(bridge):
+    """The yard API on the loopback port (YARDR.md, "Outbound"): every
+    request carries Authorization: Bearer <callback secret>, the yard
+    source's credential; every answer is one JSON object."""
+    routes = {'/v1/send': 'api_send', '/v1/tell': 'api_tell', '/v1/posted': 'api_posted', '/v1/read': 'api_read',
+              '/v1/react': 'api_react', '/v1/pin': 'api_pin', '/v1/ask-close': 'api_ask_close'}
+
     class Handler(http.server.BaseHTTPRequestHandler):
         timeout = 5
 
         def log_message(self, *_):
             pass
 
+        def _authorized(self):
+            given = self.headers.get('Authorization') or ''
+            return bridge.secret is not None and hmac.compare_digest(given.encode(), b'Bearer ' + bridge.secret.encode())
+
+        def _answer(self, status, value):
+            payload = json.dumps(value).encode()
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            if not self._authorized():
+                self._answer(403, dict(error='forbidden'))
+            elif self.path == '/v1/health':
+                self._answer(200, bridge.api_health())
+            else:
+                self._answer(404, dict(error='not found'))
+
         def do_POST(self):
-            if (not hmac.compare_digest(self.path, '/' + bridge.secret + '/publish')
-                or self.headers.get('X-GC-Request') not in ('1', 'true')):
-                self.send_error(403)
+            if not self._authorized():
+                self._answer(403, dict(error='forbidden'))
+                return
+            method = routes.get(self.path)
+            if method is None:
+                self._answer(404, dict(error='not found'))
                 return
             try:
                 length = int(self.headers.get('Content-Length', '-1'))
-                if not 0 < length <= 65536:
-                    raise ValueError()
+                if not 0 < length <= YARD_API_MAX_BODY:
+                    raise ApiError('a JSON object of at most 256 KiB is required')
                 request = json.loads(self.rfile.read(length))
                 if not isinstance(request, dict):
-                    raise ValueError()
-                if 'attachment' in request or 'attachments' in request:
-                    result = bridge.receipt(reason='attachment_not_accepted_over_callback')
-                else:
-                    result = bridge.publish(request)
-                payload = json.dumps(result).encode()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                    raise ApiError('a JSON object is required')
+                result = getattr(bridge, method)(request, key_header=self.headers.get('Idempotency-Key'))
+                self._answer(200, result)
+            except ApiError as error:
+                self._answer(400, dict(error=str(error)))
             except (ValueError, UnicodeError):
-                self.send_error(400)
-            except Exception:
-                # Never expose raw exceptions (may contain payload or secrets).
-                self.send_error(500, 'Delivery unconfirmed')
+                self._answer(400, dict(error='a JSON object is required'))
+            except TransportError as error:
+                self._answer(400, dict(error=str(error)))
+            except Exception:  # noqa: BLE001 - never expose a raw exception: it may carry a payload or a secret
+                self._answer(500, dict(error='delivery unconfirmed'))
     return Handler
 
 
@@ -980,7 +1068,10 @@ class Bridge:
         # The bridge's own directory: ledger, offset, inbound files, heartbeat.
         self.state_dir = Path(state_dir) if state_dir is not None else None
         self.protected_paths = tuple(config.get('protected_paths', ()) or ())
-        self.city, self.account, self.agent, self.local_tz, self.base = check_bridge_config(config)
+        self.yard, self.account, self.agent, self.local_tz, self.hook_url = check_bridge_config(config)
+        # The yard's hook secret (YARDR.md, "Inbound"): read from its file by
+        # main(), never written anywhere; None in a process that relays nothing.
+        self.hook_secret = config.get('hook_secret')
         self.display_name = config.get('user_display_name') or 'User'
         self.unit = config.get('unit')
         self.menu = tuple(config.get('menu') or ())
@@ -993,10 +1084,10 @@ class Bridge:
         # Whether the topics the paired user creates are served ([auto_topics]);
         # their rows live in the ledger and stay there while this is off.
         self.auto_topics = (config.get('auto_topics') or {}).get('enabled') is True
-        # The gc agent this bridge serves (check_bridge_config validated it):
-        # inbound must be routed to it, and the quota-exhaustion notice
-        # watches its session.
-        self.conversation = dict(scope_id=self.city, provider='telegram', account_id=self.account,
+        # The crew member this bridge names (check_bridge_config validated
+        # it): the topics' subscription lines name it, and the
+        # quota-exhaustion notice watches its session.
+        self.conversation = dict(scope_id=self.yard, provider='telegram', account_id=self.account,
                                  conversation_id=str(config['chat_id']), kind='dm')
         self.publish_lock = threading.Lock()
         self.stop = threading.Event()
@@ -1065,20 +1156,25 @@ class Bridge:
         self._log(f'telegram {method} attempt {attempt}/{SEND_ATTEMPTS} {outcome}: '
                   f"curl exit {'-' if code is None else code}, phase {phase}, {ms} ms")
 
-    def gc_request(self, path, body, method='POST', timeout=20):
-        """One GC extmsg API call: (HTTP status, parsed body)."""
-        headers = {'X-GC-Request': '1'}
-        token_path = self.config.get('gc_api_token_path')
-        if token_path:
-            headers['Authorization'] = 'Bearer ' + private_text(token_path)
-        return self.request(self.base + '/v0/city/' + quote(self.city, safe='') + '/extmsg/' + path,
-                            body, timeout, headers=headers, method=method)
-
-    def gc(self, path, body, method='POST', timeout=20):
-        status, result = self.gc_request(path, body, method, timeout)
-        if not 200 <= status < 300 or not isinstance(result, dict):
-            raise TransportError('GC request rejected or unconfirmed')
-        return result
+    def post_to_yard(self, body):
+        """Hand one inbound entry to the yard's hook (YARDR.md, "Inbound").
+        True when the yard recorded it, new or as a duplicate of an earlier
+        delivery of the same id; every other answer raises TransportError,
+        which keeps the inbound cursor. A delivery the yard drops (a sender
+        it does not hear) raises too: a stalled cursor is visible in the
+        log, a dropped message is not."""
+        if not self.hook_url or not self.hook_secret:
+            raise TransportError('no yard to relay to: [yardr] hook_url and hook_secret_file are required')
+        status, result = self.request(self.hook_url, body, timeout=YARD_HOOK_TIMEOUT,
+                                      headers={'X-Tgbridge-Secret': self.hook_secret})
+        if not 200 <= status < 300:
+            raise TransportError(f'the yard refused the delivery (HTTP {status}); yardr hook list shows why')
+        if isinstance(result, dict) and result.get('dropped') is True:
+            raise TransportError('the yard dropped the delivery: the sender is not heard '
+                                 '(yardr user identity <user> --source <source> --id <user_id>)')
+        if not isinstance(result, dict) or type(result.get('seq')) is not int or result['seq'] <= 0:
+            raise TransportError('the yard has not confirmed the delivery')
+        return True
 
     def probe(self):
         status, data = self.telegram('getMe', {})
@@ -1141,13 +1237,6 @@ class Bridge:
                 if wait(delay):
                     return False
                 delay = min(delay * 2, PROBE_RETRY_MAX_DELAY)
-
-    def register(self):
-        # SupportsAttachments stays False until GC's handling of it is
-        # confirmed. Flip only after confirming GC tolerates it correctly.
-        return self.gc('adapters', dict(provider='telegram', account_id=self.account, name='city-private-telegram',
-            callback_url=f'http://127.0.0.1:{self.port}/{self.secret}',
-            capabilities=dict(SupportsChildConversations=False, SupportsAttachments=False, MaxMessageLength=4096)))
 
     def _largest_photo_size(self, sizes):
         candidates = [s for s in sizes if isinstance(s, dict) and isinstance(s.get('file_id'), str) and s['file_id']]
@@ -1730,7 +1819,8 @@ class Bridge:
         # file without "thread_id" relays as General.
         while True:
             try:
-                self._relay(mid, f'{mid}-transcript', text, thread_id=state.get('thread_id'))
+                self._relay(mid, f'{mid}-transcript', text, thread_id=state.get('thread_id'), kind='transcript',
+                            forwarded='forwarded' in state)
                 self._pending_delete(day_dir, mid)
                 return
             except TransportError:
@@ -1791,123 +1881,70 @@ class Bridge:
                 queued += 1
         return queued
 
-    class _TopicNotBound(TransportError):
-        """GC routed a topic's message nowhere: no binding, no default route."""
-
-    def _relay_to_gc(self, provider_message_id, text, reply=None, conversation=None, agent=None):
+    def _relay_to_yard(self, provider_message_id, text, reply=None, conversation=None, topic=None,
+                       kind='message', forwarded=False):
         """Relay one inbound entry on `conversation` (default the paired
-        chat's) and require GC to confirm it durably, routed to `agent`
-        (default the settings' agent). On a topic's conversation, GC's empty
-        target with no entry raises _TopicNotBound; every other
-        non-confirmation raises TransportError."""
+        chat's), in `topic` (default general), and require the yard to record
+        it (post_to_yard). The entry's id is the bot, the conversation and the
+        provider message id, so the yard dedupes a retried relay by it. The
+        whole text goes to the message log once the yard has it, for
+        /v1/read: the yard keeps 500 characters of it."""
         conversation = conversation or self.conversation
-        agent = agent or self.agent
-        normalized = dict(provider_message_id=str(provider_message_id), conversation=conversation,
-            actor=dict(id=str(self.config['user_id']), display_name=self.display_name, is_bot=False), text=text,
-            received_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
-        if reply is not None:
-            normalized['reply_to_message_id'] = str(reply)
-        result = self.gc('inbound', {'message': normalized})
-        # GC can return HTTP 200 without a transcript when routing is absent or
-        # hydration is pending. Only a matching durable entry acknowledges input.
-        entry = result.get('TranscriptEntry')
-        if (conversation != self.conversation and entry is None
-                and result.get('TargetAgentName', '') == '' and result.get('TargetSessionID', '') == ''):
-            raise self._TopicNotBound('GC routed the topic to no agent')
-        if (result.get('TargetAgentName') != agent or result.get('TargetSessionID')
-            or not isinstance(entry, dict)
-            or not isinstance(entry.get('ID'), str) or not entry['ID']
-            or type(entry.get('Sequence')) is not int or entry['Sequence'] <= 0
-            or entry.get('Kind') != 'inbound'
-            or entry.get('Conversation') != conversation
-            or entry.get('ProviderMessageID') != str(provider_message_id)
-            or entry.get('Actor') != normalized['actor']):
-            raise TransportError('GC has not confirmed a matching durable inbound entry routed to the agent')
+        conversation_id = conversation['conversation_id']
+        thread_id = None
+        if ':topic:' in conversation_id:
+            thread_id = int(conversation_id.rpartition(':topic:')[2])
+        received_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        body = {
+            'id': f"{self.config['bot_id']}:{conversation_id}:{provider_message_id}",
+            'kind': kind,
+            'chat': str(self.config['chat_id']),
+            'conversation': conversation_id,
+            'topic': topic or 'general',
+            'thread_id': thread_id,
+            'message_id': str(provider_message_id),
+            'reply_to': None if reply is None else str(reply),
+            'from': {'id': str(self.config['user_id']), 'name': self.display_name},
+            'text': text,
+            'forwarded': bool(forwarded),
+            'received_at': received_at,
+        }
+        self.post_to_yard(body)
+        if self.store is not None:
+            try:
+                self.store.log_message(conversation_id, 'in', str(provider_message_id), self.display_name, text,
+                                       received_at)
+            except Exception:  # noqa: BLE001 - the yard already has it; the log is a convenience
+                self._log(f'inbound message not logged (msg {provider_message_id})')
 
-    def _relay(self, mid, provider_message_id, text, reply=None, thread_id=None):
+    def _relay(self, mid, provider_message_id, text, reply=None, thread_id=None, kind='message', forwarded=False):
         """Relay one message on the conversation of its topic thread
-        (OPERATIONS.md, "Topics"). General (thread_id None) relays exactly as
-        without topics. A configured, recorded topic relays on its own
-        conversation under a `[topic: <name>]` line; when GC routes it
-        nowhere, once more on the paired chat's, labelled not bound. A thread
-        no topic is configured or recorded for relays on the paired chat's,
-        labelled not configured, unless [auto_topics] serves it (_relay_auto).
-        Any other failure raises and retains the cursor. Returns the
-        conversation GC accepted the message on."""
+        (OPERATIONS.md, "Topics"). General (thread_id None) relays on the
+        paired chat's conversation. A configured, recorded topic relays on its
+        own conversation under a `[topic: <name>]` line, and so does a topic
+        [auto_topics] serves, under its display name; the yard routes each by
+        its subscriptions. A thread no topic is configured or recorded for
+        relays on the paired chat's, labelled not configured. Any failure
+        raises and retains the cursor. Returns the conversation the yard
+        recorded the message on."""
         if thread_id is None:
-            self._relay_to_gc(provider_message_id, text, reply)
+            self._relay_to_yard(provider_message_id, text, reply, kind=kind, forwarded=forwarded)
             return self.conversation
         topic = self.topic_by_thread(thread_id)
         if topic is None:
             auto = self._auto_topic(thread_id)
             if auto is not None:
-                return self._relay_auto(mid, provider_message_id, text, reply, auto)
-            self._relay_to_gc(provider_message_id,
-                              f'[topic: thread {thread_id} | not configured: reply lands in the main chat]\n{text}',
-                              reply)
+                self._relay_to_yard(provider_message_id, f"[topic: {auto['display_name']}]\n{text}", reply,
+                                    auto['conversation'], auto['display_name'], kind=kind, forwarded=forwarded)
+                return auto['conversation']
+            self._relay_to_yard(provider_message_id,
+                                f'[topic: thread {thread_id} | not configured: reply lands in the main chat]\n{text}',
+                                reply, kind=kind, forwarded=forwarded)
             self._log(f'topic thread {thread_id} not configured (msg {mid}); relayed to the main conversation')
             return self.conversation
-        try:
-            self._relay_to_gc(provider_message_id, f"[topic: {topic['name']}]\n{text}", reply,
-                              topic['conversation'], topic['agent'])
-            return topic['conversation']
-        except self._TopicNotBound:
-            self._relay_to_gc(provider_message_id,
-                              f"[topic: {topic['name']} | not bound: reply lands in the main chat]\n{text}", reply)
-            self._log(f'topic thread {thread_id} not bound (msg {mid}); relayed to the main conversation')
-            return self.conversation
-
-    def _relay_auto(self, mid, provider_message_id, text, reply, topic):
-        """Relay one message of a topic the paired user created on its own
-        conversation under `[topic: <display name>]`, binding it first when
-        its row has no bound_at. When GC routes it nowhere, bound_at is
-        cleared and one more bind and relay are tried; when no bind is
-        confirmed, it relays on the paired chat's conversation, labelled not
-        bound. Any other failure raises and retains the cursor."""
-        thread_id, conversation = topic['thread_id'], topic['conversation']
-        bound = topic['bound_at'] is not None or self._bind_auto_topic(topic)
-        for retry in (False, True):
-            if not bound:
-                break
-            try:
-                self._relay_to_gc(provider_message_id, f"[topic: {topic['display_name']}]\n{text}", reply,
-                                  conversation, topic['agent'])
-                return conversation
-            except self._TopicNotBound:
-                # The binding is gone (removed by hand): bind once more.
-                self.store.set_auto_topic_bound(thread_id, False)
-                bound = not retry and self._bind_auto_topic(topic)
-        self._relay_to_gc(provider_message_id,
-                          f"[topic: {topic['display_name']} | not bound: reply lands in the main chat]\n{text}", reply)
-        self._log(f'topic thread {thread_id} not bound (msg {mid}); relayed to the main conversation')
-        return self.conversation
-
-    def _bind_auto_topic(self, topic):
-        """Bind an auto topic's conversation to its agent through GC
-        (OPERATIONS.md, "Topics the user creates"): never with replace, so a
-        conversation bound to anyone else stays theirs. True, with bound_at
-        set, only when GC confirmed an active binding to that agent; else
-        logs the category and returns False. Never raises for GC."""
-        thread_id, agent = topic['thread_id'], topic['agent']
-        try:
-            status, result = self.gc_request('bind', dict(conversation=topic['conversation'], agent_name=agent))
-        except RequestNotSent:
-            category = 'gc_unreachable'
-        except TransportError:
-            category = 'gc_unconfirmed'
-        else:
-            if status == 409:
-                category = 'gc_conflict'
-            elif not 200 <= status < 300:
-                category = f'gc_rejected_{status}'
-            elif (isinstance(result, dict) and result.get('AgentName') == agent
-                  and result.get('SessionID', '') == '' and result.get('Status') == 'active'):
-                self.store.set_auto_topic_bound(thread_id, True)
-                return True
-            else:
-                category = 'gc_unconfirmed'
-        self._log(f'auto topic thread {thread_id} not bound ({category})')
-        return False
+        self._relay_to_yard(provider_message_id, f"[topic: {topic['name']}]\n{text}", reply,
+                            topic['conversation'], topic['name'], kind=kind, forwarded=forwarded)
+        return topic['conversation']
 
     @staticmethod
     def _service_topic_name(service):
@@ -1920,7 +1957,7 @@ class Bridge:
     def _observe_auto_topic(self, thread_id, message):
         """Name an auto topic from Telegram's service data, with [auto_topics]
         on, for a message in topic thread `thread_id`: forum_topic_created
-        records the thread with its name (_record_auto_topic binds it); a
+        records the thread with its name; a
         reply_to_message
         carrying it names a row without a name; forum_topic_edited with a
         name renames a served row. Relays nothing; a settings topic or a
@@ -1945,14 +1982,12 @@ class Bridge:
         """With [auto_topics] on, for an update in topic thread `thread_id`
         that relays nothing (a service message, a city command, a message the
         bridge skips): record the thread's auto row, as for its first update,
-        and bind it when the row has no bound_at, so the topic is served
-        before any relay. An edit records nothing (_observe_auto_topic); a
-        relayed message binds in _relay_auto."""
+        so the topic is served before any relay. An edit records nothing
+        (_observe_auto_topic). The yard routes a served topic by its
+        subscriptions: nothing is bound here."""
         if thread_id is None or isinstance(message.get('forum_topic_edited'), dict):
             return
-        topic = self._auto_topic(thread_id)
-        if topic is not None and topic['bound_at'] is None:
-            self._bind_auto_topic(topic)
+        self._auto_topic(thread_id)
 
     @staticmethod
     def _update_id(update):
@@ -2005,7 +2040,7 @@ class Bridge:
             self._observe_auto_topic(thread_id, message)
         found = self._match_command(text) if forward is None and attachment is None and isinstance(text, str) else None
         if found is not None:
-            # A city command goes to its handler, never to GC.
+            # A command goes to its handler, never to the yard.
             command, args = found
             uid, mid = self._update_id(update), self._message_id(message)
             self._record_auto_topic(thread_id, message)
@@ -2024,8 +2059,8 @@ class Bridge:
         transcribe_job = None
         if attachment is not None:
             kind, file_id, known_size, original_name = attachment
-            # The download happens before the GC call below so a durably
-            # accepted inbound entry always has its file already on disk.
+            # The download happens before the relay below so an entry the
+            # yard has recorded always has its file already on disk.
             path, size, failure = self._fetch_inbound_attachment(kind, file_id, known_size, mid, original_name)
             if self.transcribe and failure is None and kind in self.TRANSCRIBE_KINDS:
                 # The note goes out now; the transcript follows as a second
@@ -2058,7 +2093,7 @@ class Bridge:
         reply = message.get('reply_to_message', {}).get('message_id')
         if type(reply) is not int or reply <= 0 or reply == thread_id:
             reply = None  # in a topic, a reply to its root message is no reply
-        conversation = self._relay(mid, str(mid), relay_text, reply, thread_id)
+        conversation = self._relay(mid, str(mid), relay_text, reply, thread_id, forwarded=forward is not None)
         self._accepted(mid, conversation['conversation_id'], thread_id)
         # The message above is now durably queued for its agent but it may be
         # quota-blocked and unable to answer it any time soon; tell the user once
@@ -2895,7 +2930,7 @@ class Bridge:
         conversation_id = ask.get('conversation_id')
         thread_id = None if conversation_id is None else int(conversation_id.rpartition(':topic:')[2])
         self._relay(mid, f'ask-{ask_id}', f'[ask answer | choice: {label} | message: {mid}]\nquestion: {visible}',
-                    thread_id=thread_id)
+                    thread_id=thread_id, kind='answer')
         self.store.mark_ask_relayed(ask_id)
         self._edit_ask(ask_id, ask, mid, update_id)
 
@@ -3279,13 +3314,254 @@ class Bridge:
         fails with no text fallback: the user may have deleted the topic."""
         conversation = request.get('conversation')
         if conversation == self.conversation:
-            return self._publish(request)
-        topic = next((topic for topic in self._sendable_topics() if topic['conversation'] == conversation), None)
-        if topic is None:
-            return self.receipt(reason='recipient_not_authorized')
-        # Only served auto topics carry a display_name.
-        receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic)
-        return dict(receipt, conversation=topic['conversation'])
+            receipt = self._publish(request)
+        else:
+            topic = next((topic for topic in self._sendable_topics() if topic['conversation'] == conversation), None)
+            if topic is None:
+                return self.receipt(reason='recipient_not_authorized')
+            # Only served auto topics carry a display_name.
+            receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic)
+            receipt = dict(receipt, conversation=topic['conversation'])
+        self._log_sent(conversation, request, receipt)
+        return receipt
+
+    def _log_sent(self, conversation, request, receipt):
+        """Add a send Telegram confirmed to the message log, with its visible
+        text and its files' names. Never raises: the send already happened."""
+        if receipt.get('delivered') is not True or self.store is None or not isinstance(conversation, dict):
+            return
+        try:
+            text = request.get('text') or ''
+            if request.get('format') == 'html':
+                text = html_visible_text(text)[0] or text
+            files = request.get('attachments') or ([request['attachment']] if request.get('attachment') else [])
+            names = [Path(f.get('path', '')).name for f in files if isinstance(f, dict)]
+            if names:
+                text = '[' + ', '.join(names) + ']' + ('\n' + text if text else '')
+            self.store.log_message(conversation['conversation_id'], 'out', str(receipt.get('message_id', '')),
+                                   self.account, text, datetime.datetime.now(datetime.timezone.utc).isoformat())
+        except Exception:  # noqa: BLE001
+            self._log('sent message not logged')
+
+    # ---- the yard API (YARDR.md, "Outbound") ---------------------------------
+
+    @staticmethod
+    def _api_bool(value, name):
+        if value in (None, '', False, 'false', '0', 0):
+            return False
+        if value in (True, 'true', '1', 1):
+            return True
+        raise ApiError(f'{name} must be true or false')
+
+    def _api_conversation(self, request):
+        """The conversation a yard request names: `topic` by a configured or
+        served topic's name, else `conversation` by id, else the paired
+        chat's. ApiError for one this bridge does not serve."""
+        topic, conversation_id = request.get('topic'), request.get('conversation')
+        if topic not in (None, '', 'general'):
+            found = self.topic_by_name(topic) or next(
+                (t for t in self.served_auto_topics() if t['display_name'] == topic), None)
+            if found is None:
+                raise ApiError(f'topic {topic} is not configured, created or served')
+            return found['conversation']
+        if conversation_id in (None, ''):
+            return self.conversation
+        found = self.conversation_for_id(str(conversation_id))
+        if found is None:
+            raise ApiError(UNRESOLVED_CONVERSATION)
+        return found
+
+    @staticmethod
+    def _api_answer(receipt, conversation=None):
+        answer = dict(delivered=receipt.get('delivered') is True)
+        if receipt.get('message_id') not in (None, ''):
+            answer['message_id'] = str(receipt['message_id'])
+        if conversation is not None:
+            answer['conversation'] = receipt.get('conversation', conversation)['conversation_id'] \
+                if isinstance(receipt.get('conversation', conversation), dict) else conversation['conversation_id']
+        if not answer['delivered']:
+            answer['reason'] = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
+            answer['failure_kind'] = receipt.get('failure_kind', 'permanent')
+        return answer
+
+    def api_send(self, request, key_header=None):
+        """POST /v1/send: one message, file or album through the ledger."""
+        text = request.get('text', '')
+        if text is None:
+            text = ''
+        if not isinstance(text, str):
+            raise ApiError('text must be a string')
+        key = request.get('key') or key_header
+        if not isinstance(key, str) or not key.strip():
+            raise ApiError('key is required, in the body or the Idempotency-Key header')
+        conversation = self._api_conversation(request)
+        fmt = request.get('format') or 'auto'
+        if fmt == 'auto':
+            fmt = auto_format(text)
+        if fmt not in ('plain', 'html'):
+            raise ApiError('format must be plain, html or auto')
+        body = dict(conversation=conversation, idempotency_key=key, text=text)
+        if fmt == 'html':
+            body['format'] = 'html'
+        if self._api_bool(request.get('silent'), 'silent'):
+            body['silent'] = True
+        if self._api_bool(request.get('text_options'), 'text_options'):
+            body['text_options'] = True
+        keyboard = request.get('keyboard')
+        if isinstance(keyboard, str):
+            try:
+                keyboard = json.loads(keyboard) if keyboard.strip() else None
+            except ValueError:
+                raise ApiError('keyboard must be JSON rows') from None
+        if keyboard not in (None, []):
+            body['keyboard'] = keyboard
+        reply = request.get('reply_to')
+        if reply not in (None, ''):
+            body['reply_to_message_id'] = str(reply)
+        attachments = request.get('attachments')
+        if isinstance(attachments, str):
+            attachments = [attachments] if attachments else []
+        if attachments:
+            if not isinstance(attachments, list) or not all(isinstance(a, str) and a for a in attachments):
+                raise ApiError('attachments must be a list of file paths')
+            kind = request.get('attachment_kind') or None
+            if kind is not None and kind not in self.ATTACHMENT_KINDS:
+                raise ApiError('attachment_kind must be one of ' + ', '.join(sorted(self.ATTACHMENT_KINDS)))
+            files = [dict(path=str(Path(a).resolve()), kind=kind or infer_attachment_kind(Path(a))) for a in attachments]
+            if len(files) == 1:
+                body['attachment'] = files[0]
+            else:
+                body['attachments'] = files
+        return self._api_answer(self.publish(body), conversation)
+
+    TELL_TITLE_MAX = 250
+    TELL_TEXT_MAX = 3500
+
+    def api_tell(self, request, key_header=None):
+        """POST /v1/tell: the yard's notify (YARDR.md, "Outbound"): plain text,
+        the title on its own first line, the link last. The yard tells with
+        no key, so the key is the content's hash and the minute: a tell
+        retried within the minute is sent once, and the same words a minute
+        later are a new message."""
+        title, text, link = request.get('title') or '', request.get('text') or '', request.get('link') or ''
+        if not all(isinstance(v, str) for v in (title, text, link)):
+            raise ApiError('title, text and link must be strings')
+        if len(title) > self.TELL_TITLE_MAX or len(text) > self.TELL_TEXT_MAX or len(link) > 512:
+            raise ApiError(f'title is at most {self.TELL_TITLE_MAX} characters, text {self.TELL_TEXT_MAX}, link 512')
+        body = '\n'.join(part for part in (title.strip(), text.strip(), link.strip()) if part)
+        if not body:
+            raise ApiError('title or text is required')
+        conversation = self._api_conversation(request)
+        minute = int(time.time() // 60)
+        digest = hashlib.sha256(json.dumps([conversation['conversation_id'], body, minute]).encode()).hexdigest()
+        key = request.get('key') or key_header or f'tell:{digest[:32]}'
+        return self._api_answer(self.publish(dict(conversation=conversation, idempotency_key=key, text=body)),
+                                conversation)
+
+    def api_posted(self, request, key_header=None):
+        """POST /v1/posted: the message a confirmed send under `key` made, or {}."""
+        key = request.get('key') or key_header
+        if not isinstance(key, str) or not key.strip():
+            raise ApiError('key is required')
+        saved = self.store.saved_receipt(key)
+        if isinstance(saved, dict) and saved.get('delivered') is True and saved.get('message_id') not in (None, ''):
+            return dict(message_id=str(saved['message_id']))
+        return {}
+
+    def api_read(self, request, key_header=None):
+        """POST /v1/read: the newest messages of one conversation, whole."""
+        conversation = self._api_conversation(request)
+        limit = request.get('limit', READ_LIMIT_DEFAULT)
+        if isinstance(limit, str) and limit.isdecimal():
+            limit = int(limit)
+        if type(limit) is not int or not 1 <= limit <= READ_LIMIT_MAX:
+            raise ApiError(f'limit must be 1 to {READ_LIMIT_MAX}')
+        return dict(messages=self.store.read_messages(conversation['conversation_id'], limit))
+
+    def api_react(self, request, key_header=None):
+        """POST /v1/react: set `reaction` on `message_id`, else on the last
+        message accepted on the conversation named, else on the last accepted."""
+        reaction = request.get('reaction')
+        if reaction in ('seen', 'done'):
+            emoji = self.reactions[reaction]
+        elif reaction == 'none':
+            emoji = None
+        elif isinstance(reaction, str) and valid_reaction_emoji(reaction):
+            emoji = reaction
+        else:
+            raise ApiError('reaction must be seen, done, none or one emoji')
+        message_id = request.get('message_id')
+        if message_id not in (None, ''):
+            if not str(message_id).isdecimal() or int(message_id) <= 0:
+                raise ApiError('message_id must be a positive integer')
+            message_id = int(message_id)
+        elif request.get('topic') not in (None, '') or request.get('conversation') not in (None, ''):
+            conversation = self._api_conversation(request)
+            message_id = self.store.last_accepted_in(conversation['conversation_id'])
+        else:
+            message_id = self.store.last_accepted()
+        if message_id is None:
+            raise ApiError('no accepted message to react to')
+        # Always reaction:<message id>:…, whatever key the yard sent, so the
+        # `seen` worker's guard (Store.agent_reacted) sees this reaction too.
+        # The yard- part keeps a caller's key off the worker's own
+        # reaction:<id>:accept.
+        given = request.get('key') or key_header or f'{time.time_ns()}-{secrets.token_hex(4)}'
+        key = f'reaction:{message_id}:yard-{given}'
+        receipt = self.set_reaction(message_id, emoji, key)
+        return self._api_answer(dict(receipt, message_id=message_id))
+
+    def api_pin(self, request, key_header=None):
+        """POST /v1/pin: keep slot `slot` pinned with `text`, or unpin it."""
+        slot = request.get('slot')
+        if not isinstance(slot, str) or not self.PIN_SLOT_RE.fullmatch(slot):
+            raise ApiError('slot must be 1-32 lowercase letters, digits, _ or -')
+        if self._api_bool(request.get('unpin'), 'unpin'):
+            receipt = self.unpin(slot)
+        else:
+            text = request.get('text')
+            if not isinstance(text, str) or not text.strip():
+                raise ApiError('text is required to pin')
+            fmt = request.get('format') or 'auto'
+            if fmt == 'auto':
+                fmt = auto_format(text)
+            if fmt not in ('plain', 'html'):
+                raise ApiError('format must be plain, html or auto')
+            receipt = self.pin(slot, text, fmt)
+        answer = self._api_answer(receipt)
+        if 'changed' in receipt:
+            answer['changed'] = bool(receipt['changed'])
+        return answer
+
+    def api_ask_close(self, request, key_header=None):
+        """POST /v1/ask-close: close an open ask with the decision made."""
+        decision = request.get('decision')
+        if not isinstance(decision, str) or not decision.strip():
+            raise ApiError('decision is required')
+        message_id, ask_key = request.get('message_id'), request.get('ask_key')
+        if message_id not in (None, ''):
+            if not str(message_id).isdecimal() or int(message_id) <= 0:
+                raise ApiError('message_id must be a positive integer')
+            message_id = int(message_id)
+        else:
+            message_id = None
+        if ask_key in ('',):
+            ask_key = None
+        if ask_key is not None and not isinstance(ask_key, str):
+            raise ApiError('ask_key must be a string')
+        if (message_id is None) == (ask_key is None):
+            raise ApiError('one of message_id and ask_key is required')
+        return self._api_answer(self.close_ask(decision, message_id=message_id, ask_key=ask_key))
+
+    def api_health(self):
+        """GET /v1/health: the yard source's check call."""
+        last = None
+        if self.store is not None:
+            try:
+                last = json.loads(self.heartbeat_path().read_text()).get('last_poll_ok_at')
+            except (OSError, ValueError, AttributeError):
+                last = None
+        return dict(ok=True, bot=self.account, last_poll_ok=last)
 
     def _publish(self, request, thread_id=None, text_fallback=True):
         key, text = request.get('idempotency_key'), request.get('text')
@@ -3651,11 +3927,11 @@ class Bridge:
     AUTO_TOPICS_USERS_OFF = 'auto topics on, but users may not create topics (BotFather setting)'
 
     def topic_conversation(self, thread_id):
-        """The GC conversation of one topic: a thread whose parent is the
-        paired chat. GC compares all six fields, so it is built the same way
-        every time."""
+        """The conversation of one topic: a thread whose parent is the paired
+        chat. Ledger fingerprints hold all six fields, so it is built the same
+        way every time."""
         chat = str(self.config['chat_id'])
-        return dict(scope_id=self.city, provider='telegram', account_id=self.account,
+        return dict(scope_id=self.yard, provider='telegram', account_id=self.account,
                     conversation_id=f'{chat}:topic:{thread_id}', parent_conversation_id=chat, kind='thread')
 
     def _recorded_topics(self):
@@ -3865,12 +4141,8 @@ class Bridge:
                 name = topic['name']
                 if name in rows:
                     thread = rows[name]['thread_id']
-                    ref = self.topic_conversation(thread)
                     lines.append(f"topic {name}: thread {thread} ({done.get(name, 'recorded earlier')})")
-                    lines.append(f"bind: gc extmsg bind --provider telegram --account-id {self.account} "
-                                 f"--conversation-id {ref['conversation_id']} "
-                                 f"--parent-conversation-id {ref['parent_conversation_id']} "
-                                 f"--kind thread --agent {topic['agent']} --json")
+                    lines.append(self.subscribe_line(topic['agent'], name))
                 else:
                     reason, step = self._topic_not_created(name, unreachable)
                     lines.append(f'topic {name}: not created ({reason})' + (f'; {step}' if step else ''))
@@ -3882,19 +4154,28 @@ class Bridge:
                                  '(not in settings; its messages reach the agent as not configured)')
             if self.auto_topics:
                 for topic in self.served_auto_topics():
-                    state = f"bound to {topic['agent']}" if topic['bound_at'] else 'not bound yet'
-                    lines.append(f"auto topic {topic['display_name']}: thread {topic['thread_id']} ({state})")
+                    lines.append(f"auto topic {topic['display_name']}: thread {topic['thread_id']} (served)")
+                    lines.append(self.subscribe_line(topic['agent'], thread=topic['thread_id']))
             else:
                 unserved = len(self._unshadowed_auto_topics())
                 if unserved:
                     lines.append(f'auto topics: {unserved} recorded, not served (auto_topics off)')
             return lines, all(name in rows for name in names)
 
+    def subscribe_line(self, crew, topic=None, thread=None):
+        """The command that routes one topic's messages to a crew member in
+        the yard (YARDR.md, "The command line"), printed by `topics`: by the
+        settings' name for a configured topic, by the thread id for one the
+        user created, whose display name a rename or a twin changes."""
+        source = self.config.get('yardr_source') or 'tgbridge'
+        where = f'thread={thread}' if thread is not None else f'topic={shlex.quote(topic)}'
+        return f"subscribe: yardr subscribe {crew} {source} --scope all --where type=message --where {where}"
+
     def _topic_not_created(self, name, unreachable):
         """Why a settings topic has no row, and what the operator does next:
         (reason, next step or None)."""
         saved = self.store.saved_receipt(self._topic_key(name))
-        command, quoted = 'gc telegram topics', shlex.quote(name)
+        command, quoted = 'bridge.py topics', shlex.quote(name)
         if saved is None:
             if unreachable:
                 return 'not attempted: Telegram could not be reached', f'run {command} again'
@@ -4106,19 +4387,13 @@ class Bridge:
         server = http.server.ThreadingHTTPServer(('127.0.0.1', self.port), _callback_handler(self))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        registered = False
         try:
-            self.register()
-            registered = True
             print('Telegram bridge ready; private allowlist enforced', flush=True)
             if self.typing_seconds:
                 self._start_typing()
-            last_registration, failures = time.monotonic(), 0
+            failures = 0
             while not self.stop.is_set():
                 try:
-                    if time.monotonic() - last_registration >= 30:
-                        self.register()
-                        last_registration = time.monotonic()
                     status, data = self.telegram('getUpdates', dict(offset=self.store.offset(), timeout=20,
                                                                    allowed_updates=['message', 'callback_query']),
                                                  timeout=27)
@@ -4131,20 +4406,15 @@ class Bridge:
                     failures = 0
                 except PollConflict:
                     raise
-                except TransportError:
+                except TransportError as error:
                     failures += 1
-                    print('Transport unavailable; inbound cursor retained', file=sys.stderr, flush=True)
+                    print(f'Transport unavailable; inbound cursor retained: {error}', file=sys.stderr, flush=True)
                     if failures >= 10:
                         raise TransportError('transport failed repeatedly; restarting preserves cursor') from None
                     self.stop.wait(min(failures * 2, 10))
         finally:
             server.shutdown()
             server.server_close()
-            if registered:
-                try:
-                    self.gc('adapters', dict(provider='telegram', account_id=self.account), method='DELETE')
-                except TransportError:
-                    pass
 
 
 class _ConflictExitStatusAction(argparse.Action):
@@ -4178,10 +4448,7 @@ def _thread_id_arg(value):
 def _build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--settings', type=Path,
-                        help=f'the city\'s settings file (default: ${SETTINGS_ENV}, else '
-                             f'~/.config/<workspace_name>/{SETTINGS_NAME} from <city-root>/.gc/site.toml)')
-    parser.add_argument('--city-root', type=Path, default=_default_city_root(),
-                        help='only used to find the default settings file')
+                        help=f'the bridge\'s settings file (default: ${SETTINGS_ENV})')
     parser.add_argument('--port', type=int, help='overrides the settings\' port')
     parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'ask-close', 'react', 'pin',
                                             'topics', 'set-commands', 'render-unit', 'check-install'))
@@ -4189,8 +4456,9 @@ def _build_parser():
                         help='file holding the message text (send, reply-current)')
     parser.add_argument('--idempotency-key',
                         help='one stable key per logical message: a retry reuses it with the same body; a new message takes a new key')
-    parser.add_argument('--session', default=os.environ.get('GC_SESSION_ID') or None,
-                        help="the sending session (default: $GC_SESSION_ID, else the settings' agent)")
+    # Accepted and ignored: the gc pack's sending session. The sysmon watch
+    # and pricewatch add-ons still pass it, and nothing routes on it here.
+    parser.add_argument('--session', help=argparse.SUPPRESS)
     parser.add_argument('--conversation-id',
                         help="optional: the settings' bot.chat_id, or <chat id>:topic:<thread id> of a configured "
                              'topic, as the message notice names it (react: its last accepted message)')
@@ -4204,12 +4472,12 @@ def _build_parser():
                         help='voice and video_note are never inferred; video_note takes an empty body')
     parser.add_argument('--keyboard-file', type=Path,
                         help='file holding an inline keyboard as JSON rows (send, reply-current; '
-                             'a keyboard send publishes directly in this process, never through GC)')
+                             'a keyboard send publishes directly in this process)')
     parser.add_argument('--format', choices=('plain', 'html'), default='plain',
                         help='html sends Telegram HTML (allowlisted tags, caller-escaped text)')
     parser.add_argument('--silent', action='store_true',
                         help='send, reply-current: notify with no sound '
-                             '(publishes directly in this process, never through GC)')
+                             '(publishes directly in this process)')
     parser.add_argument('--text-options', action='store_true',
                         help='send, reply-current: allow a body offering lettered options as text '
                              'lines without --keyboard-file (recorded in the receipt)')
@@ -4323,28 +4591,6 @@ def bridge_unit_state(unit, platform=None, run=subprocess.run):
     return result.stdout.strip() or None
 
 
-def _relay_outbound(bridge, outbound, unit_state=bridge_unit_state, platform=None, home=None):
-    try:
-        return bridge.gc('outbound', outbound, timeout=GC_OUTBOUND_TIMEOUT)
-    except TransportError:
-        # The relay callback lives in the bridge process; with the unit down GC
-        # can only answer "rejected", which reads like a config problem.
-        state = unit_state(bridge.unit) if bridge.unit else None
-        if state is not None and state != 'active':
-            plat = voice_transcribe.host_platform() if platform is None else platform
-            if plat == 'darwin':
-                label = _launchd_label(bridge.unit)
-                uid = os.getuid()
-                if state == 'not loaded':
-                    plist = (Path(home) if home else Path.home()) / 'Library' / 'LaunchAgents' / f'{label}.plist'
-                    raise TransportError(
-                        f'bridge service not running (not loaded); run: launchctl bootstrap gui/{uid} {plist}') from None
-                raise TransportError(
-                    f'bridge service not running ({state}); run: launchctl kickstart -k gui/{uid}/{label}') from None
-            raise TransportError(f'bridge service not running ({state}); run: systemctl --user restart {bridge.unit}') from None
-        raise
-
-
 def _print_gc_receipt(delivered, failure_kind, reason):
     """One machine-readable line on stderr for every non-delivered receipt, so a caller can act on the bridge's own reason instead of the human-readable text, and tell an idempotency-key replay from a real failure."""
     print('GC_RECEIPT ' + json.dumps({'delivered': delivered, 'failure_kind': failure_kind, 'reason': reason}),
@@ -4380,7 +4626,7 @@ def _outbound_conversation(bridge, args):
     if args.topic is not None:
         topic = bridge.topic_by_name(args.topic)
         if topic is None:
-            raise TransportError(f'topic {args.topic} is not configured or not created (run gc telegram topics)')
+            raise TransportError(f'topic {args.topic} is not configured or not created (run bridge.py topics)')
         return topic['conversation']
     if not args.conversation_id:
         return bridge.conversation
@@ -4391,76 +4637,46 @@ def _outbound_conversation(bridge, args):
 
 
 def _dispatch_outbound(bridge, args, text, conversation=None):
+    """Deliver one send directly in this process through the shared ledger,
+    exactly as the yard API's /v1/send does. Returns the message id."""
     conversation = conversation or bridge.conversation
     keyboard = None
     if getattr(args, 'keyboard_file', None) is not None:
         keyboard = _read_keyboard_file(args.keyboard_file)
         if keyboard is None:
-            # A JSON null is valid JSON but not rows: refusing beats falling
-            # through to GC's text-only relay and reporting buttons sent.
+            # A JSON null is valid JSON but not rows: refusing beats sending
+            # a text-only message and reporting buttons sent.
             raise TransportError('keyboard file must hold JSON rows')
     silent = getattr(args, 'silent', False)
     text_options = getattr(args, 'text_options', False)
-    if keyboard is None and not text_options:
-        # Refused here too, so a plain send never reaches GC's relay only to
-        # be refused by the daemon's publish() without this guidance. A send
-        # already confirmed under this key replays its saved receipt below
-        # instead of refusing.
-        visible = text if getattr(args, 'format', 'plain') != 'html' else html_visible_text(text)[0]
-        if visible is not None and text_offers_lettered_options(visible):
-            saved = bridge.store.saved_receipt(args.idempotency_key)
-            if saved is None or resendable(saved):
-                _print_gc_receipt(False, 'permanent', 'options_need_keyboard')
-                raise TransportError(OPTIONS_NEED_KEYBOARD_MESSAGE)
-    if args.attachment or args.format == 'html' or keyboard is not None or silent or text_options:
-        # GC's outbound relay accepts only session, conversation, text, key and
-        # reply (HTTP 422 for any other property, e.g. 'body.attachment'), so
-        # its callback can never hand publish() an attachment, a format, a
-        # keyboard or silent. Deliver directly in this process instead, sharing
-        # the daemon's idempotency store; GC keeps no transcript record of this send.
-        request = dict(conversation=conversation, idempotency_key=args.idempotency_key, text=text)
-        if args.format == 'html':
-            request['format'] = 'html'
-        if silent:
-            request['silent'] = True
-        if text_options:
-            request['text_options'] = True
-        if keyboard is not None:
-            request['keyboard'] = keyboard
-        if args.attachment:
-            # --attachment-kind applies to every file; otherwise each is inferred.
-            files = [dict(path=str(path.resolve()), kind=args.attachment_kind or infer_attachment_kind(path))
-                     for path in args.attachment]
-            if len(files) == 1:
-                request['attachment'] = files[0]
-            else:
-                request['attachments'] = files
-        receipt = bridge.publish(request)
-        delivered = receipt.get('delivered') is True
+    request = dict(conversation=conversation, idempotency_key=args.idempotency_key, text=text)
+    if args.format == 'html':
+        request['format'] = 'html'
+    if silent:
+        request['silent'] = True
+    if text_options:
+        request['text_options'] = True
+    if keyboard is not None:
+        request['keyboard'] = keyboard
+    if args.attachment:
+        # --attachment-kind applies to every file; otherwise each is inferred.
+        files = [dict(path=str(path.resolve()), kind=args.attachment_kind or infer_attachment_kind(path))
+                 for path in args.attachment]
+        if len(files) == 1:
+            request['attachment'] = files[0]
+        else:
+            request['attachments'] = files
+    receipt = bridge.publish(request)
+    if receipt.get('delivered') is not True:
         failure_kind = receipt.get('failure_kind', 'permanent')
         reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
-        message_id = receipt.get('message_id', '')
-        direct = True
-    else:
-        outbound = dict(session_id=args.session, conversation=conversation, text=text,
-                        idempotency_key=args.idempotency_key)
-        result = _relay_outbound(bridge, outbound)
-        receipt = result.get('Receipt', {})
-        delivered = receipt.get('Delivered') is True
-        failure_kind = receipt.get('FailureKind', 'permanent')
-        reason = (receipt.get('Metadata') or {}).get('reason') or 'delivery not confirmed'
-        message_id = receipt.get('MessageID', '')
-        direct = False
-    if not delivered:
         _print_gc_receipt(False, failure_kind, reason)
         if reason == 'options_need_keyboard':
             raise TransportError(OPTIONS_NEED_KEYBOARD_MESSAGE)
         if reason == NOT_SENT_REASON:
             raise TransportError(NOT_SENT_MESSAGE)
-        if direct:
-            raise TransportError('Telegram delivery not confirmed: ' + reason)
-        raise TransportError('GC did not confirm delivery; inspect receipt before trying a new key')
-    return message_id
+        raise TransportError('Telegram delivery not confirmed: ' + reason)
+    return receipt.get('message_id', '')
 
 
 def _react(bridge, args):
@@ -4513,10 +4729,15 @@ _SAFE_PATH_RE = re.compile(r'/[A-Za-z0-9/._@+-]*')
 _UNIT_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9@._-]{0,120}\.service')
 _COMMAND_RE = re.compile(r'[a-z0-9_]{1,32}')
 _MODEL_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}')
-SETTINGS_KEYS = {'city', 'state_dir', 'port', 'python', 'token_file', 'callback_secret_file', 'lock_dir', 'unit',
-                 'user_display_name', 'timezone', 'gc_base_url', 'gc_api_token_file', 'health_file',
-                 'pairing_update_id', 'bot', 'menu', 'transcribe', 'agent', 'command',
-                 'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics'}
+SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_secret_file', 'lock_dir', 'unit',
+                 'user_display_name', 'timezone', 'health_file',
+                 'pairing_update_id', 'bot', 'menu', 'transcribe', 'crew', 'command',
+                 'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
+# The yard this bridge relays to (YARDR.md, "Settings").
+YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source'}
+# Keys of the gc pack this fork refuses by name, each with what replaced it.
+GC_SETTINGS = {'city': 'yard', 'agent': 'crew', 'gc_base_url': '[yardr] hook_url',
+               'gc_api_token_file': '[yardr] hook_secret_file'}
 BOT_KEYS = {'bot_id', 'user_id', 'chat_id', 'account_id'}
 COMMAND_KEYS = {'name', 'description', 'handler', 'url', 'menu', 'callback_prefix', 'timeout'}
 # Commands the bridge itself owns: /start is never relayed.
@@ -4532,7 +4753,7 @@ HANDLER_WRITE_PATHS_MAX = 256
 # A topic of the paired private chat (OPERATIONS.md, "Topics"): its name is
 # createForumTopic's, 1-128 characters; [, ] and | would break the relay's
 # topic line.
-TOPIC_KEYS = {'name', 'agent'}
+TOPIC_KEYS = {'name', 'crew'}
 TOPIC_MAX = 50
 TOPIC_NAME_MAX = 128
 TOPIC_NAME_FORBIDDEN = '[]|'
@@ -4573,30 +4794,14 @@ class Settings:
         self.__dict__.update(fields)
 
 
-def _default_city_root():
-    value = os.environ.get('GC_CITY_PATH') or os.environ.get('GC_CITY')
-    return Path(value) if value else Path.cwd()
-
-
-def settings_path(explicit, city_root, environ=None, home=None):
-    """--settings, else $TELEGRAM_BRIDGE_SETTINGS, else ~/.config/<name>/telegram-bridge.toml
-    where <name> is gc's workspace_name in <city_root>/.gc/site.toml."""
-    import tomllib
+def settings_path(explicit, environ=None):
+    """--settings, else $TELEGRAM_BRIDGE_SETTINGS."""
     environ = os.environ if environ is None else environ
     if explicit:
         return Path(explicit).expanduser()
     if environ.get(SETTINGS_ENV):
         return Path(environ[SETTINGS_ENV]).expanduser()
-    name = None
-    if city_root is not None:
-        try:
-            name = tomllib.loads((Path(city_root) / '.gc' / 'site.toml').read_text()).get('workspace_name')
-        except (OSError, ValueError):
-            name = None
-    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
-        raise SettingsError(f'no settings file: pass --settings, set {SETTINGS_ENV}, or run from a city '
-                            'whose .gc/site.toml names its workspace_name')
-    return (Path(home) if home else Path.home()) / '.config' / name / SETTINGS_NAME
+    raise SettingsError(f'no settings file: pass --settings or set {SETTINGS_ENV}')
 
 
 def _read_private_settings(path):
@@ -4756,8 +4961,8 @@ def _command_settings(data, menu):
 
 
 def _topic_settings(data, agent):
-    """The validated [[topic]] entries, in file order, each {name, agent};
-    a topic's agent defaults to the settings' `agent`."""
+    """The validated [[topic]] entries, in file order, each {name, agent}:
+    agent is the topic's crew member, which defaults to the settings' `crew`."""
     entries = data.get('topic', [])
     if not isinstance(entries, list):
         raise SettingsError('settings: topic must be a list of [[topic]] tables')
@@ -4769,6 +4974,8 @@ def _topic_settings(data, agent):
             fail(f'more than {TOPIC_MAX} [[topic]] tables')
         if not isinstance(item, dict):
             fail('not a [[topic]] table')
+        if 'agent' in item:
+            fail('agent is the gc pack\'s key: name the crew member with crew')
         unknown = sorted(set(item) - TOPIC_KEYS)
         if unknown:
             fail(f'unknown key {unknown[0]}')
@@ -4784,9 +4991,9 @@ def _topic_settings(data, agent):
         if name.casefold() in seen:
             fail(f'name repeats topic entry {seen[name.casefold()]} (names differ in more than case)')
         seen[name.casefold()] = index
-        topic_agent = item.get('agent', agent)
+        topic_agent = item.get('crew', agent)
         if not isinstance(topic_agent, str) or not NAME_RE.fullmatch(topic_agent):
-            fail('agent is missing or malformed')
+            fail('crew is missing or malformed')
         topics.append(dict(name=name, agent=topic_agent))
     return tuple(topics)
 
@@ -4817,11 +5024,13 @@ def load_settings(path, home=None):
         raise SettingsError(f'settings file is not valid TOML: {path}') from None
     if 'quota' in data:
         raise SettingsError('settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")')
+    for key in sorted(set(data) & set(GC_SETTINGS)):
+        raise SettingsError(f'settings: {key} is the gc pack\'s key; this bridge reads {GC_SETTINGS[key]} (YARDR.md)')
     unknown = sorted(set(data) - SETTINGS_KEYS)
     if unknown:
         raise SettingsError(f'settings: unknown key {unknown[0]}')
 
-    city = _text_setting(data.get('city'), 'city')
+    yard = _text_setting(data.get('yard'), 'yard')
     bot = _table(data, 'bot', BOT_KEYS, required=True)
     ids = {key: bot.get(key) for key in ('bot_id', 'user_id', 'chat_id')}
     account = _text_setting(bot.get('account_id'), 'bot.account_id', NAME_RE)
@@ -4831,7 +5040,12 @@ def load_settings(path, home=None):
         raise SettingsError('settings: token_file and callback_secret_file must name different files')
     lock_dir = _path_setting(data.get('lock_dir', str(token_file.parent)), 'lock_dir')
     timezone = _text_setting(data.get('timezone', 'UTC'), 'timezone')
-    gc_base_url = _text_setting(data.get('gc_base_url', 'http://127.0.0.1:8372'), 'gc_base_url', limit=200)
+    yardr = _table(data, 'yardr', YARDR_KEYS, required=True)
+    hook_url = _text_setting(yardr.get('hook_url'), 'yardr.hook_url', limit=256)
+    hook_secret_file = _path_setting(yardr.get('hook_secret_file'), 'yardr.hook_secret_file')
+    if _same_file(hook_secret_file, token_file) or _same_file(hook_secret_file, callback_secret_file):
+        raise SettingsError('settings: yardr.hook_secret_file must differ from token_file and callback_secret_file')
+    source = _text_setting(yardr.get('source', 'tgbridge'), 'yardr.source', NAME_RE)
 
     menu = data.get('menu', [])
     if not isinstance(menu, list) or len(menu) > 100:
@@ -4844,13 +5058,12 @@ def load_settings(path, home=None):
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
     city_commands = _command_settings(data, menu_entries)
 
-    config = dict(city=city, account_id=account, gc_base_url=gc_base_url,
+    config = dict(yard=yard, account_id=account, hook_url=hook_url, yardr_source=source,
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),
                   timezone=timezone, menu=tuple(menu_entries), **ids)
-    # Present only when set, so a city without them gets the config it had.
-    agent = _text_setting(data.get('agent', 'mayor'), 'agent')
-    if agent != 'mayor':
-        config['agent'] = agent
+    # The crew member: internally the bridge's agent, as the ledger names it.
+    agent = _text_setting(data.get('crew', 'yardmaster'), 'crew')
+    config['agent'] = agent
     if city_commands:
         config['commands'] = city_commands
     if 'reactions' in data:
@@ -4865,15 +5078,10 @@ def load_settings(path, home=None):
         typing = dict(TYPING_DEFAULTS, **_table(data, 'typing', TYPING_KEYS))
         _int_setting(typing['seconds'], 'typing.seconds', 0, TYPING_MAX_SECONDS)
         config['typing'] = typing
-    optional = (('gc_api_token_path', data.get('gc_api_token_file'), 'gc_api_token_file'),
-                ('health_file', data.get('health_file'), 'health_file'))
-    for key, value, what in optional:
-        found = _path_setting(value, what, required=False)
-        if found is not None:
-            config[key] = str(found)
-    protected = [str(token_file), str(callback_secret_file)]
-    if config.get('gc_api_token_path') is not None:
-        protected.append(config['gc_api_token_path'])
+    found = _path_setting(data.get('health_file'), 'health_file', required=False)
+    if found is not None:
+        config['health_file'] = str(found)
+    protected = [str(token_file), str(callback_secret_file), str(hook_secret_file)]
     protected.append(str(path))
     config['protected_paths'] = tuple(protected)
     check_bridge_config(config, settings=True)
@@ -4884,7 +5092,7 @@ def load_settings(path, home=None):
     if 'auto_topics' in data:
         auto_topics = _table(data, 'auto_topics', AUTO_TOPICS_KEYS)
         config['auto_topics'] = dict(enabled=_bool_setting(auto_topics.get('enabled', False), 'auto_topics.enabled'))
-    unit = _text_setting(data.get('unit', f'{city}-telegram.service'), 'unit', _UNIT_RE, limit=128)
+    unit = _text_setting(data.get('unit', f'{yard}-telegram.service'), 'unit', _UNIT_RE, limit=128)
     config['unit'] = unit
 
     python = _path_setting(data.get('python', '/usr/bin/python3'), 'python')
@@ -4949,7 +5157,7 @@ def load_settings(path, home=None):
             transcribe['gpu_check'] = gpu_check
             transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'] = gpu_check
     return Settings(
-        path=path, city=city, config=config, unit=unit, python=python,
+        path=path, yard=yard, config=config, unit=unit, python=python, hook_secret_file=hook_secret_file,
         state_dir=_path_setting(data.get('state_dir'), 'state_dir'),
         port=_int_setting(data.get('port'), 'port', 1024, 65535),
         token_file=token_file, lock_dir=lock_dir,
@@ -4977,15 +5185,14 @@ def render_unit(settings, template=None, bridge_path=None):
     # The credentials stay read-only inside the unit even when they sit in
     # the writable lock directory; the leading '-' lets a missing file pass.
     read_only = [settings.path, settings.token_file, settings.callback_secret_file]
-    gc_token = settings.config.get('gc_api_token_path')
-    if gc_token is not None:
-        read_only.append(gc_token)
+    if getattr(settings, 'hook_secret_file', None) is not None:
+        read_only.append(settings.hook_secret_file)
     read_only_paths = ' '.join(f'-{path}' for path in read_only)
-    for name, value in (('CITY', settings.city), ('PYTHON', settings.python), ('BRIDGE', bridge_path),
+    for name, value in (('YARD', settings.yard), ('PYTHON', settings.python), ('BRIDGE', bridge_path),
                         ('SETTINGS', settings.path), ('STATE_DIR', settings.state_dir), ('LOCK_DIR', settings.lock_dir),
                         ('TRANSCRIBE_QUEUE', queue), ('HANDLER_WRITE_PATHS', handler_paths),
                         ('READ_ONLY_PATHS', read_only_paths),
-                        ('AGENT', getattr(settings, 'agent', 'mayor'))):
+                        ('CREW', getattr(settings, 'agent', 'yardmaster'))):
         text = text.replace(f'@{name}@', str(value))
     if re.search(r'@[A-Z_]+@', text):
         raise SettingsError('unit template has an unknown placeholder')
@@ -5022,12 +5229,12 @@ def service_next_line(settings, bridge_path, platform=None, home=None):
                 f'launchctl bootout gui/$(id -u)/{label} 2>/dev/null; '
                 f'launchctl bootstrap gui/$(id -u) {plist}; '
                 f'python3 {bridge} --settings {settings.path} set-commands '
-                '(README.md, "Adopt in a city", step 6)')
+                '(yardr/SETUP.md, step 9)')
     return (f'next: python3 {bridge} --settings {settings.path} probe; '
             'systemctl --user daemon-reload; '
             f'systemctl --user enable --now {settings.unit}; '
             f'python3 {bridge} --settings {settings.path} set-commands '
-            '(README.md, "Adopt in a city", step 6)')
+            '(yardr/SETUP.md, step 9)')
 
 
 def render_service(settings, platform=None, home=None, bridge_path=None):
@@ -5128,6 +5335,7 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
         for value, what in ((getattr(settings, 'path', None), 'settings file'),
                             (getattr(settings, 'token_file', None), 'bot token file'),
                             (getattr(settings, 'callback_secret_file', None), 'callback secret file'),
+                            (getattr(settings, 'hook_secret_file', None), 'hook secret file'),
                             (getattr(settings, 'state_dir', None), 'state directory'),
                             (getattr(settings, 'lock_dir', None), 'lock directory'),
                             (getattr(settings, 'whisper_cli', None), 'whisper-cli'),
@@ -5187,14 +5395,18 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
         check(which('curl', path=LAUNCHD_PATH), 'curl on PATH')
     else:
         check(which('curl'), 'curl on PATH')
-    for path, what in ((settings.token_file, 'bot token'), (settings.callback_secret_file, 'callback secret')):
+    secrets_made = ('callback secret', 'hook secret')
+    files = [(settings.token_file, 'bot token'), (settings.callback_secret_file, 'callback secret')]
+    if getattr(settings, 'hook_secret_file', None) is not None:
+        files.append((settings.hook_secret_file, 'hook secret'))
+    for path, what in files:
         try:
             private_text(path)
             check(True, f'{what} file is owner-only')
         except FileNotFoundError:
-            # install.sh creates the callback secret before the unit starts:
-            # the unit may not write next to it (its home is read-only).
-            check(what == 'callback secret', f'{what} file {"is created by install.sh" if what == "callback secret" else "is missing"}')
+            # install.sh creates both secrets before the unit starts: the
+            # unit may not write next to them (its home is read-only).
+            check(what in secrets_made, f'{what} file {"is created by install.sh" if what in secrets_made else "is missing"}')
         except (OSError, TransportError):
             check(False, f'{what} file must be an owner-only regular file')
     check(settings.state_dir.is_dir() or settings.state_dir.parent.is_dir(), f'state directory {settings.state_dir}')
@@ -5444,7 +5656,7 @@ def main():
     args = parser.parse_args()
     _validate_attachment_flags(parser, args)
     os.umask(0o077)
-    settings = load_settings(settings_path(args.settings, args.city_root))
+    settings = load_settings(settings_path(args.settings))
     if args.command == 'render-unit':
         sys.stdout.write(render_service(settings))
         return
@@ -5470,6 +5682,9 @@ def main():
         return
     settings.state_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     store = Store(settings.state_dir / 'telegram-bridge.sqlite3', settings.pairing_update_id + 1)
+    if args.command == 'run':
+        # Only the polling process relays to the yard and reads its secret.
+        settings.config['hook_secret'] = capability(settings.hook_secret_file)
     bridge = Bridge(settings.config, store, token, capability(settings.callback_secret_file), port,
                     state_dir=settings.state_dir, transcribe=settings.transcribe)
     if args.command == 'probe':
@@ -5478,7 +5693,6 @@ def main():
     elif args.command in ('send', 'reply-current'):
         if not args.body_file or not args.idempotency_key:
             parser.error('send/reply-current requires --body-file and --idempotency-key (reuse the key for retries)')
-        args.session = args.session or bridge.agent
         conversation = _outbound_conversation(bridge, args)
         message_id = _dispatch_outbound(bridge, args, args.body_file.read_text(), conversation)
         print('Telegram delivery confirmed; message ID ' + str(message_id))

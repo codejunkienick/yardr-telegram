@@ -1,11 +1,10 @@
 """Silent sends: `silent: true` on publish() (`--silent` on send and
 reply-current) puts disable_notification on every Telegram request of the
-send, fallbacks included, joins the fingerprint only when true, and always
-publishes directly in the CLI process, never through GC's relay."""
+send, fallbacks included, and joins the fingerprint only when true; the CLI
+publishes in its own process, silent or not."""
 from contextlib import closing
 import io
 import json
-import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -164,20 +163,20 @@ class SilentCliTests(BridgeTestCase):
         self.assertTrue(args.silent)
         self.assertEqual(args.format, 'html')
 
-    def test_dispatch_silent_publishes_directly_not_through_gc(self):
+    def test_dispatch_silent_publishes_with_the_field(self):
+        seen = []
+        publish = self.bridge.publish
         for command in ('send', 'reply-current'):
-            with patch.object(self.bridge, 'gc') as gc_mock:
+            with patch.object(self.bridge, 'publish', side_effect=lambda request: seen.append(request) or publish(request)):
                 message_id = b._dispatch_outbound(self.bridge, self.args('--silent', command=command, key=command),
                                                   'review passed')
-            gc_mock.assert_not_called()
             self.assertEqual(message_id, '77')
+        self.assertEqual([request['silent'] for request in seen], [True, True])
         self.assertEqual([body['disable_notification'] for _, body in self.calls], [True, True])
 
     def test_dispatch_silent_attachment_carries_the_field(self):
         path = self.attachment_file()
-        with patch.object(self.bridge, 'gc') as gc_mock:
-            b._dispatch_outbound(self.bridge, self.args('--silent', '--attachment', path), 'shot')
-        gc_mock.assert_not_called()
+        b._dispatch_outbound(self.bridge, self.args('--silent', '--attachment', path), 'shot')
         self.assertEqual(self.multipart_calls[0][1]['disable_notification'], 'true')
 
     def cli(self, *extra, key):
@@ -194,23 +193,18 @@ class SilentCliTests(BridgeTestCase):
                 config = dict(line.split(' = ', 1) for line in input.splitlines() if ' = ' in line)
                 url = json.loads(config['url'])
                 requests.append((url, json.loads(json.loads(config['data']))))
-                if url.endswith('/extmsg/outbound'):
-                    payload = {'Receipt': {'Delivered': True, 'MessageID': '55'}}
-                elif url.endswith('/sendMessage'):
-                    payload = {'ok': True, 'result': {'message_id': 42, 'chat': {'id': 123}}}
-                else:
+                if not url.endswith('/sendMessage'):
                     raise AssertionError('unexpected curl invocation')
+                payload = {'ok': True, 'result': {'message_id': 42, 'chat': {'id': 123}}}
                 return subprocess.CompletedProcess(argv, 0, json.dumps(payload) + '\n200 0.010000 0.020000 0', '')
 
-            # The default sender is $GC_SESSION_ID, else the settings' agent.
             with patch.object(b.subprocess, 'run', fake_run), \
-                    patch.dict(os.environ, {'GC_SESSION_ID': 'mayor'}), \
                     patch('sys.stdout', new_callable=io.StringIO) as out:
                 run_main(self, 'bridge.py', '--settings', str(settings), 'reply-current',
                          '--body-file', str(body_file), '--idempotency-key', key, *extra)
         return out.getvalue(), requests
 
-    def test_cli_reply_current_silent_sends_directly_and_never_calls_gc_outbound(self):
+    def test_cli_reply_current_silent_sends_with_disable_notification(self):
         out, requests = self.cli('--silent', key='cli-silent')
         self.assertIn('Telegram delivery confirmed; message ID 42', out)
         [(url, body)] = requests
@@ -218,14 +212,12 @@ class SilentCliTests(BridgeTestCase):
         self.assertEqual(body, dict(chat_id=123, text='merged', link_preview_options={'is_disabled': True},
                                     disable_notification=True))
 
-    def test_cli_reply_current_without_silent_keeps_the_gc_relay(self):
+    def test_cli_reply_current_without_silent_sends_without_the_field(self):
         out, requests = self.cli(key='cli-plain')
-        self.assertIn('Telegram delivery confirmed; message ID 55', out)
+        self.assertIn('Telegram delivery confirmed; message ID 42', out)
         [(url, body)] = requests
-        self.assertTrue(url.endswith('/v0/city/test-city/extmsg/outbound'))
-        self.assertEqual(body, dict(session_id='mayor', conversation=body['conversation'],
-                                    text='merged', idempotency_key='cli-plain'))
-        self.assertNotIn('silent', json.dumps(body))
+        self.assertTrue(url.endswith('/sendMessage'))
+        self.assertEqual(body, dict(chat_id=123, text='merged', link_preview_options={'is_disabled': True}))
 
 
 if __name__ == '__main__':

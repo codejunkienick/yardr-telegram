@@ -16,7 +16,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
-import test_bridge  # noqa: E402
 from test_bridge import BridgeTestCase, run_main, write_settings  # noqa: E402
 
 HTML_REJECTED = 400, dict(ok=False, error_code=400, description="Bad Request: can't parse entities: x")
@@ -30,11 +29,6 @@ def messages(count, chat=123, first=90):
 
 class AlbumTests(BridgeTestCase):
     """publish() with attachments, against an injected sendMediaGroup transport."""
-
-    # BridgeTests' callback server helpers (imported by module, so discovery
-    # runs BridgeTests once, in test_bridge).
-    start_callback_server = test_bridge.BridgeTests.start_callback_server
-    callback_post = test_bridge.BridgeTests.callback_post
 
     def setUp(self):
         super().setUp()
@@ -218,17 +212,32 @@ class AlbumTests(BridgeTestCase):
         self.assertEqual((fields, field, path), ({'chat_id': '123', 'caption': 'shot'}, 'photo', photo['path']))
         self.assertEqual(self.album_calls, [])
 
-    def test_the_callback_refuses_an_album(self):
+    def test_the_yard_api_sends_host_paths_as_one_album(self):
         port = self.start_callback_server()
-        status, result = self.callback_post(port, self.album(self.files('photo', 'photo'), key='cb-album'))
+        shot, clip = self.attachment_file('a.png'), self.attachment_file('b.mp4')
+        status, result = self.callback_post(port, dict(key='api-album', text='two screens', attachments=[shot, clip]))
         self.assertEqual(status, 200)
-        self.assertEqual(result['metadata']['reason'], 'attachment_not_accepted_over_callback')
-        self.assertEqual((self.album_calls, self.calls), ([], []))
+        self.assertEqual(result, dict(delivered=True, message_id='90', conversation='123'))
+        [(url, fields, files)] = self.album_calls
+        self.assertTrue(url.endswith('/sendMediaGroup'))
+        self.assertEqual([item['type'] for item in json.loads(fields['media'])], ['photo', 'video'])
+        self.assertEqual(json.loads(fields['media'])[0]['caption'], 'two screens')
+        self.assertEqual([path for _, path in files], [str(Path(shot).resolve()), str(Path(clip).resolve())])
+        self.assertEqual(self.calls, [])
+
+    def test_the_yard_api_refuses_more_than_ten_files_before_telegram(self):
+        port = self.start_callback_server()
+        files = [self.attachment_file(f'{index}.png') for index in range(11)]
+        status, result = self.callback_post(port, dict(key='api-eleven', text='many', attachments=files))
+        self.assertEqual(status, 200)
+        self.assertFalse(result['delivered'])
+        self.assertEqual(result['reason'], 'album_needs_2_to_10_files')
+        self.assertEqual((self.album_calls, self.multipart_calls, self.calls), ([], [], []))
+        self.assertEqual(self.ledger_count(), 0)
 
     def args(self, *attachments, kind=None):
         return argparse.Namespace(keyboard_file=None, silent=False, format='plain', idempotency_key='cli-album',
-                                  attachment=[Path(path) for path in attachments], attachment_kind=kind,
-                                  session='mayor')
+                                  attachment=[Path(path) for path in attachments], attachment_kind=kind)
 
     def test_dispatch_builds_attachments_only_for_two_or_more_files(self):
         shot, clip = self.attachment_file('a.png'), self.attachment_file('b.mp4')
@@ -237,11 +246,10 @@ class AlbumTests(BridgeTestCase):
         def publish(request):
             seen.append(request)
             return dict(delivered=True, message_id='90')
-        with patch.object(self.bridge, 'publish', side_effect=publish), patch.object(self.bridge, 'gc') as gc:
+        with patch.object(self.bridge, 'publish', side_effect=publish):
             self.assertEqual(b._dispatch_outbound(self.bridge, self.args(shot, clip), 'two'), '90')
             b._dispatch_outbound(self.bridge, self.args(shot, clip, kind='document'), 'docs')
             b._dispatch_outbound(self.bridge, self.args(shot), 'one')
-        gc.assert_not_called()
         self.assertEqual(seen[0]['attachments'], [dict(path=shot, kind='photo'), dict(path=clip, kind='video')])
         self.assertNotIn('attachment', seen[0])
         self.assertEqual([item['kind'] for item in seen[1]['attachments']], ['document', 'document'])
@@ -301,7 +309,7 @@ class AlbumCliTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(payload) + '\n200 0.010000 0.020000 0', '')
         with patch.object(b.subprocess, 'run', fake_run), patch('sys.stdout', new_callable=io.StringIO) as out:
             run_main(self, 'bridge.py', '--settings', str(settings), 'send', '--body-file', str(body),
-                     '--idempotency-key', 'cli-album', '--session', 'mayor', '--silent',
+                     '--idempotency-key', 'cli-album', '--silent',
                      '--attachment', str(shot), '--attachment', str(clip))
         self.assertEqual(out.getvalue(), 'Telegram delivery confirmed; message ID 42\n')
         [config] = configs
@@ -318,7 +326,7 @@ class AlbumCliTests(unittest.TestCase):
         body = root / 'body.txt'
         body.write_text('many')
         argv = ['bridge.py', '--settings', str(settings), 'send', '--body-file', str(body),
-                '--idempotency-key', 'k', '--session', 'mayor']
+                '--idempotency-key', 'k']
         for index in range(11):
             (root / f'{index}.png').write_bytes(b'png')
             argv += ['--attachment', str(root / f'{index}.png')]

@@ -1,10 +1,11 @@
 """Outbound in topics the paired user creates ([auto_topics], OPERATIONS.md,
 "Topics the user creates"): a send on a served auto topic's conversation,
-bound or not yet bound, carries its message_thread_id on every Telegram
-request, and send, reply-current and react take its --conversation-id. With
-[auto_topics] off, a shadowed row or an unknown thread, nothing changes;
-General and the settings topics send byte for byte as before. Fake Telegram
-and GC, temporary directories; no network."""
+named or not, carries its message_thread_id on every Telegram request; the
+yard API's /v1/send takes its conversation id or its display name, and send,
+reply-current and react take its --conversation-id. With [auto_topics] off,
+a shadowed row or an unknown thread, nothing changes; General and the
+settings topics send byte for byte as before. Fake Telegram and yard hook,
+temporary directories; no network beyond a loopback yard API server."""
 from contextlib import closing
 import datetime
 import hashlib
@@ -29,19 +30,19 @@ from test_topic_acks import CHAT_ID, TopicAckCase, typing_in  # noqa: E402
 from test_topic_inbound import OPS, in_topic, record_topics  # noqa: E402
 from test_topic_outbound import GONE, HTML_REJECTED, TopicOutboundCase, topic_ref  # noqa: E402
 
-AUTO, FRESH, UNKNOWN = 601, 602, 603  # a bound auto row, a not yet bound one, a thread with no row
+AUTO, FRESH, UNKNOWN = 601, 602, 603  # a named auto row, an unnamed one, a thread with no row
 AUTO_ID = f'123:topic:{AUTO}'
 DELETED = 400, dict(ok=False, error_code=400, description='Bad Request: message thread not found')
 UNRESOLVED = 'conversation ID is not the paired private chat or a configured topic'
 
 
 def add_auto_rows(store):
-    """AUTO bound and named, FRESH not yet bound, and two shadowed rows: one
-    on the settings topic "ops", one on a topics row the settings dropped."""
+    """AUTO named Trip, FRESH unnamed (served as "thread 602"), and two
+    shadowed rows: one on the settings topic "ops", one on a topics row the
+    settings dropped."""
     for thread_id in (AUTO, FRESH, OPS, GONE):
-        store.add_auto_topic(thread_id, 'mayor')
+        store.add_auto_topic(thread_id, 'yardmaster')
     store.set_auto_topic_name(AUTO, 'Trip', False)
-    store.set_auto_topic_bound(AUTO, True)
 
 
 class AutoTopicOutboundCase(TopicOutboundCase):
@@ -64,7 +65,7 @@ class AutoTopicOutboundCase(TopicOutboundCase):
 
 
 class AutoTopicPublishTests(AutoTopicOutboundCase):
-    def test_a_send_on_a_bound_or_not_yet_bound_auto_topic_carries_its_thread(self):
+    def test_a_send_on_a_named_or_unnamed_auto_topic_carries_its_thread(self):
         for thread_id in (AUTO, FRESH):
             with self.subTest(thread_id=thread_id):
                 del self.calls[:]
@@ -80,7 +81,6 @@ class AutoTopicPublishTests(AutoTopicOutboundCase):
                     request, sort_keys=True).encode()).hexdigest())
                 self.assertEqual(self.bridge.publish(request), receipt)
                 self.assertEqual(len(self.calls), 1)
-        self.assertIsNone(next(row for row in self.store.auto_topic_rows() if row['thread_id'] == FRESH)['bound_at'])
 
     def test_the_html_plain_fallback_and_a_silent_send_stay_in_the_auto_topic(self):
         self.answers['sendMessage'] = [HTML_REJECTED]
@@ -117,13 +117,33 @@ class AutoTopicPublishTests(AutoTopicOutboundCase):
         self.assertTrue(url.endswith('/sendMediaGroup'))
         self.assertEqual(fields['message_thread_id'], str(AUTO))
 
-    def test_the_gc_callback_publishes_on_an_auto_conversation(self):
+    def test_the_yard_api_sends_on_an_auto_topic_by_conversation_id_or_display_name(self):
         port = self.start_callback_server()
-        status, receipt = self.callback_post(port, dict(self.request(key='cb-auto'), session_id='mayor'))
-        self.assertEqual(status, 200)
-        self.assert_in_thread(receipt)
-        [body] = self.sent('sendMessage')
-        self.assertEqual(body['message_thread_id'], AUTO)
+        cases = [(dict(conversation=AUTO_ID), AUTO), (dict(topic='Trip'), AUTO),
+                 (dict(topic=f'thread {FRESH}'), FRESH), (dict(conversation=f'123:topic:{FRESH}'), FRESH)]
+        for index, (target, thread_id) in enumerate(cases):
+            with self.subTest(**target):
+                del self.calls[:]
+                status, answer = self.api_call(port, '/v1/send', dict(target, text='hello', key=f'api-auto-{index}'))
+                self.assertEqual((status, answer), (200, dict(delivered=True, message_id='77',
+                                                              conversation=f'123:topic:{thread_id}')))
+                [body] = self.sent('sendMessage')
+                self.assertEqual(body['message_thread_id'], thread_id)
+
+    def test_the_yard_api_refuses_an_auto_topic_it_does_not_serve_before_anything_is_sent(self):
+        port = self.start_callback_server(self.make_bridge(dict(self.config, auto_topics=AUTO_OFF), self.store))
+        for index, target in enumerate((dict(conversation=AUTO_ID), dict(topic='Trip'))):
+            with self.subTest(**target):
+                status, answer = self.api_call(port, '/v1/send', dict(target, text='hello', key=f'api-off-{index}'))
+                self.assertEqual(status, 400)
+                self.assertIn('error', answer)
+        port = self.start_callback_server()
+        for index, target in enumerate((dict(conversation=f'123:topic:{UNKNOWN}'), dict(topic='OPS #7'),
+                                        dict(topic=f'thread {GONE}'))):
+            with self.subTest(**target):
+                status, answer = self.api_call(port, '/v1/send', dict(target, text='hello', key=f'api-no-{index}'))
+                self.assertEqual(status, 400)
+        self.assertEqual((self.calls, self.ledger()), ([], {}))
 
     def test_auto_off_a_shadowed_row_or_an_unknown_thread_is_refused_and_sends_nothing(self):
         bridges = {
@@ -223,7 +243,7 @@ class AutoTopicQuotaTests(AutoTopicInboundCase):
         self.config['health_file'] = str(health)
         health.write_text(json.dumps(dict(
             observed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            sessions=[dict(template='mayor', status='quota_wait', episode='ep-auto',
+            sessions=[dict(template='yardmaster', status='quota_wait', episode='ep-auto',
                            until=int(time.time() * 1000) + 3600 * 1000)])))
         self.bridge = self.make_bridge(self.config)
         self.drain(in_topic(self.update(10), NEW), in_topic(self.update(11), NEW))
@@ -234,8 +254,8 @@ class AutoTopicQuotaTests(AutoTopicInboundCase):
 
 
 class AutoTopicAckCase(TopicAckCase, AutoTopicInboundCase):
-    """The reactions and typing fixture with [auto_topics] on and the fake GC
-    that binds auto topics."""
+    """The reactions and typing fixture with [auto_topics] on and the fake
+    yard hook of the auto topic inbound tests."""
 
     def setUp(self):
         super().setUp()
@@ -270,7 +290,6 @@ class AutoTopicCliTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.enterContext(patch.dict(os.environ))
-        os.environ.pop('GC_SESSION_ID', None)
         self.settings = write_settings(self.root)
         self.base_settings = self.settings.read_text() + test_topics.topic_tables(('ops', None), ('lab', None))
         self.write_settings(AUTO_ON)
@@ -291,9 +310,7 @@ class AutoTopicCliTests(unittest.TestCase):
 
     def fake_run(self, argv, input='', **kwargs):
         self.inputs.append(input)
-        if '/extmsg/outbound' in input:
-            payload = dict(Receipt=dict(Delivered=True, MessageID='55'))
-        elif '/sendMessage' in input:
+        if '/sendMessage' in input:
             payload = dict(ok=True, result=dict(message_id=42, chat=dict(id=123)))
         else:
             raise AssertionError('unexpected curl invocation')
@@ -309,12 +326,13 @@ class AutoTopicCliTests(unittest.TestCase):
                      '--body-file', str(self.body), '--idempotency-key', key, *argv)
         return out.getvalue()
 
-    def test_send_and_reply_current_relay_through_gc_on_the_auto_conversation(self):
+    def test_a_plain_send_and_reply_current_go_straight_to_telegram_in_the_auto_thread(self):
         for index, command in enumerate(('send', 'reply-current')):
-            out = self.cli(command, '--conversation-id', AUTO_ID, key=f'relay-{index}')
-            self.assertEqual(out, 'Telegram delivery confirmed; message ID 55\n')
-        self.assertEqual([body['conversation'] for body in self.bodies()], [topic_ref(AUTO)] * 2)
-        self.assertTrue(all('/extmsg/outbound"' in config for config in self.inputs))
+            out = self.cli(command, '--conversation-id', AUTO_ID, key=f'plain-{index}')
+            self.assertEqual(out, 'Telegram delivery confirmed; message ID 42\n')
+        self.assertEqual([(body['text'], body['message_thread_id'], 'parse_mode' in body) for body in self.bodies()],
+                         [('<b>done</b>', AUTO, False)] * 2)
+        self.assertTrue(all('/sendMessage"' in config for config in self.inputs))
 
     def test_a_direct_send_into_an_auto_topic_carries_its_thread(self):
         for index, (command, thread_id) in enumerate((('send', AUTO), ('reply-current', AUTO),
@@ -323,7 +341,7 @@ class AutoTopicCliTests(unittest.TestCase):
                            key=f'html-{index}')
             self.assertEqual(out, 'Telegram delivery confirmed; message ID 42\n')
         self.assertEqual([body['message_thread_id'] for body in self.bodies()], [AUTO, AUTO, FRESH])
-        self.assertFalse(any('/extmsg/' in config for config in self.inputs))
+        self.assertTrue(all('url = "https://api.telegram.org/' in config for config in self.inputs))
         with closing(sqlite3.connect(self.ledger)) as db:
             receipts = [json.loads(receipt) for (receipt,) in db.execute('SELECT receipt FROM deliveries')]
         self.assertEqual([receipt['delivered'] for receipt in receipts], [True, True, True])
@@ -332,7 +350,7 @@ class AutoTopicCliTests(unittest.TestCase):
         cases = [(AUTO_ON, ('--conversation-id', f'123:topic:{GONE}'), UNRESOLVED),
                  (AUTO_ON, ('--conversation-id', f'123:topic:{UNKNOWN}'), UNRESOLVED),
                  (AUTO_ON, ('--conversation-id', f'123:topic:0{AUTO}'), UNRESOLVED),
-                 (AUTO_ON, ('--topic', 'Trip'), 'topic Trip is not configured or not created (run gc telegram topics)'),
+                 (AUTO_ON, ('--topic', 'Trip'), 'topic Trip is not configured or not created (run bridge.py topics)'),
                  (AUTO_OFF, ('--conversation-id', AUTO_ID), UNRESOLVED),
                  (None, ('--conversation-id', AUTO_ID), UNRESOLVED)]
         for auto, argv, message in cases:

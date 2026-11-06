@@ -1,6 +1,6 @@
 """Voice notes and round video notes out: the shared attachment path (validation,
 multipart send, ledger, receipts, 4xx text fallback) with the fake Telegram,
-and the CLI and reply-current command passing both kinds through."""
+and bridge.py's send and reply-current passing both kinds through."""
 from contextlib import closing
 import io
 import json
@@ -31,7 +31,7 @@ class MediaKindTests(BridgeTestCase):
         self.store = b.Store(self.root / 'state.sqlite3', 10)
         self.calls, self.multipart_calls = [], []
         self.multipart_answer = (200, dict(ok=True, result=dict(message_id=88, chat=dict(id=123))))
-        config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', city='test-city',
+        config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', yard='test-city', hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
                       user_display_name='Pat', timezone='UTC', unit='test-city-telegram.service', menu=MENU)
         self.bridge = b.Bridge(config, self.store, 'SECRET', 'CAPABILITY', request=self.transport,
                                request_multipart=self.multipart_transport)
@@ -185,10 +185,10 @@ class MediaKindCliTests(unittest.TestCase):
                         'print("200 0.010000 0.020000 0", end="")\n')
         return bin_dir
 
-    def test_gc_telegram_reply_current_passes_both_kinds_to_send_voice_and_send_video_note(self):
+    def test_bridge_py_reply_current_passes_both_kinds_to_send_voice_and_send_video_note(self):
         settings = write_settings(self.root)
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GC_')}
-        env.update(PATH=f'{self.fake_curl()}:{env["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(settings))
+        env = {k: v for k, v in os.environ.items() if k != b.SETTINGS_ENV}
+        env.update(PATH=f'{self.fake_curl()}:{env["PATH"]}')
         voice, circle = self.root / 'note.ogg', self.root / 'circle.mp4'
         voice.write_bytes(b'OggS')
         circle.write_bytes(b'mp4')
@@ -197,7 +197,8 @@ class MediaKindCliTests(unittest.TestCase):
         empty.write_text('')
         for key, body, path, kind in (('cli-voice', caption, voice, 'voice'),
                                       ('cli-circle', empty, circle, 'video_note')):
-            result = subprocess.run(['sh', str(PACK / 'commands' / 'reply-current' / 'run.sh'), '--body-file', str(body),
+            result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), '--settings', str(settings),
+                                     'reply-current', '--body-file', str(body),
                                      '--idempotency-key', key, '--attachment', str(path), '--attachment-kind', kind],
                                     env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)

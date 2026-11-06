@@ -1,6 +1,7 @@
 """Reactions: the [reactions] settings, the seen reaction the bridge sets on
-the worker once GC durably accepted a message (on_accept), and the `react`
-subcommand and `gc telegram react` command, with the fake Telegram and GC."""
+the worker once the yard recorded a message (on_accept), and the `react`
+subcommand, in-process and as bridge.py itself, with the fake Telegram and
+the fake yard."""
 from contextlib import closing
 import io
 import json
@@ -171,6 +172,22 @@ class AcceptReactionTests(BridgeTestCase):
         self.assertEqual(self.reactions(), [])
         self.assertIsNone(self.store.last_accepted())
 
+    def test_a_message_the_yard_does_not_record_gets_no_reaction_and_keeps_the_cursor(self):
+        for answer in ((200, dict(dropped=True)), (503, dict(error='busy')), (200, dict())):
+            with self.subTest(answer=answer):
+                transport = self.transport
+
+                def refusing(url, body, *args, **kwargs):
+                    if url == self.bridge.hook_url:
+                        return answer
+                    return transport(url, body, *args, **kwargs)
+                self.bridge.request = refusing
+                with patch('sys.stderr', new_callable=io.StringIO), self.assertRaises(b.TransportError):
+                    self.bridge.drain([self.update(uid=10)])
+                self.assertEqual(self.store.offset(), 10)
+                self.assertEqual(self.reactions(), [])
+                self.assertIsNone(self.store.last_accepted())
+
     def test_without_on_accept_no_reaction_call_at_all(self):
         self.bridge = self.make_bridge()
         self.bridge.drain([self.update(uid=10), self.update(uid=11)])
@@ -190,6 +207,8 @@ class AcceptReactionTests(BridgeTestCase):
         with patch.object(self.store, 'record_accepted', side_effect=sqlite3.OperationalError('locked')), \
                 patch('sys.stderr', new_callable=io.StringIO) as log:
             self.bridge.drain([self.update(uid=11)])
+            # The worker's seen for 11 finishes before the test's directory goes.
+            self.assertEqual(self.reactions(), [self.seen(10), self.seen(11)])
         self.assertEqual(self.store.offset(), 12)
         self.assertIn('accepted message not recorded (msg 11)', log.getvalue())
 
@@ -359,7 +378,7 @@ class ReactCommandTests(BridgeTestCase):
 
 
 class ReactCliTests(unittest.TestCase):
-    """bridge.py react and gc telegram react as processes, curl faked on PATH."""
+    """bridge.py react as a process, curl faked on PATH."""
 
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
@@ -374,7 +393,7 @@ class ReactCliTests(unittest.TestCase):
                         f'Path({str(self.root)!r}, "curl-" + uuid.uuid4().hex).write_text(sys.stdin.read())\n'
                         f'print({json.dumps(answer)!r})\n'
                         f'print("{status} 0.010000 0.020000 0", end="")\n')
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GC_')}
+        env = dict(os.environ)
         env.update(PATH=f'{bin_dir}:{env["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
         return env
 
@@ -386,10 +405,10 @@ class ReactCliTests(unittest.TestCase):
             bodies.append(json.loads(json.loads(config['data'])))
         return bodies
 
-    def test_gc_telegram_react_forwards_its_arguments(self):
+    def test_bridge_py_with_the_settings_from_the_environment_reacts_on_the_last_accepted(self):
         self.store.record_accepted(41, '2026-10-27T07:00:00+00:00')
         env = self.fake_curl(dict(ok=True, result=True))
-        result = subprocess.run(['sh', str(PACK / 'commands' / 'react' / 'run.sh'), '--reaction', 'done'],
+        result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), 'react', '--reaction', 'done'],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'Telegram reaction set; message ID 41\n')

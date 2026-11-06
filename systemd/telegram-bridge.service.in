@@ -1,8 +1,8 @@
-# Rendered per city by `bridge.py --settings <file> render-unit` (install.sh);
+# Rendered per yard by `bridge.py --settings <file> render-unit` (install.sh);
 # the placeholders (upper-case names between at signs) come from that
-# city's settings file.
+# yard's settings file.
 [Unit]
-Description=Private Telegram transport for the @CITY@ @AGENT@
+Description=Private Telegram transport for the @YARD@ yard's @CREW@
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0

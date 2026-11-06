@@ -458,7 +458,7 @@ class PinCliTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
             self.assertIn('error:', err.getvalue())
 
-    def test_the_pack_command_forwards_its_arguments(self):
+    def test_bridge_py_with_the_settings_from_the_environment_pins(self):
         bin_dir = self.root / 'bin'
         write_fake_curl(bin_dir, f'#!{sys.executable}\nimport json, sys, uuid\nfrom pathlib import Path\n'
                         'config = sys.stdin.read()\n'
@@ -466,10 +466,10 @@ class PinCliTests(unittest.TestCase):
                         'result = True if "ChatMessage" in config else {"message_id": 42, "chat": {"id": 123}}\n'
                         'print(json.dumps({"ok": True, "result": result}))\n'
                         'print("200 0.010000 0.020000 0", end="")\n')
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GC_')}
+        env = dict(os.environ)
         env.update(PATH=f'{bin_dir}:{env["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
         self.body.write_text('<b>2</b> asks wait')
-        result = subprocess.run(['sh', str(PACK / 'commands' / 'pin' / 'run.sh'), '--slot', 'waiting',
+        result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), 'pin', '--slot', 'waiting',
                                  '--format', 'html', '--body-file', str(self.body)],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)

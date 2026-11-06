@@ -26,7 +26,7 @@ import testports  # noqa: E402
 
 
 def write_settings(root, body=None, mode=0o600, **replace):
-    """An owner-only settings file for the city 'test-city' under root, with
+    """An owner-only settings file for the yard 'test-city' under root, with
     its token file; `replace` swaps whole top-level lines (key=value text),
     `body` replaces the file. Returns the settings path."""
     root = Path(root)
@@ -36,12 +36,13 @@ def write_settings(root, body=None, mode=0o600, **replace):
     if not token.exists():
         token.write_text('TESTTOKEN\n')
         token.chmod(0o600)
-    lines = dict(city='"test-city"', state_dir=f'"{root / "state"}"', port='18930',
+    lines = dict(yard='"test-city"', state_dir=f'"{root / "state"}"', port='18930',
                  token_file=f'"{token}"', callback_secret_file=f'"{private / "telegram-callback-secret"}"',
                  user_display_name='"Pat"', timezone='"Asia/Tokyo"', pairing_update_id='5')
     lines.update(replace)
     text = body if body is not None else (
         ''.join(f'{key} = {value}\n' for key, value in lines.items() if value is not None)
+        + f'\n[yardr]\nhook_url = "http://127.0.0.1:8797/hooks/tgbridge"\nhook_secret_file = "{private / "hook-secret"}"\n'
         + '\n[bot]\nbot_id = 999\nuser_id = 123\nchat_id = 123\naccount_id = "test_bot"\n'
         + ''.join(f'\n[[menu]]\ncommand = "{c}"\ndescription = {json.dumps(d)}\n' for c, d in MENU))
     path = root / 'telegram-bridge.toml'
@@ -90,7 +91,7 @@ class BridgeTestCase(unittest.TestCase):
         self.download_bytes = b'x' * 42
         self.download_status = 200
         self.file_responses = {}
-        self.config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', city='test-city',
+        self.config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', yard='test-city', hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
                            user_display_name='Pat', timezone='Asia/Tokyo',
                            unit='test-city-telegram.service', menu=MENU)
         self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY',
@@ -110,7 +111,7 @@ class BridgeTestCase(unittest.TestCase):
             return 200, dict(ok=True, result=dict(url=''))
         if url.endswith('/getFile'):
             return self.get_file_response(body)
-        return 200, self.accepted(body['message'])
+        return 200, self.accepted(body)
 
     def multipart_transport(self, url, fields, file_field, file_path, timeout=20):
         self.multipart_calls.append((url, fields, file_field, file_path))
@@ -153,11 +154,9 @@ class BridgeTestCase(unittest.TestCase):
         os.truncate(path, size)
         return str(path)
 
-    def accepted(self, message):
-        return dict(TargetAgentName='mayor', TargetSessionID='', TranscriptEntry=dict(
-            ID='transcript-record', Sequence=1, Kind='inbound',
-            Conversation=message['conversation'], ProviderMessageID=message['provider_message_id'],
-            Actor=message['actor']))
+    def accepted(self, body=None):
+        """The yard hook's answer to a delivery it recorded."""
+        return dict(seq=1)
 
     def update(self, uid=10):
         return dict(update_id=uid, message=dict(message_id=uid, text='hello',
@@ -167,8 +166,47 @@ class BridgeTestCase(unittest.TestCase):
         return dict(conversation=self.bridge.conversation, text=text, idempotency_key=key, session_id='mayor')
 
     def relayed_texts(self):
-        return [c[1]['message']['text'] for c in self.calls
-                if c[0] == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+        return [c[1]['text'] for c in self.calls
+                if c[0] == self.bridge.hook_url]
+
+    # ---- the yard API on a real loopback server -----------------------------
+
+    def start_callback_server(self, bridge=None, timeout=None):
+        """Serve the yard API (the bridge's callback handler) on a loopback
+        port picked by testports; returns the port."""
+        handler = b._callback_handler(bridge or self.bridge)
+        if timeout is not None:
+            handler.timeout = timeout
+        server = testports.bind_test_server(handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1]
+
+    def api_call(self, port, path, body=None, bridge=None, secret=None, headers=None, method='POST', raw=None):
+        """One yard API request with `Authorization: Bearer <secret>` (the
+        bridge's callback secret unless given; False sends none). Returns
+        (HTTP status, parsed JSON answer)."""
+        bridge = bridge or self.bridge
+        secret = bridge.secret if secret is None else secret
+        sent = dict(headers or {})
+        if secret is not False:
+            sent.setdefault('Authorization', 'Bearer ' + secret)
+        payload = raw if raw is not None else (None if body is None else json.dumps(body))
+        if payload is not None:
+            sent.setdefault('Content-Type', 'application/json')
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        try:
+            connection.request(method, path, payload, sent)
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def callback_post(self, port, body, bridge=None):
+        """POST /v1/send, the yard's send call."""
+        return self.api_call(port, '/v1/send', body, bridge=bridge)
 
 
 class BridgeTests(BridgeTestCase):
@@ -181,7 +219,7 @@ class BridgeTests(BridgeTestCase):
         self.assertEqual(self.calls, [])
         self.bridge.inbound(self.update())
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0][1]['message']['provider_message_id'], '10')
+        self.assertEqual(self.calls[0][1]['message_id'], '10')
 
     # ---- forwarded messages ------------------------------------------------
 
@@ -205,9 +243,9 @@ class BridgeTests(BridgeTestCase):
                                 reply_to_message=dict(message_id=7))
         self.bridge.drain([update])
         [(_, body)] = self.calls
-        self.assertEqual(body['message']['provider_message_id'], '10')
-        self.assertEqual(body['message']['reply_to_message_id'], '7')  # reply handling unchanged
-        self.assertEqual(body['message']['text'],
+        self.assertEqual(body['message_id'], '10')
+        self.assertEqual(body['reply_to'], '7')  # reply handling unchanged
+        self.assertEqual(body['text'],
                          self.forward_header('Ann Lee (@annlee)', '2026-10-22T14:05:00Z')
                          + '\n> Ship it on Friday.\n> Then tell the team.')
         self.assertEqual(self.store.offset(), 11)
@@ -295,8 +333,8 @@ class BridgeTests(BridgeTestCase):
         update['message']['reply_to_message'] = dict(message_id=3)
         self.bridge.drain([update])
         [(_, body)] = self.calls
-        self.assertEqual(body['message']['text'], text)
-        self.assertEqual(body['message']['reply_to_message_id'], '3')
+        self.assertEqual(body['text'], text)
+        self.assertEqual(body['reply_to'], '3')
 
     def test_a_forwarded_channel_photo_keeps_its_note_with_the_caption_quoted(self):
         self.bridge.state_dir = Path(self.tmp.name)
@@ -330,16 +368,16 @@ class BridgeTests(BridgeTestCase):
     def test_offset_is_durable_only_after_accept_and_retries_same_id(self):
         delivered = []
         def uncertain(url, body, *args, **kwargs):
-            delivered.append(body['message']['provider_message_id'])
+            delivered.append(body['message_id'])
             if len(delivered) == 1:
-                raise b.TransportError('GC unavailable')
-            return 200, self.accepted(body['message'])
+                raise b.TransportError('yard unavailable')
+            return 200, self.accepted(body)
         self.bridge.request = uncertain
         with self.assertRaises(b.TransportError):
             self.bridge.drain([self.update()])
         self.assertEqual(b.Store(self.path, 100).offset(), 10)
         self.bridge.drain([self.update()])
-        self.assertEqual(delivered, ['10', '10'])  # GC's same conversation/message dedup key
+        self.assertEqual(delivered, ['10', '10'])  # the same delivery id, which the yard dedupes on
         self.assertEqual(b.Store(self.path, 0).offset(), 11)
         self.bridge.drain([self.update()])
         self.assertEqual(len(delivered), 2)
@@ -365,33 +403,43 @@ class BridgeTests(BridgeTestCase):
             self.store.reserve('reuse-1', 'fp-2', pending)
         self.assertEqual(self.store.reserve('reuse-1', 'fp-1', pending), final)
 
-    def test_200_without_durable_entry_retains_cursor(self):
-        for result in ({}, {'TargetAgentName': 'mayor', 'TranscriptEntry': None},
-                       {'TargetAgentName': '', 'TranscriptEntry': None}):
+    def test_a_2xx_answer_without_a_positive_int_seq_retains_cursor(self):
+        for result in ({}, None, [], 'ok', dict(seq=0), dict(seq=-1), dict(seq='5'), dict(seq=True),
+                       dict(seq=1.0), dict(seq=None), dict(duplicate=True)):
             with self.subTest(result=result):
                 self.bridge.request = lambda *args, **kwargs: (200, result)
                 with self.assertRaises(b.TransportError):
                     self.bridge.drain([self.update()])
                 self.assertEqual(b.Store(self.path, 100).offset(), 10)
+        self.assertEqual(self.store.read_messages('123', 10), [])  # nothing logged the yard has not recorded
 
-    def test_wrong_route_or_mismatched_transcript_retains_cursor(self):
-        for field, value in [('TargetAgentName', 'other'), ('ProviderMessageID', '999'),
-                             ('Conversation', {}), ('Sequence', 0), ('ID', ''), ('Kind', 'outbound')]:
-            def response(url, body, *args, **kwargs):
-                result = self.accepted(body['message'])
-                target = result if field == 'TargetAgentName' else result['TranscriptEntry']
-                target[field] = value
-                return 200, result
-            self.bridge.request = response
-            with self.subTest(field=field), self.assertRaises(b.TransportError):
+    def test_a_refused_or_dropped_yard_answer_retains_cursor(self):
+        for status, result in [(400, dict(error='bad body')), (401, {}), (403, dict(seq=1)), (404, {}),
+                               (409, dict(seq=1)), (413, {}), (500, {}), (502, None), (199, dict(seq=1)),
+                               (300, dict(seq=1)), (200, dict(dropped=True)), (202, dict(seq=3, dropped=True))]:
+            self.bridge.request = lambda *args, **kwargs: (status, result)
+            with self.subTest(status=status, result=result), self.assertRaises(b.TransportError):
                 self.bridge.drain([self.update()])
             self.assertEqual(self.store.offset(), 10)
+        self.assertIsNone(self.store.last_accepted())  # no accept point: no seen reaction, no typing
+
+    def test_any_2xx_with_a_positive_seq_accepts_and_a_duplicate_does_too(self):
+        for uid, (status, result) in enumerate([(200, dict(seq=1)), (201, dict(seq=7)), (202, dict(seq=8)),
+                                                (204, dict(seq=9)), (200, dict(seq=4, duplicate=True)),
+                                                (299, dict(seq=2, duplicate=False))], start=10):
+            def response(url, body, *args, **kwargs):
+                self.calls.append((url, body))
+                return status, result
+            self.bridge.request = response
+            with self.subTest(status=status, result=result):
+                self.bridge.drain([self.update(uid=uid)])
+                self.assertEqual(self.store.offset(), uid + 1)
 
     def test_duplicate_durable_response_accepts_after_lost_ack(self):
         entries = []
         def response(url, body, *args, **kwargs):
             if not entries:
-                entries.append(self.accepted(body['message']))
+                entries.append(self.accepted(body))
                 raise b.TransportError('response lost after durable write')
             return 200, entries[0]  # Native Append returns the existing transcript.
         self.bridge.request = response
@@ -480,16 +528,16 @@ class BridgeTests(BridgeTestCase):
         self.assertIn('caption: see this receipt', texts[0])
         self.assertTrue(texts[0].endswith('\nsee this receipt'))
 
-    def test_inbound_attachment_retry_after_lost_gc_ack_keeps_same_provider_message_id_and_path(self):
+    def test_inbound_attachment_retry_after_a_lost_yard_answer_keeps_the_same_id_and_path(self):
         self.bridge.state_dir = Path(self.tmp.name)
         update = self.document_message(uid=22, file_name='report.pdf')
         delivered = []
         def uncertain(url, body, *args, **kwargs):
-            if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound':
-                delivered.append(body['message'])
+            if url == self.bridge.hook_url:
+                delivered.append(body)
                 if len(delivered) == 1:
-                    raise b.TransportError('GC unavailable')
-                return 200, self.accepted(body['message'])
+                    raise b.TransportError('yard unavailable')
+                return 200, self.accepted(body)
             return self.transport(url, body, *args, **kwargs)
         self.bridge.request = uncertain
         with self.assertRaises(b.TransportError):
@@ -497,7 +545,8 @@ class BridgeTests(BridgeTestCase):
         self.assertEqual(self.store.offset(), 10)  # not yet durably accepted; retained for a retry
         self.bridge.drain([update])
         self.assertEqual(len(delivered), 2)
-        self.assertEqual(delivered[0]['provider_message_id'], delivered[1]['provider_message_id'])
+        self.assertEqual(delivered[0]['message_id'], delivered[1]['message_id'])
+        self.assertEqual(delivered[0]['id'], delivered[1]['id'])  # the yard dedupes the retry on it
         self.assertEqual(delivered[0]['text'], delivered[1]['text'])  # re-download landed at the same path
         self.assertEqual(self.store.offset(), 23)
 
@@ -677,26 +726,31 @@ class BridgeTests(BridgeTestCase):
             b.private_text(key)
         key.chmod(0o600)
         self.assertEqual(b.private_text(key), 'secret')
-        with self.assertRaises(b.TransportError):
-            b.Bridge(dict(self.config, gc_base_url='https://outside.example'), self.store, 'SECRET', 'CAP')
+        for url in ('https://outside.example/hooks/tgbridge', 'http://10.0.0.1:8797/hooks/tgbridge',
+                    'https://127.0.0.1:8797/hooks/tgbridge'):
+            with self.subTest(url=url), self.assertRaises(b.TransportError):
+                b.Bridge(dict(self.config, hook_url=url), self.store, 'SECRET', 'CAP')
 
     def test_bridge_config_identity_is_validated(self):
         cases = [
             dict(bot_id=0),
             dict(bot_id=2 ** 63),
             dict(chat_id=124),
-            dict(city='two words'),
+            dict(yard='two words'),
+            dict(yard=None),
             dict(account_id='', bot_username=''),
             dict(agent='bad agent'),
             dict(timezone='Mars/Olympus'),
-            dict(gc_base_url='http://10.0.0.1:8372'),
+            dict(hook_url='http://10.0.0.1:8797/hooks/tgbridge'),
+            dict(hook_url='http://127.0.0.1:8797/v1/send'),
+            dict(hook_url=''),
         ]
         for replace in cases:
             with self.subTest(replace=replace), self.assertRaises(b.TransportError):
                 b.Bridge(dict(self.config, **replace), self.store, 'SECRET', 'CAP')
 
     def test_quota_exhausted_notice_sends_html(self):
-        self.write_city_health(self.mayor_waiting(self.future_until(), 'ep-1'))
+        self.write_city_health(self.crew_waiting(self.future_until(), 'ep-1'))
         self.bridge.drain([self.update(uid=10)])
         notice_calls = [c for c in self.calls if '/sendMessage' in c[0]]
         self.assertEqual(len(notice_calls), 1)
@@ -722,58 +776,58 @@ class BridgeTests(BridgeTestCase):
     def future_until(self, hours=1):
         return int(time.time() * 1000) + hours * 3600 * 1000
 
-    def mayor_waiting(self, until, episode='abc123'):
-        return [{'template': 'mayor', 'status': 'quota_wait', 'episode': episode, 'until': until}]
+    def crew_waiting(self, until, episode='abc123'):
+        return [{'template': 'yardmaster', 'status': 'quota_wait', 'episode': episode, 'until': until}]
 
     def test_mayor_quota_episode_reads_health_file(self):
-        self.write_city_health(self.mayor_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T09:58:30.255Z')
+        self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T09:58:30.255Z')
         self.assertEqual(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), ('abc123', self.HEALTH_UNTIL))
 
     def test_mayor_quota_episode_rejects_stale_observed_at(self):
-        self.write_city_health(self.mayor_waiting(self.HEALTH_UNTIL), observed_at='2020-01-01T00:00:00.000Z')
+        self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2020-01-01T00:00:00.000Z')
         self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
-        self.write_city_health(self.mayor_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T09:49:59Z')
+        self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T09:49:59Z')
         self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
 
     def test_mayor_quota_episode_rejects_missing_or_unparseable_observed_at(self):
         path = self.health_path()
-        path.write_text(json.dumps({'sessions': self.mayor_waiting(self.HEALTH_UNTIL)}))
+        path.write_text(json.dumps({'sessions': self.crew_waiting(self.HEALTH_UNTIL)}))
         self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
         for bad in ('yesterday', 1789466400000, None, '2026-09-15T10:00:00'):
-            path.write_text(json.dumps({'observed_at': bad, 'sessions': self.mayor_waiting(self.HEALTH_UNTIL)}))
+            path.write_text(json.dumps({'observed_at': bad, 'sessions': self.crew_waiting(self.HEALTH_UNTIL)}))
             self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), bad)
 
     def test_mayor_quota_episode_rejects_future_observed_at(self):
-        self.write_city_health(self.mayor_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T10:05:00Z')
+        self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T10:05:00Z')
         self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
 
     def test_mayor_quota_episode_rejects_expired_until(self):
         now_ms = int(self.HEALTH_NOW.timestamp() * 1000)
         for until in (now_ms - 1, now_ms):
-            self.write_city_health(self.mayor_waiting(until), observed_at='2026-09-15T09:59:00Z')
+            self.write_city_health(self.crew_waiting(until), observed_at='2026-09-15T09:59:00Z')
             self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), until)
 
     def test_mayor_quota_episode_rejects_bool_until(self):
-        self.write_city_health(self.mayor_waiting(True), observed_at='2026-09-15T09:59:00Z')
+        self.write_city_health(self.crew_waiting(True), observed_at='2026-09-15T09:59:00Z')
         self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
 
     def test_mayor_quota_episode_rejects_non_finite_until(self):
         path = self.health_path()
         for literal in ('NaN', 'Infinity', '-Infinity'):  # json.loads accepts these literals
-            path.write_text('{"observed_at": "2026-09-15T09:59:00Z", "sessions": [{"template": "mayor", '
+            path.write_text('{"observed_at": "2026-09-15T09:59:00Z", "sessions": [{"template": "yardmaster", '
                             '"status": "quota_wait", "episode": "abc123", "until": %s}]}' % literal)
             self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), literal)
 
     def test_inbound_sends_no_notice_for_stale_or_expired_health(self):
-        self.write_city_health(self.mayor_waiting(self.future_until(), 'ep-stale'),
+        self.write_city_health(self.crew_waiting(self.future_until(), 'ep-stale'),
                                observed_at='2020-01-01T00:00:00Z')
         self.bridge.drain([self.update(uid=10)])
-        self.write_city_health(self.mayor_waiting(int(time.time() * 1000) - 60 * 1000, 'ep-expired'))
+        self.write_city_health(self.crew_waiting(int(time.time() * 1000) - 60 * 1000, 'ep-expired'))
         self.bridge.drain([self.update(uid=11)])
         self.assertEqual([c for c in self.calls if '/sendMessage' in c[0]], [])
 
-    def test_mayor_quota_episode_none_when_mayor_running(self):
-        self.write_city_health([{'template': 'mayor', 'status': 'running'}])
+    def test_mayor_quota_episode_none_when_the_crew_member_is_running(self):
+        self.write_city_health([{'template': 'yardmaster', 'status': 'running'}])
         self.assertIsNone(self.bridge.mayor_quota_episode())
 
     def test_mayor_quota_episode_none_without_health_file_setting_or_file(self):
@@ -788,7 +842,7 @@ class BridgeTests(BridgeTestCase):
         (health_dir / 'health.json').write_text(json.dumps({'sessions': 'not-a-list'}))
         self.assertIsNone(self.bridge.mayor_quota_episode())
         (health_dir / 'health.json').write_text(json.dumps(
-            {'sessions': [{'template': 'mayor', 'status': 'quota_wait'}]}))
+            {'sessions': [{'template': 'yardmaster', 'status': 'quota_wait'}]}))
         self.assertIsNone(self.bridge.mayor_quota_episode())
 
     def test_format_quota_exhausted_reply_converts_to_local_time(self):
@@ -803,10 +857,10 @@ class BridgeTests(BridgeTestCase):
     def test_inbound_notifies_once_per_quota_exhaustion_episode(self):
         """Two separate user messages during the same quota_wait episode must
         relay normally but only trigger one quota-exhaustion Telegram send."""
-        self.write_city_health(self.mayor_waiting(self.future_until(), 'ep-1'))
+        self.write_city_health(self.crew_waiting(self.future_until(), 'ep-1'))
         self.bridge.drain([self.update(uid=10)])
         self.bridge.drain([self.update(uid=11)])
-        relay_calls = [c for c in self.calls if c[0] == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+        relay_calls = [c for c in self.calls if c[0] == self.bridge.hook_url]
         notice_calls = [c for c in self.calls if '/sendMessage' in c[0]]
         self.assertEqual(len(relay_calls), 2)
         self.assertEqual(len(notice_calls), 1)
@@ -826,21 +880,21 @@ class BridgeTests(BridgeTestCase):
                             b.Bridge._quota_key('ops-agent', episode))
 
     def test_inbound_notifies_for_a_long_episode(self):
-        self.write_city_health(self.mayor_waiting(self.future_until(), 'e' * 240))
+        self.write_city_health(self.crew_waiting(self.future_until(), 'e' * 240))
         self.bridge.drain([self.update(uid=10)])
         notice_calls = [c for c in self.calls if '/sendMessage' in c[0]]
         self.assertEqual(len(notice_calls), 1)
         self.assertIn('quota exhausted', notice_calls[0][1]['text'])
 
-    def test_inbound_sends_no_notice_when_mayor_is_not_quota_blocked(self):
-        self.write_city_health([{'template': 'mayor', 'status': 'running'}])
+    def test_inbound_sends_no_notice_when_the_crew_member_is_not_quota_blocked(self):
+        self.write_city_health([{'template': 'yardmaster', 'status': 'running'}])
         self.bridge.drain([self.update(uid=10)])
         self.assertEqual([c for c in self.calls if '/sendMessage' in c[0]], [])
 
     def test_inbound_sends_new_notice_for_a_later_episode(self):
-        self.write_city_health(self.mayor_waiting(self.future_until(), 'ep-1'))
+        self.write_city_health(self.crew_waiting(self.future_until(), 'ep-1'))
         self.bridge.drain([self.update(uid=10)])
-        self.write_city_health(self.mayor_waiting(self.future_until(hours=2), 'ep-2'))
+        self.write_city_health(self.crew_waiting(self.future_until(hours=2), 'ep-2'))
         self.bridge.drain([self.update(uid=11)])
         notice_calls = [c for c in self.calls if '/sendMessage' in c[0]]
         self.assertEqual(len(notice_calls), 2)
@@ -936,45 +990,6 @@ class BridgeTests(BridgeTestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(self.multipart_calls), 1)
 
-    def start_callback_server(self, bridge=None, timeout=None):
-        handler = b._callback_handler(bridge or self.bridge)
-        if timeout is not None:
-            handler.timeout = timeout
-        server = testports.bind_test_server(handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return server.server_address[1]
-
-    def callback_post(self, port, body, bridge=None):
-        bridge = bridge or self.bridge
-        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
-        try:
-            connection.request('POST', '/' + bridge.secret + '/publish', json.dumps(body),
-                               {'X-GC-Request': '1', 'Content-Type': 'application/json'})
-            response = connection.getresponse()
-            return response.status, json.loads(response.read())
-        finally:
-            connection.close()
-
-    def test_callback_refuses_attachment_without_calling_telegram(self):
-        port = self.start_callback_server()
-        path = self.attachment_file('doc.bin')
-        body = dict(conversation=self.bridge.conversation, idempotency_key='cb-attach',
-                    text='hello', attachment=dict(path=path, kind='document'))
-        status, result = self.callback_post(port, body)
-        self.assertEqual(status, 200)
-        self.assertFalse(result['delivered'])
-        self.assertEqual(result['metadata']['reason'], 'attachment_not_accepted_over_callback')
-        self.assertEqual(self.calls, [])
-        self.assertEqual(self.multipart_calls, [])
-        body = dict(conversation=self.bridge.conversation, idempotency_key='cb-plain', text='hello')
-        status, result = self.callback_post(port, body)
-        self.assertEqual(status, 200)
-        self.assertTrue(result['delivered'])
-        self.assertEqual(len(self.calls), 1)
-
     def test_callback_idle_connection_is_dropped(self):
         self.assertEqual(b._callback_handler(self.bridge).timeout, 5)
         port = self.start_callback_server(timeout=0.2)
@@ -990,17 +1005,17 @@ class BridgeTests(BridgeTestCase):
         token.write_text('token')
         callback = root / 'callback-secret'
         callback.write_text('secret')
-        gc_token = root / 'gc-token'
-        gc_token.write_text('gc')
+        hook_secret = root / 'hook-secret'
+        hook_secret.write_text('hook')
         settings_file = root / 'settings.toml'
         settings_file.write_text('settings')
         for name in ('telegram-bridge.sqlite3', 'telegram-bridge.sqlite3-wal'):
             (state_dir / name).write_bytes(b'ledger')
-        config = dict(self.config, protected_paths=(str(token), str(callback), str(gc_token), str(settings_file)))
+        config = dict(self.config, protected_paths=(str(token), str(callback), str(hook_secret), str(settings_file)))
         bridge = b.Bridge(config, self.store, 'SECRET', 'CAPABILITY',
                           request=self.transport, request_multipart=self.multipart_transport,
                           request_download=self.download_transport, state_dir=state_dir)
-        protected = [token, callback, gc_token, settings_file,
+        protected = [token, callback, hook_secret, settings_file,
                      state_dir / 'telegram-bridge.sqlite3', state_dir / 'telegram-bridge.sqlite3-wal']
         for index, path in enumerate(protected):
             with self.subTest(path=path):
@@ -1230,14 +1245,12 @@ class BridgeTests(BridgeTestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(['send', '--attachment', '/tmp/x.png', '--attachment-kind', 'audio'])
 
-    def test_dispatch_outbound_with_attachment_uses_publish_not_gc(self):
+    def test_dispatch_outbound_with_attachment_publishes_the_file(self):
         path = self.attachment_file()
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k3',
                                    '--attachment', path])
-        with patch.object(self.bridge, 'gc') as gc_mock:
-            message_id = b._dispatch_outbound(self.bridge, args, 'caption text')
-        gc_mock.assert_not_called()
+        message_id = b._dispatch_outbound(self.bridge, args, 'caption text')
         self.assertEqual(message_id, '88')  # from multipart_transport's fixed response
         self.assertEqual(len(self.multipart_calls), 1)
         url, fields, file_field, file_path = self.multipart_calls[0]
@@ -1245,19 +1258,20 @@ class BridgeTests(BridgeTestCase):
         self.assertEqual(fields['caption'], 'caption text')
         self.assertEqual(self.calls, [])  # no sendMessage fallback either
 
-    def test_dispatch_outbound_without_attachment_still_uses_gc(self):
+    def test_dispatch_outbound_of_plain_text_publishes_in_process(self):
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k2'])
-        calls = []
-        def fake_gc(path, body, method='POST', timeout=20):
-            calls.append((path, body))
-            return {'Receipt': {'Delivered': True, 'MessageID': '55'}}
-        with patch.object(self.bridge, 'gc', fake_gc), patch.object(self.bridge, 'publish') as publish_mock:
+        with patch.object(self.bridge, 'publish', wraps=self.bridge.publish) as publish_mock:
             message_id = b._dispatch_outbound(self.bridge, args, 'hello world')
-        publish_mock.assert_not_called()
-        self.assertEqual(calls, [('outbound', dict(session_id=args.session, conversation=self.bridge.conversation,
-                                                    text='hello world', idempotency_key='k2'))])
-        self.assertEqual(message_id, '55')
+        publish_mock.assert_called_once_with(dict(conversation=self.bridge.conversation, idempotency_key='k2',
+                                                  text='hello world'))
+        self.assertEqual(message_id, '77')
+        [(url, body)] = self.calls
+        self.assertTrue(url.endswith('/sendMessage'))
+        self.assertEqual(body['text'], 'hello world')
+        self.assertNotIn('parse_mode', body)
+        self.assertEqual([url for url, _ in self.calls if url == self.bridge.hook_url], [])  # nothing via the yard
+        self.assertEqual(self.store.saved_receipt('k2')['message_id'], '77')
 
     def test_dispatch_outbound_raises_transport_error_on_non_delivered_receipt(self):
         parser = b._build_parser()
@@ -1270,31 +1284,27 @@ class BridgeTests(BridgeTestCase):
     def test_dispatch_outbound_without_attachment_prints_no_receipt_line_when_delivered(self):
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k5'])
-        fake_gc = lambda path, body, method='POST', timeout=20: {'Receipt': {'Delivered': True, 'MessageID': '55'}}
-        with patch.object(self.bridge, 'gc', fake_gc), patch('sys.stderr', new_callable=io.StringIO) as log:
+        with patch('sys.stderr', new_callable=io.StringIO) as log:
             message_id = b._dispatch_outbound(self.bridge, args, 'hello world')
-        self.assertEqual(message_id, '55')
+        self.assertEqual(message_id, '77')
         self.assertNotIn('GC_RECEIPT', log.getvalue())
 
     def test_dispatch_outbound_prints_structured_receipt_line_on_idempotency_conflict(self):
-        # The relay path used to raise a generic
-        # TransportError and drop Receipt.Metadata.reason entirely, so a
-        # caller replaying a frozen idempotency key could never tell a
-        # conflict (already delivered) from a real failure. The GC_RECEIPT
-        # line on stderr is now the caller's only source of truth for it.
+        # A caller replaying a frozen idempotency key with another body must
+        # tell the conflict (already delivered) from a real failure: the
+        # GC_RECEIPT line on stderr carries the bridge's own reason.
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k6'])
-        receipt = {'Delivered': False, 'FailureKind': 'permanent',
-                   'Metadata': {'reason': 'idempotency_key_conflict'}, 'MessageID': ''}
-        fake_gc = lambda path, body, method='POST', timeout=20: {'Receipt': receipt}
-        with patch.object(self.bridge, 'gc', fake_gc), patch('sys.stderr', new_callable=io.StringIO) as log:
-            with self.assertRaises(b.TransportError):
+        self.assertEqual(b._dispatch_outbound(self.bridge, args, 'first body'), '77')
+        with patch('sys.stderr', new_callable=io.StringIO) as log:
+            with self.assertRaisesRegex(b.TransportError, 'idempotency_key_conflict'):
                 b._dispatch_outbound(self.bridge, args, 'hello world')
+        self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
         line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
         self.assertEqual(json.loads(line[len('GC_RECEIPT '):]),
                           {'delivered': False, 'failure_kind': 'permanent', 'reason': 'idempotency_key_conflict'})
 
-    def test_cli_main_send_with_attachment_bypasses_gc_and_shares_daemon_store(self):
+    def test_cli_main_send_with_attachment_shares_the_daemons_store(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             settings = write_settings(root)
@@ -1304,8 +1314,6 @@ class BridgeTests(BridgeTestCase):
             body_file.write_text('caption text')
 
             def fake_run(argv, input='', **kwargs):
-                if 'extmsg/outbound' in input:
-                    raise AssertionError('gc outbound must not be called for an attachment send')
                 if 'sendPhoto' in input:
                     payload = json.dumps({'ok': True, 'result': {'message_id': 42, 'chat': {'id': 123}}})
                     return subprocess.CompletedProcess(argv, 0, payload + '\n200 0.010000 0.020000 0', '')
@@ -1604,22 +1612,19 @@ class BridgeTests(BridgeTestCase):
         with patch('sys.stderr', new_callable=io.StringIO), self.assertRaises(SystemExit):
             parser.parse_args(['send', '--body-file', 'x', '--idempotency-key', 'k', '--format', 'markdown'])
 
-    def test_dispatch_outbound_html_publishes_directly_not_through_gc(self):
+    def test_dispatch_outbound_html_publishes_with_the_html_parse_mode(self):
         parser = b._build_parser()
         args = parser.parse_args(['reply-current', '--body-file', 'x.html', '--idempotency-key', 'k7', '--format', 'html'])
-        with patch.object(self.bridge, 'gc') as gc_mock:
-            message_id = b._dispatch_outbound(self.bridge, args, '<b>hello</b>')
-        gc_mock.assert_not_called()
+        message_id = b._dispatch_outbound(self.bridge, args, '<b>hello</b>')
         self.assertEqual(message_id, '77')
         self.assertEqual(self.calls[0][1]['parse_mode'], 'HTML')
 
     def test_dispatch_outbound_html_refusal_prints_the_receipt_line(self):
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.html', '--idempotency-key', 'k8', '--format', 'html'])
-        with patch.object(self.bridge, 'gc') as gc_mock, patch('sys.stderr', new_callable=io.StringIO) as log:
+        with patch('sys.stderr', new_callable=io.StringIO) as log:
             with self.assertRaises(b.TransportError) as ctx:
                 b._dispatch_outbound(self.bridge, args, '<div>x</div>')
-        gc_mock.assert_not_called()
         self.assertIn('html_tag_not_allowed', str(ctx.exception))
         line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
         self.assertEqual(json.loads(line[len('GC_RECEIPT '):])['reason'], 'html_tag_not_allowed')
@@ -1627,7 +1632,7 @@ class BridgeTests(BridgeTestCase):
 
 
 class AskTests(BridgeTestCase):
-    """Mayor asks: publish() keyboards, the ask: ledger, and tap-to-answer."""
+    """Asks: publish() keyboards, the ask: ledger, and tap-to-answer."""
 
     def setUp(self):
         super().setUp()
@@ -1643,7 +1648,7 @@ class AskTests(BridgeTestCase):
             return 200, dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
         if url.endswith('/answerCallbackQuery'):
             return 200, dict(ok=True, result=True)
-        return 200, self.accepted(body['message'])
+        return 200, self.accepted(body)
 
     def ask_id(self, key='ask-send-1'):
         return b.Bridge._ask_id_for_key(key)
@@ -1705,8 +1710,8 @@ class AskTests(BridgeTestCase):
         self.assertEqual(ask['question'], 'Pick one?')
         self.assertEqual(ask['options'], self.keyboard()[0])
         self.bridge.drain([self.press()])
-        [relayed] = [body for url, body in self.calls if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertIn('question: Pick one?', relayed['message']['text'])
+        [relayed] = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertIn('question: Pick one?', relayed['text'])
 
     def test_same_key_with_another_keyboard_is_a_conflict(self):
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
@@ -1776,17 +1781,17 @@ class AskTests(BridgeTestCase):
                 self.assertTrue(result['delivered'])
                 self.bridge.drain([self.press(uid=100 + index, key=key)])
                 [relayed] = [body for url, body in self.calls
-                             if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound'
-                             and body['message']['provider_message_id'] == f'ask-{self.ask_id(key)}']
-                self.assertEqual(relayed['message']['text'],
+                             if url == self.bridge.hook_url
+                             and body['message_id'] == f'ask-{self.ask_id(key)}']
+                self.assertEqual(relayed['text'],
                                  f'[ask answer | choice: Yes | message: 77]\nquestion: {text}')
 
     def test_relayed_ask_answer_line_matches_the_documented_format(self):
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
         self.bridge.drain([self.press()])
         [relayed] = [body for url, body in self.calls
-                     if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['text'],
+                     if url == self.bridge.hook_url]
+        self.assertEqual(relayed['text'],
                          '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')
 
     def test_asks_table_is_created_with_the_final_columns(self):
@@ -1832,9 +1837,9 @@ class AskTests(BridgeTestCase):
     def test_authorised_press_relays_answer_edits_and_records(self):
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
         self.bridge.drain([self.press()])
-        [relayed] = [body for url, body in self.calls if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['provider_message_id'], f'ask-{self.ask_id()}')
-        self.assertEqual(relayed['message']['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')
+        [relayed] = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertEqual(relayed['message_id'], f'ask-{self.ask_id()}')
+        self.assertEqual(relayed['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')
         [edit] = self.sent('editMessageText')
         self.assertEqual(edit['text'], 'Pick one?\n✓ Yes')
         self.assertEqual(edit['message_id'], 77)
@@ -1864,7 +1869,7 @@ class AskTests(BridgeTestCase):
         self.bridge.drain([self.press(uid=41)])
         self.bridge.drain([self.press(uid=43, choice='no')])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 1)
         self.assertEqual(len(self.sent('editMessageText')), 1)
         self.assertEqual(self.sent('answerCallbackQuery'),
@@ -1878,15 +1883,14 @@ class AskTests(BridgeTestCase):
         with patch('sys.stderr', new_callable=io.StringIO) as log:
             self.bridge.drain([self.press(uid=41, message_id=999)])
         self.assertEqual(self.sent('answerCallbackQuery'), [dict(callback_query_id='query-41')])
-        self.assertNotIn('inbound', [url.rsplit('/', 1)[1] for url, _ in self.calls
-                                     if url.startswith(self.bridge.base)])
+        self.assertEqual([url for url, _ in self.calls if url == self.bridge.hook_url], [])
         self.assertEqual(self.sent('editMessageText'), [])
         self.assertEqual(log.getvalue().splitlines(), ['callback dropped (update 41): message_mismatch'])
         self.assertFalse(self.bridge.store.get_ask(self.ask_id())['answered'])
         self.assertEqual(self.store.offset(), 42)
         self.bridge.drain([self.press(uid=43)])
-        [relayed] = [body for url, body in self.calls if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertIn('message: 77', relayed['message']['text'])
+        [relayed] = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertIn('message: 77', relayed['text'])
 
     def test_unknown_malformed_or_unauthorised_presses_are_dropped(self):
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
@@ -1902,8 +1906,7 @@ class AskTests(BridgeTestCase):
             self.bridge.drain(updates)
         self.assertEqual(self.sent('answerCallbackQuery'),
                          [dict(callback_query_id=f'query-{uid}') for uid in (41, 43, 45, 47, 49, 51)])
-        self.assertNotIn('inbound', [url.rsplit('/', 1)[1] for url, _ in self.calls
-                                     if url.startswith(self.bridge.base)])
+        self.assertEqual([url for url, _ in self.calls if url == self.bridge.hook_url], [])
         self.assertEqual(self.sent('editMessageText'), [])
         self.assertEqual(log.getvalue().splitlines(), [
             'callback dropped (update 41): not_authorized',
@@ -1940,8 +1943,8 @@ class AskTests(BridgeTestCase):
         [edit] = self.sent('editMessageText')
         self.assertEqual(edit['parse_mode'], 'HTML')
         self.assertEqual(edit['text'], '<b>Pick</b> one\n✓ Yes')
-        [relayed] = [body for url, body in self.calls if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick one')
+        [relayed] = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertEqual(relayed['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick one')
 
     def test_html_ask_edit_fallback_appends_the_choice_in_plain(self):
         def transport(url, body, *args, **kwargs):
@@ -1961,8 +1964,8 @@ class AskTests(BridgeTestCase):
         self.assertEqual(edits[0]['text'], '<b>Pick</b> one\n✓ Yes')
         self.assertNotIn('parse_mode', edits[1])
         self.assertEqual(edits[1]['text'], 'Pick one\n✓ Yes')
-        [relayed] = [body for url, body in self.calls if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick one')
+        [relayed] = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertEqual(relayed['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick one')
 
     def test_ask_keyboard_with_non_photo_attachment_is_refused(self):
         for kind in ('video', 'document', 'voice', 'video_note'):
@@ -2015,11 +2018,9 @@ class AskTests(BridgeTestCase):
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'd1-kb',
                                   '--keyboard-file', str(keyboard_path),
                                   '--attachment', attachment_path])
-        with patch.object(self.bridge, 'gc') as gc_mock, \
-                patch('sys.stderr', new_callable=io.StringIO):
+        with patch('sys.stderr', new_callable=io.StringIO):
             with self.assertRaisesRegex(b.TransportError, 'invalid_keyboard'):
                 b._dispatch_outbound(self.bridge, args, 'Pick one?')
-        gc_mock.assert_not_called()
         self.assertEqual(self.calls, [])
         self.assertEqual(self.multipart_calls, [])
         self.assertIsNone(self.bridge.store.get_ask(b.Bridge._ask_id_for_key('d1-kb')))
@@ -2069,9 +2070,9 @@ class AskTests(BridgeTestCase):
         self.assertTrue(self.bridge.publish(self.photo_ask())['delivered'])
         self.bridge.drain([self.press(uid=41, key='photo-ask-1', message_id=88)])
         [relayed] = [body for url, body in self.calls
-                     if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['provider_message_id'], f'ask-{self.ask_id("photo-ask-1")}')
-        self.assertEqual(relayed['message']['text'],
+                     if url == self.bridge.hook_url]
+        self.assertEqual(relayed['message_id'], f'ask-{self.ask_id("photo-ask-1")}')
+        self.assertEqual(relayed['text'],
                          '[ask answer | choice: Yes | message: 88]\nquestion: Pick one?')
         [edit] = self.sent('editMessageCaption')
         self.assertEqual(edit['caption'], 'Pick one?\n✓ Yes')
@@ -2116,9 +2117,9 @@ class AskTests(BridgeTestCase):
                 with patch('sys.stderr', new_callable=io.StringIO):
                     bridge.drain([self.press(uid=41, key=key, message_id=88)])
                 inbounds = [body for url, body in self.calls[calls_before:]
-                            if url == bridge.base + '/v0/city/test-city/extmsg/inbound']
+                            if url == bridge.hook_url]
                 self.assertEqual(len(inbounds), 1)
-                self.assertEqual(inbounds[0]['message']['provider_message_id'], f'ask-{self.ask_id(key)}')
+                self.assertEqual(inbounds[0]['message_id'], f'ask-{self.ask_id(key)}')
                 ask = store.get_ask(self.ask_id(key))
                 self.assertTrue(ask['answered'])
                 self.assertTrue(ask['relayed'])
@@ -2150,9 +2151,9 @@ class AskTests(BridgeTestCase):
         self.assertEqual(edits[1]['caption'], 'Pick one\n✓ Yes')
         self.assertEqual(edits[1]['reply_markup'], {'inline_keyboard': []})
         [relayed] = [body for url, body in self.calls
-                     if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['provider_message_id'], f'ask-{self.ask_id(key)}')
-        self.assertEqual(relayed['message']['text'],
+                     if url == self.bridge.hook_url]
+        self.assertEqual(relayed['message_id'], f'ask-{self.ask_id(key)}')
+        self.assertEqual(relayed['text'],
                          '[ask answer | choice: Yes | message: 88]\nquestion: Pick one')
         self.assertEqual(self.store.offset(), 42)
 
@@ -2169,9 +2170,9 @@ class AskTests(BridgeTestCase):
         with patch('sys.stderr', new_callable=io.StringIO):
             self.bridge.drain([self.press(uid=41, key=key, message_id=88)])
         [relayed] = [body for url, body in self.calls
-                     if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['provider_message_id'], f'ask-{self.ask_id(key)}')
-        self.assertEqual(relayed['message']['text'],
+                     if url == self.bridge.hook_url]
+        self.assertEqual(relayed['message_id'], f'ask-{self.ask_id(key)}')
+        self.assertEqual(relayed['text'],
                          '[ask answer | choice: Yes | message: 88]\nquestion: Pick one?')
         self.assertEqual(len(self.sent('editMessageCaption')), 1)
         ask = self.bridge.store.get_ask(self.ask_id(key))
@@ -2234,8 +2235,8 @@ class AskTests(BridgeTestCase):
         self.assertEqual(edit['parse_mode'], 'HTML')
         self.assertEqual(edit['caption'], '<b>Pick</b> one\n✓ Yes')
         [relayed] = [body for url, body in self.calls
-                     if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['text'],
+                     if url == self.bridge.hook_url]
+        self.assertEqual(relayed['text'],
                          '[ask answer | choice: Yes | message: 88]\nquestion: Pick one')
 
     def test_photo_ask_second_tap_gets_already_answered(self):
@@ -2243,7 +2244,7 @@ class AskTests(BridgeTestCase):
         self.bridge.drain([self.press(uid=41, key='photo-twice', message_id=88)])
         self.bridge.drain([self.press(uid=43, key='photo-twice', choice='no', message_id=88)])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 1)
         self.assertEqual(len(self.sent('editMessageCaption')), 1)
         self.assertEqual(self.sent('answerCallbackQuery'),
@@ -2261,10 +2262,10 @@ class AskTests(BridgeTestCase):
         with patch('sys.stderr', new_callable=io.StringIO):
             self.bridge.drain([self.press(uid=41)])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 1)
-        self.assertEqual(inbounds[0]['message']['provider_message_id'], f'ask-{self.ask_id()}')
-        self.assertEqual(inbounds[0]['message']['text'],
+        self.assertEqual(inbounds[0]['message_id'], f'ask-{self.ask_id()}')
+        self.assertEqual(inbounds[0]['text'],
                          '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')
         self.assertEqual(len(self.sent('editMessageText')), 1)
         ask = self.bridge.store.get_ask(self.ask_id())
@@ -2287,9 +2288,9 @@ class AskTests(BridgeTestCase):
         with patch('sys.stderr', new_callable=io.StringIO):
             self.bridge.drain([self.press(uid=41)])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 1)
-        self.assertEqual(inbounds[0]['message']['provider_message_id'], f'ask-{self.ask_id()}')
+        self.assertEqual(inbounds[0]['message_id'], f'ask-{self.ask_id()}')
         ask = self.bridge.store.get_ask(self.ask_id())
         self.assertTrue(ask['answered'])
         self.assertTrue(ask['relayed'])
@@ -2309,9 +2310,9 @@ class AskTests(BridgeTestCase):
         with patch('sys.stderr', new_callable=io.StringIO):
             self.bridge.drain([self.press(uid=41)])
         [relayed] = [body for url, body in self.calls
-                     if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(relayed['message']['provider_message_id'], f'ask-{self.ask_id()}')
-        self.assertEqual(relayed['message']['text'],
+                     if url == self.bridge.hook_url]
+        self.assertEqual(relayed['message_id'], f'ask-{self.ask_id()}')
+        self.assertEqual(relayed['text'],
                          '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')
         self.assertEqual(len(self.sent('editMessageText')), 1)
         ask = self.bridge.store.get_ask(self.ask_id())
@@ -2322,15 +2323,15 @@ class AskTests(BridgeTestCase):
         self.bridge.inbound(self.press(uid=41))
         self.assertEqual(self.calls, before)
 
-    def test_gc_unavailable_at_relay_retries_once(self):
+    def test_yard_unavailable_at_relay_retries_once(self):
         delivered = []
 
         def transport(url, body, *args, **kwargs):
-            if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound':
-                delivered.append(body['message'])
+            if url == self.bridge.hook_url:
+                delivered.append(body)
                 if len(delivered) == 1:
-                    raise b.TransportError('GC unavailable')
-                return 200, self.accepted(body['message'])
+                    raise b.TransportError('yard unavailable')
+                return 200, self.accepted(body)
             return self.ask_transport(url, body)
         self.bridge.request = transport
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
@@ -2346,8 +2347,9 @@ class AskTests(BridgeTestCase):
         self.assertEqual(self.sent('editMessageText'), [])
         self.bridge.drain([self.press(uid=41)])
         self.assertEqual(len(delivered), 2)
-        self.assertEqual(delivered[0]['provider_message_id'], delivered[1]['provider_message_id'])
-        self.assertEqual(delivered[0]['provider_message_id'], f'ask-{self.ask_id()}')
+        self.assertEqual(delivered[0]['id'], delivered[1]['id'])
+        self.assertEqual(delivered[0]['message_id'], f'ask-{self.ask_id()}')
+        self.assertEqual([body['kind'] for body in delivered], ['answer', 'answer'])
         self.assertEqual(self.sent('answerCallbackQuery'), [dict(callback_query_id='query-41')])
         self.assertEqual(len(self.sent('editMessageText')), 1)
         [edit] = self.sent('editMessageText')
@@ -2378,7 +2380,7 @@ class AskTests(BridgeTestCase):
         replayed = b.Bridge(self.config, store, 'SECRET', 'CAPABILITY', request=self.ask_transport)
         replayed.drain([self.press(uid=41)])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 1)
         [edit] = self.sent('editMessageText')
         self.assertEqual(edit['text'], 'Pick one?\n✓ Yes')
@@ -2411,7 +2413,7 @@ class AskTests(BridgeTestCase):
         replayed = b.Bridge(self.config, store, 'SECRET', 'CAPABILITY', request=self.ask_transport)
         replayed.drain([self.press(uid=43)])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 1)
         [edit] = self.sent('editMessageText')
         self.assertEqual(edit['text'], 'Pick one?\n✓ Yes')
@@ -2424,7 +2426,7 @@ class AskTests(BridgeTestCase):
         replayed.inbound(self.press(uid=45))
         self.assertEqual(len(self.sent('editMessageText')), 1)
         self.assertEqual(len([body for url, body in self.calls
-                              if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']), 1)
+                              if url == self.bridge.hook_url]), 1)
 
     def test_replayed_photo_press_after_crash_before_edit_edits_caption_once(self):
         self.assertTrue(self.bridge.publish(self.photo_ask(key='photo-crash'))['delivered'])
@@ -2444,7 +2446,7 @@ class AskTests(BridgeTestCase):
                             request_download=self.download_transport)
         replayed.drain([self.press(uid=41, key='photo-crash', message_id=88)])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 1)
         [edit] = self.sent('editMessageCaption')
         self.assertEqual(edit['caption'], 'Pick one?\n✓ Yes')
@@ -2461,16 +2463,16 @@ class AskTests(BridgeTestCase):
                        chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)}))
         self.bridge.drain([earlier])
         [first] = [body for url, body in self.calls
-                   if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
-        self.assertEqual(first['message']['provider_message_id'], '41')
+                   if url == self.bridge.hook_url]
+        self.assertEqual(first['message_id'], '41')
         self.assertEqual(self.store.offset(), 31)
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
         self.bridge.drain([self.press(uid=41)])
         inbounds = [body for url, body in self.calls
-                    if url == self.bridge.base + '/v0/city/test-city/extmsg/inbound']
+                    if url == self.bridge.hook_url]
         self.assertEqual(len(inbounds), 2)
-        self.assertEqual(inbounds[1]['message']['provider_message_id'], f'ask-{self.ask_id()}')
-        self.assertIn('choice: Yes', inbounds[1]['message']['text'])
+        self.assertEqual(inbounds[1]['message_id'], f'ask-{self.ask_id()}')
+        self.assertIn('choice: Yes', inbounds[1]['text'])
         ask = self.bridge.store.get_ask(self.ask_id())
         self.assertTrue(ask['answered'])
         self.assertTrue(ask['relayed'])
@@ -2485,15 +2487,13 @@ class AskTests(BridgeTestCase):
         self.assertEqual(body['reply_markup'], {'inline_keyboard': request['keyboard']})
         self.assertIsNone(self.bridge.store.get_ask('deploy'))
 
-    def test_keyboard_file_send_publishes_directly_not_through_gc(self):
+    def test_keyboard_file_send_publishes_the_keyboard(self):
         path = Path(self.tmp.name) / 'keyboard.json'
         path.write_text(json.dumps(self.keyboard('k-kb')))
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k-kb',
                                   '--keyboard-file', str(path)])
-        with patch.object(self.bridge, 'gc') as gc_mock:
-            message_id = b._dispatch_outbound(self.bridge, args, 'Pick one?')
-        gc_mock.assert_not_called()
+        message_id = b._dispatch_outbound(self.bridge, args, 'Pick one?')
         self.assertEqual(message_id, '77')
         [body] = self.sent('sendMessage')
         self.assertEqual(body['reply_markup'], {'inline_keyboard': self.keyboard('k-kb')})
@@ -2504,11 +2504,9 @@ class AskTests(BridgeTestCase):
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k-null',
                                   '--keyboard-file', str(path)])
-        with patch.object(self.bridge, 'gc') as gc_mock, \
-                patch('sys.stderr', new_callable=io.StringIO):
+        with patch('sys.stderr', new_callable=io.StringIO):
             with self.assertRaisesRegex(b.TransportError, 'keyboard file must hold JSON rows'):
                 b._dispatch_outbound(self.bridge, args, 'Pick one?')
-        gc_mock.assert_not_called()
         self.assertEqual(self.calls, [])
 
     def test_keyboard_file_missing_and_malformed_refuse_before_telegram(self):
@@ -2531,11 +2529,9 @@ class AskTests(BridgeTestCase):
         parser = b._build_parser()
         args = parser.parse_args(['reply-current', '--body-file', 'x.txt', '--idempotency-key', 'k-shape',
                                   '--keyboard-file', str(path)])
-        with patch.object(self.bridge, 'gc') as gc_mock, \
-                patch('sys.stderr', new_callable=io.StringIO):
+        with patch('sys.stderr', new_callable=io.StringIO):
             with self.assertRaisesRegex(b.TransportError, 'invalid_keyboard'):
                 b._dispatch_outbound(self.bridge, args, 'Pick one?')
-        gc_mock.assert_not_called()
         self.assertEqual(self.calls, [])
 
 
@@ -2587,8 +2583,11 @@ class VoiceTranscriptionTests(BridgeTestCase):
         self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.script_marker.read_text(), 'base cpu\n')  # small CPU model by default
         self.assertEqual(self.store.offset(), 71)
-        ids = [c[1]['message']['provider_message_id'] for c in self.calls if c[0].endswith('/inbound')]
-        self.assertEqual(ids, ['70', '70-transcript'])
+        bodies = [c[1] for c in self.calls if c[0] == self.bridge.hook_url]
+        self.assertEqual([body['message_id'] for body in bodies], ['70', '70-transcript'])
+        self.assertEqual([body['kind'] for body in bodies], ['message', 'transcript'])
+        self.assertEqual([body['id'] for body in bodies], ['999:123:70', '999:123:70-transcript'])
+        self.assertEqual([body['forwarded'] for body in bodies], [False, False])
 
     def test_gpu_off_runs_the_adapter_on_the_cpu_with_no_gpu_visible(self):
         self.write_script('import os\nprint(json.dumps(dict(text="cpu " + repr(os.environ.get("CUDA_VISIBLE_DEVICES")), '
@@ -2670,8 +2669,10 @@ class VoiceTranscriptionTests(BridgeTestCase):
                                    '\n> from the call')
         self.assertEqual(texts[1], f'{self.FORWARD_HEADER}\n[voice 0:07 transcript (msg 96): quoted below] '
                                    f'(audio: {audio})\n> hello there world')
-        ids = [c[1]['message']['provider_message_id'] for c in self.calls if c[0].endswith('/inbound')]
-        self.assertEqual(ids, ['96', '96-transcript'])
+        bodies = [c[1] for c in self.calls if c[0] == self.bridge.hook_url]
+        self.assertEqual([body['message_id'] for body in bodies], ['96', '96-transcript'])
+        self.assertEqual([body['kind'] for body in bodies], ['message', 'transcript'])
+        self.assertEqual([body['forwarded'] for body in bodies], [True, True])
 
     def test_a_forwarded_voice_note_whose_transcription_fails_is_still_marked(self):
         self.write_script('print("RuntimeError: model exploded", file=sys.stderr); sys.exit(1)')
@@ -2835,8 +2836,8 @@ class VoiceTranscriptionTests(BridgeTestCase):
         """Make the first `failures` follow-up relays fail; record every attempt's provider id."""
         attempts, original = [], self.bridge.request
         def flaky(url, body, *args, **kwargs):
-            if url.endswith('/inbound') and body['message']['provider_message_id'].endswith('-transcript'):
-                attempts.append(body['message']['provider_message_id'])
+            if url == self.bridge.hook_url and body['message_id'].endswith('-transcript'):
+                attempts.append(body['message_id'])
                 if len(attempts) <= failures:
                     return 500, dict()
             return original(url, body, *args, **kwargs)
@@ -2845,8 +2846,8 @@ class VoiceTranscriptionTests(BridgeTestCase):
 
     def test_pending_file_written_before_first_note_with_safe_mode(self):
         seen = []
-        original = self.bridge._relay_to_gc
-        self.bridge._relay_to_gc = lambda *a, **k: (seen.append([f.stat().st_mode & 0o777 for f in self.pending_files()]),
+        original = self.bridge._relay_to_yard
+        self.bridge._relay_to_yard = lambda *a, **k: (seen.append([f.stat().st_mode & 0o777 for f in self.pending_files()]),
                                                      original(*a, **k))[1]
         self.bridge.drain([self.voice_message(uid=90)])
         self.assertEqual(seen[0], [0o600])  # already on disk when the first note is relayed
@@ -2867,7 +2868,7 @@ class VoiceTranscriptionTests(BridgeTestCase):
         self.assertEqual(restarted.reconcile_pending(), 0)  # nothing left to redo
 
     def test_pending_without_confirmed_first_note_is_not_reconciled(self):
-        with patch.object(self.bridge, '_relay_to_gc', side_effect=b.TransportError('down')):
+        with patch.object(self.bridge, '_relay_to_yard', side_effect=b.TransportError('down')):
             with self.assertRaises(b.TransportError):
                 self.bridge.drain([self.voice_message(uid=92)])
         self.assertEqual(len(self.pending_files()), 1)
@@ -2944,8 +2945,8 @@ class VoiceTranscriptionTests(BridgeTestCase):
         restarted = self.restarted_bridge()
         restarted.drain([self.voice_message(uid=98)])  # redelivery after restart
         restarted.transcribe_queue.join()
-        ids = [c[1]['message']['provider_message_id'] for c in self.calls if c[0].endswith('/inbound')]
-        self.assertEqual(ids, ['98', '98', '98-transcript'])  # same first-note id twice (GC dedups), one follow-up
+        ids = [c[1]['message_id'] for c in self.calls if c[0] == self.bridge.hook_url]
+        self.assertEqual(ids, ['98', '98', '98-transcript'])  # same first-note id twice (the yard dedupes), one follow-up
         self.assertEqual(self.store.offset(), 99)
         self.assertEqual(self.pending_files(), [])
 
@@ -2980,7 +2981,7 @@ class ProbeRetryTests(unittest.TestCase):
                 raise item
             return item
         self.clock = 0.0
-        return b.Bridge(dict(bot_id=999, user_id=123, chat_id=123, bot_username='t', city='test-city'), None, 'SECRET', 'CAP',
+        return b.Bridge(dict(bot_id=999, user_id=123, chat_id=123, bot_username='t', yard='test-city'), None, 'SECRET', 'CAP',
                         request=transport)
 
     def run_retry(self, bridge, budget=600, stopped=False):
@@ -3024,41 +3025,7 @@ class ProbeRetryTests(unittest.TestCase):
         self.assertFalse(self.run_retry(bridge, stopped=True))
 
 
-class UnitDownMessageTests(unittest.TestCase):
-    class Rejecting:
-        unit = 'test-city-telegram.service'
-
-        def gc(self, path, body, method='POST', timeout=20):
-            raise b.TransportError('GC request rejected or unconfirmed')
-
-    def test_names_the_restart_command_when_the_unit_is_down(self):
-        with self.assertRaises(b.TransportError) as ctx:
-            b._relay_outbound(self.Rejecting(), {}, unit_state=lambda unit: 'failed' if unit == 'test-city-telegram.service' else None,
-                              platform='linux')
-        self.assertEqual(str(ctx.exception), 'bridge service not running (failed); run: systemctl --user restart test-city-telegram.service')
-
-    def test_keeps_the_original_error_when_the_unit_is_active_or_unknown(self):
-        for state in ('active', None):
-            with self.assertRaisesRegex(b.TransportError, 'GC request rejected or unconfirmed'):
-                b._relay_outbound(self.Rejecting(), {}, unit_state=lambda unit: state, platform='linux')
-
-    def test_darwin_hint_bootstraps_a_not_loaded_agent(self):
-        home = Path('/home/testuser')
-        with self.assertRaises(b.TransportError) as ctx:
-            b._relay_outbound(self.Rejecting(), {}, unit_state=lambda unit: 'not loaded',
-                              platform='darwin', home=home)
-        self.assertEqual(str(ctx.exception),
-                         f'bridge service not running (not loaded); run: launchctl bootstrap gui/{os.getuid()} '
-                         f'{home}/Library/LaunchAgents/test-city-telegram.plist')
-
-    def test_darwin_hint_kickstarts_a_loaded_agent(self):
-        with self.assertRaises(b.TransportError) as ctx:
-            b._relay_outbound(self.Rejecting(), {}, unit_state=lambda unit: 'spawn scheduled',
-                              platform='darwin', home=Path('/home/testuser'))
-        self.assertEqual(str(ctx.exception),
-                         f'bridge service not running (spawn scheduled); run: launchctl kickstart -k '
-                         f'gui/{os.getuid()}/test-city-telegram')
-
+class UnitStateTests(unittest.TestCase):
     def test_bridge_unit_state_on_darwin(self):
         unit = 'test-city-telegram.service'
         cases = [((0, '\tstate = running\n'), 'active'), ((0, 'state = spawn scheduled'), 'spawn scheduled'),
@@ -3093,8 +3060,6 @@ class ConflictExitStatusTests(BridgeTestCase):
         def transport(url, body, *args, **kwargs):
             if url.endswith('/getUpdates'):
                 return 409, dict(ok=False, error_code=409, description='Conflict')
-            if url.endswith('/extmsg/adapters'):
-                return 200, {}
             return self.transport(url, body, *args, **kwargs)
         self.bridge.request = transport
         with patch.object(self.bridge, 'probe_with_retry', return_value=True), \
@@ -3140,8 +3105,6 @@ class HeartbeatTests(BridgeTestCase):
             if url.endswith('/getUpdates'):
                 self.bridge.stop.set()
                 return response
-            if url.endswith('/extmsg/adapters'):
-                return 200, {}
             return self.transport(url, body, *args, **kwargs)
         self.bridge.request = transport
         with patch.object(self.bridge, 'probe_with_retry', return_value=True), \
@@ -3157,6 +3120,22 @@ class HeartbeatTests(BridgeTestCase):
         self.assertLess(abs((datetime.datetime.now(datetime.timezone.utc) - at).total_seconds()), 60)
         self.assertEqual(self.bridge.heartbeat_path(), Path(self.tmp.name) / 'telegram-bridge-heartbeat.json')
         self.assertFalse(self.bridge.heartbeat_path().with_suffix('.json.tmp').exists())
+
+    def test_run_talks_only_to_telegram_and_registers_nothing_with_the_yard(self):
+        seen = []
+        def transport(url, body, *args, **kwargs):
+            seen.append((url, kwargs.get('method', 'POST')))
+            if url.endswith('/getUpdates'):
+                self.bridge.stop.set()
+                return 200, dict(ok=True, result=[])
+            return self.transport(url, body, *args, **kwargs)
+        self.bridge.request = transport
+        with patch.object(self.bridge, 'probe_with_retry', return_value=True), \
+             patch('sys.stdout', new_callable=io.StringIO), patch('sys.stderr', new_callable=io.StringIO):
+            testports.run_bridge(self.bridge)
+        self.assertTrue(seen)
+        self.assertTrue(all(url.startswith('https://api.telegram.org/') for url, _ in seen), seen)
+        self.assertNotIn('DELETE', [method for _, method in seen])
 
     def test_failed_or_rejected_poll_writes_no_heartbeat(self):
         self.poll_once((502, dict(ok=False)))
@@ -3263,7 +3242,7 @@ class SetCommandsTests(unittest.TestCase):
     def setUp(self):
         self.calls = []
         self.answers = {}
-        config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', city='test-city', menu=MENU)
+        config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', yard='test-city', hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET', menu=MENU)
         self.bridge = b.Bridge(config, None, 'SECRET', None, request=self.transport)
 
     def transport(self, url, body, *args, **kwargs):
@@ -3290,7 +3269,7 @@ class SetCommandsTests(unittest.TestCase):
         ])
 
     def test_an_empty_menu_clears_the_paired_chats_menu(self):
-        config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', city='test-city', menu=())
+        config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', yard='test-city', hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET', menu=())
         bridge = b.Bridge(config, None, 'SECRET', None, request=self.transport)
         self.answers['getMyCommands'] = 200, dict(ok=True, result=[])
         self.assertEqual(bridge.set_commands(), [])
@@ -3333,10 +3312,12 @@ class SetCommandsTests(unittest.TestCase):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         fake_bin = root / 'bin'
         if empty_menu:
-            body = (f'city = "test-city"\nstate_dir = "{root / "state"}"\nport = 18930\n'
+            body = (f'yard = "test-city"\nstate_dir = "{root / "state"}"\nport = 18930\n'
                     f'token_file = "{root / "private" / "telegram-bot-token"}"\n'
                     f'callback_secret_file = "{root / "private" / "telegram-callback-secret"}"\n'
                     'user_display_name = "Pat"\ntimezone = "Asia/Tokyo"\npairing_update_id = 5\n'
+                    '\n[yardr]\nhook_url = "http://127.0.0.1:8797/hooks/tgbridge"\n'
+                    f'hook_secret_file = "{root / "private" / "hook-secret"}"\n'
                     '\n[bot]\nbot_id = 999\nuser_id = 123\nchat_id = 123\naccount_id = "test_bot"\n')
             settings = write_settings(root, body=body)
         else:

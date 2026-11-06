@@ -1,8 +1,10 @@
 """Topics the paired user creates ([auto_topics], OPERATIONS.md, "Topics"):
 the ledger's auto_topics table, their display names, which of them are served
-and the `topics` command's lines, with the fake Telegram, temporary
-directories and no network."""
+and the `topics` command's lines, each served topic with the yardr subscribe
+line that routes it, with the fake Telegram, temporary directories and no
+network."""
 from contextlib import closing
+import shlex
 import sqlite3
 import sys
 from pathlib import Path
@@ -11,10 +13,24 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 from test_bridge import BridgeTestCase  # noqa: E402
-from test_topics import GET_ME, USERS_ALLOWED, bind  # noqa: E402
+from test_topics import GET_ME, USERS_ALLOWED  # noqa: E402
 
 AUTO_ON = {'enabled': True}
 AUTO_OFF = {'enabled': False}
+
+
+def subscribe(topic, crew='mayor', source='tgbridge'):
+    """The line `topics` prints under a topic: the yardr command that routes
+    the topic's messages to its crew member."""
+    return (f'subscribe: yardr subscribe {crew} {source} --scope all --where type=message '
+            f'--where topic={shlex.quote(topic)}')
+
+
+def subscribe_thread(thread, crew='mayor', source='tgbridge'):
+    """The line `topics` prints under a topic the user created: routed by
+    its thread id, which a rename never changes."""
+    return (f'subscribe: yardr subscribe {crew} {source} --scope all --where type=message '
+            f'--where thread={thread}')
 
 
 def row(thread_id, name):
@@ -61,19 +77,13 @@ class AutoTopicLedgerTests(BridgeTestCase):
         self.assertFalse(self.store.add_auto_topic(601, 'helper'))
         self.assertEqual(self.store.auto_topic_rows(), first)
 
-    def test_name_implicit_and_bound_at_are_set_and_cleared(self):
+    def test_name_and_name_implicit_are_set(self):
         self.store.add_auto_topic(601, 'mayor')
         self.assertTrue(self.store.set_auto_topic_name(601, 'New topic', True))
         self.assertEqual([(r['name'], r['name_implicit']) for r in self.store.auto_topic_rows()], [('New topic', True)])
         self.assertTrue(self.store.set_auto_topic_name(601, 'Ops', False))
         self.assertEqual([(r['name'], r['name_implicit']) for r in self.store.auto_topic_rows()], [('Ops', False)])
-        self.assertTrue(self.store.set_auto_topic_bound(601, True))
-        bound_at = self.store.auto_topic_rows()[0]['bound_at']
-        self.assertTrue(bound_at.endswith('+00:00'))
-        self.assertTrue(self.store.set_auto_topic_bound(601, False))
-        self.assertIsNone(self.store.auto_topic_rows()[0]['bound_at'])
         self.assertFalse(self.store.set_auto_topic_name(602, 'x', False))
-        self.assertFalse(self.store.set_auto_topic_bound(602, True))
         self.assertEqual([r['thread_id'] for r in self.store.auto_topic_rows()], [601])
 
     def test_rows_come_in_rowid_order_which_is_the_thread_ids(self):
@@ -164,23 +174,21 @@ class AutoTopicsTests(BridgeTestCase):
             return 200, {'ok': True, 'result': {'message_thread_id': self.next_id, 'name': body['name']}}
         raise AssertionError('unexpected Telegram method ' + method)
 
-    def add(self, thread_id, name=None, bound=False, agent='mayor'):
+    def add(self, thread_id, name=None, agent='mayor'):
         self.store.add_auto_topic(thread_id, agent)
         if name is not None:
             self.store.set_auto_topic_name(thread_id, name, False)
-        if bound:
-            self.store.set_auto_topic_bound(thread_id, True)
 
     def run_topics(self, bridge, **flags):
         self.calls.clear()
         return bridge.topics(**flags)
 
     def test_served_rows_carry_their_display_name_and_conversation(self):
-        self.add(701, 'Plan', bound=True)
-        self.add(702)
+        self.add(701, 'Plan')
+        self.add(702, agent='helper')
         served = self.make_bridge().served_auto_topics()
-        self.assertEqual([(t['thread_id'], t['display_name'], t['agent'], t['bound_at'] is not None) for t in served],
-                         [(701, 'Plan', 'mayor', True), (702, 'thread 702', 'mayor', False)])
+        self.assertEqual([(t['thread_id'], t['display_name'], t['agent']) for t in served],
+                         [(701, 'Plan', 'mayor'), (702, 'thread 702', 'helper')])
         self.assertEqual(served[0]['conversation'], dict(scope_id='test-city', provider='telegram',
                                                          account_id='test_bot', conversation_id='123:topic:701',
                                                          parent_conversation_id='123', kind='thread'))
@@ -195,7 +203,7 @@ class AutoTopicsTests(BridgeTestCase):
         self.assertEqual([(t['thread_id'], t['display_name']) for t in served], [(703, 'OPS #703')])
 
     def test_auto_off_or_absent_serves_nothing(self):
-        self.add(701, 'Plan', bound=True)
+        self.add(701, 'Plan')
         for auto in (AUTO_OFF, None):
             with self.subTest(auto=auto):
                 bridge = self.make_bridge(auto=auto)
@@ -208,7 +216,7 @@ class AutoTopicsTests(BridgeTestCase):
         self.get_me = USERS_ALLOWED
         lines, complete = self.run_topics(self.make_bridge())
         self.assertEqual((lines, complete), (['users may create topics: the bridge serves each one (auto_topics)',
-                                              'topic ops: thread 501 (created)', bind(501)], True))
+                                              'topic ops: thread 501 (created)', subscribe('ops')], True))
         self.assertEqual([method for method, _ in self.calls], ['getMe', 'createForumTopic'])
 
     def test_auto_off_or_absent_prints_todays_lines(self):
@@ -218,64 +226,76 @@ class AutoTopicsTests(BridgeTestCase):
                     self.store = b.Store(Path(self.tmp.name) / f'{auto}-{bool(first)}.sqlite3', 10)
                     self.get_me, self.next_id = get_me, 500
                     lines = self.run_topics(self.make_bridge(auto=auto))
-                    self.assertEqual(lines, (first + ['topic ops: thread 501 (created)', bind(501)], True))
+                    self.assertEqual(lines, (first + ['topic ops: thread 501 (created)', subscribe('ops')], True))
                     self.assertEqual(self.run_topics(self.make_bridge(auto=auto)),
-                                     (['topic ops: thread 501 (recorded earlier)', bind(501)], True))
+                                     (['topic ops: thread 501 (recorded earlier)', subscribe('ops')], True))
                     self.assertEqual(self.calls, [])
 
     def test_auto_on_without_users_allowed_prints_no_getme_line(self):
         lines, _ = self.run_topics(self.make_bridge())
-        self.assertEqual(lines, ['topic ops: thread 501 (created)', bind(501)])
+        self.assertEqual(lines, ['topic ops: thread 501 (created)', subscribe('ops')])
 
-    def test_served_rows_are_listed_last_bound_or_not_bound_yet(self):
+    def test_served_rows_are_listed_last_each_with_the_subscribe_line_for_its_crew(self):
         self.store.record_topic('ops', 501, 'created')
         self.store.record_topic('gone', 502, 'created')
-        self.add(705, 'Plan', bound=True, agent='helper')
+        self.add(705, 'Plan', agent='helper')
         self.add(701)
         self.add(703, 'ops')
         self.add(502, 'shadowed')
         self.assertEqual(self.run_topics(self.make_bridge()), ([
-            'topic ops: thread 501 (recorded earlier)', bind(501),
+            'topic ops: thread 501 (recorded earlier)', subscribe('ops'),
             'topic gone: thread 502 (not in settings; its messages reach the agent as not configured)',
-            'auto topic thread 701: thread 701 (not bound yet)',
-            'auto topic ops #703: thread 703 (not bound yet)',
-            'auto topic Plan: thread 705 (bound to helper)'], True))
+            'auto topic thread 701: thread 701 (served)', subscribe_thread(701),
+            'auto topic ops #703: thread 703 (served)', subscribe_thread(703),
+            'auto topic Plan: thread 705 (served)', subscribe_thread(705, 'helper')], True))
         self.assertEqual(self.calls, [])
+
+    def test_a_subscribe_line_runs_as_printed_and_names_the_configured_source(self):
+        self.add(701, "Pat's plan", agent='helper')
+        config = dict(self.config, topics=(), auto_topics=AUTO_ON, yardr_source='tg-home')
+        bridge = b.Bridge(config, self.store, 'SECRET', 'CAPABILITY', request=self.topic_transport)
+        lines, complete = self.run_topics(bridge)
+        self.assertEqual((lines[1:], complete), (["auto topic Pat's plan: thread 701 (served)",
+                                                  subscribe_thread(701, 'helper', 'tg-home')], True))
+        self.assertEqual(shlex.split(lines[2].removeprefix('subscribe: ')), [
+            'yardr', 'subscribe', 'helper', 'tg-home', '--scope', 'all', '--where', 'type=message',
+            '--where', 'thread=701'])
 
     def test_auto_rows_never_change_the_exit_status(self):
         self.add(701, 'Plan')
         self.assertEqual(self.run_topics(self.make_bridge(topics=())),
-                         (['no [[topic]] tables in the settings', 'auto topic Plan: thread 701 (not bound yet)'], True))
+                         (['no [[topic]] tables in the settings', 'auto topic Plan: thread 701 (served)',
+                           subscribe_thread(701)], True))
         self.assertEqual(self.calls, [])
         # A settings topic without a thread id still fails the run, served
         # auto topics or not; with every one recorded it succeeds.
         bridge = self.make_bridge(topics=self.TOPICS + (dict(name='web', agent='mayor'),))
         self.assertEqual(self.run_topics(bridge, record='ops', thread_id=501), ([
-            'topic ops: thread 501 (recorded by hand)', bind(501),
-            'topic web: not created (not attempted); run gc telegram topics to create it',
-            'auto topic Plan: thread 701 (not bound yet)'], False))
+            'topic ops: thread 501 (recorded by hand)', subscribe('ops'),
+            'topic web: not created (not attempted); run bridge.py topics to create it',
+            'auto topic Plan: thread 701 (served)', subscribe_thread(701)], False))
         self.assertEqual(self.run_topics(bridge, record='web', thread_id=502)[1], True)
 
     def test_auto_off_with_rows_prints_how_many_are_not_served(self):
         self.store.record_topic('ops', 501, 'created')
-        self.add(701, 'Plan', bound=True)
+        self.add(701, 'Plan')
         self.add(702)
         self.add(501, 'shadowed')
         for auto in (AUTO_OFF, None):
             with self.subTest(auto=auto):
                 self.assertEqual(self.run_topics(self.make_bridge(auto=auto)), ([
-                    'topic ops: thread 501 (recorded earlier)', bind(501),
+                    'topic ops: thread 501 (recorded earlier)', subscribe('ops'),
                     'auto topics: 2 recorded, not served (auto_topics off)'], True))
         self.assertEqual(self.calls, [])
 
     def test_record_onto_an_auto_thread_adopts_it_and_drops_it_from_the_listing(self):
-        self.add(701, 'Plan', bound=True)
+        self.add(701, 'Plan')
         self.add(702, 'Other')
         bridge = self.make_bridge(topics=(dict(name='ops', agent='mayor'), dict(name='plan', agent='helper')))
         self.assertEqual(self.run_topics(bridge, record='plan', thread_id=701), ([
-            'topic ops: not created (not attempted); run gc telegram topics to create it',
-            'topic plan: thread 701 (recorded by hand)', bind(701, 'helper'),
-            'auto topic Other: thread 702 (not bound yet)'], False))
+            'topic ops: not created (not attempted); run bridge.py topics to create it',
+            'topic plan: thread 701 (recorded by hand)', subscribe('plan', 'helper'),
+            'auto topic Other: thread 702 (served)', subscribe_thread(702)], False))
         self.assertEqual(self.calls, [])
         self.assertEqual([r['thread_id'] for r in self.store.auto_topic_rows()], [701, 702])
         self.assertEqual([t['thread_id'] for t in bridge.served_auto_topics()], [702])

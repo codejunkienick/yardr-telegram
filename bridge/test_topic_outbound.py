@@ -3,8 +3,9 @@ send on a configured, recorded topic's conversation carries the topic's
 message_thread_id on every Telegram request, fallbacks and albums included;
 an ask sent in a topic relays its answer on that topic's conversation; the
 quota notice follows the triggering message; send and reply-current take
---conversation-id <chat_id>:topic:<thread_id> and --topic <name>. Fake
-Telegram and GC, temporary directories; no network."""
+--conversation-id <chat_id>:topic:<thread_id> and --topic <name>, and the
+yard's /v1/send takes a topic's conversation id or name. Fake Telegram and
+yard hook, temporary directories; no network."""
 from contextlib import closing
 import datetime
 import hashlib
@@ -41,12 +42,11 @@ def topic_ref(thread_id, chat='123'):
 
 class TopicOutboundCase(BridgeTestCase):
     """The base fixture with TP2's three [[topic]] tables ("ops" recorded as
-    thread 7), one fake transport for Telegram and GC, and an album one."""
+    thread 7), one fake transport for Telegram and the yard hook, and an
+    album one."""
 
-    # BridgeTests' callback server helpers and AskTests' ask helpers
-    # (imported by module, so discovery runs those classes once, in test_bridge).
-    start_callback_server = test_bridge.BridgeTests.start_callback_server
-    callback_post = test_bridge.BridgeTests.callback_post
+    # AskTests' ask helpers (imported by module, so discovery runs that
+    # class once, in test_bridge).
     ask_id = test_bridge.AskTests.ask_id
     keyboard = test_bridge.AskTests.keyboard
     press = test_bridge.AskTests.press
@@ -59,7 +59,6 @@ class TopicOutboundCase(BridgeTestCase):
         self.multipart_answers = []
         self.album_calls = []
         self.album_answers = []
-        self.unbound = set()  # conversation ids GC routes nowhere
         self.bridge = self.make_bridge(self.config, self.store)
 
     def make_bridge(self, config, store):
@@ -71,10 +70,8 @@ class TopicOutboundCase(BridgeTestCase):
 
     def transport(self, url, body, *args, **kwargs):
         self.calls.append((url, body))
-        if '/extmsg/' in url:
-            if body['message']['conversation']['conversation_id'] in self.unbound:
-                return 200, dict(TargetAgentName='', TargetSessionID='')
-            return 200, self.accepted(body['message'])
+        if url == self.bridge.hook_url:
+            return 200, self.accepted(body)
         method = url.rsplit('/', 1)[1]
         if self.answers.get(method):
             return self.answers[method].pop(0)
@@ -106,9 +103,9 @@ class TopicOutboundCase(BridgeTestCase):
         return [body for url, body in self.calls if url.endswith('/' + method)]
 
     def relays(self):
-        """(conversation, provider id, text) of every GC relay, in order."""
-        return [(body['message']['conversation'], body['message']['provider_message_id'], body['message']['text'])
-                for url, body in self.calls if url.endswith('/extmsg/inbound')]
+        """(conversation id, message id, text) of every delivery to the yard, in order."""
+        return [(body['conversation'], body['message_id'], body['text'])
+                for url, body in self.calls if url == self.bridge.hook_url]
 
     def ledger(self, path=None):
         with closing(sqlite3.connect(path or self.path)) as db:
@@ -143,7 +140,7 @@ class TopicPublishTests(TopicOutboundCase):
         self.assertEqual(self.bridge.publish(self.request(reply_to_message_id='41')), receipt)
         self.assertEqual(len(self.calls), 1)
 
-    def test_the_paired_chat_sends_exactly_as_in_a_city_without_topics(self):
+    def test_the_paired_chat_sends_exactly_as_in_a_bridge_without_topics(self):
         base_path = Path(self.tmp.name) / 'base.sqlite3'
         base = self.make_bridge({k: v for k, v in self.config.items() if k != 'topics'}, b.Store(base_path, 10))
         album = self.files('photo', 'photo')
@@ -277,18 +274,34 @@ class TopicPublishTests(TopicOutboundCase):
         self.assertEqual(len(self.sent('sendMessage')), 1)
         self.assertNotIn('message_thread_id', self.sent('sendMessage')[0])
 
-    def test_the_gc_callback_publishes_on_a_topic_conversation(self):
+    def test_the_yard_send_call_publishes_on_a_topic_by_conversation_id_or_name(self):
         port = self.start_callback_server()
-        status, receipt = self.callback_post(port, dict(self.request(key='cb-topic'), session_id='mayor'))
+        self.answers['sendMessage'] = [(200, dict(ok=True, result=dict(message_id=77, chat=dict(id=123)))),
+                                       (200, dict(ok=True, result=dict(message_id=78, chat=dict(id=123))))]
+        status, answer = self.api_call(port, '/v1/send', dict(conversation='123:topic:7', text='hello',
+                                                              key='cb-topic'))
+        self.assertEqual((status, answer), (200, dict(delivered=True, message_id='77', conversation='123:topic:7')))
+        status, answer = self.api_call(port, '/v1/send', dict(topic='ops', text='again', key='cb-topic-name'))
+        self.assertEqual((status, answer), (200, dict(delivered=True, message_id='78', conversation='123:topic:7')))
+        self.assertEqual([body['message_thread_id'] for body in self.sent('sendMessage')], [OPS, OPS])
+        self.assertEqual(self.ledger()['cb-topic'], hashlib.sha256(json.dumps(
+            self.request(key='cb-topic'), sort_keys=True).encode()).hexdigest())
+        # A thread whose name left the settings, a configured topic with no
+        # thread and an unknown name are refused before Telegram.
+        for index, fields in enumerate((dict(conversation=f'123:topic:{GONE}'), dict(topic='lab'),
+                                        dict(topic='nope'))):
+            with self.subTest(fields=fields):
+                status, answer = self.api_call(port, '/v1/send', dict(fields, text='x', key=f'cb-refused-{index}'))
+                self.assertEqual(status, 400)
+                self.assertIn('error', answer)
+        self.assertEqual(len(self.sent('sendMessage')), 2)
+        # The topic's message log holds both sends, oldest first, read by id or name.
+        status, answer = self.api_call(port, '/v1/read', dict(topic='ops'))
         self.assertEqual(status, 200)
-        self.assertTrue(receipt['delivered'])
-        self.assertEqual(receipt['conversation'], topic_ref(OPS))
-        [body] = self.sent('sendMessage')
-        self.assertEqual(body['message_thread_id'], OPS)
-        status, receipt = self.callback_post(port, self.request(key='cb-gone', conversation=topic_ref(GONE)))
-        self.assertEqual(status, 200)
-        self.assert_refused(receipt, 'recipient_not_authorized')
-        self.assertEqual(len(self.sent('sendMessage')), 1)
+        self.assertEqual([(m['direction'], m['id'], m['text']) for m in answer['messages']],
+                         [('out', '77', 'hello'), ('out', '78', 'again')])
+        self.assertEqual(self.api_call(port, '/v1/read', dict(conversation='123:topic:7')), (status, answer))
+        self.assertEqual(self.api_call(port, '/v1/read', dict(conversation='123')), (200, dict(messages=[])))
 
     def test_a_pinned_slot_message_stays_in_general(self):
         self.assertTrue(self.bridge.publish(self.request())['delivered'])
@@ -317,8 +330,10 @@ class TopicAskTests(TopicOutboundCase):
                          (OPS, {'inline_keyboard': self.keyboard()}))
         self.assertEqual(self.store.get_ask(self.ask_id())['conversation_id'], '123:topic:7')
         self.bridge.drain([self.topic_press()])
-        self.assertEqual(self.relays(), [(topic_ref(OPS), f'ask-{self.ask_id()}',
+        self.assertEqual(self.relays(), [('123:topic:7', f'ask-{self.ask_id()}',
                                           '[topic: ops]\n[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')])
+        [body] = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertEqual((body['kind'], body['topic'], body['thread_id'], body['reply_to']), ('answer', 'ops', OPS, None))
         [edit] = self.sent('editMessageText')
         self.assertEqual(edit, dict(chat_id=123, text='Pick one?\n✓ Yes', link_preview_options={'is_disabled': True},
                                     message_id=77, reply_markup={'inline_keyboard': []}))
@@ -338,26 +353,12 @@ class TopicAskTests(TopicOutboundCase):
         [edit] = self.sent('editMessageCaption')
         self.assertNotIn('message_thread_id', edit)
 
-    def test_a_tap_on_an_unbound_topic_ask_relays_on_the_paired_chat_labelled_not_bound(self):
-        self.assertTrue(self.bridge.publish(self.ask())['delivered'])
-        self.unbound.add('123:topic:7')
-        with patch('sys.stderr', new_callable=io.StringIO) as err:
-            self.bridge.drain([self.topic_press()])
-        provider = f'ask-{self.ask_id()}'
-        answer = '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?'
-        self.assertEqual(self.relays(), [
-            (topic_ref(OPS), provider, '[topic: ops]\n' + answer),
-            (self.bridge.conversation, provider, '[topic: ops | not bound: reply lands in the main chat]\n' + answer)])
-        self.assertEqual(err.getvalue(), 'topic thread 7 not bound (msg 77); relayed to the main conversation\n')
-        self.assertEqual(len(self.sent('editMessageText')), 1)
-        self.assertEqual(self.store.offset(), 42)
-
     def test_a_tap_after_the_topic_left_the_settings_relays_on_the_paired_chat_labelled_not_configured(self):
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
         self.bridge = self.make_bridge(dict(self.config, topics=TOPICS[1:]), self.store)
         with patch('sys.stderr', new_callable=io.StringIO) as err:
             self.bridge.drain([self.topic_press()])
-        self.assertEqual(self.relays(), [(self.bridge.conversation, f'ask-{self.ask_id()}',
+        self.assertEqual(self.relays(), [('123', f'ask-{self.ask_id()}',
                                           '[topic: thread 7 | not configured: reply lands in the main chat]\n'
                                           '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')])
         self.assertEqual(err.getvalue(),
@@ -386,12 +387,13 @@ class TopicAskTests(TopicOutboundCase):
         self.assertIsNone(store.get_ask(self.ask_id('new-ask'))['conversation_id'])
         self.bridge.drain([self.press(uid=41, key='old-ask', message_id=76), self.press(uid=42, key='new-ask')])
         self.assertEqual(self.relays(), [
-            (self.bridge.conversation, f"ask-{self.ask_id('old-ask')}",
+            ('123', f"ask-{self.ask_id('old-ask')}",
              '[ask answer | choice: Yes | message: 76]\nquestion: Old question?'),
-            (self.bridge.conversation, f"ask-{self.ask_id('new-ask')}",
+            ('123', f"ask-{self.ask_id('new-ask')}",
              '[ask answer | choice: Yes | message: 77]\nquestion: Pick one?')])
-        self.assertTrue(all('reply_to_message_id' not in body['message']
-                            for url, body in self.calls if '/extmsg/' in url))
+        self.assertEqual([(body['kind'], body['topic'], body['reply_to'])
+                          for url, body in self.calls if url == self.bridge.hook_url],
+                         [('answer', 'general', None)] * 2)
 
     def test_ask_close_closes_a_topic_ask_by_message_id(self):
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])
@@ -407,13 +409,7 @@ class TopicAskTests(TopicOutboundCase):
 
 
 class TopicQuotaTests(TopicOutboundCase):
-    def accepted(self, message):
-        result = super().accepted(message)
-        if message['conversation']['conversation_id'] == f'123:topic:{WEB}':
-            result['TargetAgentName'] = 'ops-agent'
-        return result
-
-    def waiting(self, episode, template='mayor'):
+    def waiting(self, episode, template='yardmaster'):
         self.waiting_sessions([dict(template=template, status='quota_wait', episode=episode,
                                      until=int(time.time() * 1000) + 3600 * 1000)])
 
@@ -428,17 +424,17 @@ class TopicQuotaTests(TopicOutboundCase):
     def notices(self):
         return [body for body in self.sent('sendMessage') if 'quota exhausted' in body['text']]
 
-    def test_a_mayor_episode_posts_nothing_in_a_helper_topic(self):
-        self.waiting('ep-mayor-only')
+    def test_the_default_crews_episode_posts_nothing_in_another_crews_topic(self):
+        self.waiting('ep-yardmaster-only')
         self.bridge.drain([in_topic(self.update(10), WEB)])
         self.assertEqual(self.notices(), [])
         self.assertEqual(len(self.relays()), 1)
         self.bridge.drain([self.update(11)])
         [notice] = self.notices()
         self.assertNotIn('message_thread_id', notice)
-        self.assertIn('mayor', notice['text'])
+        self.assertIn('yardmaster', notice['text'])
 
-    def test_a_helper_episode_posts_once_in_its_topic_and_names_it(self):
+    def test_a_topic_crews_episode_posts_once_in_its_topic_and_names_it(self):
         self.waiting('ep-helper', template='ops-agent')
         self.bridge.drain([in_topic(self.update(10), WEB), in_topic(self.update(11), WEB),
                            self.update(12)])
@@ -447,17 +443,17 @@ class TopicQuotaTests(TopicOutboundCase):
         self.assertIn('ops-agent', notice['text'])
         self.assertIn('quota-exhausted-9-ops-agent-ep-helper', self.ledger())
 
-    def test_two_agents_with_the_same_episode_id_do_not_suppress_each_other(self):
+    def test_two_crew_members_with_the_same_episode_id_do_not_suppress_each_other(self):
         until = int(time.time() * 1000) + 3600 * 1000
         self.waiting_sessions([
-            dict(template='mayor', status='quota_wait', episode='ep-shared', until=until),
+            dict(template='yardmaster', status='quota_wait', episode='ep-shared', until=until),
             dict(template='ops-agent', status='quota_wait', episode='ep-shared', until=until)])
         self.bridge.drain([in_topic(self.update(10), WEB), self.update(11)])
-        helper_notice, mayor_notice = self.notices()
-        self.assertEqual(helper_notice['message_thread_id'], WEB)
-        self.assertIn('ops-agent', helper_notice['text'])
-        self.assertNotIn('message_thread_id', mayor_notice)
-        self.assertIn('mayor', mayor_notice['text'])
+        topic_notice, general_notice = self.notices()
+        self.assertEqual(topic_notice['message_thread_id'], WEB)
+        self.assertIn('ops-agent', topic_notice['text'])
+        self.assertNotIn('message_thread_id', general_notice)
+        self.assertIn('yardmaster', general_notice['text'])
 
     def test_the_notice_follows_a_topic_message_once_per_episode(self):
         self.waiting('ep-topic')
@@ -466,7 +462,7 @@ class TopicQuotaTests(TopicOutboundCase):
         self.assertEqual(notice['message_thread_id'], OPS)
         self.assertEqual(self.store.offset(), 13)
 
-    def test_the_notice_after_a_general_or_fallback_message_goes_to_general(self):
+    def test_the_notice_after_a_general_or_unconfigured_thread_message_goes_to_general(self):
         for episode, update in (('ep-general', self.update(10)),
                                 ('ep-unconfigured', in_topic(self.update(11), UNRECORDED))):
             with self.subTest(episode), patch('sys.stderr', new_callable=io.StringIO):
@@ -475,21 +471,11 @@ class TopicQuotaTests(TopicOutboundCase):
                 self.bridge.drain([update])
                 [notice] = self.notices()
                 self.assertNotIn('message_thread_id', notice)
-        self.unbound.add('123:topic:7')
-        self.waiting('ep-unbound')
-        del self.calls[:]
-        with patch('sys.stderr', new_callable=io.StringIO):
-            self.bridge.drain([in_topic(self.update(12), OPS)])
-        [notice] = self.notices()
-        self.assertNotIn('message_thread_id', notice)
 
 
 class TopicCliTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
-        # --session defaults to $GC_SESSION_ID, else the settings' agent.
-        self.enterContext(patch.dict(os.environ))
-        os.environ.pop('GC_SESSION_ID', None)
         self.settings = write_settings(self.root)
         self.settings.write_text(self.settings.read_text() + test_topics.topic_tables(('ops', None), ('lab', None)))
         state = self.root / 'state'
@@ -501,17 +487,27 @@ class TopicCliTests(unittest.TestCase):
 
     def fake_run(self, argv, input='', **kwargs):
         self.inputs.append(input)
-        if '/extmsg/outbound' in input:
-            payload = dict(Receipt=dict(Delivered=True, MessageID='55'))
-        elif '/sendMessage' in input:
-            payload = dict(ok=True, result=dict(message_id=42, chat=dict(id=123)))
-        else:
+        if '/sendMessage' not in input:
             raise AssertionError('unexpected curl invocation')
+        payload = dict(ok=True, result=dict(message_id=42, chat=dict(id=123)))
         return subprocess.CompletedProcess(argv, 0, json.dumps(payload) + '\n200 0.010000 0.020000 0', '')
 
     def bodies(self):
         return [json.loads(json.loads(line[len('data = '):]))
                 for config in self.inputs for line in config.splitlines() if line.startswith('data = ')]
+
+    def receipts(self):
+        with closing(sqlite3.connect(self.root / 'state' / 'telegram-bridge.sqlite3')) as db:
+            return {key: json.loads(receipt) for key, receipt in db.execute('SELECT key, receipt FROM deliveries')}
+
+    def assert_sent_on(self, key, conversation, text='<b>done</b>'):
+        """The ledger's fingerprint of `key` is the request's: the send went
+        out on `conversation`, directly from this process."""
+        with closing(sqlite3.connect(self.root / 'state' / 'telegram-bridge.sqlite3')) as db:
+            [(fingerprint,)] = db.execute('SELECT fingerprint FROM deliveries WHERE key=?', (key,)).fetchall()
+        request = dict(conversation=conversation, idempotency_key=key, text=text)
+        self.assertEqual(fingerprint, hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest())
+        self.assertIs(self.receipts()[key]['delivered'], True)
 
     def cli(self, *argv, key='cli-1'):
         with patch.object(b.subprocess, 'run', self.fake_run), patch('sys.stdout', new_callable=io.StringIO) as out:
@@ -519,36 +515,37 @@ class TopicCliTests(unittest.TestCase):
                      '--body-file', str(self.body), '--idempotency-key', key, *argv)
         return out.getvalue()
 
-    def test_a_topic_conversation_id_relays_to_gc_on_the_topic_conversation(self):
+    def test_a_topic_conversation_id_publishes_directly_into_its_thread(self):
         out = self.cli('--conversation-id', '123:topic:7')
-        self.assertEqual(out, 'Telegram delivery confirmed; message ID 55\n')
-        self.assertEqual(self.bodies(), [dict(session_id='mayor', conversation=topic_ref(OPS), text='<b>done</b>',
-                                              idempotency_key='cli-1')])
+        self.assertEqual(out, 'Telegram delivery confirmed; message ID 42\n')
+        self.assertEqual(self.bodies(), [dict(chat_id=123, text='<b>done</b>', link_preview_options={'is_disabled': True},
+                                              message_thread_id=OPS)])
+        self.assert_sent_on('cli-1', topic_ref(OPS))
 
     def test_the_topic_flag_resolves_the_same_conversation(self):
         self.cli('--topic', 'ops')
-        self.assertEqual(self.bodies()[0]['conversation'], topic_ref(OPS))
+        self.assertEqual(self.bodies()[0]['message_thread_id'], OPS)
+        self.assert_sent_on('cli-1', topic_ref(OPS))
 
     def test_the_paired_chat_id_and_no_flag_keep_the_paired_conversation(self):
         self.cli('--conversation-id', '123', key='k1')
         self.cli(key='k2')
-        self.assertEqual([body['conversation'] for body in self.bodies()],
-                         [b.Bridge(b.load_settings(self.settings).config, None, 'S', None).conversation] * 2)
+        self.assertEqual([body.get('message_thread_id') for body in self.bodies()], [None, None])
+        paired = b.Bridge(b.load_settings(self.settings).config, None, 'S', None).conversation
+        self.assertEqual([receipt['conversation'] for receipt in self.receipts().values()], [paired] * 2)
 
     def test_an_html_reply_in_a_topic_publishes_directly_with_its_thread(self):
         for index, argv in enumerate((('--conversation-id', '123:topic:7'), ('--topic', 'ops'))):
             out = self.cli('--format', 'html', *argv, key=f'html-{index}')
             self.assertEqual(out, 'Telegram delivery confirmed; message ID 42\n')
-        self.assertEqual([body['message_thread_id'] for body in self.bodies()], [OPS, OPS])
-        self.assertFalse(any('/extmsg/' in config for config in self.inputs))
-        with closing(sqlite3.connect(self.root / 'state' / 'telegram-bridge.sqlite3')) as db:
-            receipts = [json.loads(receipt) for _, receipt in db.execute('SELECT key, receipt FROM deliveries')]
-        self.assertEqual([receipt['delivered'] for receipt in receipts], [True, True])
+        self.assertEqual([(body['message_thread_id'], body['parse_mode']) for body in self.bodies()],
+                         [(OPS, 'HTML'), (OPS, 'HTML')])
+        self.assertEqual([receipt['delivered'] for receipt in self.receipts().values()], [True, True])
 
     def test_a_conversation_or_topic_no_topic_serves_is_refused_before_anything_is_sent(self):
-        cases = [(('--topic', 'nope'), 'topic nope is not configured or not created (run gc telegram topics)'),
-                 (('--topic', 'lab'), 'topic lab is not configured or not created (run gc telegram topics)'),
-                 (('--topic', 'OPS'), 'topic OPS is not configured or not created (run gc telegram topics)')]
+        cases = [(('--topic', 'nope'), 'topic nope is not configured or not created (run bridge.py topics)'),
+                 (('--topic', 'lab'), 'topic lab is not configured or not created (run bridge.py topics)'),
+                 (('--topic', 'OPS'), 'topic OPS is not configured or not created (run bridge.py topics)')]
         for conversation_id in ('123:topic:0', '123:topic:8', '124', '124:topic:7', '123:topic:07', '123:topic:',
                                 '123:thread:7', '123:topic:7:x'):
             cases.append((('--conversation-id', conversation_id),
@@ -579,25 +576,25 @@ class TopicCliTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
             self.assertIn('error:', err.getvalue())
 
-    def test_gc_telegram_reply_current_passes_the_topic_flag(self):
+    def test_reply_current_in_its_own_process_takes_the_topic_flag_and_the_settings_from_the_environment(self):
         bin_dir = self.root / 'bin'
         write_fake_curl(bin_dir, f'#!{sys.executable}\nimport json, sys, uuid\nfrom pathlib import Path\n'
                         'config = sys.stdin.read()\n'
                         f'Path({str(self.root)!r}, "curl-" + uuid.uuid4().hex).write_text(config)\n'
-                        'print(json.dumps({"Receipt": {"Delivered": True, "MessageID": "55"}}))\n'
+                        'print(json.dumps({"ok": True, "result": {"message_id": 42, "chat": {"id": 123}}}))\n'
                         'print("200 0.010000 0.020000 0", end="")\n')
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GC_')}
-        env.update(PATH=f'{bin_dir}:{env["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
-        result = subprocess.run(['sh', str(PACK / 'commands' / 'reply-current' / 'run.sh'), '--topic', 'ops',
-                                 '--body-file', str(self.body), '--idempotency-key', 'pack-topic'],
+        env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
+        result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), 'reply-current',
+                                 '--topic', 'ops', '--body-file', str(self.body), '--idempotency-key', 'cli-topic'],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, 'Telegram delivery confirmed; message ID 55\n')
+        self.assertEqual(result.stdout, 'Telegram delivery confirmed; message ID 42\n')
         [config] = [path.read_text() for path in self.root.glob('curl-*')]
         self.inputs = [config]
-        self.assertIn('/extmsg/outbound"', config)
-        self.assertEqual(self.bodies(), [dict(session_id='mayor', conversation=topic_ref(OPS), text='<b>done</b>',
-                                              idempotency_key='pack-topic')])
+        self.assertIn('/sendMessage"', config)
+        self.assertEqual(self.bodies(), [dict(chat_id=123, text='<b>done</b>', link_preview_options={'is_disabled': True},
+                                              message_thread_id=OPS)])
+        self.assert_sent_on('cli-topic', topic_ref(OPS))
 
 
 if __name__ == '__main__':

@@ -1,9 +1,9 @@
 """Inbound in topics of the paired private chat (OPERATIONS.md, "Topics"): a
-message written in a topic relays on that topic's GC conversation under its
-topic line, falls back to the paired chat's when GC routes the topic nowhere
-or no topic is configured for the thread, and voice transcripts and city
-commands follow the thread. Fake Telegram, GC and transcriber; temporary
-directories; no network."""
+message written in a topic relays on that topic's conversation under its
+topic line, naming the topic, so the yard routes it by subscription; a
+thread no topic is configured for relays on the paired chat's, labelled;
+voice transcripts and commands follow the thread. Fake Telegram, yard hook
+and transcriber; temporary directories; no network."""
 from contextlib import closing
 import hashlib
 import io
@@ -19,9 +19,22 @@ import bridge as b  # noqa: E402
 from test_bridge import BridgeTestCase  # noqa: E402
 from test_commands import CommandCase, answer  # noqa: E402
 
-TOPICS = (dict(name='ops', agent='mayor'), dict(name='web', agent='ops-agent'), dict(name='lab', agent='mayor'))
+TOPICS = (dict(name='ops', agent='yardmaster'), dict(name='web', agent='ops-agent'),
+          dict(name='lab', agent='yardmaster'))
 OPS, WEB = 7, 9  # the recorded thread ids; "lab" is configured but has no ledger row
+GENERAL = '123'  # the paired chat's conversation id
 SERVICE_KEYS = ('forum_topic_created', 'forum_topic_edited', 'forum_topic_closed', 'forum_topic_reopened')
+# How the fake yard hook answers a delivery it does not record: each keeps the cursor.
+REFUSALS = {
+    'error': (500, dict(error='internal')),
+    'forbidden': (403, dict(error='bad secret')),
+    'dropped': (200, dict(dropped=True)),
+    'no_seq': (200, dict()),
+    'zero_seq': (200, dict(seq=0)),
+    'string_seq': (200, dict(seq='1')),
+    'bool_seq': (200, dict(seq=True)),
+    'not_an_object': (200, [1]),
+}
 
 
 def record_topics(store):
@@ -38,47 +51,40 @@ def in_topic(update, thread_id, **fields):
 
 class TopicInboundCase(BridgeTestCase):
     """The base fixture with three [[topic]] tables, two recorded, and a fake
-    GC whose answer to an inbound relay depends on the conversation."""
+    yard hook whose answer to a delivery depends on its conversation."""
 
     def setUp(self):
         super().setUp()
         self.config['topics'] = TOPICS
         record_topics(self.store)
         self.bridge = self.make_bridge(self.config)
-        # conversation_id -> how GC answers a relay on it; anything else is accepted
-        # for the agent its binding names (the paired chat and "ops": mayor).
+        # conversation id -> a REFUSALS key, or 'transport' to raise; anything
+        # else is recorded with a fresh seq.
         self.answers = {}
-        self.routes = {'123:topic:9': 'ops-agent'}
 
     def make_bridge(self, config, store=None):
         return b.Bridge(config, store or self.store, 'SECRET', 'CAPABILITY', request=self.transport,
                         request_multipart=self.multipart_transport, request_download=self.download_transport)
 
     def transport(self, url, body, *args, **kwargs):
-        if not url.endswith('/inbound'):
+        if url != self.bridge.hook_url:
             return super().transport(url, body, *args, **kwargs)
         self.calls.append((url, body))
-        message = body['message']
-        how = self.answers.get(message['conversation']['conversation_id'], 'accepted')
-        if how == 'unbound':
-            return 200, dict(TargetAgentName='', TargetSessionID='')
-        if how == 'error':
-            return 500, dict(error='internal')
-        result = self.accepted(message)
-        result['TargetAgentName'] = self.routes.get(message['conversation']['conversation_id'], 'mayor')
-        if how == 'other_agent':
-            result['TargetAgentName'] = 'helper'
-        elif how == 'hydrating':
-            del result['TranscriptEntry']
-        elif how == 'other_conversation':
-            result['TranscriptEntry']['Conversation'] = self.bridge.conversation
-        return 200, result
+        how = self.answers.get(body['conversation'], 'accepted')
+        if how == 'transport':
+            raise b.TransportError('yard unreachable')
+        if how in REFUSALS:
+            return REFUSALS[how]
+        return 200, dict(seq=len(self.calls))
+
+    def deliveries(self):
+        """The body of every delivery to the yard hook, in order."""
+        return [body for url, body in self.calls if url == self.bridge.hook_url]
 
     def relays(self):
-        """(conversation, provider id, reply id, text) of every GC relay, in order."""
-        return [(body['message']['conversation'], body['message']['provider_message_id'],
-                 body['message'].get('reply_to_message_id'), body['message']['text'])
-                for url, body in self.calls if url.endswith('/inbound')]
+        """(conversation id, message id, reply id, text) of every delivery, in order."""
+        return [(body['conversation'], body['message_id'], body['reply_to'], body['text'])
+                for body in self.deliveries()]
 
     def drain(self, *updates):
         with patch('sys.stderr', new_callable=io.StringIO) as err:
@@ -86,17 +92,17 @@ class TopicInboundCase(BridgeTestCase):
         return err.getvalue()
 
     def topic_ref(self, thread_id):
-        return dict(scope_id='test-city', provider='telegram', account_id='test_bot',
-                    conversation_id=f'123:topic:{thread_id}', parent_conversation_id='123', kind='thread')
+        """A topic's conversation id, as a delivery names it."""
+        return f'123:topic:{thread_id}'
 
 
 class GeneralTests(TopicInboundCase):
     def bodies(self, bridge, calls, update):
         del calls[:]
         bridge.drain([update])
-        return [{k: v for k, v in body['message'].items() if k != 'received_at'} for _, body in calls]
+        return [{k: v for k, v in body.items() if k != 'received_at'} for _, body in calls]
 
-    def test_a_general_message_relays_exactly_as_in_a_city_without_topics(self):
+    def test_a_general_message_relays_exactly_as_in_a_bridge_without_topics(self):
         base_config = {k: v for k, v in self.config.items() if k != 'topics'}
         base_store = b.Store(Path(self.tmp.name) / 'base.sqlite3', 10)
         cases = {
@@ -116,13 +122,14 @@ class GeneralTests(TopicInboundCase):
                     json.dumps(update)))
                 self.assertEqual(self.bodies(self.bridge, self.calls, update), expected)
                 [body] = expected
-                self.assertEqual(body['conversation'], self.bridge.conversation)
+                self.assertEqual((body['conversation'], body['topic'], body['thread_id']), (GENERAL, 'general', None))
+                self.assertEqual(body['id'], f'999:123:{uid}')
                 self.assertEqual(body['text'], 'hello')
-                self.assertEqual(body['reply_to_message_id'], str(OPS))  # only a topic's root reply is dropped
+                self.assertEqual(body['reply_to'], str(OPS))  # only a topic's root reply is dropped
                 self.assertEqual(self.store.offset(), uid + 1)
 
-    def test_an_empty_target_on_the_paired_chat_still_retains_the_cursor(self):
-        self.answers['123'] = 'unbound'
+    def test_a_refused_delivery_on_the_paired_chat_retains_the_cursor(self):
+        self.answers[GENERAL] = 'dropped'
         with self.assertRaises(b.TransportError):
             self.drain(self.update())
         self.assertEqual(len(self.relays()), 1)
@@ -130,60 +137,29 @@ class GeneralTests(TopicInboundCase):
 
 
 class TopicRelayTests(TopicInboundCase):
-    def test_a_text_in_a_bound_topic_relays_on_its_conversation_under_its_topic_line(self):
+    def test_a_text_in_a_configured_topic_relays_on_its_conversation_under_its_topic_line(self):
         log = self.drain(in_topic(self.update(), OPS))
         self.assertEqual(self.relays(), [(self.topic_ref(OPS), '10', None, '[topic: ops]\nhello')])
+        [body] = self.deliveries()
+        self.assertEqual({k: v for k, v in body.items() if k != 'received_at'}, dict(
+            id='999:123:topic:7:10', kind='message', chat='123', conversation='123:topic:7', topic='ops',
+            thread_id=OPS, message_id='10', reply_to=None, text='[topic: ops]\nhello',
+            forwarded=False, **{'from': dict(id='123', name='Pat')}))
         self.assertEqual(self.store.offset(), 11)
         self.assertEqual(log, '')
 
-    def test_a_topic_with_its_own_agent_is_accepted_only_when_gc_routes_to_that_agent(self):
+    def test_a_topic_with_its_own_crew_relays_on_its_conversation_like_any_other(self):
+        # The crew member a [[topic]] names reaches only its subscription
+        # line: the delivery names the topic, and the yard routes it.
         self.drain(in_topic(self.update(10), WEB))
         self.assertEqual(self.relays(), [(self.topic_ref(WEB), '10', None, '[topic: web]\nhello')])
+        [body] = self.deliveries()
+        self.assertEqual((body['topic'], body['thread_id']), ('web', WEB))
+        self.assertNotIn('ops-agent', json.dumps(body))
         self.assertEqual(self.store.offset(), 11)
-        self.routes['123:topic:9'] = 'mayor'
-        with self.assertRaises(b.TransportError):
-            self.drain(in_topic(self.update(11), WEB))
-        self.assertEqual(self.store.offset(), 11)
-        self.assertEqual([ref for ref, *_ in self.relays()], [self.topic_ref(WEB)] * 2)
 
-    def test_a_topic_bound_to_helper_accepts_a_helper_route_and_rejects_the_settings_agent(self):
-        # A [[topic]] with agent = "helper": GC answering TargetAgentName
-        # helper with a transcript entry accepts the inbound on the topic's
-        # conversation and advances the cursor; nothing goes to the main chat.
-        self.config['topics'] = TOPICS + (dict(name='help', agent='helper'),)
-        self.store.record_topic('help', 11, 'recorded')
-        self.bridge = self.make_bridge(self.config)
-        self.routes['123:topic:11'] = 'helper'
-        self.drain(in_topic(self.update(10), 11))
-        self.assertEqual(self.relays(), [(self.topic_ref(11), '10', None, '[topic: help]\nhello')])
-        self.assertEqual(self.store.offset(), 11)
-        # A GC answer naming the settings agent (mayor) instead keeps the cursor.
-        self.routes['123:topic:11'] = 'mayor'
-        with self.assertRaises(b.TransportError):
-            self.drain(in_topic(self.update(11), 11))
-        self.assertEqual(self.store.offset(), 11)
-        self.assertEqual([ref for ref, *_ in self.relays()], [self.topic_ref(11)] * 2)
-
-    def test_an_unbound_topic_relays_again_on_the_paired_chat_labelled_and_advances(self):
-        self.answers['123:topic:7'] = 'unbound'
-        update = in_topic(self.update(), OPS, reply_to_message=dict(message_id=5))
-        log = self.drain(update)
-        self.assertEqual(self.relays(), [
-            (self.topic_ref(OPS), '10', '5', '[topic: ops]\nhello'),
-            (self.bridge.conversation, '10', '5', '[topic: ops | not bound: reply lands in the main chat]\nhello'),
-        ])
-        self.assertEqual(self.store.offset(), 11)
-        self.assertEqual(log, 'topic thread 7 not bound (msg 10); relayed to the main conversation\n')
-
-    def test_a_failed_fallback_relay_retains_the_cursor(self):
-        self.answers.update({'123:topic:7': 'unbound', '123': 'error'})
-        with self.assertRaises(b.TransportError):
-            self.drain(in_topic(self.update(), OPS))
-        self.assertEqual(len(self.relays()), 2)
-        self.assertEqual(self.store.offset(), 10)
-
-    def test_every_other_answer_in_a_topic_retains_the_cursor_and_never_reaches_the_paired_chat(self):
-        for how in ('other_agent', 'hydrating', 'error', 'other_conversation'):
+    def test_every_refusal_in_a_topic_retains_the_cursor_and_never_reaches_the_paired_chat(self):
+        for how in (*REFUSALS, 'transport'):
             with self.subTest(how):
                 del self.calls[:]
                 self.answers['123:topic:7'] = how
@@ -191,24 +167,35 @@ class TopicRelayTests(TopicInboundCase):
                     self.drain(in_topic(self.update(), OPS))
                 self.assertEqual([ref for ref, *_ in self.relays()], [self.topic_ref(OPS)])
                 self.assertEqual(self.store.offset(), 10)
+        del self.answers['123:topic:7']
+        self.drain(in_topic(self.update(), OPS))
+        self.assertEqual(self.store.offset(), 11)
+
+    def test_a_retried_delivery_carries_the_same_id(self):
+        self.answers['123:topic:7'] = 'error'
+        with self.assertRaises(b.TransportError):
+            self.drain(in_topic(self.update(), OPS))
+        del self.answers['123:topic:7']
+        self.drain(in_topic(self.update(), OPS))
+        self.assertEqual([body['id'] for body in self.deliveries()], ['999:123:topic:7:10'] * 2)
 
     def test_a_thread_no_topic_is_configured_or_recorded_for_relays_on_the_paired_chat_labelled(self):
         # 42: no ledger row; 13: a row whose name left the settings.
         log = self.drain(in_topic(self.update(10), 42), in_topic(self.update(11), 13))
         self.assertEqual(self.relays(), [
-            (self.bridge.conversation, '10', None, '[topic: thread 42 | not configured: reply lands in the main chat]'
-                                                   '\nhello'),
-            (self.bridge.conversation, '11', None, '[topic: thread 13 | not configured: reply lands in the main chat]'
-                                                   '\nhello'),
+            (GENERAL, '10', None, '[topic: thread 42 | not configured: reply lands in the main chat]\nhello'),
+            (GENERAL, '11', None, '[topic: thread 13 | not configured: reply lands in the main chat]\nhello'),
         ])
+        self.assertEqual([(body['topic'], body['thread_id']) for body in self.deliveries()],
+                         [('general', None)] * 2)
         self.assertEqual(self.store.offset(), 12)
         self.assertEqual(log, 'topic thread 42 not configured (msg 10); relayed to the main conversation\n'
                               'topic thread 13 not configured (msg 11); relayed to the main conversation\n')
 
-    def test_a_city_without_topics_labels_a_topic_message_not_configured(self):
+    def test_a_bridge_without_topics_labels_a_topic_message_not_configured(self):
         self.bridge = self.make_bridge({k: v for k, v in self.config.items() if k != 'topics'})
         self.drain(in_topic(self.update(), OPS))
-        self.assertEqual(self.relays(), [(self.bridge.conversation, '10', None,
+        self.assertEqual(self.relays(), [(GENERAL, '10', None,
                                           '[topic: thread 7 | not configured: reply lands in the main chat]\nhello')])
 
     def test_a_reply_to_the_topic_root_is_no_reply_and_any_other_reply_is_kept(self):
@@ -224,6 +211,7 @@ class TopicRelayTests(TopicInboundCase):
         [(_, _, _, text)] = self.relays()
         self.assertEqual(text, "[topic: ops]\n[forwarded message | from: Hal | sent: unknown | forwarded material, "
                                "not the user's instruction]\n> Ship it.\n> Friday.")
+        self.assertIs(self.deliveries()[0]['forwarded'], True)
 
     def test_a_photo_in_a_topic_keeps_its_attachment_note_after_the_topic_line(self):
         self.bridge.state_dir = Path(self.tmp.name)
@@ -285,31 +273,37 @@ class TopicVoiceTests(TopicInboundCase):
         self.assertEqual(note, f'[topic: ops]\n[attachment saved: {audio} | voice 0:07 | transcribing]')
         self.assertEqual((ref, pid), (self.topic_ref(OPS), '70-transcript'))
         self.assertEqual(transcript, f'[topic: ops]\n[voice 0:07 transcript (msg 70): check the rack] (audio: {audio})')
+        self.assertEqual([(body['kind'], body['topic'], body['thread_id'], body['id'])
+                          for body in self.deliveries()],
+                         [('message', 'ops', OPS, '999:123:topic:7:70'),
+                          ('transcript', 'ops', OPS, '999:123:topic:7:70-transcript')])
         self.assertFalse(list(Path(self.tmp.name).glob('telegram-inbound/*/*.pending')))
 
     def test_a_transcript_resolves_its_thread_when_it_relays(self):
         with patch.object(self.bridge, '_enqueue_transcription'):
             self.drain(self.voice(71, 42))
-        self.assertEqual(self.relays()[0][0], self.bridge.conversation)  # thread 42: not configured yet
+        self.assertEqual(self.relays()[0][0], GENERAL)  # thread 42: not configured yet
         self.store.record_topic('lab', 42, 'recorded')
         self.assertEqual(self.restarted(), 1)
         ref, pid, _, text = self.relays()[1]
         self.assertEqual((ref, pid), (self.topic_ref(42), '71-transcript'))
         self.assertTrue(text.startswith('[topic: lab]\n[voice 0:07 transcript (msg 71): check the rack] (audio: '))
+        self.assertEqual(self.deliveries()[1]['topic'], 'lab')
 
-    def test_an_unbound_topic_gets_its_transcript_on_the_paired_chat_labelled(self):
-        self.answers['123:topic:7'] = 'unbound'
+    def test_a_refused_transcript_in_a_topic_never_reaches_the_paired_chat(self):
+        with patch.object(self.bridge, '_enqueue_transcription'):
+            self.drain(self.voice(72, OPS))
+        self.answers['123:topic:7'] = 'dropped'
+        bridge = self.make_bridge(self.config)
+        bridge.state_dir, bridge.transcribe = self.bridge.state_dir, self.bridge.transcribe
+        bridge.PENDING_BACKOFF_SECONDS = (0, 0)
         with patch('sys.stderr', new_callable=io.StringIO) as log:
-            self.bridge.drain([self.voice(72, OPS)])
-            self.bridge.transcribe_queue.join()
-        relays = self.relays()
-        self.assertEqual([(ref['conversation_id'], pid) for ref, pid, _, _ in relays],
-                         [('123:topic:7', '72'), ('123', '72'), ('123:topic:7', '72-transcript'),
-                          ('123', '72-transcript')])
-        self.assertTrue(relays[3][3].startswith('[topic: ops | not bound: reply lands in the main chat]\n'
-                                                '[voice 0:07 transcript (msg 72): '))
-        self.assertEqual([line for line in log.getvalue().splitlines() if line.startswith('topic')],
-                         ['topic thread 7 not bound (msg 72); relayed to the main conversation'] * 2)
+            bridge.reconcile_pending()
+            bridge.transcribe_queue.join()
+        self.assertEqual([(ref, pid) for ref, pid, *_ in self.relays()],
+                         [(self.topic_ref(OPS), '72')] + [(self.topic_ref(OPS), '72-transcript')] * 3)
+        self.assertIn('voice transcript relay gave up (msg 72)', log.getvalue())
+        self.assertTrue(json.loads(self.pending(72).read_text())['gave_up'])
 
     def test_a_pending_file_without_a_thread_relays_on_the_paired_chat(self):
         with patch.object(self.bridge, '_enqueue_transcription'):
@@ -317,8 +311,9 @@ class TopicVoiceTests(TopicInboundCase):
         self.assertNotIn('thread_id', json.loads(self.pending(73).read_text()))
         self.assertEqual(self.restarted(), 1)
         ref, pid, _, text = self.relays()[1]
-        self.assertEqual((ref, pid), (self.bridge.conversation, '73-transcript'))
+        self.assertEqual((ref, pid), (GENERAL, '73-transcript'))
         self.assertTrue(text.startswith('[voice 0:07 transcript (msg 73): check the rack] (audio: '))
+        self.assertEqual((self.deliveries()[1]['kind'], self.deliveries()[1]['topic']), ('transcript', 'general'))
 
     def test_a_malformed_thread_in_a_pending_file_is_refused(self):
         with patch.object(self.bridge, '_enqueue_transcription'):

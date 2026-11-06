@@ -1,7 +1,8 @@
-"""City commands ([[command]]): settings, dispatch to an executable or a
+"""Commands ([[command]]): settings, dispatch to an executable or a
 loopback URL handler, callback routing, the handler contract and its failure
-modes, the delivery ledger, set-commands, and the served-agent setting. Fake
-Telegram and fake GC; temp files only; no network beyond a loopback fixture."""
+modes, the delivery ledger, set-commands, and the crew setting. Fake
+Telegram and a fake yard hook; temp files only; no network beyond a loopback
+fixture."""
 import contextlib
 import datetime
 import http.server
@@ -27,6 +28,7 @@ INPUT_KEYS = {'kind', 'command', 'args', 'update_id', 'message_id', 'callback_da
               'received_at', 'user_display_name'}
 HANDLER_ENV = {'PATH', 'HOME', 'LANG', 'TZ', 'TELEGRAM_BRIDGE_COMMAND'}
 MARKER = 'HANDLER-OUTPUT-MARKER'
+HOOK_URL = 'http://127.0.0.1:8797/hooks/tgbridge'
 
 
 def handler_script(directory, body, name='handler.py'):
@@ -54,13 +56,14 @@ def answer(*actions):
 
 
 class FakeTelegram:
-    """Records every Telegram and GC call; answers like the real services."""
+    """Records every Telegram call and every relay to the yard's hook (as
+    method 'hook'); answers like the real services."""
 
-    def __init__(self, agent='mayor'):
-        self.calls, self.next_id, self.agent, self.answers = [], 500, agent, {}
+    def __init__(self):
+        self.calls, self.next_id, self.next_seq, self.answers = [], 500, 0, {}
 
     def __call__(self, url, body, *args, **kwargs):
-        method = url.rsplit('/', 1)[1]
+        method = 'hook' if url == HOOK_URL else url.rsplit('/', 1)[1]
         self.calls.append((method, body))
         if method in self.answers:
             result = self.answers[method]
@@ -72,11 +75,9 @@ class FakeTelegram:
             return 200, dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
         if method == 'answerCallbackQuery':
             return 200, dict(ok=True, result=True)
-        if method == 'inbound':
-            message = body['message']
-            return 200, dict(TargetAgentName=self.agent, TargetSessionID='', TranscriptEntry=dict(
-                ID='entry', Sequence=1, Kind='inbound', Conversation=message['conversation'],
-                ProviderMessageID=message['provider_message_id'], Actor=message['actor']))
+        if method == 'hook':
+            self.next_seq += 1
+            return 200, dict(seq=self.next_seq)
         raise AssertionError('unexpected call ' + method)
 
     def methods(self):
@@ -93,15 +94,15 @@ class CommandCase(unittest.TestCase):
         self.store = b.Store(self.root / 'state.sqlite3', 10)
         self.telegram = FakeTelegram()
         self.handler = handler_script(self.handlers, answer(dict(type='send', text='ok')))
-        self.env = self.enterContext(patch.dict(os.environ, {'LANG': 'C.UTF-8', 'GC_CITY': '/srv/city',
-                                                             'GC_SESSION_ID': 'mayor', 'TELEGRAM_BOT_TOKEN': 'SECRET'}))
+        self.env = self.enterContext(patch.dict(os.environ, {'LANG': 'C.UTF-8', 'YARDR_HOME': '/srv/yard',
+                                                             'TELEGRAM_BOT_TOKEN': 'SECRET'}))
         self.bridge = self.make_bridge()
 
     def make_bridge(self, commands=None, **config):
         if commands is None:
             commands = (self.command(),)
-        config = dict(dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', city='test-city',
-                           user_display_name='Pat', timezone='Asia/Tokyo', menu=MENU,
+        config = dict(dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city', hook_url=HOOK_URL,
+                           hook_secret='HOOKSECRET', user_display_name='Pat', timezone='Asia/Tokyo', menu=MENU,
                            commands=commands), **config)
         return b.Bridge(config, self.store, 'SECRET', 'CAPABILITY', request=self.telegram, state_dir=self.root)
 
@@ -177,16 +178,16 @@ class CommandSettingsTests(SettingsCase):
             dict(name='six', description='Deploy a branch', menu=True, timeout=10, url='http://[::1]:9/x',
                  callback_prefix='six:')))
         self.assertEqual(settings.handler_write_paths, (self.root / 'out',))
-        self.assertEqual(settings.agent, 'mayor')
+        self.assertEqual(settings.agent, 'yardmaster')
 
     def test_a_command_timeout_of_120_loads(self):
         settings = b.load_settings(self.settings(self.entry(timeout=120)))
         self.assertEqual(settings.config['commands'][0]['timeout'], 120)
 
-    def test_without_commands_the_config_is_unchanged(self):
+    def test_without_commands_the_config_has_none(self):
         settings = b.load_settings(self.settings())
         self.assertNotIn('commands', settings.config)
-        self.assertNotIn('agent', settings.config)
+        self.assertEqual(settings.config['agent'], 'yardmaster')
         self.assertEqual(settings.handler_write_paths, ())
 
     def test_each_bad_entry_is_refused_by_name(self):
@@ -328,26 +329,29 @@ class CommandSettingsTests(SettingsCase):
         with self.assertRaisesRegex(b.SettingsError, 'command must be a list of at most 100'):
             b.load_settings(path)
 
-    def test_agent_setting(self):
-        self.assertEqual(b.load_settings(self.settings(agent='"reviewer"')).config['agent'], 'reviewer')
-        self.assertNotIn('agent', b.load_settings(self.settings(agent='"mayor"')).config)
+    def test_crew_setting(self):
+        # The crew member reaches the bridge as its agent, always present.
+        self.assertEqual(b.load_settings(self.settings(crew='"reviewer"')).config['agent'], 'reviewer')
+        self.assertEqual(b.load_settings(self.settings(crew='"yardmaster"')).config['agent'], 'yardmaster')
+        self.assertEqual(b.load_settings(self.settings()).config['agent'], 'yardmaster')
         for bad in ('""', '"two words"', '7'):
             with self.subTest(bad=bad):
-                self.refused('agent is missing or malformed', agent=bad)
+                self.refused('settings: crew is missing or malformed', crew=bad)
 
 
 class CommandUnitTests(SettingsCase):
-    def test_render_unit_appends_handler_write_paths_and_names_the_agent(self):
+    def test_render_unit_appends_handler_write_paths_and_names_the_crew(self):
         out, logs = self.root / 'out', self.root / 'logs'
-        path = self.settings(self.entry(), handler_write_paths=f'["{out}", "{logs}"]', agent='"reviewer"')
+        path = self.settings(self.entry(), handler_write_paths=f'["{out}", "{logs}"]', crew='"reviewer"')
         unit = b.render_unit(b.load_settings(path), bridge_path='/srv/bridge.py')
         self.assertIn(f'ReadWritePaths={self.root / "state"} {self.root / "private"} {out} {logs}\n', unit)
         self.assertIn(f'ReadOnlyPaths=-{path} -{self.root / "private" / "telegram-bot-token"} '
-                      f'-{self.root / "private" / "telegram-callback-secret"}\n', unit)
-        self.assertIn('Description=Private Telegram transport for the test-city reviewer\n', unit)
+                      f'-{self.root / "private" / "telegram-callback-secret"} '
+                      f'-{self.root / "private" / "hook-secret"}\n', unit)
+        self.assertIn("Description=Private Telegram transport for the test-city yard's reviewer\n", unit)
         default = b.render_unit(b.load_settings(self.settings()), bridge_path='/srv/bridge.py')
         self.assertIn(f'ReadWritePaths={self.root / "state"} {self.root / "private"}\n', default)
-        self.assertIn('Description=Private Telegram transport for the test-city mayor\n', default)
+        self.assertIn("Description=Private Telegram transport for the test-city yard's yardmaster\n", default)
 
     def test_check_install_reports_handlers_and_write_paths(self):
         out = self.root / 'out'
@@ -370,7 +374,7 @@ class CommandUnitTests(SettingsCase):
 
 
 class DispatchTests(CommandCase):
-    def test_a_command_runs_its_handler_with_the_exact_input_and_never_reaches_gc(self):
+    def test_a_command_runs_its_handler_with_the_exact_input_and_never_reaches_the_yard(self):
         before = datetime.datetime.now(datetime.timezone.utc)
         log = self.drain(self.message('/deploy'))
         [given] = self.inputs()
@@ -389,14 +393,14 @@ class DispatchTests(CommandCase):
                    self.message('/deploy@Test_Bot two words', 44))
         self.assertEqual([(i['args'], i['message_id']) for i in self.inputs()],
                          [('', 1040), ('feature/x  now', 1042), ('two words', 1044)])
-        self.assertNotIn('inbound', self.telegram.methods())
+        self.assertNotIn('hook', self.telegram.methods())
 
     def test_anything_else_still_reaches_the_agent_as_text(self):
         for uid, text in enumerate(('/deploy@other_bot', '/deployx', '/deploy\nnext line', 'deploy', '/Deploy',
                                     ' /deploy', '/status', '/quota'), 50):
             self.drain(self.message(text, uid * 2))
         self.assertEqual(self.records(), [])
-        self.assertEqual([body['message']['text'] for body in self.telegram.of('inbound')],
+        self.assertEqual([body['text'] for body in self.telegram.of('hook')],
                          ['/deploy@other_bot', '/deployx', '/deploy\nnext line', 'deploy', '/Deploy', ' /deploy',
                           '/status', '/quota'])
 
@@ -414,10 +418,10 @@ class DispatchTests(CommandCase):
             updates.append(update)
         self.drain(*updates)
         self.assertEqual(self.records(), [])
-        self.assertEqual(self.telegram.methods(), ['inbound'] * 4)
+        self.assertEqual(self.telegram.methods(), ['hook'] * 4)
         header = ("[forwarded message | from: Someone | sent: 1970-01-01T00:00:01Z | "
                   "forwarded material, not the user's instruction]")
-        self.assertEqual([body['message']['text'] for body in self.telegram.of('inbound')],
+        self.assertEqual([body['text'] for body in self.telegram.of('hook')],
                          [f'{header}\n> /deploy', f'{header}\n> /quota', f'{header}\n> /deploy@test_bot main',
                           f'{header}\n> /start x'])
 
@@ -435,7 +439,7 @@ class DispatchTests(CommandCase):
         self.assertEqual((given['kind'], given['command'], given['args'], given['update_id']),
                          ('command', 'quota', '', 40))
         self.assertEqual(self.telegram.methods(), ['sendMessage'])
-        self.assertNotIn('inbound', self.telegram.methods())
+        self.assertNotIn('hook', self.telegram.methods())
         self.assertEqual(list(self.ledger()), ['command:40:0'])
         self.assertEqual(seen, [])  # the handler runs via Popen; nothing shells out
         self.assertEqual(log, 'command quota handled (update 40): 1 action(s)\n')
@@ -455,7 +459,7 @@ class DispatchTests(CommandCase):
         self.assertEqual(record['env']['HOME'], os.environ['HOME'])
         self.assertEqual(record['cwd'], str(self.handlers.resolve()))
         self.assertEqual(record['argv'], [str(self.handler)])
-        for secret in ('SECRET', 'CAPABILITY', '/srv/city'):
+        for secret in ('SECRET', 'CAPABILITY', 'HOOKSECRET', '/srv/yard'):
             self.assertNotIn(secret, json.dumps(record))
 
     def test_a_url_handler_gets_the_same_json_by_post(self):
@@ -549,7 +553,7 @@ class CallbackTests(CommandCase):
         self.assertEqual(self.records(), [])
         self.assertEqual(self.telegram.of('answerCallbackQuery'),
                          [dict(callback_query_id=f'query-{uid}') for uid in (41, 43, 45, 47, 49, 51)])
-        self.assertNotIn('inbound', self.telegram.methods())
+        self.assertNotIn('hook', self.telegram.methods())
         self.assertEqual(log.splitlines(), [
             'callback dropped (update 41): no_registered_prefix', 'callback dropped (update 43): not_authorized',
             'callback dropped (update 45): not_authorized', 'callback dropped (update 47): not_authorized',
@@ -953,7 +957,7 @@ class NoCommandsTests(CommandCase):
     def test_messages_reach_the_agent_and_callbacks_are_answered_empty(self):
         log = self.drain(self.message('/deploy'), self.callback('deploy:yes'))
         self.assertEqual(self.records(), [])
-        self.assertEqual([body['message']['text'] for body in self.telegram.of('inbound')], ['/deploy'])
+        self.assertEqual([body['text'] for body in self.telegram.of('hook')], ['/deploy'])
         self.assertEqual(self.telegram.of('answerCallbackQuery'), [dict(callback_query_id='query-41')])
         self.assertEqual(log, 'callback dropped (update 41): no_registered_prefix\n')
         self.assertEqual(self.store.offset(), 42)
@@ -973,24 +977,27 @@ class NoCommandsTests(CommandCase):
         self.assertEqual(polls[0]['allowed_updates'], ['message', 'callback_query'])
 
 
-class AgentTests(CommandCase):
-    def test_default_agent_is_the_mayor(self):
+class CrewTests(CommandCase):
+    def test_the_default_crew_is_the_yardmaster(self):
         self.bridge = self.make_bridge(())
-        self.assertEqual(self.bridge.agent, 'mayor')
+        self.assertEqual(self.bridge.agent, 'yardmaster')
         self.drain(self.message('hello'))
         self.assertEqual(self.store.offset(), 41)
 
-    def test_another_agent_accepts_only_entries_routed_to_it(self):
+    def test_the_crew_never_rides_on_the_relay(self):
+        # The yard routes a message by its subscriptions, not by a name the
+        # bridge sends: a bridge for another crew member relays the same body.
         self.bridge = self.make_bridge((), agent='other')
-        self.telegram.agent = 'other'
         self.drain(self.message('hello'))
         self.assertEqual(self.store.offset(), 41)
-        self.telegram.agent = 'mayor'
-        with self.assertRaisesRegex(b.TransportError, 'routed to the agent'):
-            self.drain(self.message('again', 42))
-        self.assertEqual(self.store.offset(), 41)
+        self.store = b.Store(self.root / 'default.sqlite3', 10)
+        self.bridge = self.make_bridge(())
+        self.drain(self.message('hello'))
+        first, second = [{k: v for k, v in body.items() if k != 'received_at'} for body in self.telegram.of('hook')]
+        self.assertEqual(first, second)
+        self.assertNotIn('other', json.dumps(first))
 
-    def test_the_quota_notice_watches_the_agents_session(self):
+    def test_the_quota_notice_watches_the_crews_session(self):
         health = self.root / 'health.json'
         until = int(time.time() * 1000) + 3600 * 1000
         observed = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -998,22 +1005,17 @@ class AgentTests(CommandCase):
             health.write_text(json.dumps(dict(observed_at=observed, sessions=[dict(
                 template=template, status='quota_wait', episode='e1', until=until)])))
         self.bridge = self.make_bridge((), agent='other', health_file=str(health))
-        sessions('mayor')
+        sessions('yardmaster')
         self.assertIsNone(self.bridge.mayor_quota_episode())
         sessions('other')
         self.assertEqual(self.bridge.mayor_quota_episode(), ('e1', until))
-        mayor = self.make_bridge((), health_file=str(health))
-        self.assertIsNone(mayor.mayor_quota_episode())
+        default = self.make_bridge((), health_file=str(health))
+        self.assertIsNone(default.mayor_quota_episode())
+        sessions('yardmaster')
+        self.assertEqual(default.mayor_quota_episode(), ('e1', until))
 
-    def test_send_defaults_its_session_to_the_agent(self):
-        parser = b._build_parser()
-        with patch.dict(os.environ):
-            os.environ.pop('GC_SESSION_ID')
-            self.assertIsNone(b._build_parser().parse_args(['send']).session)
-        self.assertEqual(parser.parse_args(['send', '--session', 's1']).session, 's1')
-
-    def test_a_bad_agent_in_the_config_is_refused(self):
-        with self.assertRaisesRegex(b.TransportError, 'agent name required'):
+    def test_a_bad_crew_in_the_config_is_refused(self):
+        with self.assertRaisesRegex(b.TransportError, 'crew name required'):
             self.make_bridge((), agent='two words')
 
 

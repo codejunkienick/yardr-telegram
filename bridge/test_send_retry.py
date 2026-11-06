@@ -89,7 +89,7 @@ class TransportClassificationTests(unittest.TestCase):
 
     def test_a_timeout_on_plain_http_is_never_not_sent(self):
         # time_appconnect is 0 on every plain-HTTP transfer: it proves nothing there.
-        error = self.failure(28, metrics(connect=0.0), url='http://127.0.0.1:8372/v0/city/c/extmsg/outbound')
+        error = self.failure(28, metrics(connect=0.0), url='http://127.0.0.1:8797/hooks/tgbridge')
         self.assertIsInstance(error, b.RequestUnconfirmed)
 
     def test_a_completed_transfer_returns_its_status_and_body(self):
@@ -145,7 +145,7 @@ class SendRetryTests(BridgeTestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.store = b.Store(self.root / 'state.sqlite3', 10)
         self.answers, self.calls, self.sleeps, self.clock = [], [], [], [0.0]
-        self.config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', city='test-city',
+        self.config = dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot', yard='test-city', hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
                            user_display_name='Pat', timezone='UTC', unit='test-city-telegram.service', menu=MENU)
         self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY', request=self.transport,
                                request_multipart=self.multipart_transport, sleep=self.sleep,
@@ -385,24 +385,20 @@ class SendRetryTests(BridgeTestCase):
             self.bridge.probe()
         self.assertEqual((len(self.calls), self.sleeps), (1, []))
 
-    def test_the_receipt_gc_reads_and_the_receipt_line_carry_failure_kind_transient(self):
+    def test_the_yard_api_answer_and_the_receipt_line_carry_failure_kind_transient(self):
         self.answers = [not_sent()] * 3
         receipt = self.publish()
-        self.assertEqual(receipt['failure_kind'], 'transient')  # the wire field GC's adapter reads
-        args = b._build_parser().parse_args(['send', '--body-file', 'x', '--idempotency-key', 'html-1',
-                                             '--format', 'html'])
+        self.assertEqual(receipt['failure_kind'], 'transient')
         self.answers = [not_sent()] * 3
-        with self.assertRaises(b.TransportError) as caught:
-            b._dispatch_outbound(self.bridge, args, '<b>hi</b>')
-        self.assertIn('send again with the same key and body', str(caught.exception))
-        relayed = []
-        def fake_gc(path, body, method='POST', timeout=20):
-            relayed.append(timeout)
-            return {'Receipt': {'Delivered': False, 'FailureKind': 'transient', 'Metadata': {'reason': NOT_SENT}}}
-        args = b._build_parser().parse_args(['send', '--body-file', 'x', '--idempotency-key', 'plain-1'])
-        with patch.object(self.bridge, 'gc', fake_gc), self.assertRaises(b.TransportError):
-            b._dispatch_outbound(self.bridge, args, 'hi')
-        self.assertEqual(relayed, [b.GC_OUTBOUND_TIMEOUT])
+        answer = self.bridge.api_send(dict(key='api-1', text='hi'))
+        self.assertEqual(answer, dict(delivered=False, conversation='123', reason=NOT_SENT, failure_kind='transient'))
+        for key, flags, text in (('html-1', ['--format', 'html'], '<b>hi</b>'), ('plain-1', [], 'hi')):
+            with self.subTest(key=key):
+                args = b._build_parser().parse_args(['send', '--body-file', 'x', '--idempotency-key', key, *flags])
+                self.answers = [not_sent()] * 3
+                with self.assertRaises(b.TransportError) as caught:
+                    b._dispatch_outbound(self.bridge, args, text)
+                self.assertIn('send again with the same key and body', str(caught.exception))
         lines = [json.loads(line[len('GC_RECEIPT '):]) for line in self.log.getvalue().splitlines()
                  if line.startswith('GC_RECEIPT ')]
         self.assertEqual(lines, [dict(delivered=False, failure_kind='transient', reason=NOT_SENT)] * 2)

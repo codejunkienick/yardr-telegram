@@ -1,6 +1,6 @@
 """Typing: the [typing] settings and the "typing..." chat action the worker
-sends after GC accepted a message until the next send, with the fake Telegram
-and GC, an injected clock and an injected wait, so no test sleeps."""
+sends after the yard recorded a message until the next send, with the fake
+Telegram and yard, an injected clock and an injected wait, so no test sleeps."""
 from contextlib import closing
 import io
 from pathlib import Path
@@ -210,7 +210,7 @@ class TypingTests(BridgeTestCase):
         until = int((time.time() + 3600) * 1000)
         with patch.object(self.bridge, 'mayor_quota_episode', return_value=('episode-1', until)):
             self.bridge.drain([self.update(uid=10)])
-        self.assertEqual(self.ledger_rows(), ['quota-exhausted-5-mayor-episode-1'])
+        self.assertEqual(self.ledger_rows(), ['quota-exhausted-10-yardmaster-episode-1'])
         self.work(5)
         self.assertEqual(self.actions, [])
         self.assertIsNone(self.bridge.typing_windows.get(None))
@@ -332,7 +332,6 @@ class TypingTests(BridgeTestCase):
                                   port=0, request=self.transport)
                 bridge.stop.set()
                 with patch.object(bridge, 'probe_with_retry', return_value=True), \
-                        patch.object(bridge, 'register'), patch.object(bridge, 'gc'), \
                         patch('sys.stdout', new_callable=io.StringIO):
                     bridge.run()
                 if started:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install one city's Telegram bridge from this pack, idempotently:
+# Install one yard's Telegram bridge from this repository, idempotently:
 #   install.sh --settings <file> [--dry-run]
 # 1. checks the settings and the host (python, curl, owner-only credentials,
 #    and with transcription on: ffmpeg, whisper-cli and the models — a listed
@@ -10,7 +10,7 @@
 # 3. renders the city's service file (its systemd user unit, or its
 #    launchd plist on macOS) where bridge.py's service_file names it.
 # It never starts, stops or restarts a unit and never contacts Telegram:
-# the operator does that afterwards (README.md, "Adopt in a city").
+# the operator does that afterwards (yardr/SETUP.md, step 9).
 set -eu
 pack=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
 settings= dry_run=0
@@ -38,6 +38,7 @@ try:
     s = m["load_settings"](sys.argv[2])
     print("queue_dir=" + shlex.quote(str(s.queue_dir) if s.transcribe else ""))
     print("secret=" + shlex.quote(str(s.callback_secret_file)))
+    print("hook_secret=" + shlex.quote(str(s.hook_secret_file)))
     print("unit_name=" + shlex.quote(s.unit))
     print("service_file=" + shlex.quote(str(m["service_file"](s))))
     print("next_line=" + shlex.quote(str(m["service_next_line"](s, sys.argv[1]))))
@@ -57,17 +58,22 @@ if [ -n "$queue_dir" ] && [ ! -d "$queue_dir" ]; then
   fi
 fi
 
-# The callback secret: the unit may write only its state and lock
-# directories, so a missing secret is minted here, owner-only, and never
-# printed.
-if [ ! -e "$secret" ] && [ ! -L "$secret" ]; then
-  if [ "$dry_run" = 1 ]; then
-    echo "would create callback secret $secret (mode 600)"
-  else
-    python3 -c 'import runpy, sys; m = runpy.run_path(sys.argv[1]); m["capability"](sys.argv[2])' "$bridge" "$secret" \
-      && echo "created callback secret $secret (mode 600)"
+# The two secrets: the callback secret the yard's source sends as its
+# credential, and the hook secret the bridge sends to the yard's hook. The
+# unit may write only its state and lock directories, so a missing secret
+# is minted here, owner-only, and never printed.
+for pair in "callback:$secret" "hook:$hook_secret"; do
+  what=${pair%%:*}
+  file=${pair#*:}
+  if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+    if [ "$dry_run" = 1 ]; then
+      echo "would create $what secret $file (mode 600)"
+    else
+      python3 -c 'import runpy, sys; m = runpy.run_path(sys.argv[1]); m["capability"](sys.argv[2])' "$bridge" "$file" \
+        && echo "created $what secret $file (mode 600)"
+    fi
   fi
-fi
+done
 
 python3 "$bridge" --settings "$settings" check-install
 

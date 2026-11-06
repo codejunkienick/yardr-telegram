@@ -194,7 +194,8 @@ class GpuProbeTests(ProbeFixture):
                                    f'{self.home / b.QUEUE_SUBDIR}',
                      f'ReadOnlyPaths=-{self.root / "telegram-bridge.toml"} '
                      f'-{self.root / "private" / "telegram-bot-token"} '
-                     f'-{self.root / "private" / "telegram-callback-secret"}',
+                     f'-{self.root / "private" / "telegram-callback-secret"} '
+                     f'-{self.root / "private" / "hook-secret"}',
                      'RestrictSUIDSGID=true', 'LockPersonality=true', 'RestrictRealtime=true',
                      'RestrictNamespaces=true', 'SystemCallArchitectures=native',
                      'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'):

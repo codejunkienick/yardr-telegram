@@ -154,60 +154,74 @@ class OptionsCliTests(BridgeTestCase):
         self.assertFalse(self.args().text_options)
         self.assertTrue(self.args('--text-options').text_options)
 
-    def test_dispatch_refuses_lettered_options_before_gc(self):
+    def test_dispatch_refuses_lettered_options_before_telegram(self):
         for command in ('send', 'reply-current'):
             with self.subTest(command=command), \
-                    patch.object(self.bridge, 'gc') as gc_mock, \
                     patch('sys.stderr', new_callable=io.StringIO) as log:
                 with self.assertRaises(b.TransportError) as ctx:
                     b._dispatch_outbound(self.bridge,
                                          self.args(command=command, key=f'k-{command}'),
                                          OPTIONS_PLAIN)
-            gc_mock.assert_not_called()
             self.assertIn('options_need_keyboard', str(ctx.exception))
             self.assertIn('--keyboard-file', str(ctx.exception))
             self.assertIn('Asks with buttons', str(ctx.exception))
             line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
             self.assertEqual(json.loads(line[len('GC_RECEIPT '):])['reason'],
                              'options_need_keyboard')
+            self.assertIsNone(self.store.saved_receipt(f'k-{command}'))
         self.assertEqual(self.calls, [])
 
     def test_dispatch_with_a_keyboard_file_sends_the_ask(self):
         path, rows = self.keyboard_file('k-kb')
-        with patch.object(self.bridge, 'gc') as gc_mock:
-            message_id = b._dispatch_outbound(
-                self.bridge, self.args('--keyboard-file', path, key='k-kb'), OPTIONS_PLAIN)
-        gc_mock.assert_not_called()
+        message_id = b._dispatch_outbound(
+            self.bridge, self.args('--keyboard-file', path, key='k-kb'), OPTIONS_PLAIN)
         self.assertEqual(message_id, '77')
         [body] = [body for url, body in self.calls if url.endswith('/sendMessage')]
         self.assertEqual(body['reply_markup'], {'inline_keyboard': rows})
 
-    def test_dispatch_text_options_publishes_directly_and_records_it(self):
-        with patch.object(self.bridge, 'gc') as gc_mock:
-            message_id = b._dispatch_outbound(
-                self.bridge, self.args('--text-options', key='k-text'), OPTIONS_PLAIN)
-        gc_mock.assert_not_called()
+    def test_dispatch_text_options_publishes_and_records_it(self):
+        message_id = b._dispatch_outbound(
+            self.bridge, self.args('--text-options', key='k-text'), OPTIONS_PLAIN)
         self.assertEqual(message_id, '77')
         self.assertIs(self.store.saved_receipt('k-text')['text_options'], True)
 
     def test_dispatch_replays_a_confirmed_send_instead_of_refusing(self):
+        # The same request the CLI builds, confirmed before the refusal existed.
+        request = dict(conversation=self.bridge.conversation, idempotency_key='k-old', text=OPTIONS_PLAIN)
         with patch.object(b, 'text_offers_lettered_options', lambda visible: False):
-            sent = self.bridge.publish(self.publish(key='k-old', text=OPTIONS_PLAIN))
+            sent = self.bridge.publish(request)
         self.assertTrue(sent['delivered'])
-        fake_gc = lambda path, body, method='POST', timeout=20: {
-            'Receipt': {'Delivered': True, 'MessageID': '77'}}
-        with patch.object(self.bridge, 'gc', fake_gc):
-            message_id = b._dispatch_outbound(self.bridge, self.args(key='k-old'), OPTIONS_PLAIN)
+        message_id = b._dispatch_outbound(self.bridge, self.args(key='k-old'), OPTIONS_PLAIN)
         self.assertEqual(message_id, '77')
         self.assertEqual(len(self.calls), 1)
 
-    def test_dispatch_a_single_letter_still_uses_the_gc_relay(self):
-        fake_gc = lambda path, body, method='POST', timeout=20: {
-            'Receipt': {'Delivered': True, 'MessageID': '55'}}
-        with patch.object(self.bridge, 'gc', fake_gc):
-            message_id = b._dispatch_outbound(self.bridge, self.args(key='k-one'), 'A: done')
-        self.assertEqual(message_id, '55')
+    def test_dispatch_a_single_letter_is_sent_as_text(self):
+        message_id = b._dispatch_outbound(self.bridge, self.args(key='k-one'), 'A: done')
+        self.assertEqual(message_id, '77')
+        [(url, body)] = self.calls
+        self.assertTrue(url.endswith('/sendMessage'))
+        self.assertEqual(body['text'], 'A: done')
+        self.assertNotIn('reply_markup', body)
+
+
+class OptionsApiTests(BridgeTestCase):
+    """The same rule through the yard API's send (Bridge.api_send)."""
+
+    def test_api_send_refuses_lettered_options_and_takes_text_options_or_a_keyboard(self):
+        answer = self.bridge.api_send(dict(key='api-opt', text=OPTIONS_PLAIN))
+        self.assertEqual(answer, dict(delivered=False, conversation='123', reason='options_need_keyboard',
+                                      failure_kind='permanent'))
         self.assertEqual(self.calls, [])
+        answer = self.bridge.api_send(dict(key='api-opt', text=OPTIONS_PLAIN, text_options='true'))
+        self.assertEqual(answer, dict(delivered=True, message_id='77', conversation='123'))
+        ask_id = b.Bridge._ask_id_for_key('api-kb')
+        rows = [[dict(text='Bridge check', callback_data=f'ask:{ask_id}:a'),
+                 dict(text='Replier', callback_data=f'ask:{ask_id}:b')]]
+        answer = self.bridge.api_send(dict(key='api-kb', text=OPTIONS_PLAIN, keyboard=json.dumps(rows)))
+        self.assertTrue(answer['delivered'])
+        bodies = [body for url, body in self.calls if url.endswith('/sendMessage')]
+        self.assertNotIn('reply_markup', bodies[0])
+        self.assertEqual(bodies[1]['reply_markup'], {'inline_keyboard': rows})
 
 
 if __name__ == '__main__':

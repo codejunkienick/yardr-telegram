@@ -1,9 +1,9 @@
 """Reactions and typing in topics of the paired private chat (OPERATIONS.md,
 "Reactions" and "Typing"): the accept point records each message under the
-conversation GC accepted it on, `react --conversation-id/--topic` targets
-that conversation's last accepted message, and typing shows in the thread
-the user wrote in. Fake Telegram and GC, an injected clock; temporary
-directories; no network."""
+conversation the yard recorded it on, `react --conversation-id/--topic`
+targets that conversation's last accepted message, and typing shows in the
+thread the user wrote in. Fake Telegram and yard hook, an injected clock;
+temporary directories; no network."""
 from contextlib import closing
 import io
 from pathlib import Path
@@ -17,7 +17,7 @@ import bridge as b  # noqa: E402
 from test_topic_inbound import TopicInboundCase, in_topic  # noqa: E402
 
 START = 1000.0
-OPS, WEB, LAB = 7, 9, 11  # ops and web are bound; lab is recorded, but GC routes it nowhere
+OPS, WEB, LAB = 7, 9, 11  # each a configured, recorded topic; 13 is a thread no topic is configured for
 OPS_ID, WEB_ID, LAB_ID, CHAT_ID = '123:topic:7', '123:topic:9', '123:topic:11', '123'
 GENERAL = dict(chat_id=123, action='typing')
 
@@ -27,15 +27,13 @@ def typing_in(thread_id):
 
 
 class TopicAckCase(TopicInboundCase):
-    """The topic inbound fixture (ops and web bound, the paired chat
-    accepted) plus lab recorded and unbound, with the typing clock of the
-    typing tests: the worker runs in the test's thread, `wait` moves the
-    clock on."""
+    """The topic inbound fixture (ops and web recorded) plus lab recorded,
+    with the typing clock of the typing tests: the worker runs in the
+    test's thread, `wait` moves the clock on."""
 
     def setUp(self):
         super().setUp()
         self.store.record_topic('lab', LAB, 'created')
-        self.answers[LAB_ID] = 'unbound'
         self.now = START
         self.actions = []
         self.hooks = {}
@@ -104,12 +102,12 @@ class AcceptedPerConversationTests(TopicAckCase):
         self.assertEqual(self.store.last_accepted_in(OPS_ID), 11)
         self.assertEqual(self.store.last_accepted(), 12)
 
-    def test_an_unbound_or_unconfigured_topic_records_the_paired_chats_conversation(self):
+    def test_an_unconfigured_thread_records_the_paired_chats_conversation(self):
         log = self.drain(in_topic(self.update(10), LAB), in_topic(self.update(11), 13))
-        self.assertEqual([relay[0]['conversation_id'] for relay in self.relays()], [LAB_ID, CHAT_ID, CHAT_ID])
+        self.assertEqual([relay[0] for relay in self.relays()], [LAB_ID, CHAT_ID])
+        self.assertEqual(self.store.last_accepted_in(LAB_ID), 10)
         self.assertEqual(self.store.last_accepted_in(CHAT_ID), 11)
-        self.assertIsNone(self.store.last_accepted_in(LAB_ID))
-        self.assertIn('not bound', log)
+        self.assertIn('topic thread 13 not configured', log)
 
     def test_a_ledger_without_the_table_opens_unchanged_and_gains_it(self):
         self.store.record_accepted(41, '2026-10-27T07:00:00+00:00')
@@ -150,7 +148,7 @@ class ReactInConversationTests(TopicAckCase):
     def test_a_conversation_with_nothing_accepted_refuses_before_telegram(self):
         self.store.record_topic('more', 15, 'created')
         self.bridge = self.make_bridge(dict(self.config_with(300), topics=self.config['topics'] + (
-            dict(name='more', agent='mayor'),)))
+            dict(name='more', agent='yardmaster'),)))
         for argv in (('--conversation-id', '123:topic:15'), ('--topic', 'more'), ('--topic', 'lab')):
             with self.subTest(argv=argv), self.assertRaisesRegex(
                     b.TransportError, '^no accepted message to react to in that conversation$'):
@@ -162,7 +160,7 @@ class ReactInConversationTests(TopicAckCase):
                   'conversation ID is not the paired private chat or a configured topic'),
                  (('--conversation-id', '456'), 'conversation ID is not the paired private chat or a configured topic'),
                  (('--conversation-id', ''), 'conversation ID is not the paired private chat or a configured topic'),
-                 (('--topic', 'nope'), 'topic nope is not configured or not created (run gc telegram topics)')]
+                 (('--topic', 'nope'), 'topic nope is not configured or not created (run bridge.py topics)')]
         for argv, message in cases:
             with self.subTest(argv=argv), self.assertRaises(b.TransportError) as raised:
                 self.react('--reaction', 'done', *argv)
@@ -189,17 +187,17 @@ class TypingInTopicsTests(TopicAckCase):
         self.work(1)
         self.assertEqual(self.actions_at(), [(0, typing_in(OPS)), (1, GENERAL)])
 
-    def test_an_unbound_topics_message_still_shows_typing_in_its_own_thread(self):
-        self.drain(in_topic(self.update(10), LAB))
+    def test_an_unconfigured_threads_message_still_shows_typing_in_its_own_thread(self):
+        self.drain(in_topic(self.update(10), 13))
         self.assertEqual(self.store.last_accepted_in(CHAT_ID), 10)
         self.work(1)
-        self.assertEqual(self.actions_at(), [(0, typing_in(LAB))])
+        self.assertEqual(self.actions_at(), [(0, typing_in(13))])
 
     def test_windows_in_two_topics_run_at_once_and_one_send_closes_both(self):
         self.drain(in_topic(self.update(10), OPS))
         self.hooks[START + 2] = lambda: self.drain(in_topic(self.update(11), WEB))
         self.hooks[START + 7] = lambda: self.assertTrue(self.bridge.publish(dict(
-            self.publish(key='reply-1'), conversation=self.topic_ref(OPS)))['delivered'])
+            self.publish(key='reply-1'), conversation=self.bridge.topic_conversation(OPS)))['delivered'])
         self.work(20)
         self.assertEqual(self.actions_at(), [(0, typing_in(OPS)), (2, typing_in(WEB)), (4, typing_in(OPS)),
                                              (6, typing_in(WEB))])

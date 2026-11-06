@@ -1,4 +1,4 @@
-"""Per-city settings: the loader, the default lookup, the unit template and the
+"""Per-yard settings: the loader, the lookup, the unit template and the
 install checks. Temp files only; nothing reads the host's real settings."""
 import hashlib
 import importlib.util
@@ -34,36 +34,50 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(b.SettingsError, pattern):
             b.load_settings(write_settings(self.root, **replace))
 
+    def with_yardr(self, table):
+        """The default settings with their [yardr] table's body replaced by
+        `table`; None drops the table."""
+        path = write_settings(self.root)
+        text = path.read_text()
+        start, end = text.index('\n[yardr]\n'), text.index('\n[bot]\n')
+        path.write_text(text[:start] + ('' if table is None else '\n[yardr]\n' + table) + text[end:])
+        return path
+
     def test_valid_settings_give_the_bridge_config_and_paths(self):
         settings = b.load_settings(write_settings(self.root))
-        self.assertEqual(settings.city, 'test-city')
+        self.assertEqual(settings.yard, 'test-city')
+        self.assertEqual(settings.hook_secret_file, self.root / 'private' / 'hook-secret')
         self.assertEqual(settings.state_dir, self.root / 'state')
         self.assertEqual(settings.port, 18930)
         self.assertEqual(settings.lock_dir, self.root / 'private')  # the token file's directory
         self.assertEqual(settings.unit, 'test-city-telegram.service')
         self.assertEqual(settings.pairing_update_id, 5)
         self.assertIsNone(settings.transcribe)  # off unless enabled
+        # The hook secret itself is read only by the polling process (main).
         self.assertEqual(settings.config, dict(
-            city='test-city', account_id='test_bot', gc_base_url='http://127.0.0.1:8372', user_display_name='Pat',
+            yard='test-city', account_id='test_bot', hook_url='http://127.0.0.1:8797/hooks/tgbridge',
+            yardr_source='tgbridge', agent='yardmaster', user_display_name='Pat',
             timezone='Asia/Tokyo', menu=MENU, unit='test-city-telegram.service',
             protected_paths=(str(self.root / 'private' / 'telegram-bot-token'),
                              str(self.root / 'private' / 'telegram-callback-secret'),
+                             str(self.root / 'private' / 'hook-secret'),
                              str(self.root / 'telegram-bridge.toml')),
             bot_id=999, user_id=123, chat_id=123))
         bridge = b.Bridge(settings.config, None, 'SECRET', None, state_dir=settings.state_dir)
         self.assertEqual(bridge.conversation, dict(scope_id='test-city', provider='telegram', account_id='test_bot',
                                                    conversation_id='123', kind='dm'))
 
-    def test_optional_files_reach_the_config(self):
-        path = write_settings(self.root, health_file='"/srv/city/health.json"',
-                              gc_api_token_file='"~/.config/test-city/gc-token"')
-        config = b.load_settings(path).config
-        self.assertEqual(config['health_file'], '/srv/city/health.json')
-        self.assertEqual(config['gc_api_token_path'], str(Path.home() / '.config/test-city/gc-token'))
-        self.assertEqual(config['protected_paths'], (str(self.root / 'private' / 'telegram-bot-token'),
-                                                     str(self.root / 'private' / 'telegram-callback-secret'),
-                                                     str(Path.home() / '.config/test-city/gc-token'),
-                                                     str(path)))
+    def test_the_health_file_and_the_hook_secret_file_reach_the_config(self):
+        path = write_settings(self.root, health_file='"/srv/yard/health.json"')
+        path.write_text(path.read_text().replace(str(self.root / 'private' / 'hook-secret'),
+                                                 '~/.config/test-city/hook-secret'))
+        settings = b.load_settings(path)
+        self.assertEqual(settings.config['health_file'], '/srv/yard/health.json')
+        self.assertEqual(settings.hook_secret_file, Path.home() / '.config/test-city/hook-secret')
+        self.assertEqual(settings.config['protected_paths'], (str(self.root / 'private' / 'telegram-bot-token'),
+                                                              str(self.root / 'private' / 'telegram-callback-secret'),
+                                                              str(Path.home() / '.config/test-city/hook-secret'),
+                                                              str(path)))
 
     def test_a_leftover_quota_table_refuses_with_the_migration_line(self):
         line = 'settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")'
@@ -100,10 +114,11 @@ class SettingsTests(unittest.TestCase):
 
     def test_invalid_settings_name_the_first_problem(self):
         cases = [
-            ('not valid TOML', dict(body='city = \n')),
+            ('not valid TOML', dict(body='yard = \n')),
             ('unknown key language', dict(language='"ru"')),
-            ('city is missing or malformed', dict(city=None)),
-            ('city is missing or malformed', dict(city='"two words"')),
+            ('yard is missing or malformed', dict(yard=None)),
+            ('yard is missing or malformed', dict(yard='"two words"')),
+            ('crew is missing or malformed', dict(crew='"two words"')),
             ('state_dir must be a path', dict(state_dir=None)),
             ('state_dir must be an absolute', dict(state_dir='"relative/state"')),
             ('state_dir must be an absolute', dict(state_dir='"/srv/a b"')),
@@ -120,16 +135,87 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(pattern=pattern, replace=replace):
                 self.refused(pattern, **replace)
 
-    def test_gc_base_url_must_be_plain_http_on_loopback_without_a_path_or_user(self):
-        line = 'settings: gc_base_url must be plain HTTP on 127.0.0.1 without a path or user'
-        for url in ('http://10.0.0.1:8372', 'https://127.0.0.1:8372',
-                    'http://127.0.0.1:8372/api', 'http://u@127.0.0.1:8372'):
+    def test_the_gc_packs_keys_are_refused_by_name(self):
+        for key, value, replacement in (('city', '"test-city"', 'yard'), ('agent', '"mayor"', 'crew'),
+                                        ('gc_base_url', '"http://127.0.0.1:8372"', '[yardr] hook_url'),
+                                        ('gc_api_token_file', '"/srv/gc-token"', '[yardr] hook_secret_file')):
+            with self.subTest(key=key):
+                with self.assertRaises(b.SettingsError) as caught:
+                    b.load_settings(write_settings(self.root, **{key: value}))
+                self.assertEqual(str(caught.exception),
+                                 f"settings: {key} is the gc pack's key; this bridge reads {replacement} (YARDR.md)")
+        # Named even in a gc pack file that has no yard key at all.
+        with self.assertRaisesRegex(b.SettingsError, "^settings: city is the gc pack's key"):
+            b.load_settings(write_settings(self.root, yard=None, city='"test-city"'))
+
+    def test_the_yardr_table_is_required_and_names_its_keys(self):
+        secret = self.root / 'private' / 'hook-secret'
+        url = 'hook_url = "http://127.0.0.1:8797/hooks/tgbridge"\n'
+        file = f'hook_secret_file = "{secret}"\n'
+        for table, line in ((None, 'settings: [yardr] is required'),
+                            (file, 'settings: yardr.hook_url is missing or malformed'),
+                            ('hook_url = ""\n' + file, 'settings: yardr.hook_url is missing or malformed'),
+                            (f'hook_url = "http://127.0.0.1:8797/hooks/{"x" * 250}"\n' + file,
+                             'settings: yardr.hook_url is missing or malformed'),
+                            (url, 'settings: yardr.hook_secret_file must be a path'),
+                            (url + 'hook_secret_file = "relative/hook-secret"\n',
+                             'settings: yardr.hook_secret_file must be an absolute, normalized path'),
+                            (url + file + 'secret = "x"\n', 'settings: unknown key yardr.secret'),
+                            (url + file + 'source = "two words"\n', 'settings: yardr.source is missing or malformed')):
+            with self.subTest(table=table):
+                with self.assertRaises(b.SettingsError) as caught:
+                    b.load_settings(self.with_yardr(table))
+                self.assertTrue(str(caught.exception).startswith(line), str(caught.exception))
+        self.assertEqual(b.load_settings(self.with_yardr(url + file)).config['yardr_source'], 'tgbridge')
+        settings = b.load_settings(self.with_yardr(url + file + 'source = "telegram-ops"\n'))
+        self.assertEqual(settings.config['yardr_source'], 'telegram-ops')
+        self.assertEqual(settings.config['hook_url'], 'http://127.0.0.1:8797/hooks/tgbridge')
+
+    def test_the_hook_url_must_be_plain_http_on_loopback_at_a_hooks_path(self):
+        line = ('settings: yardr.hook_url must be http://<loopback address>:<port>/hooks/<name>, '
+                'with no user, query or fragment')
+        secret = self.root / 'private' / 'hook-secret'
+        for url in ('https://127.0.0.1:8797/hooks/tgbridge', 'http://10.0.0.1:8797/hooks/tgbridge',
+                    'http://example.com:8797/hooks/tgbridge', 'http://127.0.0.1:8797',
+                    'http://127.0.0.1:8797/', 'http://127.0.0.1:8797/api', 'http://127.0.0.1:8797/hooks/',
+                    'http://127.0.0.1:8797/hooks/a/b', 'http://127.0.0.1:8797/hooks/-x',
+                    'http://u@127.0.0.1:8797/hooks/tgbridge', 'http://u:p@127.0.0.1:8797/hooks/tgbridge',
+                    'http://127.0.0.1:8797/hooks/tgbridge?x=1', 'http://127.0.0.1:8797/hooks/tgbridge#top',
+                    'http://127.0.0.1/hooks/tgbridge', 'http://127.0.0.1:99999/hooks/tgbridge'):
             with self.subTest(url=url):
                 with self.assertRaises(b.SettingsError) as caught:
-                    b.load_settings(write_settings(self.root, gc_base_url=f'"{url}"'))
+                    b.load_settings(self.with_yardr(f'hook_url = "{url}"\nhook_secret_file = "{secret}"\n'))
                 self.assertEqual(str(caught.exception), line)
-        settings = b.load_settings(write_settings(self.root, gc_base_url='"http://127.0.0.1:8372"'))
-        self.assertEqual(settings.config['gc_base_url'], 'http://127.0.0.1:8372')
+        for url in ('http://127.0.0.1:8797/hooks/tgbridge', 'http://[::1]:8797/hooks/tg.bridge_2',
+                    'http://localhost:8797/hooks/tgbridge'):
+            with self.subTest(url=url):
+                settings = b.load_settings(self.with_yardr(f'hook_url = "{url}"\nhook_secret_file = "{secret}"\n'))
+                self.assertEqual(settings.config['hook_url'], url)
+
+    def test_the_hook_secret_must_be_a_file_of_its_own(self):
+        token = self.root / 'private' / 'telegram-bot-token'
+        callback = self.root / 'private' / 'telegram-callback-secret'
+        hook = self.root / 'private' / 'hook-secret'
+        url = 'hook_url = "http://127.0.0.1:8797/hooks/tgbridge"\n'
+        line = 'settings: yardr.hook_secret_file must differ from token_file and callback_secret_file'
+        for same in (token, callback):
+            with self.subTest(same=same.name):
+                with self.assertRaises(b.SettingsError) as caught:
+                    b.load_settings(self.with_yardr(url + f'hook_secret_file = "{same}"\n'))
+                self.assertEqual(str(caught.exception), line)
+        hook.symlink_to(token)  # an alias of the token file
+        with self.assertRaises(b.SettingsError) as caught:
+            b.load_settings(write_settings(self.root))
+        self.assertEqual(str(caught.exception), line)
+        hook.unlink()
+        callback.write_text('CALLBACK\n')
+        os.link(callback, hook)  # a hard link to the callback secret
+        with self.assertRaises(b.SettingsError) as caught:
+            b.load_settings(write_settings(self.root))
+        self.assertEqual(str(caught.exception), line)
+        hook.unlink()
+        hook.write_text('HOOK\n')
+        self.assertEqual(b.load_settings(write_settings(self.root)).hook_secret_file, hook)
 
     def test_bot_id_above_the_signed_64_bit_bound_is_refused(self):
         base = write_settings(self.root).read_text()
@@ -186,16 +272,17 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(calls, [('setMyCommands', dict(commands=[], scope=dict(type='chat', chat_id=123))),
                                  ('getMyCommands', dict(scope=dict(type='chat', chat_id=123)))])
 
-    def test_a_second_city_on_the_same_host_gets_its_own_everything(self):
+    def test_a_second_yard_on_the_same_host_gets_its_own_everything(self):
         first = b.load_settings(write_settings(self.root))
         other_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        second = b.load_settings(write_settings(other_root, city='"other-city"', port='18940',
+        second = b.load_settings(write_settings(other_root, yard='"other-yard"', port='18940',
                                                 user_display_name='"Sam"', timezone='"UTC"'))
-        self.assertEqual(second.unit, 'other-city-telegram.service')
-        for field in ('city', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit'):
+        self.assertEqual(second.unit, 'other-yard-telegram.service')
+        for field in ('yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'hook_secret_file',
+                      'lock_dir', 'unit'):
             self.assertNotEqual(getattr(first, field), getattr(second, field), field)
         bridges = [b.Bridge(s.config, None, 'SECRET', None) for s in (first, second)]
-        self.assertEqual([x.conversation['scope_id'] for x in bridges], ['test-city', 'other-city'])
+        self.assertEqual([x.conversation['scope_id'] for x in bridges], ['test-city', 'other-yard'])
         self.assertEqual([x.display_name for x in bridges], ['Pat', 'Sam'])
 
 
@@ -248,9 +335,9 @@ class ExampleSettingsTests(unittest.TestCase):
     example sets, commented or not, is a key the loader accepts."""
 
     EXPECTED = {
-        '': {'city', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
-             'user_display_name', 'timezone', 'gc_base_url', 'gc_api_token_file', 'health_file',
-             'pairing_update_id', 'agent', 'handler_write_paths'},
+        '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
+             'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
+        'yardr': {'hook_url', 'hook_secret_file', 'source'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},
         'menu': {'command', 'description'},
         'command': {'name', 'description', 'handler', 'menu', 'callback_prefix', 'timeout'},
@@ -259,7 +346,7 @@ class ExampleSettingsTests(unittest.TestCase):
                        'gpu_min_free_mb'},
         'reactions': {'on_accept', 'seen', 'done'},
         'typing': {'seconds'},
-        'topic': {'name', 'agent'},
+        'topic': {'name', 'crew'},
         'auto_topics': {'enabled'},
     }
 
@@ -272,7 +359,7 @@ class ExampleSettingsTests(unittest.TestCase):
         for line in text.splitlines():
             stripped = line.strip()
             content = stripped.lstrip('#').strip() if stripped.startswith('#') else stripped
-            header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(bot|transcribe|reactions|typing|auto_topics)\]',
+            header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(yardr|bot|transcribe|reactions|typing|auto_topics)\]',
                                   content)
             if header:
                 section = header.group(1) or header.group(2)
@@ -286,22 +373,19 @@ class ExampleSettingsTests(unittest.TestCase):
     def _write_example(self, command='handler', transcribe='method'):
         private = self.root / 'private'
         private.mkdir(mode=0o700, exist_ok=True)
-        for name, mode in (('telegram-bot-token', 0o600), ('telegram-callback-secret', 0o600),
+        for name, mode in (('telegram-bot-token', 0o600), ('callback-secret', 0o600), ('hook-secret', 0o600),
                            ('telegram-deploy', 0o700), ('gpu-check', 0o700)):
             path = private / name
             path.write_text('TEST\n' if mode == 0o600 else '#!/bin/sh\n')
             path.chmod(mode)
         text = (PACK / 'settings.example.toml').read_text()
         for old, new in sorted({
-                '/home/alex/example-city/telegram-state': str(self.root / 'state'),
-                '~/.config/example-city/telegram-bot-token': str(private / 'telegram-bot-token'),
-                '~/.config/example-city/telegram-callback-secret': str(private / 'telegram-callback-secret'),
-                '~/.config/example-city/gc-api-token': str(private / 'gc-api-token'),
-                '~/.config/example-city': str(private),
-                '/home/alex/example-city/health.json': str(self.root / 'health.json'),
-                '/home/alex/example-city/var/deploy': str(self.root / 'deploy'),
-                '/home/alex/example-city/bin/telegram-deploy': str(private / 'telegram-deploy'),
-                '/home/alex/example-city/bin/gpu-check': str(private / 'gpu-check'),
+                '/home/alex/.local/state/example-telegram': str(self.root / 'state'),
+                '~/.config/example-telegram': str(private),
+                '/home/alex/example/health.json': str(self.root / 'health.json'),
+                '/home/alex/example/var/deploy': str(self.root / 'deploy'),
+                '/home/alex/example/bin/telegram-deploy': str(private / 'telegram-deploy'),
+                '/home/alex/example/bin/gpu-check': str(private / 'gpu-check'),
                 '~/work/whisper.cpp/build/bin/whisper-cli': str(self.root / 'whisper-cli'),
                 '~/work/whisper.cpp/models': str(self.root / 'models')}.items(), key=lambda item: -len(item[0])):
             text = text.replace(old, new)
@@ -310,7 +394,7 @@ class ExampleSettingsTests(unittest.TestCase):
             stripped = line.strip()
             commented = stripped.startswith('#')
             content = stripped.lstrip('#').strip() if commented else stripped
-            header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(bot|transcribe|reactions|typing|auto_topics)\]',
+            header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(yardr|bot|transcribe|reactions|typing|auto_topics)\]',
                                   content)
             if header:
                 section = header.group(1) or header.group(2)
@@ -341,13 +425,15 @@ class ExampleSettingsTests(unittest.TestCase):
             with self.subTest(command=command, transcribe=transcribe):
                 path = self._write_example(command, transcribe)
                 settings = b.load_settings(path)
-                self.assertEqual(settings.city, 'example-city')
+                self.assertEqual(settings.yard, 'example')
+                self.assertEqual(settings.hook_secret_file, self.root / 'private' / 'hook-secret')
                 self.assertEqual(settings.config['commands'][0]['name'], 'deploy')
                 self.assertIn('url' if command == 'url' else 'handler', settings.config['commands'][0])
                 self.assertIsNotNone(settings.transcribe)
                 data = tomllib.loads(path.read_text())
-                loaded[''] |= set(data) - {'bot', 'menu', 'command', 'transcribe', 'reactions', 'typing', 'topic',
-                                           'auto_topics'}
+                loaded[''] |= set(data) - {'yardr', 'bot', 'menu', 'command', 'transcribe', 'reactions', 'typing',
+                                           'topic', 'auto_topics'}
+                loaded['yardr'] |= set(data['yardr'])
                 loaded['bot'] |= set(data['bot'])
                 loaded['menu'] |= set(data['menu'][0])
                 loaded['command'] |= set(data['command'][0])
@@ -358,7 +444,7 @@ class ExampleSettingsTests(unittest.TestCase):
                 loaded['auto_topics'] |= set(data['auto_topics'])
                 self.assertEqual(settings.config['auto_topics'], {'enabled': True})
                 self.assertEqual(settings.config['topics'],
-                                 (dict(name='ops', agent='mayor'), dict(name='web', agent='mayor')))
+                                 (dict(name='ops', agent='secretary'), dict(name='web', agent='yardmaster')))
         self.assertEqual(loaded, dict(self.EXPECTED, command=self.EXPECTED['command'] | {'url'}))
         path = self._write_example()
         path.write_text('unknown_example_key = 1\n' + path.read_text())
@@ -398,26 +484,26 @@ class TranscribeSettingsTests(unittest.TestCase):
         self.assertEqual(self.load('enabled = true\ngpu = false\n').transcribe['env'],
                          settings.transcribe['env'])
 
-    def test_every_city_gets_the_one_host_wide_queue(self):
-        # Two cities' settings, each with its own state, port and transcriber
-        # paths, still name one queue: there is no per-city queue setting, and
+    def test_every_yard_gets_the_one_host_wide_queue(self):
+        # Two yards' settings, each with its own state, port and transcriber
+        # paths, still name one queue: there is no per-yard queue setting, and
         # the transcriber derives the same directory on its own.
         home = self.root / 'home'
         second = self.root / 'second'
         second.mkdir()
-        cities = []
+        yards = []
         for root, table in ((self.root, 'enabled = true\n'),
                             (second, 'enabled = true\nwhisper_cli = "/opt/w/whisper-cli"\nmodel = "small.en"\n')):
-            path = write_settings(root, city='"second-city"' if root == second else '"test-city"',
+            path = write_settings(root, yard='"second-yard"' if root == second else '"test-city"',
                                   port='18940' if root == second else '18930')
             path.write_text(path.read_text() + '\n[transcribe]\n' + table)
-            cities.append(b.load_settings(path, home=home))
-        self.assertNotEqual(cities[0].state_dir, cities[1].state_dir)
-        self.assertEqual({c.queue_dir for c in cities}, {home / '.local/state/voice-transcribe'})
+            yards.append(b.load_settings(path, home=home))
+        self.assertNotEqual(yards[0].state_dir, yards[1].state_dir)
+        self.assertEqual({c.queue_dir for c in yards}, {home / '.local/state/voice-transcribe'})
         self.assertEqual(b.QUEUE_SUBDIR, vt.QUEUE_SUBDIR)
-        for city in cities:
-            self.assertNotIn('VOICE_TRANSCRIBE_QUEUE_DIR', city.transcribe['env'])
-            self.assertEqual(vt.Options(environ=city.transcribe['env']).queue_dir,
+        for yard in yards:
+            self.assertNotIn('VOICE_TRANSCRIBE_QUEUE_DIR', yard.transcribe['env'])
+            self.assertEqual(vt.Options(environ=yard.transcribe['env']).queue_dir,
                              Path.home() / '.local/state/voice-transcribe')
 
     def test_importing_bridge_does_not_need_voice_transcribe_on_sys_path(self):
@@ -654,39 +740,44 @@ class SettingsLookupTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
-    def test_explicit_then_environment_then_the_city_workspace_name(self):
-        city = self.root / 'city'
-        (city / '.gc').mkdir(parents=True)
-        (city / '.gc' / 'site.toml').write_text('workspace_name = "some-city"\n')
-        home = self.root / 'home'
-        self.assertEqual(b.settings_path('/x/given.toml', city, environ={b.SETTINGS_ENV: '/x/env.toml'}, home=home),
+    def test_explicit_then_the_environment(self):
+        self.assertEqual(b.settings_path('/x/given.toml', environ={b.SETTINGS_ENV: '/x/env.toml'}),
                          Path('/x/given.toml'))
-        self.assertEqual(b.settings_path(None, city, environ={b.SETTINGS_ENV: '/x/env.toml'}, home=home),
-                         Path('/x/env.toml'))
-        self.assertEqual(b.settings_path(None, city, environ={}, home=home),
-                         home / '.config' / 'some-city' / 'telegram-bridge.toml')
+        self.assertEqual(b.settings_path(None, environ={b.SETTINGS_ENV: '/x/env.toml'}), Path('/x/env.toml'))
+        self.assertEqual(b.settings_path(None, environ={b.SETTINGS_ENV: '~/env.toml'}), Path.home() / 'env.toml')
+        with patch.dict(os.environ, {b.SETTINGS_ENV: '/x/process.toml'}):
+            self.assertEqual(b.settings_path(None), Path('/x/process.toml'))
 
-    def test_no_way_to_find_settings_refuses(self):
-        city = self.root / 'city'
-        (city / '.gc').mkdir(parents=True)
-        for site in (None, 'workspace_name = "../escape"\n', 'not toml [', 'other = 1\n'):
-            with self.subTest(site=site):
-                if site is not None:
-                    (city / '.gc' / 'site.toml').write_text(site)
-                with self.assertRaisesRegex(b.SettingsError, 'no settings file: pass --settings'):
-                    b.settings_path(None, city, environ={}, home=self.root)
+    def test_nothing_else_finds_settings(self):
+        # No city root, no .gc/site.toml, no default under ~/.config.
+        (self.root / '.gc').mkdir()
+        (self.root / '.gc' / 'site.toml').write_text('workspace_name = "some-city"\n')
+        for environ in ({}, {b.SETTINGS_ENV: ''}, {'GC_CITY': str(self.root), 'GC_CITY_PATH': str(self.root)}):
+            with self.subTest(environ=environ):
+                with self.assertRaises(b.SettingsError) as caught:
+                    b.settings_path(None, environ=environ)
+                self.assertEqual(str(caught.exception),
+                                 f'no settings file: pass --settings or set {b.SETTINGS_ENV}')
 
     def test_cli_refuses_to_start_without_settings_and_says_why(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith('GC_') and k != b.SETTINGS_ENV}
         env['HOME'] = str(self.root)
-        result = subprocess.run([sys.executable, str(PACK / 'bridge' / 'bridge.py'), '--city-root', str(self.root), 'run'],
+        bridge = str(PACK / 'bridge' / 'bridge.py')
+        result = subprocess.run([sys.executable, bridge, 'run'],
                                 env=env, capture_output=True, text=True, timeout=30, cwd=self.root)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('no settings file: pass --settings', result.stderr)
+        self.assertEqual((result.returncode, result.stderr.strip()),
+                         (1, f'no settings file: pass --settings or set {b.SETTINGS_ENV}'))
         missing = self.root / 'missing.toml'
-        result = subprocess.run([sys.executable, str(PACK / 'bridge' / 'bridge.py'), '--settings', str(missing), 'run'],
+        result = subprocess.run([sys.executable, bridge, '--settings', str(missing), 'run'],
                                 env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual((result.returncode, result.stderr.strip()), (1, f'settings file not found: {missing}'))
+        result = subprocess.run([sys.executable, bridge, 'run'], env=dict(env, **{b.SETTINGS_ENV: str(missing)}),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual((result.returncode, result.stderr.strip()), (1, f'settings file not found: {missing}'))
+        result = subprocess.run([sys.executable, bridge, f'--city-root={self.root}', 'run'],
+                                env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 2)  # the gc pack's flag is gone
+        self.assertIn('unrecognized arguments: --city-root', result.stderr)
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), [])  # nothing created
 
 
@@ -694,18 +785,18 @@ class UnitTemplateTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
-    def test_renders_the_city_unit_with_its_own_paths(self):
+    def test_renders_the_yard_unit_with_its_own_paths(self):
         path = write_settings(self.root)
         settings = b.load_settings(path)
         unit = b.render_unit(settings, bridge_path='/srv/pack/bridge/bridge.py')
         state, private = self.root / 'state', self.root / 'private'
-        self.assertIn('Description=Private Telegram transport for the test-city mayor\n', unit)
+        self.assertIn("Description=Private Telegram transport for the test-city yard's yardmaster\n", unit)
         self.assertIn(f'WorkingDirectory={state}\n', unit)
         self.assertIn(f'ExecStart=/usr/bin/python3 /srv/pack/bridge/bridge.py --settings {path} run\n', unit)
         self.assertIn(f'ReadWritePaths={state} {private}\n', unit)  # transcription off: no queue
         self.assertIn(f'ReadWritePaths={state} {private}\n'
                       f'ReadOnlyPaths=-{path} -{private / "telegram-bot-token"} '
-                      f'-{private / "telegram-callback-secret"}\n', unit)
+                      f'-{private / "telegram-callback-secret"} -{private / "hook-secret"}\n', unit)
         for line in ('Restart=on-failure', 'RestartPreventExitStatus=2', 'UMask=0077', 'NoNewPrivileges=true',
                      'PrivateTmp=true', 'ProtectSystem=strict', 'ProtectHome=read-only', 'StartLimitIntervalSec=0',
                      'RestrictSUIDSGID=true', 'LockPersonality=true', 'RestrictRealtime=true',
@@ -714,20 +805,23 @@ class UnitTemplateTests(unittest.TestCase):
             self.assertIn(line + '\n', unit)
         self.assertNotRegex(unit, r'@[A-Z_]+@')
 
-    def test_read_only_paths_include_the_gc_token_file_when_set(self):
-        gc_token = self.root / 'gc-token'
-        path = write_settings(self.root, gc_api_token_file=f'"{gc_token}"')
+    def test_a_hook_secret_kept_elsewhere_is_read_only_and_the_crew_named(self):
+        hook = self.root / 'yard' / 'hook-secret'
+        path = write_settings(self.root, crew='"secretary"')
+        path.write_text(path.read_text().replace(str(self.root / 'private' / 'hook-secret'), str(hook)))
         unit = b.render_unit(b.load_settings(path), bridge_path='/srv/pack/bridge/bridge.py')
         private = self.root / 'private'
+        self.assertIn(f'ReadWritePaths={self.root / "state"} {private}\n', unit)
         self.assertIn(f'ReadOnlyPaths=-{path} -{private / "telegram-bot-token"} '
-                      f'-{private / "telegram-callback-secret"} -{gc_token}\n', unit)
+                      f'-{private / "telegram-callback-secret"} -{hook}\n', unit)
+        self.assertIn("Description=Private Telegram transport for the test-city yard's secretary\n", unit)
 
     def test_the_sandbox_properties_carry_the_read_only_paths_and_hardening(self):
         settings = b.load_settings(write_settings(self.root))
         properties = b.unit_sandbox_properties(settings, bridge_path='/srv/pack/bridge/bridge.py')
         private = self.root / 'private'
         self.assertIn(f'ReadOnlyPaths=-{settings.path} -{private / "telegram-bot-token"} '
-                      f'-{private / "telegram-callback-secret"}', properties)
+                      f'-{private / "telegram-callback-secret"} -{private / "hook-secret"}', properties)
         for line in ('RestrictSUIDSGID=true', 'LockPersonality=true', 'RestrictRealtime=true',
                      'RestrictNamespaces=true', 'SystemCallArchitectures=native',
                      'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'):
@@ -794,7 +888,7 @@ class UnitTemplateTests(unittest.TestCase):
                                      'systemctl --user daemon-reload; '
                                      'systemctl --user enable --now my-bridge.service; '
                                      f'python3 {bridge} --settings {settings.path} set-commands '
-                                     '(README.md, "Adopt in a city", step 6)')
+                                     '(yardr/SETUP.md, step 9)')
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(b.service_file(settings, platform='linux', home=home),
                              home / '.config' / 'systemd' / 'user' / 'my-bridge.service')
@@ -806,7 +900,7 @@ class UnitTemplateTests(unittest.TestCase):
                          'launchctl bootout gui/$(id -u)/my-bridge 2>/dev/null; '
                          f'launchctl bootstrap gui/$(id -u) {plist}; '
                          f'python3 {bridge} --settings {settings.path} set-commands '
-                         '(README.md, "Adopt in a city", step 6)')
+                         '(yardr/SETUP.md, step 9)')
 
     def test_an_unsafe_bridge_path_or_placeholder_refuses(self):
         settings = b.load_settings(write_settings(self.root))
@@ -854,6 +948,7 @@ class InstallCheckTests(unittest.TestCase):
             (True, 'curl on PATH'),
             (True, 'bot token file is owner-only'),
             (True, 'callback secret file is created by install.sh'),
+            (True, 'hook secret file is created by install.sh'),
             (True, f'state directory {self.settings.state_dir}'),
             (True, f'lock directory {self.settings.lock_dir}'),
             (True, 'ffmpeg on PATH'),
@@ -1003,6 +1098,18 @@ class InstallCheckTests(unittest.TestCase):
         self.assertIn((False, 'bot token file must be an owner-only regular file'), results)
         self.assertNotIn('TESTTOKEN', repr(results))
 
+    def test_the_hook_secret_must_be_owner_only_and_is_never_printed(self):
+        sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
+        hook = self.settings.hook_secret_file
+        hook.write_text('HOOKSECRETVALUE\n')
+        hook.chmod(0o600)
+        results = b.install_problems(self.settings, which=lambda n: n, sums=sums, platform='linux')
+        self.assertIn((True, 'hook secret file is owner-only'), results)
+        hook.chmod(0o644)
+        results = b.install_problems(self.settings, which=lambda n: n, sums=sums, platform='linux')
+        self.assertIn((False, 'hook secret file must be an owner-only regular file'), results)
+        self.assertNotIn('HOOKSECRETVALUE', repr(results))
+
     def test_a_model_without_a_recorded_sum_fails_naming_it(self):
         sums = self.model('large-v3-turbo-q5_0', b'turbo')
         self.assertEqual(self.failures(sums=sums),
@@ -1065,7 +1172,7 @@ class InstallCheckTests(unittest.TestCase):
 class InstallScriptTests(unittest.TestCase):
     """install.sh against a fake home: the unit may write only its state and
     lock directories (and the queue), so the script itself mints a missing
-    callback secret kept anywhere else before the unit's first start."""
+    callback or hook secret kept anywhere else before the unit's first start."""
 
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -1094,7 +1201,7 @@ class InstallScriptTests(unittest.TestCase):
                          'systemctl --user daemon-reload; '
                          'systemctl --user enable --now test-city-telegram.service; '
                          f'python3 {bridge} --settings {self.path} set-commands '
-                         '(README.md, "Adopt in a city", step 6)')
+                         '(yardr/SETUP.md, step 9)')
         self.assertIn(f'would create callback secret {self.secret} (mode 600)', dry.stdout)
         self.assertIn('ok    callback secret file is created by install.sh', dry.stdout)
         self.assertFalse(self.secret.parent.exists())  # a dry run writes nothing
@@ -1118,6 +1225,53 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('is current', again.stdout)
         self.assertEqual(self.secret.read_text(), secret)
 
+    def test_install_mints_a_missing_hook_secret_beside_the_callback_secret(self):
+        if not shutil.which('curl'):
+            self.skipTest('curl not on PATH')
+        hook = self.root / 'yard-secrets' / 'hook-secret'  # outside state_dir and lock_dir too
+        self.path.write_text(self.path.read_text().replace(str(self.root / 'private' / 'hook-secret'), str(hook)))
+        dry = self.install('--dry-run')
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertIn(f'would create callback secret {self.secret} (mode 600)\n'
+                      f'would create hook secret {hook} (mode 600)\n', dry.stdout)
+        self.assertIn('ok    hook secret file is created by install.sh', dry.stdout)
+        self.assertFalse(hook.parent.exists())  # a dry run writes nothing
+        self.assertFalse(self.secret.parent.exists())
+
+        done = self.install()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f'created callback secret {self.secret} (mode 600)', done.stdout)
+        self.assertIn(f'created hook secret {hook} (mode 600)', done.stdout)
+        self.assertIn('ok    hook secret file is owner-only', done.stdout)
+        secret = hook.read_text()
+        self.assertGreaterEqual(len(secret), 32)
+        self.assertNotEqual(secret, self.secret.read_text())
+        self.assertEqual(hook.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(hook.parent.stat().st_mode & 0o777, 0o700)
+        self.assertNotIn(secret, done.stdout + done.stderr)
+        unit = (self.home / '.config/systemd/user/test-city-telegram.service').read_text()
+        self.assertIn(f' -{hook}\n', unit)  # read-only inside the unit
+
+        again = self.install()  # idempotent: the secret is kept
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertNotIn('created hook secret', again.stdout)
+        self.assertEqual(hook.read_text(), secret)
+
+    def test_install_keeps_a_hook_secret_the_yard_already_has(self):
+        if not shutil.which('curl'):
+            self.skipTest('curl not on PATH')
+        hook = self.root / 'private' / 'hook-secret'
+        hook.write_text('the-secret-yardr-hook-add-was-given\n')
+        hook.chmod(0o600)
+        for args in (('--dry-run',), ()):
+            with self.subTest(args=args):
+                result = self.install(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('hook secret ' + str(hook), result.stdout)
+                self.assertIn('ok    hook secret file is owner-only', result.stdout)
+                self.assertNotIn('the-secret-yardr-hook-add-was-given', result.stdout + result.stderr)
+                self.assertEqual(hook.read_text(), 'the-secret-yardr-hook-add-was-given\n')
+
     def test_install_on_darwin_writes_the_launchagent_plist(self):
         if not shutil.which('curl', path=b.LAUNCHD_PATH):
             self.skipTest('curl not on the launchd PATH')
@@ -1127,7 +1281,7 @@ class InstallScriptTests(unittest.TestCase):
                      'launchctl bootout gui/$(id -u)/test-city-telegram 2>/dev/null; '
                      f'launchctl bootstrap gui/$(id -u) {plist}; '
                      f'python3 {bridge} --settings {self.path} set-commands '
-                     '(README.md, "Adopt in a city", step 6)')
+                     '(yardr/SETUP.md, step 9)')
         dry = self.install('--dry-run', platform='darwin')
         self.assertEqual(dry.returncode, 0, dry.stderr)
         self.assertIn(f'would write {plist}:', dry.stdout)
@@ -1192,6 +1346,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stderr.strip(), 'settings: unknown key language')
         self.assertFalse(self.secret.exists())
+        self.assertFalse((self.root / 'private' / 'hook-secret').exists())
         self.assertFalse((self.home / '.local/state/voice-transcribe').exists())
         self.assertFalse((self.home / '.config/systemd/user/test-city-telegram.service').exists())
         self.assertFalse((self.home / '.local/bin/voice-transcribe').exists())

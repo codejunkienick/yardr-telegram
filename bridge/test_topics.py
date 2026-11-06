@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -36,15 +37,17 @@ def not_sent():
     return b.RequestNotSent('network request not sent', 7, 'connect')
 
 
-def bind(thread_id, agent='mayor'):
-    return (f'bind: gc extmsg bind --provider telegram --account-id test_bot --conversation-id 123:topic:{thread_id} '
-            f'--parent-conversation-id 123 --kind thread --agent {agent} --json')
+def subscribe(topic, crew='yardmaster', source='tgbridge'):
+    """The line `topics` prints for a topic: the yardr subscription that
+    routes its messages to `crew` (YARDR.md, "The command line")."""
+    return (f'subscribe: yardr subscribe {crew} {source} --scope all --where type=message '
+            f'--where topic={shlex.quote(topic)}')
 
 
 def topic_tables(*entries):
-    """[[topic]] TOML for (name, agent or None) pairs."""
-    return ''.join(f'\n[[topic]]\nname = {json.dumps(name)}\n' + (f'agent = "{agent}"\n' if agent else '')
-                   for name, agent in entries)
+    """[[topic]] TOML for (name, crew or None) pairs."""
+    return ''.join(f'\n[[topic]]\nname = {json.dumps(name)}\n' + (f'crew = "{crew}"\n' if crew else '')
+                   for name, crew in entries)
 
 
 class TopicSettingsTests(unittest.TestCase):
@@ -61,23 +64,25 @@ class TopicSettingsTests(unittest.TestCase):
             self.load(tables)
         self.assertEqual(str(raised.exception), message)
 
-    def test_topics_load_in_file_order_with_the_settings_agent_as_default(self):
+    def test_topics_load_in_file_order_with_the_settings_crew_as_default(self):
+        # A topic's crew member is the bridge's agent internally, as the ledger names it.
         settings = self.load(topic_tables(('ops', None), ('web', 'helper'), ('x' * 128, None)))
-        self.assertEqual(settings.config['topics'], (dict(name='ops', agent='mayor'), dict(name='web', agent='helper'),
-                                                     dict(name='x' * 128, agent='mayor')))
-        settings = self.load(topic_tables(('ops', None), ('Ops log', 'mayor')), agent='"helper"')
+        self.assertEqual(settings.config['topics'], (dict(name='ops', agent='yardmaster'),
+                                                     dict(name='web', agent='helper'),
+                                                     dict(name='x' * 128, agent='yardmaster')))
+        settings = self.load(topic_tables(('ops', None), ('Ops log', 'yardmaster')), crew='"helper"')
         self.assertEqual(settings.config['topics'], (dict(name='ops', agent='helper'),
-                                                     dict(name='Ops log', agent='mayor')))
+                                                     dict(name='Ops log', agent='yardmaster')))
         self.assertEqual(b.Bridge(settings.config, None, 'SECRET', None).topic_settings, settings.config['topics'])
 
-    def test_a_file_without_topics_loads_to_the_config_it_loaded_to_before(self):
+    def test_a_file_without_topics_loads_to_a_config_without_them(self):
         config = self.load('').config
-        expected = dict(city='test-city', account_id='test_bot', gc_base_url='http://127.0.0.1:8372',
-                        user_display_name='Pat', timezone='Asia/Tokyo', menu=MENU, bot_id=999, user_id=123,
-                        chat_id=123, unit='test-city-telegram.service',
+        expected = dict(yard='test-city', account_id='test_bot', hook_url='http://127.0.0.1:8797/hooks/tgbridge',
+                        yardr_source='tgbridge', agent='yardmaster', user_display_name='Pat', timezone='Asia/Tokyo',
+                        menu=MENU, bot_id=999, user_id=123, chat_id=123, unit='test-city-telegram.service',
                         protected_paths=config['protected_paths'])
         self.assertEqual(config, expected)
-        self.assertEqual(len(config['protected_paths']), 3)
+        self.assertEqual(len(config['protected_paths']), 4)
         with_topics = self.load(topic_tables(('ops', None))).config
         self.assertEqual({k: v for k, v in with_topics.items() if k != 'topics'}, config)
         path = write_settings(self.root)
@@ -88,7 +93,7 @@ class TopicSettingsTests(unittest.TestCase):
         cases = [
             (topic_tables(('', None)), 'topic entry 1: name must be a string of 1-128 characters'),
             (topic_tables(('ops', None), ('x' * 129, None)), 'topic entry 2: name must be a string of 1-128 characters'),
-            ('\n[[topic]]\nagent = "mayor"\n', 'topic entry 1: name must be a string of 1-128 characters'),
+            ('\n[[topic]]\ncrew = "yardmaster"\n', 'topic entry 1: name must be a string of 1-128 characters'),
             ('\n[[topic]]\nname = 7\n', 'topic entry 1: name must be a string of 1-128 characters'),
             (topic_tables((' ops', None)), 'topic entry 1: name has leading or trailing whitespace'),
             (topic_tables(('ops\t', None)), 'topic entry 1: name has leading or trailing whitespace'),
@@ -104,8 +109,12 @@ class TopicSettingsTests(unittest.TestCase):
              'topic entry 3: name repeats topic entry 1 (names differ in more than case)'),
             (topic_tables(('Straße', None), ('STRASSE', None)),
              'topic entry 2: name repeats topic entry 1 (names differ in more than case)'),
-            (topic_tables(('ops', 'not an agent')), 'topic entry 1: agent is missing or malformed'),
-            ('\n[[topic]]\nname = "ops"\nagent = 5\n', 'topic entry 1: agent is missing or malformed'),
+            (topic_tables(('ops', 'not a crew')), 'topic entry 1: crew is missing or malformed'),
+            ('\n[[topic]]\nname = "ops"\ncrew = 5\n', 'topic entry 1: crew is missing or malformed'),
+            ('\n[[topic]]\nname = "ops"\nagent = "yardmaster"\n',
+             "topic entry 1: agent is the gc pack's key: name the crew member with crew"),
+            (topic_tables(('ops', None)) + 'agent = 5\n',
+             "topic entry 1: agent is the gc pack's key: name the crew member with crew"),
             ('\n[[topic]]\nname = "ops"\nthread_id = 5\n', 'topic entry 1: unknown key thread_id'),
             (topic_tables(*((f't{n}', None) for n in range(51))), 'topic entry 51: more than 50 [[topic]] tables'),
             ('topic = "ops"\n', 'topic must be a list of [[topic]] tables'),
@@ -124,9 +133,9 @@ class TopicSettingsTests(unittest.TestCase):
                     self.refuses(tables, 'settings: ' + message)
         self.assertEqual(len(self.load(topic_tables(*((f't{n}', None) for n in range(50)))).config['topics']), 50)
 
-    def test_a_malformed_settings_agent_is_named_before_any_topic(self):
-        with self.assertRaisesRegex(b.SettingsError, '^settings: agent is missing or malformed$'):
-            self.load(topic_tables(('ops', None)), agent='"not an agent"')
+    def test_a_malformed_settings_crew_is_named_before_any_topic(self):
+        with self.assertRaisesRegex(b.SettingsError, '^settings: crew is missing or malformed$'):
+            self.load(topic_tables(('ops', None)), crew='"not a crew"')
 
 
 class TopicLedgerTests(unittest.TestCase):
@@ -181,10 +190,10 @@ class TopicLedgerTests(unittest.TestCase):
         # every recorded ask reads as NULL (the paired chat).
         tables['asks'] = tables['asks'][:-1] + ', conversation_id TEXT)'
         rows['asks'] = [row + (None,) for row in rows['asks']]
-        added = ('topics', 'topic_attempts', 'accepted_conversations', 'auto_topics')
+        added = ('topics', 'topic_attempts', 'accepted_conversations', 'auto_topics', 'messages', 'sqlite_sequence')
         self.assertEqual({k: v for k, v in after_tables.items() if k not in added}, tables)
         self.assertEqual({k: v for k, v in after_rows.items() if k not in added}, rows)
-        self.assertEqual([after_rows[k] for k in added], [[], [], [], []])
+        self.assertEqual([after_rows[k] for k in added], [[], [], [], [], [], []])
         self.assertEqual(store.offset(), 42)
         b.Store(self.path, 10)
         self.assertEqual(self.dump(), (after_tables, after_rows))
@@ -212,7 +221,7 @@ class TopicLedgerTests(unittest.TestCase):
 class TopicsTests(BridgeTestCase):
     """Bridge.topics and the lookups against a fake Telegram."""
 
-    TOPICS = (dict(name='ops', agent='mayor'), dict(name='web', agent='helper'))
+    TOPICS = (dict(name='ops', agent='yardmaster'), dict(name='web', agent='helper'))
 
     def setUp(self):
         super().setUp()
@@ -263,9 +272,9 @@ class TopicsTests(BridgeTestCase):
         self.calls.clear()
         return self.bridge.topics(**flags)
 
-    def test_topics_creates_each_once_in_settings_order_and_prints_bind_lines(self):
-        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', bind(501),
-                                              'topic web: thread 502 (created)', bind(502, 'helper')], True))
+    def test_topics_creates_each_once_in_settings_order_and_prints_subscribe_lines(self):
+        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', subscribe('ops'),
+                                              'topic web: thread 502 (created)', subscribe('web', 'helper')], True))
         self.assertEqual(self.calls, [('getMe', {}), ('createForumTopic', {'chat_id': 123, 'name': 'ops'}),
                                       ('createForumTopic', {'chat_id': 123, 'name': 'web'})])
         self.assertEqual(self.rows(), [('ops', 501, 'created'), ('web', 502, 'created')])
@@ -275,16 +284,16 @@ class TopicsTests(BridgeTestCase):
 
     def test_a_rerun_sends_nothing_and_prints_recorded_earlier(self):
         self.run_topics()
-        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (recorded earlier)', bind(501),
-                                              'topic web: thread 502 (recorded earlier)', bind(502, 'helper')], True))
+        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (recorded earlier)', subscribe('ops'),
+                                              'topic web: thread 502 (recorded earlier)', subscribe('web', 'helper')], True))
         self.assertEqual(self.calls, [])
 
     def test_a_new_settings_topic_alone_is_created(self):
         self.run_topics()
-        self.bridge = self.make_bridge(topics=self.TOPICS + (dict(name='docs', agent='mayor'),))
+        self.bridge = self.make_bridge(topics=self.TOPICS + (dict(name='docs', agent='yardmaster'),))
         lines, complete = self.run_topics()
         self.assertTrue(complete)
-        self.assertEqual(lines[-2:], ['topic docs: thread 503 (created)', bind(503)])
+        self.assertEqual(lines[-2:], ['topic docs: thread 503 (created)', subscribe('docs')])
         self.assertEqual(self.calls, [('getMe', {}), ('createForumTopic', {'chat_id': 123, 'name': 'docs'})])
 
     def test_topic_mode_off_creates_nothing(self):
@@ -308,7 +317,7 @@ class TopicsTests(BridgeTestCase):
         self.answers['getMe'] = [USERS_ALLOWED]
         lines, complete = self.run_topics()
         self.assertEqual(lines[0], 'WARN users may create and delete topics in this chat (BotFather setting)')
-        self.assertEqual(lines[1:3], ['topic ops: thread 501 (created)', bind(501)])
+        self.assertEqual(lines[1:3], ['topic ops: thread 501 (created)', subscribe('ops')])
         self.assertTrue(complete)
 
     def test_a_rejected_create_fails_and_a_rerun_does_not_send(self):
@@ -316,16 +325,16 @@ class TopicsTests(BridgeTestCase):
         lines, complete = self.run_topics()
         self.assertFalse(complete)
         self.assertEqual(lines[0], 'topic ops: not created (telegram_rejected_not_sent_400); '
-                                   'fix the cause, then run gc telegram topics --retry ops')
-        self.assertEqual(lines[1:], ['topic web: thread 501 (created)', bind(501, 'helper')])
+                                   'fix the cause, then run bridge.py topics --retry ops')
+        self.assertEqual(lines[1:], ['topic web: thread 501 (created)', subscribe('web', 'helper')])
         self.assertEqual(self.run_topics(), (lines[:1] + ['topic web: thread 501 (recorded earlier)', lines[2]], False))
         self.assertEqual(self.calls, [])
 
     def test_an_unconfirmed_create_fails_with_the_recovery_and_a_rerun_does_not_send(self):
         recovery = ('topic ops: not created (ambiguous_delivery_requires_manual_reconciliation); check the chat: '
                     'if topic ops is there, write in it, take the thread id from the "[topic: thread <id> | not '
-                    'configured" line the agent receives and run gc telegram topics --record ops --thread-id <id>; '
-                    'if it is not, run gc telegram topics --retry ops')
+                    'configured" line the agent receives and run bridge.py topics --record ops --thread-id <id>; '
+                    'if it is not, run bridge.py topics --retry ops')
         answers = (UNCONFIRMED, b.RequestUnconfirmed('timed out', 28, 'after-send'),
                    (200, {'ok': True, 'result': {'message_thread_id': 501, 'name': 'Ops'}}),
                    (200, {'ok': True, 'result': {'message_thread_id': 0, 'name': 'ops'}}),
@@ -344,14 +353,14 @@ class TopicsTests(BridgeTestCase):
         self.answers['createForumTopic'] = [not_sent(), not_sent(), not_sent()]
         lines, complete = self.run_topics()
         self.assertEqual(lines, ['topic ops: not created (transport_unavailable_not_sent); '
-                                 'run gc telegram topics again to send it',
+                                 'run bridge.py topics again to send it',
                                  'topic web: not created (not attempted: Telegram could not be reached); '
-                                 'run gc telegram topics again'])
+                                 'run bridge.py topics again'])
         self.assertFalse(complete)
         self.assertEqual(self.methods(), ['getMe'] + ['createForumTopic'] * 3)
         self.assertEqual(list(self.ledger()), ['topic:1:ops'])
-        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', bind(501),
-                                              'topic web: thread 502 (created)', bind(502, 'helper')], True))
+        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', subscribe('ops'),
+                                              'topic web: thread 502 (created)', subscribe('web', 'helper')], True))
         self.assertEqual(sorted(self.ledger()), ['topic:1:ops', 'topic:1:web'])
 
     def test_retry_after_an_ambiguous_or_rejected_create_sends_under_attempt_two(self):
@@ -360,7 +369,7 @@ class TopicsTests(BridgeTestCase):
                 self.fresh(f'retry-{answer[0]}', self.TOPICS[:1])
                 self.answers['createForumTopic'] = [answer]
                 self.run_topics()
-                self.assertEqual(self.run_topics(retry='ops'), (['topic ops: thread 501 (created)', bind(501)], True))
+                self.assertEqual(self.run_topics(retry='ops'), (['topic ops: thread 501 (created)', subscribe('ops')], True))
                 self.assertEqual(self.calls, [('getMe', {}), ('createForumTopic', {'chat_id': 123, 'name': 'ops'})])
                 self.assertEqual(sorted(self.ledger()), ['topic:1:ops', 'topic:2:ops'])
                 self.assertFalse(self.ledger()['topic:1:ops']['delivered'])
@@ -394,13 +403,13 @@ class TopicsTests(BridgeTestCase):
     def test_record_writes_a_row_with_no_telegram_call(self):
         lines, complete = self.run_topics(record='web', thread_id=777)
         self.assertEqual(self.calls, [])
-        self.assertEqual(lines, ['topic ops: not created (not attempted); run gc telegram topics to create it',
-                                 'topic web: thread 777 (recorded by hand)', bind(777, 'helper')])
+        self.assertEqual(lines, ['topic ops: not created (not attempted); run bridge.py topics to create it',
+                                 'topic web: thread 777 (recorded by hand)', subscribe('web', 'helper')])
         self.assertFalse(complete)
         self.assertEqual(self.rows(), [('web', 777, 'recorded')])
         self.assertEqual(self.ledger(), {})
-        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', bind(501),
-                                              'topic web: thread 777 (recorded earlier)', bind(777, 'helper')], True))
+        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', subscribe('ops'),
+                                              'topic web: thread 777 (recorded earlier)', subscribe('web', 'helper')], True))
         self.assertEqual(self.methods(), ['getMe', 'createForumTopic'])
 
     def test_record_after_an_ambiguous_create_completes_the_topic(self):
@@ -426,15 +435,15 @@ class TopicsTests(BridgeTestCase):
         self.run_topics()
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DELETE FROM topics WHERE name='ops'")
-        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', bind(501),
-                                              'topic web: thread 502 (recorded earlier)', bind(502, 'helper')], True))
+        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (created)', subscribe('ops'),
+                                              'topic web: thread 502 (recorded earlier)', subscribe('web', 'helper')], True))
         self.assertEqual(self.calls, [])
         self.assertEqual(self.rows(), [('web', 502, 'created'), ('ops', 501, 'created')])
 
     def test_a_row_whose_name_left_the_settings_prints_its_line(self):
         self.run_topics()
         self.bridge = self.make_bridge(topics=self.TOPICS[1:])
-        self.assertEqual(self.run_topics(), (['topic web: thread 502 (recorded earlier)', bind(502, 'helper'),
+        self.assertEqual(self.run_topics(), (['topic web: thread 502 (recorded earlier)', subscribe('web', 'helper'),
                                               'topic ops: thread 501 (not in settings; its messages reach the '
                                               'agent as not configured)'], True))
         self.bridge = self.make_bridge(topics=())
@@ -552,11 +561,11 @@ class TopicsCliTests(unittest.TestCase):
         return self.out
 
     def test_topics_prints_each_line(self):
-        self.assertEqual(self.cli(), f'topic ops: thread 501 (created)\n{bind(501)}\n'
-                                     f'topic web: thread 502 (created)\n{bind(502)}\n')
+        self.assertEqual(self.cli(), f"topic ops: thread 501 (created)\n{subscribe('ops')}\n"
+                                     f"topic web: thread 502 (created)\n{subscribe('web')}\n")
         self.assertEqual([method for method, _ in self.requests], ['getMe', 'createForumTopic', 'createForumTopic'])
-        self.assertEqual(self.cli(), f'topic ops: thread 501 (recorded earlier)\n{bind(501)}\n'
-                                     f'topic web: thread 502 (recorded earlier)\n{bind(502)}\n')
+        self.assertEqual(self.cli(), f"topic ops: thread 501 (recorded earlier)\n{subscribe('ops')}\n"
+                                     f"topic web: thread 502 (recorded earlier)\n{subscribe('web')}\n")
         self.assertEqual(self.requests, [])
         self.assertTrue((self.root / 'state' / 'telegram-topics.lock').exists())
 
@@ -569,7 +578,7 @@ class TopicsCliTests(unittest.TestCase):
         del self.answer
         with self.assertRaises(b.TransportError):  # web still has no thread id
             self.cli('--record', 'ops', '--thread-id', '640')
-        self.assertEqual(self.out.splitlines()[:2], ['topic ops: thread 640 (recorded by hand)', bind(640)])
+        self.assertEqual(self.out.splitlines()[:2], ['topic ops: thread 640 (recorded by hand)', subscribe('ops')])
         self.assertEqual(self.requests, [])
         self.assertIn('topic web: thread 501 (created)', self.cli('--retry', 'web'))
         self.assertEqual([method for method, _ in self.requests], ['getMe', 'createForumTopic'])
@@ -594,7 +603,18 @@ class TopicsCliTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
             self.assertIn('error:', err.getvalue())
 
-    def test_the_pack_command_forwards_its_arguments(self):
+    def test_subscribe_lines_name_each_topics_crew_and_the_yards_source(self):
+        self.settings = write_settings(self.root, crew='"helper"')
+        self.settings.write_text(self.settings.read_text().replace('[yardr]\n', '[yardr]\nsource = "tg-two"\n')
+                                 + topic_tables(('ops', None), ('Ops log', 'web-crew')))
+        self.assertEqual(self.cli().splitlines(), [
+            'topic ops: thread 501 (created)',
+            'subscribe: yardr subscribe helper tg-two --scope all --where type=message --where topic=ops',
+            'topic Ops log: thread 502 (created)',
+            "subscribe: yardr subscribe web-crew tg-two --scope all --where type=message --where topic='Ops log'",
+        ])
+
+    def test_topics_in_its_own_process_takes_its_flags_and_the_settings_from_the_environment(self):
         bin_dir = self.root / 'bin'
         write_fake_curl(bin_dir, f'#!{sys.executable}\nimport json, sys, uuid\nfrom pathlib import Path\n'
                         'config = sys.stdin.read()\n'
@@ -605,19 +625,18 @@ class TopicsCliTests(unittest.TestCase):
                         '    result = {"message_thread_id": 501, "name": "ops"}\n'
                         'print(json.dumps({"ok": True, "result": result}))\n'
                         'print("200 0.010000 0.020000 0", end="")\n')
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GC_')}
-        env.update(PATH=f'{bin_dir}:{env["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
-        command = ['sh', str(PACK / 'commands' / 'topics' / 'run.sh')]
+        env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
+        command = [sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), 'topics']
         result = subprocess.run(command + ['--record', 'web', '--thread-id', '777'],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertEqual(result.stdout, 'topic ops: not created (not attempted); run gc telegram topics to create it\n'
-                                        f'topic web: thread 777 (recorded by hand)\n{bind(777)}\n')
+        self.assertEqual(result.stdout, 'topic ops: not created (not attempted); run bridge.py topics to create it\n'
+                                        f"topic web: thread 777 (recorded by hand)\n{subscribe('web')}\n")
         self.assertEqual(list(self.root.glob('curl-*')), [])
         result = subprocess.run(command, env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f'topic ops: thread 501 (created)\n{bind(501)}\n'
-                                        f'topic web: thread 777 (recorded earlier)\n{bind(777)}\n')
+        self.assertEqual(result.stdout, f"topic ops: thread 501 (created)\n{subscribe('ops')}\n"
+                                        f"topic web: thread 777 (recorded earlier)\n{subscribe('web')}\n")
         configs = sorted((p.read_text() for p in self.root.glob('curl-*')), key=lambda c: '/getMe' not in c)
         self.assertEqual(len(configs), 2)
         self.assertIn('/createForumTopic"', configs[1])

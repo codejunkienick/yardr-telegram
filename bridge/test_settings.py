@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 
@@ -1686,6 +1687,9 @@ class InstanceTests(unittest.TestCase):
         out = self.ok(self.run_install(b_settings))
         self.assertIn('ok    native yard socket and current operator identity', out)
         self.assertNotEqual(a_root, b_root)
+        self.assertIn(f'wrote pack {b_root}/pack (base http://127.0.0.1:18951)', out)
+        self.assert_pack(a_root, 18941)
+        self.assert_pack(b_root, 18951)
         b_tops = (b_root, b_settings, self.root / 'birch' / 'private', self.root / 'birch' / 'state', b_unit)
         b_before = tree_digest(*b_tops)
         self.assertIn(str(b_root / 'bin/telegram-bridge'), b_before)
@@ -1697,16 +1701,38 @@ class InstanceTests(unittest.TestCase):
         a_before = tree_digest(a_root, a_unit, self.root / 'alder')
         dry = self.ok(self.run_install(a_settings, '--dry-run'))
         self.assertIn(f'release releases/{self.first} is current', dry)
+        self.assertIn(f'pack {a_root}/pack is current', dry)
         self.assertEqual(tree_digest(a_root, a_unit, self.root / 'alder'), a_before)
         unchanged('dry-run')
 
         (self.source / 'vendor').mkdir()
         (self.source / 'vendor' / 'yardr_fixture_vendored.py').write_text('VALUE = "alder"\n')
+        with (self.source / 'yardr/SETUP.md').open('a') as stream:
+            stream.write('\nA line of the second release.\n')
         second = commit_source(self.source, self.home, 'vendor a module')
+        first_pack = os.readlink(a_root / 'pack')
+        dry = self.ok(self.run_install(a_settings, '--dry-run'))
+        self.assertIn(f'would write pack {a_root}/pack (base http://127.0.0.1:18941)', dry)
+        self.assertEqual(tree_digest(a_root, a_unit, self.root / 'alder'), a_before)
+        # A pack generation that cannot be written keeps the release, the link and the pack as they were.
+        (a_root / 'packs').chmod(0o500)
+        try:
+            failed = self.run_install(a_settings)
+        finally:
+            (a_root / 'packs').chmod(0o700)
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn('not activated', failed.stderr)
+        self.assertEqual(tree_digest(a_root, a_unit, self.root / 'alder'), a_before)
         out = self.ok(self.run_install(a_settings))
         self.assertIn(f'linked {a_root}/previous -> releases/{self.first}', out)
         self.assertIn(f'linked {a_root}/current -> releases/{second}', out)
-        self.assertNotIn('wrote', out)  # the unit and the launchers name current: unchanged
+        # the unit and the launchers name current: unchanged; the pack is the new release's
+        self.assertEqual([line for line in out.splitlines() if line.startswith('wrote')],
+                         [f'wrote pack {a_root}/pack (base http://127.0.0.1:18941)'])
+        second_pack = os.readlink(a_root / 'pack')
+        self.assertNotEqual(second_pack, first_pack)
+        self.assertTrue((a_root / first_pack).is_dir())
+        self.assert_pack(a_root, 18941)
         unchanged('upgrade')
 
         # The vendor slot: A's release resolves the module inside itself; B's commit has none.
@@ -1735,11 +1761,17 @@ class InstanceTests(unittest.TestCase):
                          (f'releases/{self.first}', f'releases/{second}'))
         self.assertIn('ok    release files match SHA256SUMS', out)
         self.assertEqual(out.strip().splitlines()[-1], self.next_line(a_root, 'alder-telegram.service'))
+        self.assertIn(f'wrote pack {a_root}/pack (base http://127.0.0.1:18941)', out)
+        self.assertEqual(os.readlink(a_root / 'pack'), first_pack)  # the prior release's own generation
+        self.assert_pack(a_root, 18941)
         unchanged('rollback')
 
         out = self.ok(self.run_install(a_settings))
         self.assertIn(f'release {second} reused from {a_root}/releases/{second}', out)
         self.assertEqual(os.readlink(a_root / 'current'), f'releases/{second}')
+        self.assertEqual(os.readlink(a_root / 'pack'), second_pack)
+        out = self.ok(self.run_install(a_settings))
+        self.assertIn(f'pack {a_root}/pack is current', out)
         unchanged('reinstall')
 
         # A launcher with the right bytes but the wrong mode is written again.
@@ -1790,6 +1822,30 @@ class InstanceTests(unittest.TestCase):
         with b.Store(self.root / 'birch/state/telegram-bridge.sqlite3', 0).connect() as db:
             rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM run_asks')]
         self.assertEqual([(row['conversation'], row['message_id']) for row in rows], [('123', 90)])
+
+    def assert_pack(self, root, port):
+        """root/pack is a generation under packs/ holding the current
+        release's yardr/ with only its base line naming port."""
+        self.assertRegex(os.readlink(root / 'pack'), r'^packs/[0-9a-f]{16}$')
+        release, pack = root / 'current/yardr', root / 'pack'
+
+        def files(top):
+            return {p.relative_to(top).as_posix(): p for p in sorted(top.rglob('*'))
+                    if p.is_file() and '__pycache__' not in p.parts}
+
+        released, packed = files(release), files(pack)
+        self.assertEqual(sorted(packed), sorted(released))
+        for name, path in released.items():
+            self.assertEqual(packed[name].stat().st_mode & 0o111, path.stat().st_mode & 0o111, name)
+            if name != 'tgbridge.yaml':
+                self.assertEqual(packed[name].read_bytes(), path.read_bytes(), name)
+        old, new = released['tgbridge.yaml'].read_text(), packed['tgbridge.yaml'].read_text()
+        self.assertEqual(len(old.splitlines(keepends=True)), len(new.splitlines(keepends=True)))
+        self.assertEqual([(a, b) for a, b in zip(old.splitlines(keepends=True), new.splitlines(keepends=True)) if a != b],
+                         [('base: http://127.0.0.1:8941\n', f'base: http://127.0.0.1:{port}\n')])
+        bases = 'bases:\n  odyssey: http://127.0.0.1:8941\n  imd: http://127.0.0.1:8942\n'
+        self.assertIn(bases, old)
+        self.assertIn(bases, new)
 
     def next_line(self, root, unit):
         launcher = root / 'bin/telegram-bridge'
@@ -1892,6 +1948,43 @@ class InstanceTests(unittest.TestCase):
                          (1, 'install.sh: the source path has a newline in it; install from a checkout whose path '
                              'has none'), result.stdout)
         self.assertEqual(tree_digest(*tops), before)
+        shutil.rmtree(odd)
+
+        # The pack's generation and link are the root's own, as they were rendered.
+        generation = root / os.readlink(root / 'pack')
+        setup = generation / 'SETUP.md'
+        setup.chmod(0o600)
+        kept = setup.read_bytes()
+        setup.write_bytes(kept + b'tampered\n')
+        for args in ((), ('--dry-run',)):
+            refused(f'install.sh: {generation} does not match the pack rendered for it; move it aside, then run '
+                    'install.sh again', *args)
+        setup.write_bytes(kept)
+        setup.chmod(0o644)
+        pointer = os.readlink(root / 'pack')
+        (root / 'pack').unlink()
+        (root / 'pack').mkdir()
+        refused(f'install.sh: {root}/pack is not a link to a generation under packs/; move it aside, then run '
+                'install.sh again')
+        (root / 'pack').rmdir()
+        (root / 'pack').symlink_to(pointer)
+
+        # A declaration without exactly one top-level base line is refused before anything is written.
+        declaration = self.source / 'yardr/tgbridge.yaml'
+        text = declaration.read_text()
+        line = 'base: http://127.0.0.1:8941\n'
+        self.assertEqual(text.count(line), 1)
+        for broken, has in ((text.replace(line, ''), 'it has 0 top-level base lines'),
+                            (text.replace(line, line + line), 'it has 2 top-level base lines'),
+                            (text.replace(line, 'base: http://localhost:8941\n'), 'its one is another form')):
+            declaration.write_text(broken)
+            commit_source(self.source, self.home, 'a broken base line')
+            for args in ((), ('--dry-run',)):
+                with self.subTest(has=has, args=args):
+                    refused(f'install.sh: {declaration} must have exactly one top-level line '
+                            f'base: http://127.0.0.1:<port>; {has}', *args)
+        declaration.write_text(text)
+        commit_source(self.source, self.home, 'the base line again')
 
     def venv(self, path):
         """A venv at path whose python links to this interpreter; skipped when one cannot be made."""
@@ -2129,6 +2222,91 @@ class InstanceTests(unittest.TestCase):
         self.assertEqual(os.readlink(root / 'previous'), f'releases/{self.first}')
         self.assertTrue(unit_file.read_text().endswith('# a template change\n'))
         self.assertIn(f'exec {python} ', (root / 'bin/telegram-bridge').read_text())
+
+
+    def test_an_interrupted_or_concurrent_activation_keeps_the_pack_with_its_release(self):
+        settings, root, _ = self.instance('fir', 993, 18991)
+        self.ok(self.run_install(settings))
+        first = os.readlink(root / 'current')
+        faults = self.root / 'faults'
+        faults.mkdir()
+        (faults / 'sitecustomize.py').write_text(
+            'import os, signal, time\n'
+            '_dir, _fault = os.environ.get("FAULT_DIR"), os.environ.get("FAULT")\n'
+            'if _fault == "term":\n'
+            '    _replace = os.replace\n'
+            '    def replace(src, dst, *a, **k):\n'
+            '        _replace(src, dst, *a, **k)\n'
+            '        if os.path.basename(str(dst)) == "pack":\n'
+            '            os.kill(os.getpid(), signal.SIGTERM)\n'
+            '    os.replace = replace\n'
+            'elif _fault == "pause":\n'
+            '    _rename = os.rename\n'
+            '    def rename(src, dst, *a, **k):\n'
+            '        if os.path.basename(os.path.dirname(str(dst))) == "packs":\n'
+            '            open(os.path.join(_dir, "paused"), "w").close()\n'
+            '            deadline = time.monotonic() + 120\n'
+            '            while not os.path.exists(os.path.join(_dir, "go")) and time.monotonic() < deadline:\n'
+            '                time.sleep(0.05)\n'
+            '            raise OSError(5, "Input/output error", str(dst))\n'
+            '        return _rename(src, dst, *a, **k)\n'
+            '    os.rename = rename\n'
+            'elif _fault == "wait":\n'
+            '    import fcntl\n'
+            '    _flock = fcntl.flock\n'
+            '    def flock(fd, op):\n'
+            '        try:\n'
+            '            return _flock(fd, op | fcntl.LOCK_NB)\n'
+            '        except BlockingIOError:\n'
+            '            open(os.path.join(_dir, "blocked"), "w").close()\n'
+            '            return _flock(fd, op)\n'
+            '    fcntl.flock = flock\n')
+
+        def faulted(fault):
+            return {**self.env, 'PYTHONPATH': str(faults), 'FAULT_DIR': str(faults), 'FAULT': fault}
+
+        def command():
+            return ['sh', str(self.source / 'install.sh'), '--settings', str(settings)]
+
+        # SIGTERM as the pack link is replaced: the pack moved last, after the release it belongs to.
+        with (self.source / 'yardr/SETUP.md').open('a') as stream:
+            stream.write('\nA line of the second release.\n')
+        second = commit_source(self.source, self.home, 'a second release')
+        stopped = subprocess.run(command(), env=faulted('term'), capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(stopped.returncode, 0, stopped.stdout)
+        self.assertEqual(os.readlink(root / 'current'), f'releases/{second}', stopped.stderr)
+        self.assertEqual(os.readlink(root / 'previous'), first)
+        self.assert_pack(root, 18991)
+
+        # A pauses before its pack generation, with its release already in
+        # place; B, installing the same commit, waits for A's activation, so
+        # A's failure cannot take back a release B adopted.
+        with (self.source / 'yardr/SETUP.md').open('a') as stream:
+            stream.write('\nA line of the third release.\n')
+        third = commit_source(self.source, self.home, 'a third release')
+        a = subprocess.Popen(command(), env=faulted('pause'), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        b_proc = None
+        try:
+            deadline = time.monotonic() + 120
+            while not (faults / 'paused').exists() and a.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue((faults / 'paused').exists(), a.poll())
+            self.assertTrue((root / f'releases/{third}').is_dir())
+            b_proc = subprocess.Popen(command(), env=faulted('wait'), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True)
+            while not (faults / 'blocked').exists() and b_proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+        finally:
+            (faults / 'go').touch()
+            a_out, a_err = a.communicate(timeout=120)
+            b_out, b_err = b_proc.communicate(timeout=120) if b_proc else ('', '')
+        self.assertNotEqual(a.returncode, 0, a_out)
+        self.assertIn('back in place', a_err)
+        self.assertEqual(b_proc.returncode, 0, b_out + b_err)
+        self.assertEqual(os.readlink(root / 'current'), f'releases/{third}')
+        self.assertTrue((root / 'current').is_dir(), b_out)
+        self.assertEqual(os.readlink(root / 'previous'), f'releases/{second}')
+        self.assert_pack(root, 18991)
 
 
 if __name__ == '__main__':

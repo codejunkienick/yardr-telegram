@@ -2366,6 +2366,18 @@ class RealNativeTests(BridgeTestCase):
                     source_dir.rmdir()
             # Reapplying the supported source pack preserves an installation's bindings and grants.
             release = str(Path(__file__).resolve().parents[1] / 'yardr')
+
+            def rendered(name, port):
+                """The release's pack as install.sh renders it for an instance on port."""
+                directory = root / name
+                directory.mkdir()
+                b.stage_pack(b.render_pack(release, port), directory)
+                return str(directory)
+
+            # With no base= selected, the yard's calls go to the base of the instance's own pack.
+            self.assertNotIn('base', client.call('GetSource', ['tgbridge']))
+            cli('pack', 'apply', rendered('fresh-pack', 28941), '--yes')
+            self.assertEqual(cli('source', 'show', 'tgbridge').splitlines()[0], 'tgbridge  http://127.0.0.1:28941')
             legacy = root / 'legacy-pack'
             shutil.copytree(release, legacy)
             declaration = legacy / 'tgbridge.yaml'
@@ -2380,17 +2392,22 @@ class RealNativeTests(BridgeTestCase):
             cli('source', 'grant', 'tgbridge', 'send', '--group', 'humans')
             before_source = client.call('GetSource', ['tgbridge'])
             before_group = client.call('GetGroup', ['humans'])
-            cli('pack', 'check', release)
-            cli('pack', 'apply', release, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
+            instance = rendered('instance-pack', 18942)
+            cli('pack', 'check', instance)
+            cli('pack', 'apply', instance, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
             upgraded = client.call('GetSource', ['tgbridge'])
             self.assertIn('  ask_card:', upgraded['declaration'])
             self.assertIn('  run_ask:', upgraded['declaration'])
+            self.assertIn('\nbase: http://127.0.0.1:18942\nbases:\n  odyssey: http://127.0.0.1:8941\n'
+                          '  imd: http://127.0.0.1:8942\n', upgraded['declaration'])
+            self.assertEqual(cli('source', 'show', 'tgbridge').splitlines()[0], 'tgbridge  http://127.0.0.1:8942 (base imd)')
+            self.assertEqual((upgraded['base'], upgraded['keyed_host']), ('imd', 'http://127.0.0.1:8942'))
             self.assertEqual({k: v for k, v in upgraded.items() if k not in ('declaration', 'added_at')},
                              {k: v for k, v in before_source.items() if k not in ('declaration', 'added_at')})
             self.assertEqual(client.call('GetGroup', ['humans']), before_group)
             cli('source', 'grant', 'tgbridge', 'ask_card', '--group', 'humans')
             granted = client.call('GetGroup', ['humans'])
-            cli('pack', 'apply', release, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
+            cli('pack', 'apply', instance, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
             self.assertEqual(client.call('GetSource', ['tgbridge']), upgraded)
             self.assertEqual(client.call('GetGroup', ['humans']), granted)
             self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-test-only\n')

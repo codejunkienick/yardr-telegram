@@ -5537,6 +5537,90 @@ def release_source(directory):
     return found[0] if len(found) == 1 and found[0].startswith('/') else None
 
 
+# An instance's source pack: its release's yardr/ with the declaration's one
+# top-level base line naming the instance's port, published by install.sh as
+# <root>/packs/<digest>/ behind the link <root>/pack.
+PACK_DECLARATION = 'tgbridge.yaml'
+_PACK_BASE_RE = re.compile(rb'base: http://127\.0\.0\.1:[0-9]+')
+
+
+def pack_tree(directory):
+    """{relative path: (bytes, mode)} of every regular file under directory,
+    bytecode caches aside; ValueError naming the path on a link or any
+    other kind of file."""
+    directory, files = Path(directory), {}
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError(f'{directory} is not a directory of its own')
+    for path in sorted(directory.rglob('*')):
+        relative = path.relative_to(directory)
+        if '__pycache__' in relative.parts:
+            continue
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            raise ValueError(f'{path} is not a regular file')
+        if path.is_file():
+            files[relative.as_posix()] = (path.read_bytes(), 0o755 if path.stat().st_mode & 0o111 else 0o644)
+    return files
+
+
+def render_pack(directory, port):
+    """pack_tree of a release's yardr/ directory with the one top-level line
+    base: http://127.0.0.1:<n> of its declaration naming port instead, every
+    other byte as it is; ValueError when there is not exactly one such line."""
+    files = pack_tree(directory)
+    declaration = Path(directory) / PACK_DECLARATION
+    if PACK_DECLARATION not in files:
+        raise ValueError(f'{declaration} is missing')
+    text, mode = files[PACK_DECLARATION]
+    lines = text.splitlines(keepends=True)
+    found = [i for i, line in enumerate(lines) if line.startswith(b'base:')]
+    if len(found) != 1 or not _PACK_BASE_RE.fullmatch(lines[found[0]].rstrip(b'\n')):
+        has = 'its one is another form' if len(found) == 1 else f'it has {len(found)} top-level base lines'
+        raise ValueError(f'{declaration} must have exactly one top-level line base: http://127.0.0.1:<port>; {has}')
+    lines[found[0]] = f'base: http://127.0.0.1:{port}'.encode() + lines[found[0]][len(lines[found[0]].rstrip(b'\n')):]
+    files[PACK_DECLARATION] = (b''.join(lines), mode)
+    return files
+
+
+def pack_digest(files):
+    """The 16 hex characters that name a rendered pack's generation."""
+    digest = hashlib.sha256()
+    for relative, (content, mode) in sorted(files.items()):
+        digest.update(f'{mode:o} {relative}\0{hashlib.sha256(content).hexdigest()}\n'.encode())
+    return digest.hexdigest()[:16]
+
+
+def pack_plan(root, directory, port):
+    """(files, generation, what) for the instance's pack rendered from the
+    release's yardr/ directory: the generation is root-relative, and what is
+    current, link (the generation is there, the link is not on it) or write;
+    ValueError on what install.sh refuses."""
+    files, root = render_pack(directory, port), Path(root)
+    generation = 'packs/' + pack_digest(files)
+    link, path = root / 'pack', root / generation
+    if (root / 'packs').is_symlink():
+        raise ValueError(f'{root / "packs"} is a link; this root keeps its packs in a directory of its own')
+    if link.exists() and not link.is_symlink():
+        raise ValueError(f'{link} is not a link to a generation under packs/; move it aside, then run install.sh again')
+    if not (path.exists() or path.is_symlink()):
+        return files, generation, 'write'
+    try:
+        same = pack_tree(path) == files
+    except (ValueError, OSError):
+        same = False
+    if not same:
+        raise ValueError(f'{path} does not match the pack rendered for it; move it aside, then run install.sh again')
+    return files, generation, 'current' if link.is_symlink() and os.readlink(link) == generation else 'link'
+
+
+def stage_pack(files, directory):
+    """Writes a rendered pack into the empty directory."""
+    for relative, (content, mode) in sorted(files.items()):
+        path = Path(directory) / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        path.chmod(mode)
+
+
 def recorded_sums(path=None):
     """{file name: SHA-256} from the pack's sha256sum-format list."""
     sums = {}

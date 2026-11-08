@@ -7,6 +7,8 @@
 #   current, previous   links to releases/<commit>
 #   bin/telegram-bridge, bin/voice-transcribe   launchers with the settings' python
 #   service.previous    the service file this install last replaced
+#   packs/<digest>/     a release's yardr/ with its base line naming the settings' port
+#   pack                a link to the active release's packs/<digest>, for yardr pack apply
 # An install, in order:
 # 1. checks python and the settings, and the contract: the instance runs,
 #    reads and writes nothing in the source (this script's directory, with
@@ -24,10 +26,13 @@
 # 5. activates the release: previous -> the old current, current -> the
 #    release, then the service file (its systemd user unit, or its launchd
 #    plist on macOS; the replaced one kept in service.previous) and the
-#    launchers, each only when it changed, restoring them all if one fails.
+#    launchers, each only when it changed, restoring them all if one fails;
+#    pack moves last, to the release's own rendered pack; one activation
+#    of a root runs at a time, and a signal waits until it is done.
 # --rollback swaps current and previous after the same checks of the
-# previous release, and needs no git. Removing an instance is disabling its
-# service, removing its service file and rm -rf of its root.
+# previous release, and needs no git; pack returns to that release's.
+# Removing an instance is disabling its service, removing its service file
+# and rm -rf of its root.
 # It never touches ~/.local/bin/voice-transcribe, never starts, stops or
 # restarts a service and never contacts Telegram: the operator does that
 # afterwards with the printed next: line (yardr/SETUP.md, step 9).
@@ -80,6 +85,7 @@ try:
         sys.exit("\n".join("install.sh: " + line for line in problems))
     print("root=" + shlex.quote(str(root)))
     print("python=" + shlex.quote(str(s.python)))
+    print("port=" + str(s.port))
     print("queue_dir=" + shlex.quote(str(s.queue_dir) if s.transcribe else ""))
     print("secret=" + shlex.quote(str(s.callback_secret_file)))
     print("hook_secret=" + shlex.quote(str(s.hook_secret_file)))
@@ -135,6 +141,18 @@ if [ -L "$root/releases" ]; then
   echo "install.sh: $root/releases is a link; this root keeps its releases in a directory of its own" >&2
   exit 1
 fi
+# The instance's pack is rendered from the release's yardr/ (the clean
+# checkout's is HEAD's); one it cannot render or publish stops the script here.
+if [ "$mode" = install ]; then pack_from=$pack/yardr; else pack_from=$release/yardr; fi
+python3 -B -c '
+import runpy, sys
+try:
+    runpy.run_path(sys.argv[1])["pack_plan"](sys.argv[2], sys.argv[3], int(sys.argv[4]))
+except ValueError as error:
+    sys.exit(f"install.sh: {error}")
+except OSError as error:
+    sys.exit(f"install.sh: cannot read {error.filename}: {error.strerror}")
+' "$bridge" "$root" "$pack_from" "$port"
 
 # Stage the commit under the root; it becomes the release only once its own
 # check-install passes. An existing release of the commit is reused only
@@ -225,12 +243,13 @@ done
 # Activate: every new file and link is written beside its destination
 # first, then each is renamed into place; a failure puts back what was
 # already replaced, so the instance keeps the release it had.
-python3 -B - "$code/bridge/bridge.py" "$settings" "$root" "$target" "$stage" "$dry_run" <<'EOF'
-import os, plistlib, runpy, shlex, sys, tempfile
+python3 -B - "$code/bridge/bridge.py" "$settings" "$root" "$target" "$stage" "$dry_run" "$bridge" <<'EOF'
+import fcntl, os, plistlib, runpy, shlex, shutil, signal, sys, tempfile
 from pathlib import Path
-bridge, settings, root, target, stage, dry_run = sys.argv[1:]
+bridge, settings, root, target, stage, dry_run, renderer = sys.argv[1:]
 root, dry_run = Path(root), dry_run == '1'
 m = runpy.run_path(bridge)
+r = runpy.run_path(renderer)  # this script's own: an older release has no pack_plan
 s = m['load_settings'](settings)
 current_bridge = root / 'current/bridge/bridge.py'
 python = shlex.quote(str(s.python))
@@ -265,6 +284,10 @@ def bridge_of(text):
         return 'an unreadable ExecStart'
 
 
+if not dry_run:
+    # One activation of a root at a time: a failed one cannot take back a release another adopted.
+    lock = os.open(root, os.O_RDONLY)
+    fcntl.flock(lock, fcntl.LOCK_EX)
 current = os.readlink(root / 'current') if (root / 'current').is_symlink() else None
 if current is None and (root / 'current').exists():
     sys.exit(f'install.sh: {root / "current"} is not a link; not activated')
@@ -284,15 +307,32 @@ if old_service is not None and old_service != files[service][0]:
 for path, (text, mode) in files.items():
     if written(path, text, mode):
         print(f'{"unit" if path == service else "launcher"} {path} is current')
+# The pack is a new generation beside the old ones, and the link moves to it.
+try:
+    # A reused release another activation took back is renamed from this stage, which holds its files.
+    release = Path(stage) if stage and not (root / target).exists() else Path(bridge).parents[1]
+    pack_files, generation, pack_state = r['pack_plan'](root, release / 'yardr', s.port)
+except (ValueError, OSError) as error:
+    sys.exit(f'install.sh: {error}; not activated')
+pack_line = f'pack {root / "pack"} (base http://127.0.0.1:{s.port})'
+if pack_state == 'current':
+    print(f'pack {root / "pack"} is current')
 if dry_run:
     for link, value in links.items():
         print(f'would link {link} -> {value}')
     for path, text, _ in changes:
         print(f'would write {path}' + (':\n' + text.decode().rstrip('\n') if path == service else ''))
+    if pack_state != 'current':
+        print('would write ' + pack_line)
     sys.exit(0)
 
 prepared = []  # (temporary, destination, the destination's old link or bytes)
+pack_stage = None
 try:
+    if pack_state == 'write':
+        (root / 'packs').mkdir(mode=0o700, parents=True, exist_ok=True)
+        pack_stage = Path(tempfile.mkdtemp(prefix='.stage-', dir=root / 'packs'))
+        r['stage_pack'](pack_files, pack_stage)
     for link, value in links.items():
         tmp = Path(tempfile.mktemp(prefix=f'.{link.name}.', dir=root))
         os.symlink(value, tmp)
@@ -308,16 +348,28 @@ try:
         else:
             prepared.append((Path(tmp), path, ('file', (read(path), os.stat(path).st_mode & 0o7777)
                                                if path.exists() else None)))
+    # The pack link moves last, so a stop before it keeps the previous pack.
+    if pack_state != 'current':
+        tmp = Path(tempfile.mktemp(prefix='.pack.', dir=root))
+        os.symlink(generation, tmp)
+        prepared.append((tmp, root / 'pack', ('link', os.readlink(root / 'pack') if (root / 'pack').is_symlink() else None)))
 except OSError as error:
     for tmp, _, _ in prepared:
         tmp.unlink(missing_ok=True)
+    if pack_stage:
+        shutil.rmtree(pack_stage, ignore_errors=True)
     sys.exit(f'install.sh: cannot write beside {error.filename}: {error.strerror}; not activated')
 
+# A signal waits until the renames, or their undo, are all done.
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
 done = []
 try:
     if stage and not (root / target).exists():
         os.rename(stage, root / target)
         done.append((None, root / target, ('stage', stage)))
+    if pack_stage:
+        os.rename(pack_stage, root / generation)
+        done.append((None, root / generation, ('stage', pack_stage)))
     for tmp, path, old in prepared:
         os.replace(tmp, path)
         done.append((tmp, path, old))
@@ -335,12 +387,18 @@ except OSError as error:
             os.chmod(path, old[1])
     for tmp, _, _ in prepared:
         tmp.unlink(missing_ok=True)
+    if pack_stage:
+        shutil.rmtree(pack_stage, ignore_errors=True)
     sys.exit(f'install.sh: activating {error.filename} failed: {error.strerror}; '
-             'the previous release, service file and launchers are back in place')
+             'the previous release, service file, launchers and pack are back in place')
+finally:
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
 for link, value in links.items():
     print(f'linked {link} -> {value}')
 for path, _, _ in changes:
     print(f'wrote {path}')
+if pack_state != 'current':
+    print('wrote ' + pack_line)
 EOF
 
 link="$HOME/.local/bin/voice-transcribe"

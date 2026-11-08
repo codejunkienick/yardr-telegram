@@ -3,6 +3,7 @@ object on stdin, one on stdout, with only the environment the yard hands a
 source's command. thread talks to a fake bridge on loopback; nothing
 reaches the network."""
 import http.server
+import runpy
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import unittest
 from pathlib import Path
 
 PACK = Path(__file__).resolve().parent.parent
+BRIDGE = PACK.parent / 'bridge' / 'bridge.py'
 NORMALIZE = PACK / 'tgbridge' / 'normalize'
 THREAD = PACK / 'tgbridge' / 'thread'
 SECRET = 'test-callback-secret'
@@ -39,8 +41,10 @@ def entry(**overrides):
 
 
 class NormalizeTests(unittest.TestCase):
+    normalize = NORMALIZE
+
     def test_topic_entry_becomes_the_envelope(self):
-        result = run(NORMALIZE, [], entry())
+        result = run(self.normalize, [], entry())
         self.assertEqual(result.returncode, 0, result.stderr)
         envelope = json.loads(result.stdout)
         self.assertEqual(envelope, {
@@ -51,7 +55,7 @@ class NormalizeTests(unittest.TestCase):
                        'thread': ['7']}})
 
     def test_general_transcript_with_a_reply(self):
-        result = run(NORMALIZE, [], entry(conversation='123', topic='general', thread_id=None, kind='transcript',
+        result = run(self.normalize, [], entry(conversation='123', topic='general', thread_id=None, kind='transcript',
                                           message_id='41-transcript', reply_to='40'))
         envelope = json.loads(result.stdout)
         self.assertEqual(envelope['thread'], {'id': '123', 'title': 'Telegram'})
@@ -62,7 +66,7 @@ class NormalizeTests(unittest.TestCase):
 
     def test_refuses_without_a_body_and_never_echoes_it(self):
         for given in ({'headers': {}}, {'body': 'text'}, {'body': {'text': 'secret words'}}):
-            result = run(NORMALIZE, [], given)
+            result = run(self.normalize, [], given)
             self.assertEqual(result.returncode, 1)
             self.assertNotIn('secret words', result.stderr)
             self.assertEqual(result.stdout, '')
@@ -101,6 +105,8 @@ class FakeBridge:
 
 
 class ThreadTests(unittest.TestCase):
+    thread = THREAD
+
     def setUp(self):
         self.bridge = FakeBridge()
         self.addCleanup(self.bridge.close)
@@ -108,7 +114,7 @@ class ThreadTests(unittest.TestCase):
 
     def test_reply_sends_auto_format_with_the_key_and_answers_the_id(self):
         self.bridge.answers['/v1/send'] = (200, {'delivered': True, 'message_id': '77', 'conversation': '123'})
-        result = run(THREAD, ['reply'], {'thread': '123:topic:7', 'parent': '41', 'body': '<b>Up</b>', 'key': 'k1'},
+        result = run(self.thread, ['reply'], {'thread': '123:topic:7', 'parent': '41', 'body': '<b>Up</b>', 'key': 'k1'},
                      self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {'id': '77'})
@@ -119,7 +125,7 @@ class ThreadTests(unittest.TestCase):
 
     def test_reply_carries_files_as_attachments(self):
         self.bridge.answers['/v1/send'] = (200, {'delivered': True, 'message_id': '78'})
-        result = run(THREAD, ['reply'], {'thread': '123', 'parent': '', 'body': 'shot', 'key': 'k2',
+        result = run(self.thread, ['reply'], {'thread': '123', 'parent': '', 'body': 'shot', 'key': 'k2',
                                          'files': ['/tmp/a/shot.png']}, self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.bridge.requests[0][2]['attachments'], ['/tmp/a/shot.png'])
@@ -127,23 +133,23 @@ class ThreadTests(unittest.TestCase):
     def test_reply_not_delivered_fails_with_the_reason(self):
         self.bridge.answers['/v1/send'] = (200, {'delivered': False, 'reason': 'options_need_keyboard',
                                                  'failure_kind': 'permanent'})
-        result = run(THREAD, ['reply'], {'thread': '123', 'body': 'A: x\nB: y', 'key': 'k3'}, self.env)
+        result = run(self.thread, ['reply'], {'thread': '123', 'body': 'A: x\nB: y', 'key': 'k3'}, self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn('options_need_keyboard', result.stderr)
         self.assertEqual(result.stdout, '')
 
     def test_reply_refused_names_the_bridge_error(self):
         self.bridge.answers['/v1/send'] = (400, {'error': 'conversation ID is not the paired private chat'})
-        result = run(THREAD, ['reply'], {'thread': '9', 'body': 'x', 'key': 'k4'}, self.env)
+        result = run(self.thread, ['reply'], {'thread': '9', 'body': 'x', 'key': 'k4'}, self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn('HTTP 400: conversation ID is not the paired private chat', result.stderr)
 
     def test_posted_finds_the_ledger_send_or_nothing(self):
         self.bridge.answers['/v1/posted'] = (200, {'message_id': '77'})
-        found = run(THREAD, ['posted'], {'thread': '123', 'key': 'k1'}, self.env)
+        found = run(self.thread, ['posted'], {'thread': '123', 'key': 'k1'}, self.env)
         self.assertEqual(json.loads(found.stdout), {'id': '77'})
         self.bridge.answers['/v1/posted'] = (200, {})
-        none = run(THREAD, ['posted'], {'thread': '123', 'key': 'k9'}, self.env)
+        none = run(self.thread, ['posted'], {'thread': '123', 'key': 'k9'}, self.env)
         self.assertEqual(json.loads(none.stdout), {})
         self.assertEqual([r[2] for r in self.bridge.requests], [{'key': 'k1'}, {'key': 'k9'}])
 
@@ -151,7 +157,7 @@ class ThreadTests(unittest.TestCase):
         self.bridge.answers['/v1/read'] = (200, {'messages': [
             {'id': '41', 'direction': 'in', 'from': 'Pat', 'text': 'long ' * 200, 'at': '2026-11-06T10:00:00+00:00'},
             {'id': '77', 'direction': 'out', 'from': 'test_bot', 'text': 'Up', 'at': '2026-11-06T10:01:00+00:00'}]})
-        result = run(THREAD, ['read'], {'thread': '123:topic:7'}, self.env)
+        result = run(self.thread, ['read'], {'thread': '123:topic:7'}, self.env)
         messages = json.loads(result.stdout)['messages']
         self.assertEqual([m['id'] for m in messages], ['41', '77'])
         self.assertEqual(messages[0]['body'], 'long ' * 200)
@@ -160,19 +166,95 @@ class ThreadTests(unittest.TestCase):
 
     def test_refuses_a_base_off_this_machine_and_a_missing_secret(self):
         for base in ('https://127.0.0.1:8941', 'http://example.com:8941', 'http://10.0.0.2:8941'):
-            result = run(THREAD, ['posted'], {'thread': '1', 'key': 'k'}, dict(self.env, YARDR_SOURCE_BASE=base))
+            result = run(self.thread, ['posted'], {'thread': '1', 'key': 'k'}, dict(self.env, YARDR_SOURCE_BASE=base))
             self.assertEqual(result.returncode, 1, base)
             self.assertIn('loopback', result.stderr)
-        result = run(THREAD, ['posted'], {'thread': '1', 'key': 'k'}, dict(self.env, TGBRIDGE_SECRET=''))
+        result = run(self.thread, ['posted'], {'thread': '1', 'key': 'k'}, dict(self.env, TGBRIDGE_SECRET=''))
         self.assertEqual(result.returncode, 1)
         self.assertIn('TGBRIDGE_SECRET', result.stderr)
         self.assertEqual(self.bridge.requests, [])
 
     def test_a_bridge_that_is_down_is_named(self):
         self.bridge.close()
-        result = run(THREAD, ['read'], {'thread': '123'}, self.env)
+        result = run(self.thread, ['read'], {'thread': '123'}, self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn('is its unit running', result.stderr)
+
+
+class RenderedPackTests(unittest.TestCase):
+    """An instance's pack as install.sh renders it from a release's yardr/:
+    the declaration's one base line names the instance's port, and every
+    other byte, the legacy bases included, is the release's."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.b = runpy.run_path(str(BRIDGE))
+
+    def test_two_instances_differ_from_the_release_only_in_the_base_line(self):
+        release = self.b['pack_tree'](PACK)
+        bases = b'bases:\n  odyssey: http://127.0.0.1:8941\n  imd: http://127.0.0.1:8942\n'
+        self.assertIn(bases, release['tgbridge.yaml'][0])
+        digests = set()
+        for port in (18941, 28942):
+            with self.subTest(port=port):
+                rendered = self.b['render_pack'](PACK, port)
+                self.assertEqual(sorted(rendered), sorted(release))
+                self.assertEqual({k: v for k, v in rendered.items() if k != 'tgbridge.yaml'},
+                                 {k: v for k, v in release.items() if k != 'tgbridge.yaml'})
+                old, new = release['tgbridge.yaml'][0], rendered['tgbridge.yaml'][0]
+                self.assertEqual([(a, b) for a, b in zip(old.splitlines(True), new.splitlines(True)) if a != b],
+                                 [(b'base: http://127.0.0.1:8941\n', f'base: http://127.0.0.1:{port}\n'.encode())])
+                self.assertEqual(len(old.splitlines()), len(new.splitlines()))
+                self.assertIn(bases, new)
+                digests.add(self.b['pack_digest'](rendered))
+        self.assertEqual(len(digests), 2)
+
+    def test_a_declaration_without_exactly_one_base_line_is_refused_and_nothing_is_written(self):
+        line = 'base: http://127.0.0.1:8941\n'
+        text = (PACK / 'tgbridge.yaml').read_text()
+        for broken, has in ((text.replace(line, ''), 'it has 0 top-level base lines'),
+                            (text.replace(line, line + line), 'it has 2 top-level base lines'),
+                            (text.replace(line, 'base: https://127.0.0.1:8941\n'), 'its one is another form')):
+            with self.subTest(has=has), tempfile.TemporaryDirectory() as tmp:
+                copy, root = Path(tmp) / 'yardr', Path(tmp) / 'root'
+                shutil.copytree(PACK, copy, ignore=shutil.ignore_patterns('__pycache__'))
+                (copy / 'tgbridge.yaml').write_text(broken)
+                with self.assertRaises(ValueError) as caught:
+                    self.b['pack_plan'](root, copy, 18941)
+                self.assertEqual(str(caught.exception), f'{copy}/tgbridge.yaml must have exactly one top-level '
+                                 f'line base: http://127.0.0.1:<port>; {has}')
+                self.assertFalse(root.exists())
+
+    def test_a_link_in_the_release_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / 'yardr'
+            shutil.copytree(PACK, copy, ignore=shutil.ignore_patterns('__pycache__'))
+            (copy / 'tgbridge' / 'elsewhere').symlink_to('/etc/hostname')
+            with self.assertRaises(ValueError) as caught:
+                self.b['render_pack'](copy, 18941)
+            self.assertEqual(str(caught.exception), f'{copy}/tgbridge/elsewhere is not a regular file')
+
+
+def rendered_copy(cls, port):
+    """cls's pack directory: this pack rendered for port into a temporary
+    directory removed after the class, as install.sh stages one."""
+    b = runpy.run_path(str(BRIDGE))
+    tmp = tempfile.TemporaryDirectory(prefix='rendered-')
+    cls.addClassCleanup(tmp.cleanup)
+    b['stage_pack'](b['render_pack'](PACK, port), tmp.name)
+    return Path(tmp.name)
+
+
+class RenderedNormalizeTests(NormalizeTests):
+    @classmethod
+    def setUpClass(cls):
+        cls.normalize = rendered_copy(cls, 18941) / 'tgbridge' / 'normalize'
+
+
+class RenderedThreadTests(ThreadTests):
+    @classmethod
+    def setUpClass(cls):
+        cls.thread = rendered_copy(cls, 28942) / 'tgbridge' / 'thread'
 
 
 class DeclarationTests(unittest.TestCase):

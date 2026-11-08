@@ -72,10 +72,11 @@ Run it from a checkout with no tracked changes: it installs that HEAD as
 this yard's own copy under `~/.local/share/yardr-telegram/odyssey-telegram`
 (`--root` names another root). It mints the callback secret and the hook
 secret (owner-only, never printed), checks the host from the copy, points
-the root's `current` at it, and renders `odyssey-telegram.service` and the
-launcher `bin/telegram-bridge` there. Start nothing yet. The checkout is no
-longer what runs: install again after a pull to update this yard, and
-`install.sh --settings <file> --rollback` returns it to the release before.
+the root's `current` at it, and renders `odyssey-telegram.service`, the
+launcher `bin/telegram-bridge` and the yard's pack `pack` there (step 5).
+Start nothing yet. The checkout is no longer what runs: install again
+after a pull to update this yard, and `install.sh --settings <file>
+--rollback` returns it to the release before.
 
 ## 4. The yard's hook listener (shell; odyssey only)
 
@@ -90,13 +91,31 @@ The address is loopback: nothing outside this machine reaches it.
 ## 5. The pack and its credential (shell)
 
 ```sh
-yardr pack apply ~/work/yardr-telegram/yardr
-yardr source set tgbridge base=imd        # imd only
+yardr pack apply ~/.local/share/yardr-telegram/odyssey-telegram/pack
 sed 's/^/TGBRIDGE_SECRET=/' ~/.config/odyssey-telegram/callback-secret | yardr source key tgbridge
 yardr source set tgbridge calls_per_hour=600
 yardr source set tgbridge updates_per_hour=300
 yardr source check tgbridge               # after step 9; health answers 200
 ```
+
+`<root>/pack` is the active release's `yardr/` with its `base` line
+naming this settings file's port, so the source's calls go to this yard's
+own bridge with no `base=`; the legacy `bases:` (odyssey, imd) are kept as
+they are. install.sh renders it on every install and `--rollback`, and
+`yardr pack apply tgbridge` reads it again from there.
+
+An installation that already has an alias selected (`yardr source show
+tgbridge` says `(base imd)`) keeps it, and names the env file it already
+has (`source.env_file` in `yardr source show tgbridge --json`):
+
+```sh
+yardr pack apply ~/.local/share/yardr-telegram/imd-telegram/pack \
+  --source-base tgbridge=imd --source-env tgbridge=<its env_file>
+```
+
+The first apply from `<root>/pack` moves the yard's recorded import origin
+(`yardr pack list`) off the checkout: later re-applies read the installed
+pack, not `~/work/yardr-telegram/yardr`.
 
 A caller gets 60 calls of a source an hour, 10 of them updates, unless the
 source says otherwise; a chat needs more. `yardr reply` is not a call and

@@ -1,6 +1,7 @@
 """Native paths through the bridge, a framed Unix RPC and fake Telegram."""
 import copy
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import http.server
 import json
 import os
@@ -29,6 +30,32 @@ def proposal():
                 run=dict(argv=['depot', 'test', 'web'], command='yardr depot test web', description='Set its test',
                          does=['current: make test', 'proposed: sh scripts/test.sh'],
                          back='propose the old command', back_by='an operator'))
+
+
+def skill_proposal(extra=''):
+    # Captured from Bead on the real isolated core; only provenance/seq/time stabilized.
+    ask = json.loads(Path(__file__).with_name('fixtures').joinpath('skill_add.json').read_text())
+    if extra:
+        carried = ask['run']['carried'][0]
+        file, change = carried['files'][0], carried['old'][0]
+        file['text'] += extra
+        file['sha256'] = hashlib.sha256(file['text'].encode()).hexdigest()
+        change['new_sha256'] = file['sha256']
+        before = carried['text'].removesuffix('\n').split('\n')
+        after = file['text'].removesuffix('\n').split('\n')
+        change['diff'] = ('--- was\n+++ is\n' + f'@@ -1,{len(before)} +1,{len(after)} @@\n'
+                          + ''.join('-' + line + '\n' for line in before)
+                          + ''.join('+' + line + '\n' for line in after))
+        does = ask['run']['does'][:7]
+        does[2] = f"writes skills/snapshot/SKILL.md, mode 0644; sha256 {change['old_sha256']} -> {file['sha256']}"
+        for label, value in [('proposed SKILL.md', file['text']), ('standing SKILL.md', carried['text']), ('replacement diff', change['diff'])]:
+            does.append(label + ' (quoted UTF-8 lines, including line endings):')
+            rows = [line + '\n' for line in value.split('\n')[:-1]]
+            if not value or not value.endswith('\n'):
+                rows.append(value.rsplit('\n', 1)[-1])
+            does.extend(json.dumps(line, ensure_ascii=False) for line in rows)
+        ask['run']['does'] = does
+    return ask
 
 
 class NativeSocket:
@@ -130,6 +157,18 @@ class NativeTests(BridgeTestCase):
             return base(url, body, *args, **kwargs)
         self.bridge.request = telegram
 
+    def reset_native(self, ask):
+        with self.store.connect() as db:
+            for table in ('run_asks', 'run_ask_keys', 'run_ask_updates', 'deliveries'):
+                db.execute('DELETE FROM ' + table)
+        self.native.ask = ask
+        self.native.calls.clear()
+        self.native.mode = None
+        self.native.user = dict(name='pat', role='operator', identities={'tgbridge': {'id': '123'}})
+        self.calls.clear()
+        self.sent_count = 0
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+
     def create(self, **kwargs):
         return self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='native-1', **kwargs))
 
@@ -225,133 +264,153 @@ class NativeTests(BridgeTestCase):
         self.assertEqual(self.edits()[-1]['message_id'], int(first['message_id']))
 
     def test_decline_and_take_back_use_canonical_words_without_execution(self):
-        for state in ('decline', 'taken back'):
-            with self.subTest(state=state):
-                if state == 'decline':
-                    self.create()
-                    self.press('decline')
-                    self.assertEqual(self.writes()[0][0], 'DeclineAsk')
-                    self.assertEqual(self.row()['state'], 'declined')
-                else:
-                    self.native.ask.update(state='taken back', words='new canonical reason', by='proposer')
-                    self.bridge.run_asks.refresh()
-                    self.assertIn('Taken back by proposer: new canonical reason', self.edits()[-1]['text'])
-        self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
+        for factory in (proposal, skill_proposal):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                for state in ('decline', 'taken back'):
+                    with self.subTest(state=state):
+                        if state == 'decline':
+                            self.create()
+                            self.press('decline')
+                            self.assertEqual(self.writes()[0][0], 'DeclineAsk')
+                            self.assertEqual(self.row()['state'], 'declined')
+                        else:
+                            self.native.ask.update(state='taken back', words='new canonical reason', by='proposer')
+                            self.bridge.run_asks.refresh()
+                            self.assertIn('Taken back by proposer: new canonical reason', self.edits()[-1]['text'])
+                self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
 
     def test_weight_requires_bound_reply_cancel_expiry_mismatch_and_one_use(self):
-        self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
-        self.sent_count = -76  # first synthetic card has message ID 1, distinct from boolean True
-        first = self.create()
-        self.press()
-        self.assertEqual(self.writes(), [])
-        self.assertIn("type the ask's number, 7", b.html_visible_text(self.edits()[-1]['text'])[0])
-        pending = self.row()['pending']
-        count = len(self.calls)
-        for restart in (False, True):
-            with self.subTest(restart=restart):
-                if restart:
-                    self.bridge.run_asks = n.RunAsks(self.bridge)
-                self.assertEqual(self.create(), first)
-                self.assertEqual(self.row()['pending'], pending)
-                self.assertEqual(len(self.calls), count)
+        for factory in (proposal, skill_proposal):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                if factory is proposal:
+                    self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
+                self.sent_count = -76  # first synthetic card has message ID 1, distinct from boolean True
+                first = self.create()
+                self.press()
                 self.assertEqual(self.writes(), [])
-        for changes in ({'reply_to_message': {'message_id': 900}}, {'reply_to_message': {}},
-                        {'reply_to_message': {'message_id': True}},
-                        {'forward_origin': {'type': 'hidden_user'}}, {'from': {'id': 124, 'is_bot': False}},
-                        {'from': {'id': 123, 'is_bot': True}}, {'is_topic_message': True, 'message_thread_id': 12}):
-            # Non-confirmations retain their ordinary routing; only the bound reply is consumed.
-            with patch.object(self.bridge, '_relay'):
-                self.reply(**changes)
-            self.assertEqual(self.writes(), [])
-        self.reply(value='wrong', uid=51)
-        self.assertIsNone(self.row()['pending'])
-        self.assertEqual(self.writes(), [])
-        self.press(uid=42)
-        self.press('cancel', uid=43)
-        with patch.object(self.bridge, '_relay'):
-            self.reply(uid=52)
-        self.assertEqual(self.writes(), [])
-        self.press(uid=44)
-        row = self.row()
-        row['pending']['expires'] = 0
-        self.bridge.run_asks.save(row)
-        self.reply(uid=53)
-        self.assertEqual(self.writes(), [])
-        self.press(uid=45)
-        self.bridge.run_asks = n.RunAsks(self.bridge)
-        self.native.mode = 'lost-open'
-        self.reply(uid=54)
-        self.assertEqual(self.writes()[-1][1]['weighed'], True)
-        self.assertEqual(self.row()['state'], 'open')
-        self.assertEqual([button['callback_data'] for button in self.edits()[-1]['reply_markup']['inline_keyboard'][0]],
-                         [f"runask:{self.row()['id']}:approve", f"runask:{self.row()['id']}:decline"])
-        with patch.object(self.bridge, '_relay'):
-            self.reply(uid=54)
-        self.assertEqual(len(self.writes()), 1)
-        self.native.mode = None
-        self.press(uid=46)
-        self.assertEqual(len(self.writes()), 1)  # retry still needs a fresh bound confirmation
-        self.reply(uid=55)
-        self.assertEqual(self.row()['state'], 'approved')
-        self.assertEqual(len(self.writes()), 2)
-        self.assertTrue(self.writes()[-1][1]['weighed'])
+                self.assertIn("type the ask's number, 7", b.html_visible_text(self.edits()[-1]['text'])[0])
+                pending = self.row()['pending']
+                count = len(self.calls)
+                for restart in (False, True):
+                    with self.subTest(restart=restart):
+                        if restart:
+                            self.bridge.run_asks = n.RunAsks(self.bridge)
+                        self.assertEqual(self.create(), first)
+                        self.assertEqual(self.row()['pending'], pending)
+                        self.assertEqual(len(self.calls), count)
+                        self.assertEqual(self.writes(), [])
+                for changes in ({'reply_to_message': {'message_id': 900}}, {'reply_to_message': {}},
+                                {'reply_to_message': {'message_id': True}},
+                                {'forward_origin': {'type': 'hidden_user'}}, {'from': {'id': 124, 'is_bot': False}},
+                                {'from': {'id': 123, 'is_bot': True}}, {'is_topic_message': True, 'message_thread_id': 12}):
+                    # Non-confirmations retain their ordinary routing; only the bound reply is consumed.
+                    with patch.object(self.bridge, '_relay'):
+                        self.reply(**changes)
+                    self.assertEqual(self.writes(), [])
+                self.reply(value='wrong', uid=51)
+                self.assertIsNone(self.row()['pending'])
+                self.assertEqual(self.writes(), [])
+                self.press(uid=42)
+                self.press('cancel', uid=43)
+                with patch.object(self.bridge, '_relay'):
+                    self.reply(uid=52)
+                self.assertEqual(self.writes(), [])
+                self.press(uid=44)
+                row = self.row()
+                row['pending']['expires'] = 0
+                self.bridge.run_asks.save(row)
+                self.reply(uid=53)
+                self.assertEqual(self.writes(), [])
+                self.press(uid=45)
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.native.mode = 'lost-open'
+                self.reply(uid=54)
+                self.assertEqual(self.writes()[-1][1]['weighed'], True)
+                self.assertEqual(self.row()['state'], 'open')
+                self.assertEqual([button['callback_data'] for button in self.edits()[-1]['reply_markup']['inline_keyboard'][0]],
+                                 [f"runask:{self.row()['id']}:approve", f"runask:{self.row()['id']}:decline"])
+                with patch.object(self.bridge, '_relay'):
+                    self.reply(uid=54)
+                self.assertEqual(len(self.writes()), 1)
+                self.native.mode = None
+                self.press(uid=46)
+                self.assertEqual(len(self.writes()), 1)  # retry still needs a fresh bound confirmation
+                self.reply(uid=55)
+                self.assertEqual(self.row()['state'], 'approved')
+                self.assertEqual(len(self.writes()), 2)
+                self.assertTrue(self.writes()[-1][1]['weighed'])
 
     def test_callback_and_proposal_binding_refusals(self):
-        self.create()
-        for changes in ({'message_id': 200}, {'chat': {'id': 456, 'type': 'private'}},
-                        {'from': {'id': 998, 'is_bot': True}}, {'from': {'id': 999, 'is_bot': False}},
-                        {'is_topic_message': True, 'message_thread_id': 12}, {'forward_date': 123}):
-            self.press(**changes)
-        self.assertEqual(self.writes(), [])
-        query = self.press(message_id=200, uid=60)
-        query['message']['message_id'] = self.row()['message_id']
-        for sender in ({'id': 456, 'is_bot': False}, {'id': 123, 'is_bot': True}):
-            query['from'] = sender
-            self.bridge.inbound(dict(update_id=61, callback_query=query))
-        self.assertEqual(self.writes(), [])
-        for key, value in [('to', 'someone'), ('context', ['changed']), ('question', 'changed question'),
-                           ('run', dict(self.native.ask['run'], does=['changed']))]:
-            saved = copy.deepcopy(self.native.ask)
-            self.native.ask[key] = value
-            self.press(uid=41)
-            self.assertEqual(self.writes(), [])
-            self.native.ask = saved
-            row = self.row()
-            row['state'] = 'open'
-            self.bridge.run_asks.save(row)
-        self.native.user['identities']['tgbridge'] = {'id': '456'}
-        self.press(uid=42)
-        self.assertEqual(self.writes(), [])
-        self.native.user['identities']['tgbridge'] = '123'
-        self.press(uid=43)
-        self.assertEqual(self.writes(), [])
-        self.native.user.update(role='member')
-        self.press(uid=44)
-        self.assertEqual(self.writes(), [])
+        for factory in (proposal, skill_proposal):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                self.create()
+                for changes in ({'message_id': 200}, {'chat': {'id': 456, 'type': 'private'}},
+                                {'from': {'id': 998, 'is_bot': True}}, {'from': {'id': 999, 'is_bot': False}},
+                                {'is_topic_message': True, 'message_thread_id': 12}, {'forward_date': 123}):
+                    self.press(**changes)
+                self.assertEqual(self.writes(), [])
+                query = self.press(message_id=200, uid=60)
+                query['message']['message_id'] = self.row()['message_id']
+                for sender in ({'id': 456, 'is_bot': False}, {'id': 123, 'is_bot': True}):
+                    query['from'] = sender
+                    self.bridge.inbound(dict(update_id=61, callback_query=query))
+                self.assertEqual(self.writes(), [])
+                for key, value in [('to', 'someone'), ('context', ['changed']), ('question', 'changed question'),
+                                   ('run', dict(self.native.ask['run'], does=['changed']))]:
+                    saved = copy.deepcopy(self.native.ask)
+                    self.native.ask[key] = value
+                    self.press(uid=41)
+                    self.assertEqual(self.writes(), [])
+                    self.native.ask = saved
+                    row = self.row()
+                    row['state'] = 'open'
+                    self.bridge.run_asks.save(row)
+                self.native.user['identities']['tgbridge'] = {'id': '456'}
+                self.press(uid=42)
+                self.assertEqual(self.writes(), [])
+                self.native.user['identities']['tgbridge'] = '123'
+                self.press(uid=43)
+                self.assertEqual(self.writes(), [])
+                self.native.user.update(role='member')
+                self.press(uid=44)
+                self.assertEqual(self.writes(), [])
 
     def test_same_operator_two_homes_and_conversations_cannot_cross(self):
-        self.create()
-        other_home = Path(self.tmp.name) / 'other'
-        other_home.mkdir(mode=0o700)
-        other = NativeSocket(other_home)
-        self.addCleanup(other.close)
-        original = self.bridge.run_asks
-        self.config.update(yardr_home=str(other_home), yard='other-yard')
-        self.bridge.run_asks = n.RunAsks(self.bridge)
-        self.press()
-        self.assertEqual(self.writes(), [])
-        self.assertFalse(any(method == 'ApproveAsk' for method, _, _ in other.calls))
-        result = self.bridge.api_ask_close(dict(ask_key='native-1', decision='approved'))
-        self.assertEqual(result['reason'], 'run_ask_wrong_yard_or_pairing')
-        self.config.update(yardr_home=str(self.home), yard='test-city')
-        self.bridge.run_asks = original
-        self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
-        self.store.record_topic('ops', 12, 'created')
-        self.assertEqual(self.create(topic='ops')['reason'], 'idempotency_key_conflict')
-        duplicate = dict(self.row(), id='f' * 24)
-        self.bridge.run_asks.save(duplicate)
-        close = self.bridge.close_ask('forged', message_id=77)
-        self.assertEqual(close['metadata']['reason'], 'run_ask_message_binding_ambiguous')
+        for factory in (proposal, skill_proposal):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                self.create()
+                other_home = Path(self.tmp.name) / ('other-' + factory.__name__)
+                other_home.mkdir(mode=0o700)
+                other = NativeSocket(other_home)
+                other.ask = factory()
+                self.addCleanup(other.close)
+                original = self.bridge.run_asks
+                self.config.update(yardr_home=str(other_home), yard='other-yard')
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.press()
+                self.assertEqual(self.writes(), [])
+                self.assertFalse(any(method == 'ApproveAsk' for method, _, _ in other.calls))
+                result = self.bridge.api_ask_close(dict(ask_key='native-1', decision='approved'))
+                self.assertEqual(result['reason'], 'run_ask_wrong_yard_or_pairing')
+                self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='other-home'))['delivered'])
+                other_row = self.bridge.run_asks.rows()[-1]
+                self.assertNotEqual(other_row['id'], self.row()['id'])
+                self.assertNotEqual(other_row['proposal'], self.row()['proposal'])
+                if factory is skill_proposal:
+                    self.assertNotEqual(other_row['bundle']['parts'][0]['key'], self.row()['bundle']['parts'][0]['key'])
+                self.config.update(yardr_home=str(self.home), yard='test-city')
+                self.bridge.run_asks = original
+                self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
+                self.store.record_topic('ops', 12, 'created')
+                self.assertEqual(self.create(topic='ops')['reason'], 'idempotency_key_conflict')
+                duplicate = dict(self.row(), id='f' * 24)
+                self.bridge.run_asks.save(duplicate)
+                close = self.bridge.close_ask('forged', message_id=self.row()['message_id'])
+                self.assertEqual(close['metadata']['reason'], 'run_ask_message_binding_ambiguous')
 
     def test_unsupported_and_malformed_payloads_never_send(self):
         base = proposal()
@@ -373,6 +432,213 @@ class NativeTests(BridgeTestCase):
         self.native.user['role'] = 'member'
         self.assertFalse(self.create()['delivered'])
         self.assertEqual(self.sent_count, 0)
+
+        # Mutate the actual core fixture at every authoritative boundary.
+        mutations = [
+            (('weight',), []), (('weight', 0, 'class'), 'trust'),
+            (('weight', 0, 'line'), 'WEIGHTY · invented'),
+            (('run', 'argv'), ['skill', 'add', 'relative']),
+            (('run', 'argv'), ['skill', 'add', '/synthetic/../proposal']),
+            (('run', 'command'), 'yardr skill add /elsewhere'),
+            (('run', 'description'), 'invented metadata'),
+            (('run', 'pack'), {}), (('run', 'ask'), ['value']),
+            (('run', 'carried'), []), (('run', 'carried', 0), None),
+            (('run', 'carried', 0, 'name'), '../other'),
+            (('run', 'carried', 0, 'removed'), []),
+            (('run', 'carried', 0, 'files'), []),
+            (('run', 'carried', 0, 'files', 0, 'program'), 'other.md'),
+            (('run', 'carried', 0, 'files', 0, 'text'), True),
+            (('run', 'carried', 0, 'files', 0, 'sha256'), '0' * 64),
+            (('run', 'carried', 0, 'text'), ''),
+            (('run', 'carried', 0, 'old'), []),
+            (('run', 'carried', 0, 'old', 0, 'old_sha256'), '0' * 64),
+            (('run', 'carried', 0, 'old', 0, 'new_sha256'), '0' * 64),
+            (('run', 'carried', 0, 'old', 0, 'diff'), ''),
+            (('run', 'carried', 0, 'inventory'), []),
+            (('run', 'carried', 0, 'inventory', 0, 'size'), True),
+            (('run', 'carried', 0, 'inventory', 0, 'mode'), 'symlink'),
+            (('run', 'carried', 0, 'inventory', 0, 'sha256'), '0' * 64),
+            (('run', 'does', 0), 'skill snapshot: "wrong description"'),
+            (('run', 'does', 3), 'standing metadata name: snapshot; description: "wrong"'),
+            (('run', 'does', 4), 'current holders and affected readers: '),
+            (('run', 'does', 8), '"partial bytes"'),
+            (('run', 'back'), 'automatic undo'),
+        ]
+        for path, value in mutations:
+            with self.subTest(path=path):
+                self.reset_native(skill_proposal())
+                target = self.native.ask
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(self.sent_count, 0)
+        for field in ('files', 'old', 'inventory'):
+            self.reset_native(skill_proposal())
+            self.native.ask['run']['carried'][0][field] *= 2
+            self.assertFalse(self.create()['delivered'])
+            self.assertEqual(self.sent_count, 0)
+        for missing in (('inventory',), ('old_sha256',), ('inventory', 'old_sha256')):
+            with self.subTest(refresh_missing=missing):
+                self.reset_native(skill_proposal())
+                carried = self.native.ask['run']['carried'][0]
+                for field in missing:
+                    del (carried if field == 'inventory' else carried['old'][0])[field]
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
+
+    def test_skill_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
+        self.bridge.sleep = lambda _: None
+        ask = skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n')
+        self.reset_native(ask)
+        self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
+        self.store.record_topic('ops', 12, 'created')
+        self.assertTrue(self.create(topic='ops')['delivered'])
+        row = self.row()
+        parts = row['bundle']['parts']
+        sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
+        self.assertGreater(len(parts), 3)
+        self.assertEqual(len(sent), len(parts) + 1)
+        bodies = []
+        for index, (part, body) in enumerate(zip(parts, sent)):
+            visible, error = b.html_visible_text(body['text'])
+            self.assertFalse(error)
+            self.assertEqual(visible, part['plain'])
+            self.assertLessEqual(n.units(visible), n.CAP)
+            self.assertEqual(hashlib.sha256(visible.encode()).hexdigest(), part['sha256'])
+            self.assertEqual(body['message_thread_id'], 12)
+            self.assertNotIn('reply_markup', body)
+            self.assertEqual(body.get('reply_parameters'), None if index == 0 else {'message_id': parts[index-1]['message_id']})
+            self.assertIn(row['proposal'], part['plain'])
+            bodies.append(visible.split('\n', 3)[3])
+        review = ''.join(bodies)
+        self.assertEqual(hashlib.sha256(review.encode()).hexdigest(), row['bundle']['sha256'])
+        self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
+        self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
+        self.assertEqual(sent[-1]['reply_parameters']['message_id'], parts[-1]['message_id'])
+        self.assertIn(row['proposal'], sent[-1]['text'])
+        self.assertEqual(sent[-1]['reply_markup']['inline_keyboard'][0][0]['callback_data'], f"runask:{row['id']}:approve")
+        expected = [body['text'] for body in sent]
+        original = self.bridge.request
+        for failure in ('transient', 'ambiguous', 'crash-after-receipt'):
+            for index, target in enumerate(expected):
+                with self.subTest(failure=failure, part=index):
+                    self.reset_native(copy.deepcopy(ask))
+                    blocked = [True]
+                    def telegram(url, body, *args, **kwargs):
+                        if url.endswith('/sendMessage') and body['text'] == target and blocked[0]:
+                            self.calls.append((url, body))
+                            error = b.RequestNotSent if failure == 'transient' else b.RequestUnconfirmed
+                            raise error('synthetic interruption')
+                        return original(url, body, *args, **kwargs)
+                    self.bridge.request = telegram
+                    if failure == 'crash-after-receipt':
+                        # The ledger confirms a send, but the native row save is interrupted.
+                        self.bridge.request = original
+                        save = self.bridge.run_asks.save
+                        def crash(row):
+                            delivered = sum(p['message_id'] is not None for p in row['bundle']['parts'])
+                            if delivered == index + 1 or (index == len(parts) and row['message_id'] is not None):
+                                raise RuntimeError('synthetic crash after ledger receipt')
+                            save(row)
+                        with patch.object(self.bridge.run_asks, 'save', side_effect=crash):
+                            with self.assertRaises(RuntimeError):
+                                self.create(topic='ops')
+                    else:
+                        result = self.create(topic='ops')
+                        self.assertFalse(result['delivered'])
+                        self.assertIsNone(self.row()['message_id'])
+                        self.assertEqual(sum(p['message_id'] is not None for p in self.row()['bundle']['parts']), index)
+                    confirmed = [p['message_id'] for p in self.row()['bundle']['parts'][:index]]
+                    before = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+                    blocked[0] = False
+                    self.bridge.run_asks = n.RunAsks(self.bridge)
+                    retry = self.create(topic='ops')
+                    if failure == 'ambiguous':
+                        self.assertFalse(retry['delivered'])
+                        self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), before)
+                        # Existing ledger reconciliation can confirm an observed message; same key resumes.
+                        key = self.row()['bundle']['parts'][index]['key'] if index < len(parts) else f"runask:{self.row()['id']}:send"
+                        self.store.finish(key, self.bridge.receipt(True, message_id='700'))
+                        self.assertTrue(self.create(topic='ops')['delivered'])
+                    else:
+                        self.assertTrue(retry['delivered'])
+                    self.assertEqual([p['message_id'] for p in self.row()['bundle']['parts'][:index]], confirmed)
+                    sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                    complete = len(sends)
+                    self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='new-repost-key', topic='ops'))['delivered'])
+                    self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), complete)
+                    self.assertEqual(self.writes(), [])
+        self.bridge.request = original
+
+    def test_skill_bundle_drift_rechecks_during_transport_retry_and_repost(self):
+        original = self.bridge.request
+        self.bridge.sleep = lambda _: None
+        for drift in ('proposal', 'operator', 'state'):
+            with self.subTest(drift=drift):
+                self.reset_native(skill_proposal())
+                attempts = []
+                def telegram(url, body, *args, **kwargs):
+                    if url.endswith('/sendMessage'):
+                        attempts.append(body)
+                        if drift == 'proposal':
+                            self.native.ask['context'].append('new proposal')
+                        elif drift == 'operator':
+                            self.native.user['role'] = 'member'
+                        else:
+                            self.native.ask.update(state='taken back', words='withdrawn', by='proposer')
+                        raise b.RequestNotSent('not sent before drift')
+                    return original(url, body, *args, **kwargs)
+                self.bridge.request = telegram
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(len(attempts), 1)
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.assertFalse(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='new-retry'))['delivered'])
+                self.assertEqual(len(attempts), 1)
+                self.assertIsNone(self.row()['message_id'])
+                self.assertEqual(self.writes(), [])
+                key = self.row()['bundle']['parts'][0]['key']
+                self.assertTrue(b.resendable(self.store.saved_receipt(key)))
+                if drift == 'operator':
+                    self.native.user['role'] = 'operator'
+                    self.bridge.request = original
+                    self.assertTrue(self.create()['delivered'])
+        self.bridge.request = original
+
+    def test_skill_bundle_maximum_file_and_oversized_envelope_refuse_whole(self):
+        base_size = len(skill_proposal()['run']['carried'][0]['files'][0]['text'].encode())
+        remaining = 32768 - base_size
+        extra = '🙂' * (remaining // 4) + 'x' * (remaining % 4)
+        self.reset_native(skill_proposal(extra))
+        self.assertTrue(self.create()['delivered'])
+        row = self.row()
+        review = ''.join(p['plain'].split('\n', 3)[3] for p in row['bundle']['parts'])
+        self.assertTrue(review.endswith('\n'.join(self.native.ask['run']['does'])))
+        self.assertTrue(all(n.units(p['plain']) <= n.CAP for p in row['bundle']['parts']))
+        self.assertTrue(all(p['message_id'] for p in row['bundle']['parts']))
+        self.reset_native(skill_proposal(extra + 'x'))
+        self.assertFalse(self.create()['delivered'])
+        self.assertEqual(self.sent_count, 0)
+        self.reset_native(skill_proposal())
+        self.config['yard'] = '🙂' * 2000
+        self.assertFalse(self.create()['delivered'])
+        self.assertEqual(self.sent_count, 0)
+        self.assertEqual(self.writes(), [])
+
+    def test_skill_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
+        self.reset_native(skill_proposal())
+        self.assertTrue(self.create()['delivered'])
+        self.press()
+        self.home.rename(self.home.with_name('previous-yard'))
+        self.home.mkdir(mode=0o700)
+        replacement = NativeSocket(self.home)
+        replacement.ask = skill_proposal()
+        self.addCleanup(replacement.close)
+        self.reply()
+        self.assertEqual(self.row()['state'], 'stale')
+        self.assertEqual(self.writes(), [])
+        self.assertFalse(any(method == 'ApproveAsk' for method, _, _ in replacement.calls))
 
     def test_utf16_cap_and_weight_mark_trust(self):
         self.native.ask['question'] = 'WEIGHTY ·  WEIGHTY · forgery\n🙂'
@@ -432,35 +698,65 @@ class NativeTests(BridgeTestCase):
         self.assertEqual(len(self.writes()), 2)
         self.assertEqual(self.edits()[-1]['reply_markup'], {'inline_keyboard': []})
 
+        for mode in ('lost-commit', 'invalid-commit', 'wire-error-commit', 'lost-open', 'lost-unreadable', 'refused'):
+            with self.subTest(skill_write=mode):
+                self.reset_native(skill_proposal())
+                self.create()
+                self.native.mode = mode
+                self.press()
+                self.assertEqual(self.writes(), [])
+                self.reply()
+                self.assertEqual(len(self.writes()), 1)
+                self.assertTrue(self.writes()[0][1]['weighed'])
+                if mode in ('lost-commit', 'invalid-commit', 'wire-error-commit'):
+                    self.assertEqual(self.row()['state'], 'approved')
+                else:
+                    self.assertEqual(self.row()['state'], 'open')
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                self.assertEqual(len(self.writes()), 1)
+                if mode == 'lost-unreadable':
+                    self.assertIn(n.UNCERTAIN, self.edits()[-1]['text'])
+                    self.native.mode = None
+                    self.bridge.run_asks.refresh()
+                    self.assertEqual(self.row()['state'], 'approved')
+
+
     def test_pending_settlement_long_results_and_outcome_edits(self):
-        self.create()
-        self.native.mode = 'carrying'
-        self.press()
-        self.assertEqual(self.row()['state'], 'carrying')
-        self.assertIn('approved, to be carried out', self.edits()[-1]['text'])
-        self.native.ask['ran']['pending_reason'] = 'waiting for report'
-        self.bridge.run_asks.refresh()
-        self.assertIn('waiting for report', self.edits()[-1]['text'])
-        result = 'canonical <failure>\r\n' + '🙂' * 4200
-        self.native.ask['ran'].update(result=result, failed=True, pending_reason='')
-        self.bridge.run_asks = n.RunAsks(self.bridge)
-        self.bridge.run_asks.refresh()
-        self.assertEqual(self.row()['state'], 'failed')
-        sends = [body['text'] for url, body in self.calls if url.endswith('/sendMessage')][1:]
-        footer = ''.join(sends)
-        self.assertTrue(footer.endswith(result))
-        self.assertTrue(all(n.units(part) <= 4096 for part in sends))
-        count = self.sent_count
-        self.bridge.run_asks.refresh()
-        self.assertEqual(self.sent_count, count)
-        self.native.ask['ran'].update(result='edited canonical outcome', failed=False)
-        self.bridge.run_asks.refresh()
-        self.assertIn('edited canonical outcome', self.edits()[-1]['text'])
-        self.native.ask['ran']['result'] = ''
-        self.bridge.run_asks.refresh()
-        self.assertIn('approval recorded', self.edits()[-1]['text'])
-        self.assertNotIn('approved, ran', self.edits()[-1]['text'])
-        self.assertEqual(len(self.writes()), 1)
+        for factory in (proposal, skill_proposal):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                self.create()
+                initial_sends = self.sent_count
+                self.native.mode = 'carrying'
+                self.press()
+                if factory is skill_proposal:
+                    self.reply()
+                self.assertEqual(self.row()['state'], 'carrying')
+                self.assertIn('approved, to be carried out', self.edits()[-1]['text'])
+                self.native.ask['ran']['pending_reason'] = 'waiting for report'
+                self.bridge.run_asks.refresh()
+                self.assertIn('waiting for report', self.edits()[-1]['text'])
+                result = 'canonical <failure>\r\n' + '🙂' * 4200
+                self.native.ask['ran'].update(result=result, failed=True, pending_reason='')
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                self.assertEqual(self.row()['state'], 'failed')
+                sends = [body['text'] for url, body in self.calls if url.endswith('/sendMessage')][initial_sends:]
+                footer = ''.join(sends)
+                self.assertTrue(footer.endswith(result))
+                self.assertTrue(all(n.units(part) <= 4096 for part in sends))
+                count = self.sent_count
+                self.bridge.run_asks.refresh()
+                self.assertEqual(self.sent_count, count)
+                self.native.ask['ran'].update(result='edited canonical outcome', failed=False)
+                self.bridge.run_asks.refresh()
+                self.assertIn('edited canonical outcome', self.edits()[-1]['text'])
+                self.native.ask['ran']['result'] = ''
+                self.bridge.run_asks.refresh()
+                self.assertIn('approval recorded', self.edits()[-1]['text'])
+                self.assertNotIn('approved, ran', self.edits()[-1]['text'])
+                self.assertEqual(len(self.writes()), 1)
 
     def test_concurrent_terminal_decisions_execute_once(self):
         self.create()
@@ -577,24 +873,29 @@ class NativeTests(BridgeTestCase):
         self.assertEqual(len(self.calls), count)
 
     def test_fresh_role_proposal_and_state_checks_on_confirmation(self):
-        self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run'}]
-        self.create()
-        for change in ('role', 'proposal', 'state'):
-            self.native.ask = proposal()
-            self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run'}]
-            self.native.user['role'] = 'operator'
-            self.press(uid=60 + len(self.calls))
-            if change == 'role':
-                self.native.user['role'] = 'member'
-            elif change == 'proposal':
-                self.native.ask['run']['does'].append('changed since tap')
-            else:
-                self.native.ask.update(state='taken back', by='proposer', words='replaced')
-            self.reply(uid=200 + len(self.calls))
-            self.assertEqual(self.writes(), [])
-            row = self.row()
-            row.update(state='open', pending=None)
-            self.bridge.run_asks.save(row)
+        for factory in (proposal, skill_proposal):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                if factory is proposal:
+                    self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run'}]
+                self.create()
+                for change in ('role', 'proposal', 'state'):
+                    self.native.ask = factory()
+                    if factory is proposal:
+                        self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run'}]
+                    self.native.user['role'] = 'operator'
+                    self.press(uid=60 + len(self.calls))
+                    if change == 'role':
+                        self.native.user['role'] = 'member'
+                    elif change == 'proposal':
+                        self.native.ask['run']['does'].append('changed since tap')
+                    else:
+                        self.native.ask.update(state='taken back', by='proposer', words='replaced')
+                    self.reply(uid=200 + len(self.calls))
+                    self.assertEqual(self.writes(), [])
+                    row = self.row()
+                    row.update(state='open', pending=None)
+                    self.bridge.run_asks.save(row)
 
     def test_installed_native_cli_uses_the_same_ledger_and_module(self):
         from test_bridge import write_fake_curl
@@ -736,6 +1037,8 @@ class RealNativeTests(BridgeTestCase):
                 status, response = self.transport(url, body, *args, **kwargs)
                 if url.endswith('/sendMessage'):
                     response['result']['message_id'] = next(ids)
+                elif url.endswith('/editMessageText'):
+                    response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
                 return status, response
             self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
             self.bridge.hook_secret = None
@@ -778,6 +1081,163 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(client.call('GetUser', {'name': 'synthetic-member'})['name'], 'synthetic-member')
             additions = client.call('EventsOfKind', ['user_added', 100])
             self.assertEqual(len([event for event in additions if event['data'].get('approved', {}).get('ask') == strong['ask']]), 1)
+
+            # The new core supplies the carried review; Telegram must deliver it all before buttons.
+            fixture = skill_proposal()
+            old = root / 'old'
+            old.mkdir()
+            (old / 'SKILL.md').write_bytes(fixture['run']['carried'][0]['text'].encode())
+            cli('skill', 'add', str(old))
+            source_dir = root / 'snapshot'
+            source_dir.mkdir()
+            captured = (fixture['run']['carried'][0]['files'][0]['text']
+                        + 'Generic long Unicode line 🙂 <&>\t\r' * 160 + '\n').encode()
+            target = home / 'skills' / 'snapshot' / 'SKILL.md'
+            before = target.read_bytes()
+            before_identity = target.stat().st_ino
+            (source_dir / 'SKILL.md').write_bytes(captured)
+            result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'sample-1',
+                                     'Refresh the synthetic skill?', '--to', 'pat', '--context', 'Synthetic snapshot fixture',
+                                     '--run', 'skill add ' + str(source_dir)], env=env, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            skill = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            # Verify the frozen fixture still uses the real wire contract and canonical metadata.
+            self.assertEqual(set(skill), set(fixture))
+            self.assertEqual(set(skill['run']), set(fixture['run']))
+            self.assertEqual(skill['run']['does'][:2], fixture['run']['does'][:2])
+            self.assertEqual(skill['weight'], fixture['weight'])
+            self.assertEqual(skill['run']['carried'][0]['files'][0]['text'].encode(), captured)
+            # Source provenance is never reopened by the bridge or core carry.
+            (source_dir / 'SKILL.md').unlink()
+            source_dir.rmdir()
+            # Enough unique Telegram IDs for a complete large bundle.
+            ids = iter(range(200, 1000))
+            calls_before = len(self.calls)
+            receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=skill['ask'], key='real-skill'))
+            self.assertTrue(receipt['delivered'], receipt)
+            row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == skill['ask'])
+            sends = [body for url, body in self.calls[calls_before:] if url.endswith('/sendMessage')]
+            self.assertGreater(len(sends), 3)
+            self.assertEqual(len(sends), len(row['bundle']['parts']) + 1)
+            self.assertTrue(all(not body.get('reply_markup') for body in sends[:-1]))
+            self.assertTrue(sends[-1]['reply_markup']['inline_keyboard'])
+            self.assertEqual(target.read_bytes(), before)
+            self.assertEqual(target.stat().st_ino, before_identity)
+            query['data'] = sends[-1]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+            query['message']['message_id'] = row['message_id']
+            self.bridge.inbound(dict(update_id=50, callback_query=query))
+            self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]['state'], 'open')
+            self.assertEqual(target.read_bytes(), before)
+            approvals = []
+            actual_call = self.bridge.run_asks.client.call
+            def record_call(method, args):
+                reply = actual_call(method, args)
+                if method == 'ApproveAsk':
+                    approvals.append(reply)
+                return reply
+            self.bridge.run_asks.client.call = record_call
+            confirmation = dict(update_id=51, message=dict(message_id=901, text=str(skill['ask']),
+                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+                reply_to_message=dict(message_id=row['message_id'], **{'from': dict(id=999, is_bot=True)})))
+            self.bridge.inbound(confirmation)
+            self.assertEqual(len(approvals), 1)
+            self.assertEqual(approvals[0]['result'], n.PENDING)
+            deadline = time.monotonic() + 10
+            while True:
+                settled = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+                if settled.get('ran', {}).get('result') != n.PENDING:
+                    break
+                if time.monotonic() > deadline:
+                    self.fail('real skill carry did not settle')
+                time.sleep(.02)
+            self.assertEqual(settled['state'], 'answered')
+            self.assertFalse(settled['ran'].get('failed'))
+            self.assertEqual(settled['ran']['argv'], skill['run']['argv'])
+            self.assertIn('snapshot', settled['ran']['result'])
+            self.assertEqual(target.read_bytes(), captured)
+            installed = (target.stat().st_ino, target.stat().st_mtime_ns)
+            intents = sorted(p.name for p in (home / 'skills').glob('.carry-skill-*'))
+            self.assertEqual(len(intents), 1)
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+            self.bridge.run_asks.refresh()
+            self.assertEqual(next(r for r in self.bridge.run_asks.rows() if r['ask'] == skill['ask'])['state'], 'approved')
+            self.bridge.inbound(confirmation)
+            self.bridge.inbound(dict(update_id=52, callback_query=query))
+            self.assertTrue(self.bridge.api_ask_close(dict(ask_key='real-skill', decision='invented outcome'))['delivered'])
+            self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=skill['ask'], key='real-skill-repost'))['delivered'])
+            self.assertEqual(target.read_bytes(), captured)
+            self.assertEqual((target.stat().st_ino, target.stat().st_mtime_ns), installed)
+            self.assertEqual(sorted(p.name for p in (home / 'skills').glob('.carry-skill-*')), intents)
+            self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1], settled)
+
+            for offset, scenario in enumerate(('add', 'add-quoted', 'add-block', 'decline', 'target-drift', 'unfamiliar-metadata'), 1):
+                with self.subTest(real_skill=scenario):
+                    name = 'snapshot-' + scenario
+                    if scenario == 'target-drift':
+                        cli('skill', 'add', str(old), '--name', name)
+                    source_dir.mkdir()
+                    proposed_bytes = captured
+                    if scenario == 'add-quoted':
+                        proposed_bytes = captured.replace(b'description: Generic proposed instructions', b'description: "Generic proposed instructions"')
+                    elif scenario == 'add-block':
+                        proposed_bytes = captured.replace(b'description: Generic proposed instructions', b'description: >-\r\n  Generic proposed\r\n  instructions')
+                    elif scenario == 'unfamiliar-metadata':
+                        proposed_bytes = captured.replace(b'name: snapshot', b'license: MIT\r\nname: snapshot')
+                    (source_dir / 'SKILL.md').write_bytes(proposed_bytes)
+                    result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'sample-1',
+                        'Review a synthetic single-file skill?', '--to', 'pat', '--context', 'Isolated native refusal/add case',
+                        '--run', 'skill add ' + str(source_dir) + ' --name ' + name], env=env, cwd=root, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    proposed = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+                    if scenario.startswith('add'):
+                        carried = proposed['run']['carried'][0]
+                        self.assertEqual(carried['text'], '')
+                        # Core omits empty old-state fields on an add, not on a refresh.
+                        self.assertNotIn('inventory', carried)
+                        self.assertNotIn('old_sha256', carried['old'][0])
+                    with self.assertRaises(n.RPCRefused):
+                        client.call('ApproveAsk', dict(bead='sample-1', ask=proposed['ask'], actor='proposer', weighed=True, values={}))
+                    shown = self.bridge.api_run_ask(dict(bead='sample-1', ask=proposed['ask'], key=name))
+                    if scenario == 'unfamiliar-metadata':
+                        self.assertFalse(shown['delivered'])
+                        self.assertIn('unsupported native skill metadata', shown['reason'])
+                        self.assertFalse((home / 'skills' / name).exists())
+                        (source_dir / 'SKILL.md').unlink()
+                        source_dir.rmdir()
+                        continue
+                    self.assertTrue(shown['delivered'], shown)
+                    row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == proposed['ask'])
+                    action = 'decline' if scenario == 'decline' else 'approve'
+                    query['data'] = f"runask:{row['id']}:{action}"
+                    query['message']['message_id'] = row['message_id']
+                    self.bridge.inbound(dict(update_id=100 + offset * 2, callback_query=query))
+                    target = home / 'skills' / name / 'SKILL.md'
+                    if scenario == 'target-drift':
+                        drifted = before.replace(b'Keep', b'Change')
+                        target.write_bytes(drifted)
+                    if scenario != 'decline':
+                        self.bridge.inbound(dict(update_id=101 + offset * 2, message=dict(
+                            message_id=1001 + offset, text=str(proposed['ask']), chat=dict(id=123, type='private'),
+                            **{'from': dict(id=123, is_bot=False)}, reply_to_message=dict(message_id=row['message_id']))))
+                    deadline = time.monotonic() + 10
+                    while True:
+                        final = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+                        if final.get('ran', {}).get('result') != n.PENDING:
+                            break
+                        if time.monotonic() > deadline:
+                            self.fail('real skill add did not settle')
+                        time.sleep(.02)
+                    if scenario.startswith('add'):
+                        self.assertEqual(final['state'], 'answered')
+                        self.assertEqual(target.read_bytes(), proposed_bytes)
+                    elif scenario == 'decline':
+                        self.assertEqual(final['state'], 'declined')
+                        self.assertFalse(target.exists())
+                    else:
+                        self.assertEqual(final['state'], 'open')
+                        self.assertEqual(target.read_bytes(), drifted)
+                    (source_dir / 'SKILL.md').unlink()
+                    source_dir.rmdir()
         finally:
             server.terminate()
             server.wait(timeout=10)

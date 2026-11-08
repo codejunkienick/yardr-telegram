@@ -84,6 +84,11 @@ Release history: `CHANGELOG.md`.
 - yardr 0.16 or later with the yard running (`yardr version`), and the
   yard's hook listener on a loopback address (`yardr settings get
   hook_addr`).
+- Optional native skill review needs the core captured single-file proposal
+  capability (introduced at `a79f6f8162c8`) and the paired operator setup in
+  [SETUP.md](yardr/SETUP.md#single-file-skill-snapshots). Full review parts
+  precede buttons; Approve requires a direct ask-number reply. Other
+  file-bearing proposals remain unsupported.
 - For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).

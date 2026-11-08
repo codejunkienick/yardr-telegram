@@ -117,3 +117,11 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/OPERATIONS.md | "message to pin not found" (the user deleted the message before its pin | a deleted message is replaced |
 <!-- /citations -->
 ```
+
+
+Native run/skill approval: `bridge/run_asks.py` (`validate`, `validate_skill`,
+`skill_bundle`, `RunAsks.send_card`, `callback`, `reply`, `decide`, `settle`,
+`refresh`); `bridge/OPERATIONS.md`, “Captured single-file skill review”;
+`yardr/SETUP.md`, “Single-file skill snapshots”. The fixture
+`bridge/fixtures/skill_add.json` was captured from a real isolated core Bead
+response; real CLI/RPC/carry coverage is in `bridge/test_run_asks.py`.

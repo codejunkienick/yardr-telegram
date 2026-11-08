@@ -217,3 +217,16 @@ preserves one-use confirmations, delivery keys and canonical revisions;
 ambiguous writes re-read Bead, execution pending is separate from success,
 and polling reconciles settlements and outcome edits. Long results split
 into bounded ledger-backed messages without truncating the canonical text.
+
+
+Native skill snapshots additionally support `skill add <absolute-source>
+[--name <name>]` using the core's existing `run.carried` envelope, never a
+new run.skill field. The bridge verifies its single-file manifest, metadata,
+old inventory, exact bytes/digests, replacement diff, complete canonical Does
+and strong code weight. It delivers the entire quoted review in numbered
+ledger-backed reply-chain parts before the bound approval card, with exact
+UTF16 envelope limits and no rewriting of file content. The same weighted
+human confirmation and canonical carry settlement apply. Additional files,
+deletions and other file-bearing proposals remain refused. See
+[the exact scope and recovery limits](bridge/OPERATIONS.md#captured-single-file-skill-review)
+and [bootstrap requirements](yardr/SETUP.md#single-file-skill-snapshots).

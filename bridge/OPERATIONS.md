@@ -2084,9 +2084,11 @@ run/weight and Telegram message. Custom commands and publish keyboards
 cannot use `runask:`. Move any existing overlapping callback_prefix to a
 different namespace before updating. The complete canonical card is HTML-escaped and limited
 to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
-following Footplate; canonical warning lines alone are bold. V1 refuses
-secret/setup/identity/depot_push, parameter inputs, carried files, pack
-plans and crew-add prompts, with a Footplate/cards fallback before sending.
+following Footplate; canonical warning lines alone are bold. Self-contained
+cards keep that limit. A captured single-file `skill add` uses the complete
+review bundle below. Secret/setup/identity/depot_push, parameter inputs,
+other carried files, pack plans and crew-add prompts still refuse before
+sending, with Footplate/cards as the fallback.
 
 Routine Approve calls ApproveAsk with weighed=false after fresh checks.
 Weighty Approve only persists a pending confirmation and edits the card
@@ -2129,3 +2131,59 @@ See [source setup](../yardr/SETUP.md#12-native-run-cards-operator-optional)
 for declaration installation, explicit `yardr source grant tgbridge run_ask
 --crew yardmaster`, operator bootstrap, check-install and restart. The pack
 contains no grants; builder/secretary/blanket grants are not required.
+
+
+### Captured single-file skill review
+
+A native `skill add <absolute-source> [--name <name>]` can add or refresh one
+regular `SKILL.md`. Both source and standing destination must contain only
+that file, each at most 32768 UTF-8 bytes. Extra files, directories, symlinks,
+deletions and multi-file source/pack/crew proposals remain unsupported.
+The source is provenance: the server installs the captured bytes even after
+that source changes or disappears. No assignment, grant or account changes.
+
+This requires the core captured-snapshot contract documented in its
+`docs/api.md`, “Skill-add proposal contract”, introduced by core revision
+`a79f6f8162c8`. Version labels alone are insufficient: every call checks the
+actual canonical argv/command/description, complete carried manifest,
+metadata, old bytes/inventory/mode/size, hashes, replacement diff, complete
+quoted Does sections, truthful undo text and exact strong code weight.
+Older or unfamiliar shapes refuse before any interactive send. The bridge's
+metadata reader accepts name/description frontmatter using plain, JSON-style
+double-quoted, YAML single-quoted or simple block strings; other YAML forms
+or additional metadata keys require Footplate/cards. It adds no dependency
+or permission layer. Core remains the authority for live target/holder and
+operator checks under its apply lock.
+
+The bundle shows every canonical Does line: metadata/holders, old/new
+identity, complete proposed and standing bytes and the replacement diff.
+Quoted strings preserve CRLF, tabs, trailing newlines, Unicode and literal
+weight marks. Content is HTML-escaped inside preformatted blocks and labelled
+untrusted in every envelope. It is never stripped, normalized or shortened.
+A long line splits between Unicode codepoints; the *whole* envelope stays
+within 3500 visible UTF16 units. An envelope/card that cannot fit refuses
+before sending any bundle part. No file attachment or partial preview is
+used as approval evidence.
+
+SQLite's existing native row stores the binding/proposal digest, ordered
+bundle and part hashes, stable send keys, conversation and confirmed message
+IDs. Every part replies to its predecessor; the final card names the bundle
+digest/count and replies to its last part. Open that quoted reply, then
+follow the part reply chain to part 1. ALL parts must be confirmed before a
+live Approve button is sent. A definitely unsent part retries under its
+original key; confirmed parts stay sent. Ambiguous delivery stays blocked
+under the existing ledger's manual reconciliation semantics, even after a
+restart or a different caller key. There is no automatic duplicate-send
+repair or recovery of a deleted Telegram message. Preserve the ledger.
+
+Skill bundle digests also bind the native home directory device/inode, so
+replacing a home at the same path cannot reuse an identical proposal.
+Native ownership/proposal/state is reread before each part, transport retry
+and final card, as well as before every decision. Changes invalidate the
+binding; old/new bundles cannot mix. Approve first opens the existing
+five-minute direct-reply ask-number confirmation; the tap does not install.
+Decline/cancel never install. Approval recorded/pending carry, verified
+installation, failure and uncertain transport remain distinct canonical
+states. Polling/restart and ask_close reconcile the same native answer;
+caller-supplied decision text cannot declare success. Filesystem writes and
+recovery belong entirely to the core server, never the bridge.

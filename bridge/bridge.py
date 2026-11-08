@@ -3153,7 +3153,7 @@ class Bridge:
                 and sent.get('chat', {}).get('id') == self.config['chat_id'])
 
     def _deliver_text(self, text, reply, pending, plain=None, method='sendMessage', extra=None, fallback_reason=None,
-                      not_modified=False):
+                      not_modified=False, before_attempt=None):
         """Send text; `plain` is set for HTML, and is the one fallback body
         sent (under the same key, same reservation) when Telegram cannot parse
         the markup. The first send was then definitively not delivered, so
@@ -3168,7 +3168,11 @@ class Bridge:
         if reply:
             body['reply_parameters'] = {'message_id': int(reply)}
         try:
-            status, data = self._send(method, lambda timeout: self.telegram(method, body, timeout))
+            def attempt(timeout):
+                if before_attempt is not None:
+                    before_attempt()
+                return self.telegram(method, body, timeout)
+            status, data = self._send(method, attempt)
             if self._confirmed(status, data):
                 if fallback_reason is not None:
                     return self.receipt(True, message_id=str(data['result']['message_id']),
@@ -3178,7 +3182,8 @@ class Bridge:
                     and data.get('error_code') == 400 and 'message is not modified' in str(data.get('description', '')).lower()):
                 return self.receipt(True, message_id=str(extra['message_id']))
             if plain is not None and self._html_rejected(data):
-                receipt = self._deliver_text(plain, reply, pending, method=method, extra=extra, not_modified=not_modified)
+                receipt = self._deliver_text(plain, reply, pending, method=method, extra=extra, not_modified=not_modified,
+                                             before_attempt=before_attempt)
                 if receipt is not pending:
                     receipt['format_fallback_reason'] = 'telegram_html_parse_rejected_400'
                 return receipt

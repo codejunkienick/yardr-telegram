@@ -1,0 +1,97 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Refresh the synthetic skill?",
+  "context": [
+    "Synthetic snapshot fixture"
+  ],
+  "options": [],
+  "state": "open",
+  "run": {
+    "argv": [
+      "skill",
+      "add",
+      "/synthetic/proposal"
+    ],
+    "command": "yardr skill add /synthetic/proposal",
+    "description": "Copy a skill directory into the yard's skills",
+    "does": [
+      "skill snapshot: \"Generic proposed instructions\"",
+      "source directory is provenance only; installs the captured snapshot even if the source changes or disappears.",
+      "writes skills/snapshot/SKILL.md, mode 0644; sha256 b01c627f47bde2b898b606cb9485c7965dd10117a7681fde8190689930b898fa -> c1e52b38f75cebc2b6460f89946ba37eb7e04b24b28fce1b2dad0fdfcf97a10e",
+      "standing metadata name: snapshot; description: \"Generic standing instructions\"",
+      "current holders and affected readers: none",
+      "changes no assignments, grants, credentials or accounts; future reads of this skill see the new instructions.",
+      "no automatic undo; any retained recovery copy requires an operator to review and restore it in a terminal.",
+      "proposed SKILL.md (quoted UTF-8 lines, including line endings):",
+      "\"---\\r\\n\"",
+      "\"name: snapshot\\r\\n\"",
+      "\"description: Generic proposed instructions\\r\\n\"",
+      "\"---\\r\\n\"",
+      "\"Review <b> & 'quoted' synthetic notes. 🙂\\r\\n\"",
+      "\"WEIGHTY · not authority\\r\\n\"",
+      "\"No automatic execution.\\t\\n\"",
+      "standing SKILL.md (quoted UTF-8 lines, including line endings):",
+      "\"---\\n\"",
+      "\"name: snapshot\\n\"",
+      "\"description: Generic standing instructions\\n\"",
+      "\"---\\n\"",
+      "\"Keep the synthetic notes.\\n\"",
+      "replacement diff (quoted UTF-8 lines, including line endings):",
+      "\"--- was\\n\"",
+      "\"+++ is\\n\"",
+      "\"@@ -1,5 +1,7 @@\\n\"",
+      "\"----\\n\"",
+      "\"-name: snapshot\\n\"",
+      "\"-description: Generic standing instructions\\n\"",
+      "\"----\\n\"",
+      "\"-Keep the synthetic notes.\\n\"",
+      "\"+---\\r\\n\"",
+      "\"+name: snapshot\\r\\n\"",
+      "\"+description: Generic proposed instructions\\r\\n\"",
+      "\"+---\\r\\n\"",
+      "\"+Review <b> & 'quoted' synthetic notes. 🙂\\r\\n\"",
+      "\"+WEIGHTY · not authority\\r\\n\"",
+      "\"+No automatic execution.\\t\\n\""
+    ],
+    "back": "no automatic undo; review and restore the previous skill in a terminal",
+    "back_by": "only the operator",
+    "carried": [
+      {
+        "name": "snapshot",
+        "text": "---\nname: snapshot\ndescription: Generic standing instructions\n---\nKeep the synthetic notes.\n",
+        "files": [
+          {
+            "program": "SKILL.md",
+            "text": "---\r\nname: snapshot\r\ndescription: Generic proposed instructions\r\n---\r\nReview <b> & 'quoted' synthetic notes. 🙂\r\nWEIGHTY · not authority\r\nNo automatic execution.\t\n",
+            "sha256": "c1e52b38f75cebc2b6460f89946ba37eb7e04b24b28fce1b2dad0fdfcf97a10e"
+          }
+        ],
+        "old": [
+          {
+            "program": "SKILL.md",
+            "old_sha256": "b01c627f47bde2b898b606cb9485c7965dd10117a7681fde8190689930b898fa",
+            "new_sha256": "c1e52b38f75cebc2b6460f89946ba37eb7e04b24b28fce1b2dad0fdfcf97a10e",
+            "diff": "--- was\n+++ is\n@@ -1,5 +1,7 @@\n----\n-name: snapshot\n-description: Generic standing instructions\n----\n-Keep the synthetic notes.\n+---\r\n+name: snapshot\r\n+description: Generic proposed instructions\r\n+---\r\n+Review <b> & 'quoted' synthetic notes. 🙂\r\n+WEIGHTY · not authority\r\n+No automatic execution.\t\n"
+          }
+        ],
+        "inventory": [
+          {
+            "path": "SKILL.md",
+            "sha256": "b01c627f47bde2b898b606cb9485c7965dd10117a7681fde8190689930b898fa",
+            "mode": "0644",
+            "size": 92
+          }
+        ]
+      }
+    ]
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: writes agent instructions for skill snapshot"
+    }
+  ]
+}

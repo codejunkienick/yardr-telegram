@@ -232,10 +232,12 @@ minutes. A free-standing number never confirms anything. Cancel clears the
 confirmation; Decline records a native decline without execution. Telegram
 never asks for a device or account password.
 
-V1 supports self-contained native run asks only. Secret, setup, identity,
+Self-contained native run asks retain their original behavior. Secret,
+setup, identity,
 depot-push, parameter input, carried source/pack files and crew-add prompt
-payloads are refused before sending. Cards over 3500 visible UTF16 units
-are refused whole. Use Footplate or the yard cards for those proposals;
+payloads are refused before sending, except the verified single-file skill
+snapshot described below. Self-contained cards over 3500 visible UTF16 units
+are refused whole. Use Footplate or the yard cards for refused proposals;
 ordinary send/tell summaries cannot authorize an approval.
 
 Native `ask_close` keeps its existing selector contract:
@@ -260,3 +262,50 @@ is shown as "approved, to be carried out", then refreshed on polling or
 Long canonical outcomes are delivered whole in bounded, keyed messages.
 Keep the ledger when moving/restarting the bridge; deleting it loses these
 bindings and delivery history.
+
+
+### Single-file skill snapshots
+
+After the reviewed core and bridge are installed, propose a fresh skill
+snapshot and publish its returned ask number with the same per-call grant
+and pairing above:
+
+```sh
+yardr bead ask <bead> "Refresh the reviewed skill?" \
+  --context "Review all quoted file and replacement diff parts before approval." \
+  --run "skill add /absolute/path/to/release-notes --name release-notes"
+yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=skill-review-1
+```
+
+Minimum core capability is the captured single-file contract introduced at
+`a79f6f8162c8`, checked from the actual per-call payload, not inferred from a
+version string. Core and bridge must agree on complete canonical review,
+manifest, bytes/digests, old inventory, metadata, code weight and pending/
+settled carry semantics. Hook-only configurations still need no native keys.
+No new grant or filesystem sandbox exception is needed. Installation, source
+updates, grants and service restart are the coordinator/operator's reviewed
+steps; builders test only synthetic homes, never install their worktree.
+
+Only one regular textual SKILL.md (at most 32 KiB on either side) is
+supported; extra source/standing files and deletion are refused. Frontmatter
+is limited to name/description with plain, quoted or simple block strings;
+other metadata/YAML requires the native full client. The complete canonical
+review, proposed/standing files and replacement diff arrive as numbered,
+escaped, untrusted review parts before the approval card. Every part and the
+card name the same bundle digest; the card replies to its final part and
+that part replies to its predecessor. Follow those replies to review all
+parts. Long lines and Unicode split safely without changing captured bytes.
+
+The first Approve tap only asks for a direct reply with the exact ask number
+within five minutes; only the paired operator can confirm. The source is a
+captured snapshot, so later source edits/deletion do not change approval.
+Changed standing state or holders are refused by core. Approval recorded
+and pending carry are separate from verified installed success or failure;
+check the canonical outcome after uncertainty. There is no automatic undo.
+
+Repeat the same run_ask call after a definitely unsent part: confirmed parts
+are retained, missing parts resume, and no button appears until complete.
+An ambiguous part/card is never blindly resent, even with another key or
+a restart; use existing delivery-ledger reconciliation with the operator.
+Keep SQLite state. Details and rendering limits are in
+[operations](../bridge/OPERATIONS.md#captured-single-file-skill-review).

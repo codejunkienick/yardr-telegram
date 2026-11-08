@@ -26,6 +26,9 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 # added with (yardr hook add tgbridge --source tgbridge --secret-file <it>).
 [yardr]
 # Optional native cards: set BOTH after installing tgbridge and binding the operator.
+# Single-file skill snapshots also require the core captured-snapshot capability
+# (a79f6f8162c8 or compatible); complete review parts precede weighted confirmation.
+# See yardr/SETUP.md. No new settings, blanket grant or yard filesystem writes.
 # home = "~/.yardr"                 # private existing yard; socket is home/yard.sock
 # operator = "operator"             # current operator user mapped to bot.user_id
 hook_url = "http://127.0.0.1:8795/hooks/tgbridge"

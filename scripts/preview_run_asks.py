@@ -3,6 +3,47 @@
 from html import escape
 import importlib.util
 from pathlib import Path
+import sys
+
+
+def skill_cards():
+    # Drive the real bridge state machine with the existing offline transports.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests, skill_proposal
+    case = NativeTests()
+    case.setUp()
+    cards = []
+    def capture(label, body, group):
+        buttons = [item['text'] for row in body.get('reply_markup', {}).get('inline_keyboard', []) for item in row]
+        reply = body.get('reply_parameters', {}).get('message_id')
+        navigation = f'Reply to message {reply}' if reply else ''
+        controls = ''.join('<button>' + escape(button) + '</button>' for button in buttons)
+        cards.append(f'<section class="{group}"><h2>' + escape(label) + '</h2><article>'
+                     + '<div class="navigation">' + escape(navigation) + '</div><div class="body">' + body['text']
+                     + '</div><div class="buttons">' + controls + '</div></article></section>')
+    try:
+        case.native.ask = skill_proposal('Generic long line <&> 🙂; file content only. ' * 35 + '\n')
+        case.config['yard'] = 'example'
+        case.create()
+        sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
+        for index, body in enumerate(sends[:-1], 1):
+            capture(f'Complete review · part {index}/{len(sends)-1}', body, 'bundle')
+        capture('Final bound approval card', sends[-1], 'states')
+        case.press()
+        capture('Direct reply confirmation · first tap installs nothing', case.edits()[-1], 'states')
+        case.native.mode = 'carrying'
+        case.reply()
+        capture('Approval recorded · pending carry', case.edits()[-1], 'states')
+        case.native.ask['ran'].update(result='skill snapshot: installed the captured SKILL.md bytes', pending_reason='')
+        case.bridge.run_asks.refresh()
+        capture('Settled canonical installation', case.edits()[-1], 'states')
+        case.native.ask['ran'].update(result='Synthetic failure: target changed; nothing installed', failed=True)
+        case.bridge.run_asks.refresh()
+        capture('Alternative canonical failure', case.edits()[-1], 'states')
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
 
 
 def main():
@@ -42,6 +83,8 @@ def main():
          '✓ approved, ran: yardr source set example calls_per_hour=60\nsource example: calls_per_hour: 60')
     card('Failed canonical outcome', routine,
          '✕ approved, failed: yardr source set example calls_per_hour=60\nThe synthetic external operation failed')
+    if '--skill' in sys.argv:
+        cards = skill_cards()
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}
@@ -50,8 +93,14 @@ h2{font-size:16px;margin:0 0 10px}article{background:white;border:1px solid #cfd
 .body{white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.45 monospace;background:#eef4f8;border-radius:6px;padding:9px;margin:0}
 b{font-weight:700}.footer{white-space:pre-wrap;border-top:1px solid #d9e5ed;padding-top:12px;margin-bottom:0}
 .buttons{display:flex;gap:8px;margin-top:16px}button{flex:1;border:0;border-radius:7px;padding:11px 5px;background:#e2eff9;color:#226295;font-weight:600}
+.navigation{font-size:12px;color:#496175;margin-bottom:8px}section{min-width:0}
 </style><h1>Native operator run cards</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid">'''
-          + ''.join(cards) + '</div>')
+          + ''.join(cards) + '''</div><script>
+const view = new URLSearchParams(location.search).get('view');
+if (view === 'bundle' || view === 'states') {
+  document.querySelectorAll('section').forEach(section => section.hidden = !section.classList.contains(view));
+}
+</script>''')
 
 
 if __name__ == '__main__':

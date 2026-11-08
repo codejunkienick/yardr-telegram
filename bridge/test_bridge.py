@@ -1230,7 +1230,8 @@ class BridgeTests(BridgeTestCase):
                      'a new message takes a new key',
                      "optional: the settings' bot.chat_id, or <chat id>:topic:<thread id> of a configured "
                      'topic, as the message notice names it',
-                     'send, reply-current: send into the configured topic of this name, instead of --conversation-id',
+                     'send, reply-current, run-ask: send into the configured topic of this name, '
+                     'instead of --conversation-id',
                      'absolute path of a file to send, the body as its caption'):
             self.assertIn(text, help_text)
 

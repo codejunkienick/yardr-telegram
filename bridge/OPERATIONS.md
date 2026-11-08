@@ -2062,3 +2062,70 @@ and the kernel picks a port.
 Wire references: `YARDR.md` (the hook's body and the yard API) and
 `<repo>/yardr/tgbridge.yaml` (the source the yard reaches the bridge
 through).
+
+## Native run cards
+
+`run_asks.py` owns native socket framing, payload checks, rendering and the
+SQLite state machine. `bridge.py` supplies its existing ledger-backed
+transport, routing, callbacks and ordinary asks. The optional `[yardr] home`
+and `operator` settings must be set together. The socket is always resolved
+`home/yard.sock`; check-install verifies its owner/type and current operator
+mapping. No sandbox write exceptions are installed for native cards.
+
+Authenticated `POST /v1/run-ask` accepts exactly `bead`, positive `ask`,
+`topic`/`conversation`, `silent`, and `key` (or Idempotency-Key). It reads
+GetUser and Bead over the native RPC socket with X-Yardr-Connection naming
+the configured source. RPC answers use `result` or structured
+`error: {code, message}`. Caller-supplied approval data is refused.
+
+Each card binds the configured yard/home/source/operator, paired bot/user/
+chat, conversation, native recipient, question, proposer, context, complete
+run/weight and Telegram message. Custom commands and publish keyboards
+cannot use `runask:`. Move any existing overlapping callback_prefix to a
+different namespace before updating. The complete canonical card is HTML-escaped and limited
+to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
+following Footplate; canonical warning lines alone are bold. V1 refuses
+secret/setup/identity/depot_push, parameter inputs, carried files, pack
+plans and crew-add prompts, with a Footplate/cards fallback before sending.
+
+Routine Approve calls ApproveAsk with weighed=false after fresh checks.
+Weighty Approve only persists a pending confirmation and edits the card
+with a direct-reply prompt. The paired human must reply to that bound
+message, in the same chat/topic, with the exact ask number within 300
+seconds. No sole-pending-card fallback exists. Forwarded/bot/wrong-owner/
+wrong-topic/wrong-reply/expired/cancelled/stale/replayed confirmations cannot
+approve. Mismatch/expiry clear the confirmation. Cancel restores the open
+card. Decline needs the same ownership checks and no weight confirmation.
+Only actual bound confirmation replies are consumed; other chat continues.
+No account or device passwords are requested.
+
+The state lives beside ordinary asks in the existing SQLite ledger;
+process locks serialize terminal interactions and durable update claims
+prevent replay. Send reservations precede Telegram: an ambiguous card send
+is not resent. Repeating a run-ask request returns its original receipt even
+while weight confirmation is pending, including after restart. Caller keys
+cannot be shared between native cards and ordinary sends; the second kind
+refuses with `idempotency_key_conflict` before sending. Existing ordinary
+ask-key selectors retain their meaning if an older ledger has a collision.
+A write's answer never establishes its outcome alone: the
+bridge re-reads Bead, including after a native wire error or generic HTTP
+failure. A timeout/EOF/invalid response after sending is uncertain; no
+blind write retry occurs. Fresh taps read canonical state again. If the
+outcome cannot be read, the operator sees "the yard did not answer; read
+the card again", never a success inferred from silence.
+
+`ask_close` keeps decision plus message_id/ask_key for compatibility.
+Native selectors ignore decision and refuse open/put-aside asks; terminal
+words, take-back by, ran.result, pending_reason and failed come from Bead.
+CarryPending means "approved, to be carried out", not successful execution.
+Polling and native ask_close reconcile crash-after-commit, settlements and
+later outcome edits. Canonical revisions give edits, outcome parts and hook
+relays distinct stable keys. Long outcomes split into messages of at most
+3500 UTF16 units; exact result text is retained. A committed approval stays
+recorded even if its edit/relay delivery is not confirmed. Keep the ledger
+across service restarts and checkout moves.
+
+See [source setup](../yardr/SETUP.md#12-native-run-cards-operator-optional)
+for declaration installation, explicit `yardr source grant tgbridge run_ask
+--crew yardmaster`, operator bootstrap, check-install and restart. The pack
+contains no grants; builder/secretary/blanket grants are not required.

@@ -10,8 +10,11 @@ changes must stay true for every adopter.
 sh scripts/test.sh
 ```
 
-The suite is offline and fake-only: it fakes Telegram, the yard and whisper-cli,
-uses temporary directories, and reaches no network. It needs no real
+The suite is offline: it fakes Telegram and whisper-cli,
+uses temporary directories, and reaches no external network. When yardr is on
+PATH it also starts an isolated native store/server and proves a stored
+operation executes once; that test skips without the binary. Its subprocesses
+use a temporary HOME/state/PATH with no YARDR variables. It needs no real
 settings file and starts no unit. It needs Python 3.11 or later, and curl for the tests that run the real curl against a loopback server (they skip without it). Extra arguments go to unittest, for
 example `sh scripts/test.sh -v`. CI runs the same suite on Ubuntu and macOS with Python 3.11 and 3.13, and Windows is covered only through the Linux job because hosted Windows runners cannot run WSL 2.
 

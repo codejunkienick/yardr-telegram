@@ -97,6 +97,9 @@ PACK_DIR = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True  # the pack directory is read-only under the unit
 _transcriber_spec = importlib.util.spec_from_file_location(
     'voice_transcribe', PACK_DIR / 'transcriber' / 'voice_transcribe.py')
+_native_spec = importlib.util.spec_from_file_location('run_asks', Path(__file__).resolve().with_name('run_asks.py'))
+run_asks = importlib.util.module_from_spec(_native_spec)
+_native_spec.loader.exec_module(run_asks)
 voice_transcribe = importlib.util.module_from_spec(_transcriber_spec)
 _transcriber_spec.loader.exec_module(voice_transcribe)
 SETTINGS_ENV = 'TELEGRAM_BRIDGE_SETTINGS'
@@ -518,6 +521,7 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, offset INTEGER NOT NULL)')
             db.execute('INSERT OR IGNORE INTO cursor VALUES (1, ?)', (initial_offset,))
             db.execute('CREATE TABLE IF NOT EXISTS deliveries (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS run_ask_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL, request TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS asks (ask_id TEXT PRIMARY KEY, question TEXT NOT NULL, '
                        'format TEXT NOT NULL, options TEXT NOT NULL, message_id INTEGER, '
                        'answered INTEGER NOT NULL DEFAULT 0, answer TEXT, '
@@ -622,6 +626,8 @@ class Store:
                     return saved
                 db.execute('UPDATE deliveries SET receipt=? WHERE key=?', (json.dumps(pending), key))
                 return None
+            if db.execute('SELECT 1 FROM run_ask_keys WHERE key=?', (key,)).fetchone():
+                raise TransportError('idempotency key reserved for a native ask')
             db.execute('INSERT INTO deliveries VALUES (?, ?, ?)', (key, fingerprint, json.dumps(pending)))
         return None
 
@@ -923,7 +929,7 @@ def _callback_handler(bridge):
     request carries Authorization: Bearer <callback secret>, the yard
     source's credential; every answer is one JSON object."""
     routes = {'/v1/send': 'api_send', '/v1/tell': 'api_tell', '/v1/posted': 'api_posted', '/v1/read': 'api_read',
-              '/v1/react': 'api_react', '/v1/pin': 'api_pin', '/v1/ask-close': 'api_ask_close'}
+              '/v1/react': 'api_react', '/v1/pin': 'api_pin', '/v1/ask-close': 'api_ask_close', '/v1/run-ask': 'api_run_ask'}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         timeout = 5
@@ -1090,6 +1096,7 @@ class Bridge:
         self.conversation = dict(scope_id=self.yard, provider='telegram', account_id=self.account,
                                  conversation_id=str(config['chat_id']), kind='dm')
         self.publish_lock = threading.Lock()
+        self.run_asks = run_asks.RunAsks(self)
         self.stop = threading.Event()
         self.last_heartbeat = None
         # The bot as the start probe's getMe described it; None until then.
@@ -2038,6 +2045,8 @@ class Bridge:
         thread_id = self._topic_thread(message)
         if thread_id is not None and self.auto_topics:
             self._observe_auto_topic(thread_id, message)
+        if attachment is None and isinstance(text, str) and self.run_asks.reply(self._update_id(update), message):
+            return
         found = self._match_command(text) if forward is None and attachment is None and isinstance(text, str) else None
         if found is not None:
             # A command goes to its handler, never to the yard.
@@ -2351,6 +2360,7 @@ class Bridge:
     # (callback_data ask:<ask-id>:<choice>). No [[command]] callback_prefix
     # may equal or overlap it; no handler output may use it.
     ASK_CALLBACK_PREFIX = 'ask:'
+    RESERVED_CALLBACK_PREFIXES = ('ask:', 'runask:')
     ASK_ALREADY_ANSWERED = 'Already answered'
     # The line a close (ask-close) appends to the ask's text or caption.
     ASK_DECIDED_PREFIX = '\n✓ Decided: '
@@ -2604,6 +2614,8 @@ class Bridge:
                     # never be relayed. Refuse rather than mislabel an answer.
                     return None, 'invalid_keyboard'
                 seen.add(data)
+                if data.startswith('runask:'):
+                    return None, 'foreign_callback_data'
                 if data.startswith(self.ASK_CALLBACK_PREFIX):
                     if self._ask_choice(data) is None:
                         return None, 'invalid_keyboard'
@@ -2799,6 +2811,9 @@ class Bridge:
             reason = 'not_authorized'
         elif not isinstance(data, str) or not data:
             reason = 'no_registered_prefix'
+        elif data.startswith('runask:'):
+            self.run_asks.callback(update_id, query)
+            return
         elif data.startswith(self.ASK_CALLBACK_PREFIX):
             self.inbound_ask(update_id, query, data)
             return
@@ -2993,7 +3008,8 @@ class Bridge:
         else:
             ask = self.store.get_ask(self._ask_id_for_key(ask_key))
         if ask is None:
-            return self.receipt(reason='ask_not_found')
+            native = self.run_asks.close(message_id=message_id, ask_key=ask_key)
+            return native if native is not None else self.receipt(reason='ask_not_found')
         if ask['message_id'] is None:
             # The ask's send never confirmed a message: nothing to edit.
             return self.receipt(reason='ask_message_unknown')
@@ -3136,7 +3152,8 @@ class Bridge:
         return (status == 200 and data.get('ok') is True and type(sent.get('message_id')) is int
                 and sent.get('chat', {}).get('id') == self.config['chat_id'])
 
-    def _deliver_text(self, text, reply, pending, plain=None, method='sendMessage', extra=None, fallback_reason=None):
+    def _deliver_text(self, text, reply, pending, plain=None, method='sendMessage', extra=None, fallback_reason=None,
+                      not_modified=False):
         """Send text; `plain` is set for HTML, and is the one fallback body
         sent (under the same key, same reservation) when Telegram cannot parse
         the markup. The first send was then definitively not delivered, so
@@ -3157,8 +3174,11 @@ class Bridge:
                     return self.receipt(True, message_id=str(data['result']['message_id']),
                                         fallback_reason=fallback_reason)
                 return self.receipt(True, message_id=str(data['result']['message_id']))
+            if (not_modified and method == 'editMessageText' and data.get('ok') is False
+                    and data.get('error_code') == 400 and 'message is not modified' in str(data.get('description', '')).lower()):
+                return self.receipt(True, message_id=str(extra['message_id']))
             if plain is not None and self._html_rejected(data):
-                receipt = self._deliver_text(plain, reply, pending, method=method, extra=extra)
+                receipt = self._deliver_text(plain, reply, pending, method=method, extra=extra, not_modified=not_modified)
                 if receipt is not pending:
                     receipt['format_fallback_reason'] = 'telegram_html_parse_rejected_400'
                 return receipt
@@ -3532,6 +3552,28 @@ class Bridge:
         if 'changed' in receipt:
             answer['changed'] = bool(receipt['changed'])
         return answer
+
+    def api_run_ask(self, request, key_header=None):
+        """Publish a canonical native proposal, never caller-provided approval text."""
+        if set(request) - {'bead', 'ask', 'topic', 'conversation', 'silent', 'key'}:
+            raise ApiError('run-ask accepts only bead, ask, routing, silent and key')
+        bead, number = request.get('bead'), request.get('ask')
+        if not isinstance(bead, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}', bead):
+            raise ApiError('run-ask requires a bead id')
+        if type(number) is str and re.fullmatch(r'[1-9][0-9]*', number):
+            number = int(number)
+        if type(number) is not int or not 0 < number < 2 ** 64:
+            raise ApiError('run-ask requires a positive ask number')
+        key = request.get('key') or key_header
+        if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9._:@-]{1,200}', key):
+            raise ApiError('run-ask requires an idempotency key')
+        conversation = self._api_conversation(request)
+        silent = self._api_bool(request.get('silent'), 'silent')
+        try:
+            receipt = self.run_asks.create(bead, number, key, conversation['conversation_id'], silent)
+        except run_asks.NativeError as error:
+            receipt = self.receipt(reason=str(error))
+        return self._api_answer(receipt, conversation)
 
     def api_ask_close(self, request, key_header=None):
         """POST /v1/ask-close: close an open ask with the decision made."""
@@ -4402,6 +4444,7 @@ class Bridge:
                     if status != 200 or data.get('ok') is not True or not isinstance(data.get('result'), list):
                         raise TransportError('Telegram poll rejected')
                     self.record_poll_ok()
+                    self.run_asks.refresh()
                     self.drain(data['result'])
                     failures = 0
                 except PollConflict:
@@ -4450,7 +4493,7 @@ def _build_parser():
     parser.add_argument('--settings', type=Path,
                         help=f'the bridge\'s settings file (default: ${SETTINGS_ENV})')
     parser.add_argument('--port', type=int, help='overrides the settings\' port')
-    parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'ask-close', 'react', 'pin',
+    parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'ask-close', 'run-ask', 'react', 'pin',
                                             'topics', 'set-commands', 'render-unit', 'check-install'))
     parser.add_argument('--body-file', type=Path,
                         help='file holding the message text (send, reply-current)')
@@ -4463,7 +4506,7 @@ def _build_parser():
                         help="optional: the settings' bot.chat_id, or <chat id>:topic:<thread id> of a configured "
                              'topic, as the message notice names it (react: its last accepted message)')
     parser.add_argument('--topic', metavar='NAME',
-                        help='send, reply-current: send into the configured topic of this name, '
+                        help='send, reply-current, run-ask: send into the configured topic of this name, '
                              'instead of --conversation-id; react: react to its last accepted message')
     parser.add_argument('--attachment', type=Path, action='append',
                         help='absolute path of a file to send, the body as its caption; '
@@ -4486,6 +4529,8 @@ def _build_parser():
                              'react to (default: the last accepted message)')
     parser.add_argument('--ask-key',
                         help="ask-close: the ask send's --idempotency-key, instead of --message-id")
+    parser.add_argument('--bead', help='run-ask: the native proposal bead')
+    parser.add_argument('--ask', type=int, help='run-ask: the native ask number')
     parser.add_argument('--decision',
                         help='ask-close: the decision made, one line, shown under the ask in place of its buttons')
     parser.add_argument('--reaction',
@@ -4513,6 +4558,13 @@ def _build_parser():
 
 
 def _validate_attachment_flags(parser, args):
+    if args.command == 'run-ask':
+        if not args.bead or not args.ask or not args.idempotency_key:
+            parser.error('run-ask requires --bead, --ask and --idempotency-key')
+        if args.body_file or args.attachment or args.keyboard_file or args.text_options or args.format != 'plain':
+            parser.error('run-ask takes its entire proposal from the native yard')
+    elif args.bead is not None or args.ask is not None:
+        parser.error('--bead and --ask are run-ask flags')
     if args.attachment_kind and not args.attachment:
         parser.error('--attachment-kind requires --attachment')
     if args.gpu_probe and args.command != 'check-install':
@@ -4525,8 +4577,8 @@ def _validate_attachment_flags(parser, args):
         parser.error('--message-id is a react and ask-close flag')
     if getattr(args, 'conflict_exit_status_given', False) and args.command != 'run':
         parser.error('--conflict-exit-status is a run flag')
-    if args.topic is not None and args.command not in ('send', 'reply-current', 'react'):
-        parser.error('--topic is a send, reply-current and react flag')
+    if args.topic is not None and args.command not in ('send', 'reply-current', 'run-ask', 'react'):
+        parser.error('--topic is a send, reply-current, run-ask and react flag')
     if args.topic is not None and args.conversation_id is not None:
         parser.error('--topic and --conversation-id are exclusive')
     if args.command == 'react' and args.message_id is not None and (args.conversation_id is not None
@@ -4734,7 +4786,7 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
                  'pairing_update_id', 'bot', 'menu', 'transcribe', 'crew', 'command',
                  'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
 # The yard this bridge relays to (YARDR.md, "Settings").
-YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source'}
+YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator'}
 # Keys of the gc pack this fork refuses by name, each with what replaced it.
 GC_SETTINGS = {'city': 'yard', 'agent': 'crew', 'gc_base_url': '[yardr] hook_url',
                'gc_api_token_file': '[yardr] hook_secret_file'}
@@ -4949,8 +5001,9 @@ def _command_settings(data, menu):
         for other in commands:
             if prefix.startswith(other['callback_prefix']) or other['callback_prefix'].startswith(prefix):
                 raise SettingsError(f"settings: {label} callback_prefix overlaps the one of /{other['name']}")
-        if prefix.startswith(Bridge.ASK_CALLBACK_PREFIX) or Bridge.ASK_CALLBACK_PREFIX.startswith(prefix):
-            raise SettingsError(f'settings: {label} callback_prefix overlaps the bridge-owned ask: prefix')
+        for reserved in Bridge.RESERVED_CALLBACK_PREFIXES:
+            if prefix.startswith(reserved) or reserved.startswith(prefix):
+                raise SettingsError(f'settings: {label} callback_prefix overlaps the bridge-owned {reserved} prefix')
         command['callback_prefix'] = prefix
         commands.append(command)
     shown = len(menu) + sum(1 for command in commands if command['menu'])
@@ -5047,6 +5100,17 @@ def load_settings(path, home=None):
         raise SettingsError('settings: yardr.hook_secret_file must differ from token_file and callback_secret_file')
     source = _text_setting(yardr.get('source', 'tgbridge'), 'yardr.source', NAME_RE)
 
+    native = {}
+    if 'home' in yardr or 'operator' in yardr:
+        if not yardr.get('home') or not yardr.get('operator'):
+            raise SettingsError('settings: [yardr] home and operator must be set together')
+        try:
+            native_home = run_asks.validate_home(_path_setting(yardr['home'], 'yardr.home'))
+        except run_asks.NativeError as error:
+            raise SettingsError('settings: ' + str(error)) from None
+        operator = _text_setting(yardr['operator'], 'yardr.operator', re.compile(r'[a-z0-9][a-z0-9._-]{0,63}'))
+        native = dict(yardr_home=str(native_home), yardr_socket=str(native_home / 'yard.sock'), yardr_operator=operator)
+
     menu = data.get('menu', [])
     if not isinstance(menu, list) or len(menu) > 100:
         raise SettingsError('settings: menu must be a list of [[menu]] tables')
@@ -5060,7 +5124,7 @@ def load_settings(path, home=None):
 
     config = dict(yard=yard, account_id=account, hook_url=hook_url, yardr_source=source,
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),
-                  timezone=timezone, menu=tuple(menu_entries), **ids)
+                  timezone=timezone, menu=tuple(menu_entries), **ids, **native)
     # The crew member: internally the bridge's agent, as the ledger names it.
     agent = _text_setting(data.get('crew', 'yardmaster'), 'crew')
     config['agent'] = agent
@@ -5409,6 +5473,12 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
             check(what in secrets_made, f'{what} file {"is created by install.sh" if what in secrets_made else "is missing"}')
         except (OSError, TransportError):
             check(False, f'{what} file must be an owner-only regular file')
+    if settings.config.get('yardr_home'):
+        try:
+            run_asks.verify_operator(run_asks.YardSocketClient(settings.config['yardr_home'], settings.config['yardr_source']), settings.config)
+            check(True, 'native yard socket and current operator identity')
+        except run_asks.NativeError as error:
+            check(False, str(error))
     check(settings.state_dir.is_dir() or settings.state_dir.parent.is_dir(), f'state directory {settings.state_dir}')
     check(settings.lock_dir.is_dir(), f'lock directory {settings.lock_dir}')
     for command in settings.config.get('commands', ()):
@@ -5696,6 +5766,12 @@ def main():
         conversation = _outbound_conversation(bridge, args)
         message_id = _dispatch_outbound(bridge, args, args.body_file.read_text(), conversation)
         print('Telegram delivery confirmed; message ID ' + str(message_id))
+    elif args.command == 'run-ask':
+        result = bridge.api_run_ask(dict(bead=args.bead, ask=args.ask, key=args.idempotency_key,
+                                       topic=args.topic, conversation=args.conversation_id, silent=args.silent))
+        print(json.dumps(result))
+        if not result['delivered']:
+            raise TransportError('native card not delivered: ' + result['reason'])
     elif args.command == 'ask-close':
         # Directly in this process through the shared ledger; GC is never called.
         receipt = bridge.close_ask(args.decision, message_id=args.message_id, ask_key=args.ask_key)

@@ -25,6 +25,9 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 # (the yard's hook_addr) and the hook's name, and the secret the hook was
 # added with (yardr hook add tgbridge --source tgbridge --secret-file <it>).
 [yardr]
+# Optional native cards: set BOTH after installing tgbridge and binding the operator.
+# home = "~/.yardr"                 # private existing yard; socket is home/yard.sock
+# operator = "operator"             # current operator user mapped to bot.user_id
 hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
 hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints it
 # source = "tgbridge"                       # the declared source's name, in printed lines

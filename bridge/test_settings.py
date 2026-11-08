@@ -337,7 +337,7 @@ class ExampleSettingsTests(unittest.TestCase):
     EXPECTED = {
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
-        'yardr': {'hook_url', 'hook_secret_file', 'source'},
+        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},
         'menu': {'command', 'description'},
         'command': {'name', 'description', 'handler', 'menu', 'callback_prefix', 'timeout'},
@@ -371,6 +371,7 @@ class ExampleSettingsTests(unittest.TestCase):
         return keys
 
     def _write_example(self, command='handler', transcribe='method'):
+        (self.root / 'yard').mkdir(mode=0o700, exist_ok=True)
         private = self.root / 'private'
         private.mkdir(mode=0o700, exist_ok=True)
         for name, mode in (('telegram-bot-token', 0o600), ('callback-secret', 0o600), ('hook-secret', 0o600),
@@ -382,6 +383,7 @@ class ExampleSettingsTests(unittest.TestCase):
         for old, new in sorted({
                 '/home/alex/.local/state/example-telegram': str(self.root / 'state'),
                 '~/.config/example-telegram': str(private),
+                '~/.yardr': str(self.root / 'yard'),
                 '/home/alex/example/health.json': str(self.root / 'health.json'),
                 '/home/alex/example/var/deploy': str(self.root / 'deploy'),
                 '/home/alex/example/bin/telegram-deploy': str(private / 'telegram-deploy'),

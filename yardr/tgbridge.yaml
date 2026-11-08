@@ -89,6 +89,20 @@ calls:
       method: POST
       path: /v1/pin
       body: { slot: "{slot}", unpin: true }
+  run_ask:
+    kind: update
+    about: Publish a native run proposal from the configured yard for its paired operator
+    params:
+      bead:         { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" }
+      ask:          { type: string, pattern: "^[1-9][0-9]*$" }
+      topic:        { type: string, max: 128, optional: true }
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$", optional: true }
+      silent:       { type: bool, optional: true }
+      key:          { type: string, pattern: "^[A-Za-z0-9._:@-]{1,200}$", optional: true }
+    request:
+      method: POST
+      path: /v1/run-ask
+      body: { bead: "{bead}", ask: "{ask}", topic: "{topic}", conversation: "{conversation}", silent: "{silent}", key: "{key}" }
   ask_close:
     kind: update
     about: Close an open button ask with the decision made some other way

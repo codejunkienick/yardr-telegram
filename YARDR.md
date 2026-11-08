@@ -180,3 +180,40 @@ except where noted:
   (`/v1/read`) replaces it.
 - Binding topics: a topic is routed by a subscription in the yard, made
   once by the operator from the line `topics` prints.
+
+## Native operator approvals
+
+Optional `[yardr] home` and `operator` enable authenticated
+`POST /v1/run-ask`, the `run_ask` source update call and:
+
+```sh
+python3 bridge/bridge.py --settings <file> run-ask \
+  --bead <bead> --ask <number> --idempotency-key <key>
+```
+
+The CLI also accepts `--topic`, `--conversation-id`, and `--silent`.
+The HTTP body accepts exactly `bead`, `ask`, `key` (else Idempotency-Key),
+`topic`, `conversation`, and `silent`; its delivery receipt matches send.
+The configured private home alone determines `home/yard.sock`. A current
+operator role and `identities[source].id == bot.user_id` are required.
+
+Only bead/ask/routing/key are supplied by callers. Question, proposer,
+context, command, description, every does/current/proposed/back line and
+canonical weight come from Bead. No actor, command, weight, weighed or
+approval text is accepted. `runask:` is reserved from add-ons/publish.
+Routine approval calls native ApproveAsk unweighed. Weighty approval first
+opens a five-minute confirmation, consumed only by the paired human's
+direct reply to that card containing its exact ask number. Cancel sends
+no approval. All interactions recheck home, pairing, recipient, proposal,
+message, conversation, current role/mapping and native state.
+
+The supported scope, installation/bootstrap commands, explicit per-call
+operator grant and recovery limitations are in
+[SETUP.md](yardr/SETUP.md#12-native-run-cards-operator-optional).
+Unsupported or oversized cards refuse whole, with Footplate/cards as the
+fallback. Native ask_close refreshes canonical state and ignores caller
+closure text; ordinary chat asks retain their existing behavior. SQLite
+preserves one-use confirmations, delivery keys and canonical revisions;
+ambiguous writes re-read Bead, execution pending is separate from success,
+and polling reconciles settlements and outcome edits. Long results split
+into bounded ledger-backed messages without truncating the canonical text.

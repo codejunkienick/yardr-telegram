@@ -180,3 +180,83 @@ and `yardr reply <seq> "<b>Got it.</b>"` answers in the same chat or
 topic, in Telegram HTML when the text is valid HTML. A message over 500
 characters (a long voice transcript) is cut in the inbox line; `yardr
 thread show <seq>` reads it whole from the bridge.
+
+## 12. Native run cards (operator, optional)
+
+First install this source declaration (step 5). Give only the coordinating
+crew the new update call; the source pack contains no grants. If the operator
+user does not exist yet, first run `yardr user add <operator>`:
+
+```sh
+yardr source grant tgbridge run_ask --crew yardmaster
+yardr user set <operator> role=operator
+yardr user identity <operator> --source tgbridge --id <bot.user_id>
+```
+
+In the bridge's existing private settings, add both keys under `[yardr]`:
+
+```toml
+home = "~/.yardr"          # the exact yard this bridge serves
+operator = "<operator>"
+```
+
+The home must exist, belong to the service user, and have no group/world
+write permission. Its resolved `yard.sock` is the only native endpoint;
+there is no socket override or caller-selected yard. The operator must be
+a current operator user with the current source identity, checked at every
+interaction. The same Telegram id in another yard gives no access here.
+
+After reviewed code is installed, run `install.sh --settings <file>` and
+`python3 bridge/bridge.py --settings <file> check-install`, then use the
+normal service restart for that bridge. The installer imports `run_asks.py`
+from beside `bridge.py`, including its runpy and absolute service launch
+modes; keep the checkout together. The unit's existing sandbox restrictions
+stay in place: no yard database/config/credential write access is added.
+`check-install` checks the socket owner/type and the actual operator mapping.
+Live settings, source apply, grants and restart belong to this operator
+step, after code review.
+
+Create a fresh native proposal, then publish its returned ask number:
+
+```sh
+yardr bead ask <bead> "Lower this source's call limit?" \
+  --context "The synthetic source no longer needs the higher limit." \
+  --run "source set example calls_per_hour=60"
+yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=native-example-1
+```
+
+The asking crew proposes the operation; the paired human approves it. A
+routine card needs one verified tap. A weighty card first shows a prompt:
+reply **directly to that card** with its exact ask number within five
+minutes. A free-standing number never confirms anything. Cancel clears the
+confirmation; Decline records a native decline without execution. Telegram
+never asks for a device or account password.
+
+V1 supports self-contained native run asks only. Secret, setup, identity,
+depot-push, parameter input, carried source/pack files and crew-add prompt
+payloads are refused before sending. Cards over 3500 visible UTF16 units
+are refused whole. Use Footplate or the yard cards for those proposals;
+ordinary send/tell summaries cannot authorize an approval.
+
+Native `ask_close` keeps its existing selector contract:
+
+```sh
+yardr call tgbridge ask_close ask_key=native-example-1 decision=refresh
+# Or: message_id=<Telegram message id>, with the same decision field.
+```
+
+For native cards the decision field is ignored: the bridge re-reads Bead,
+refuses a still-open ask, and shows only the canonical state/result. For
+ordinary chat asks it continues to carry the decision text. Taking back a
+proposal uses `yardr bead ask --take-back <bead> <ask> "<reason>"`.
+
+The bridge keeps send keys and confirmations in SQLite across restarts.
+It never resends an ambiguously delivered card or retries a native write
+without another verified interaction and fresh canonical read. After a
+lost response it re-reads Bead; an unresolved outcome says "the yard did
+not answer; read the card again". Approval recorded with execution pending
+is shown as "approved, to be carried out", then refreshed on polling or
+`ask_close`. Failed execution and later outcome edits remain distinct.
+Long canonical outcomes are delivered whole in bounded, keyed messages.
+Keep the ledger when moving/restarting the bridge; deleting it loses these
+bindings and delivery history.

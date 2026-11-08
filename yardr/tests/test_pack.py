@@ -8,6 +8,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import threading
 import unittest
 from pathlib import Path
@@ -176,9 +178,30 @@ class ThreadTests(unittest.TestCase):
 class DeclarationTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('yardr'), 'yardr is not on PATH')
     def test_yardr_reads_the_pack(self):
-        # pack check reads the yard's state; YARDR_HOME is left as the
-        # caller has it, and nothing is written.
-        result = subprocess.run(['yardr', 'pack', 'check', str(PACK)], capture_output=True, text=True, timeout=60)
+        binary = str(Path(shutil.which('yardr')).resolve())
+        with tempfile.TemporaryDirectory(prefix='pack-') as tmp:
+            root = Path(tmp)
+            home = root / 'yard'
+            home.mkdir(mode=0o700)
+            env = dict(HOME=tmp, XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'),
+                       PATH=tmp + ':/usr/local/bin:/usr/bin:/bin', USER='operator')
+            command = [binary, '--home', str(home), '--actor', 'operator']
+            server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 15
+                while not (home / 'yard.sock').exists():
+                    if server.poll() is not None or time.monotonic() > deadline:
+                        self.fail('isolated pack-check server did not start')
+                    time.sleep(.02)
+                setup = subprocess.run(command + ['settings', 'set', 'default_kind', 'codex'],
+                                       env=env, cwd=root, capture_output=True, text=True, timeout=20)
+                self.assertEqual(setup.returncode, 0, setup.stderr)
+                result = subprocess.run(command + ['pack', 'check', str(PACK)], env=env, cwd=root,
+                                        capture_output=True, text=True, timeout=60)
+            finally:
+                server.terminate()
+                server.wait(timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('declared source tgbridge', result.stdout)
         self.assertIn('runs 2 programs of the pack as you: tgbridge/normalize, tgbridge/thread', result.stdout)

@@ -1,5 +1,5 @@
 #!/bin/sh
-# The fake-only test suite, the bridge's then the yardr pack's: no network,
+# The offline test suite, the bridge's then the yardr pack's: no external network,
 # no real settings, no unit.
 set -eu
 cd "$(dirname "$0")/.."

@@ -234,6 +234,8 @@ class CommandSettingsTests(SettingsCase):
              self.entry() + self.entry('other', callback_prefix='dep')),
             (r'command entry 1 \(deploy\) callback_prefix overlaps the bridge-owned ask: prefix',
              self.entry(callback_prefix='ask:')),
+            (r'command entry 1 \(deploy\) callback_prefix overlaps the bridge-owned runask: prefix',
+             self.entry(callback_prefix='runask:')),
             (r'command entry 1 \(deploy\) callback_prefix overlaps the bridge-owned ask: prefix',
              self.entry(callback_prefix='ask:x')),
             (r'command entry 1 \(deploy\) callback_prefix overlaps the bridge-owned ask: prefix',
@@ -692,6 +694,8 @@ class FailureTests(CommandCase):
             (answer(dict(type='send', text='x', keyboard=[[dict(text='a', callback_data='deploy:a', url='x')]])),
              'invalid_keyboard'),
             (answer(dict(type='send', text='x', keyboard=[[dict(text='a', callback_data='other:a')]])),
+             'foreign_callback_data'),
+            (answer(dict(type='send', text='x', keyboard=[[dict(text='a', callback_data='runask:012345678901234567890123:approve')]])),
              'foreign_callback_data'),
             (answer(dict(type='answer_callback', text='hi')), 'invalid_answer'),
         ]

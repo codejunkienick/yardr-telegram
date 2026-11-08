@@ -174,7 +174,8 @@ class SetupTests(unittest.TestCase):
         path.chmod(0o600)
         return path
 
-    def run_setup(self, settings, bin_dir, *extra, env_extra=None):
+    def run_setup(self, settings, bin_dir, *extra, env_extra=None,
+                  background=False):
         env = dict(HOME=str(self.home), PATH=str(bin_dir),
                    FAKE_LOG=str(self.log),
                    TELEGRAM_PACK_MODELS_SHA256=str(self.sums),
@@ -186,8 +187,18 @@ class SetupTests(unittest.TestCase):
                     env.pop(key, None)
                 else:
                     env[key] = value
+        command = [str(SETUP), "--settings", str(settings), *extra]
+        if env.get("FAKE_CURL_INT"):
+            # A background runner can pass ignored SIGINT through exec.
+            command = [sys.executable, "-c",
+                       "import os, signal, sys; "
+                       "signal.signal(signal.SIGINT, signal.SIG_DFL); "
+                       "os.execv(sys.argv[1], sys.argv[1:])", *command]
+        if background:
+            command = ["/bin/sh", "-c", '"$@" & child=$!; wait "$child"',
+                       "sh", *command]
         return subprocess.run(
-            [str(SETUP), "--settings", str(settings), *extra],
+            command,
             env=env, capture_output=True, text=True, timeout=60)
 
     def log_text(self):
@@ -552,13 +563,18 @@ class SetupTests(unittest.TestCase):
 
     def test_interrupted_download_leaves_no_temp_file(self):
         settings = self.settings("cpu")
-        result = self.run_setup(
-            settings, self.make_bin(), env_extra={"FAKE_CURL_INT": "1"})
-        self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
-        self.assertNotIn("next:", result.stdout)
-        self.assertFalse(
-            (self.models_dir / "ggml-large-v3-turbo-q5_0.bin").exists())
-        self.assertEqual(list(self.models_dir.iterdir()), [])
+        bin_dir = self.make_bin()
+        for background in (False, True):
+            with self.subTest(background=background):
+                result = self.run_setup(
+                    settings, bin_dir, env_extra={"FAKE_CURL_INT": "1"},
+                    background=background)
+                self.assertEqual(result.returncode, 130,
+                                 result.stdout + result.stderr)
+                self.assertNotIn("next:", result.stdout)
+                self.assertFalse(
+                    (self.models_dir / "ggml-large-v3-turbo-q5_0.bin").exists())
+                self.assertEqual(list(self.models_dir.iterdir()), [])
 
     def test_whisper_ref_override_and_usage_errors(self):
         settings = self.settings("cpu")

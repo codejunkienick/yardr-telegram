@@ -46,6 +46,70 @@ def skill_cards():
     return cards
 
 
+def decision_cards():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests
+    import json
+    case = NativeTests()
+    case.setUp()
+    cards = []
+
+    def capture(label, body):
+        rows = body.get('reply_markup', {}).get('inline_keyboard', [])
+        controls = ''.join('<div class="buttons">' + ''.join('<button>' + escape(item['text']) + '</button>'
+                           for item in row) + '</div>' for row in rows)
+        cards.append('<section><h2>' + escape(label) + '</h2><article><div class="body">' + body['text']
+                     + '</div>' + controls + '</article></section>')
+
+    def create(name, title):
+        fixture = Path(__file__).resolve().parents[1] / 'bridge' / 'fixtures' / ('ordinary_' + name + '.json')
+        case.reset_native(json.loads(fixture.read_text()))
+        case.config['yard'] = 'example'
+        case.native.bead = dict(id='stage-1' if name == 'stage' else 'sample-1', title=title)
+        result = case.bridge.api_ask_card(dict(bead=case.native.bead['id'], ask=7, key='preview-' + name))
+        if not result['delivered']:
+            raise RuntimeError('synthetic preview card refused')
+        capture(title, case.calls[-1][1])
+
+    try:
+        create('option', 'Ordinary option decision')
+        case.reply('2 Keep them until Monday')
+        capture('Canonical answer with optional words', case.edits()[-1])
+        create('words', 'Free-word answer')
+        case.reply('Use the new location 🙂')
+        capture('Canonical free-word answer', case.edits()[-1])
+        create('stage', 'Synthetic stage decision')
+        case.press('later')
+        capture('Canonical put-aside state', case.edits()[-1])
+        case.native.ask.update(state='open')
+        case.bridge.run_asks.refresh()
+        capture('Retired original generation · no controls', case.edits()[-1])
+        reopened = next(body for url, body in reversed(case.calls) if url.endswith('/sendMessage')
+                        and body.get('reply_markup', {}).get('inline_keyboard'))
+        capture('Due/reopened generation · new message', reopened)
+        case.press('decline', uid=41)
+        capture('Canonical declined state', case.edits()[-1])
+        case.native.ask.update(state='taken back', by='yard', words='Another stage decider moved the bead')
+        case.bridge.run_asks.refresh()
+        capture('Canonical sibling take-back', case.edits()[-1])
+        create('option', 'Before an unavailable re-presentation')
+        row = case.row()
+        sent = case.bridge.api_send(dict(text='Unrelated synthetic message', key=f"runask:{row['id']}:send:1"))
+        if not sent['delivered']:
+            raise RuntimeError('synthetic collision message refused')
+        case.bridge.run_asks.client.call('DeferAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat'))
+        case.native.ask['state'] = 'open'
+        case.bridge.run_asks.refresh()
+        current = case.row()
+        if current['message_id'] is not None or len(current['generations']) != 1:
+            raise RuntimeError('synthetic collision must leave the new turn unbound')
+        capture('Reopened ask unavailable · old card retired, no new card', case.edits()[-1])
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
 def main():
     spec = importlib.util.spec_from_file_location('native_cards', Path(__file__).resolve().parents[1] / 'bridge' / 'run_asks.py')
     native = importlib.util.module_from_spec(spec)
@@ -85,6 +149,9 @@ def main():
          '✕ approved, failed: yardr source set example calls_per_hour=60\nThe synthetic external operation failed')
     if '--skill' in sys.argv:
         cards = skill_cards()
+    if '--decisions' in sys.argv:
+        cards = decision_cards()
+    heading = 'Native ordinary decisions' if '--decisions' in sys.argv else 'Native operator run cards'
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}
@@ -94,7 +161,7 @@ h2{font-size:16px;margin:0 0 10px}article{background:white;border:1px solid #cfd
 b{font-weight:700}.footer{white-space:pre-wrap;border-top:1px solid #d9e5ed;padding-top:12px;margin-bottom:0}
 .buttons{display:flex;gap:8px;margin-top:16px}button{flex:1;border:0;border-radius:7px;padding:11px 5px;background:#e2eff9;color:#226295;font-weight:600}
 .navigation{font-size:12px;color:#496175;margin-bottom:8px}section{min-width:0}
-</style><h1>Native operator run cards</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid">'''
+</style><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid">'''
           + ''.join(cards) + '''</div><script>
 const view = new URLSearchParams(location.search).get('view');
 if (view === 'bundle' || view === 'states') {

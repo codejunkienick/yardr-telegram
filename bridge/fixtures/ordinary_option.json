@@ -1,0 +1,28 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "pat",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Where do the links go?",
+  "context": [
+    "Synthetic ordinary decision"
+  ],
+  "options": [
+    {
+      "label": "Move",
+      "consequence": "Move the links."
+    },
+    {
+      "label": "Keep",
+      "consequence": "Keep the links here."
+    },
+    {
+      "label": "You decide",
+      "consequence": "leave it to pat"
+    }
+  ],
+  "recommend": 1,
+  "why": "The target is ready.",
+  "state": "open",
+  "turn": 0
+}

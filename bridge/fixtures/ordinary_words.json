@@ -1,0 +1,13 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "pat",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "What should it say?",
+  "context": [
+    "A free-word answer"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0
+}

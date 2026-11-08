@@ -269,3 +269,34 @@ yardr call tgbridge pin slot=waiting text="$(cat list.html)" format=html --json
   `yardr call tgbridge unpin slot=<slot>`, and the next update sends anew.
 
 The source file and symbol behind each claim in this skill are in `citations.md`, next to this file; open it only when you need them.
+
+## Native ordinary decisions
+
+For a canonical yard decision, create the ask with `yardr bead ask`, then use
+`yardr call tgbridge ask_card bead=<bead> ask=<number> topic=<topic> key=<stable-key>`.
+The bridge renders the canonical complete question, context, numbered choices,
+consequences, recommendation and about-beads. Never substitute a chat keyboard
+for a native answer. Human buttons call AnswerAskExpected; direct replies to that card
+can contain `N optional words`, or the whole answer for a no-options ask.
+Later/Decline use DeferAskExpected/DeclineAskExpected. Each message presents
+one open turn forever, bound only by a confirmed send. Callbacks carry that
+message's turn; direct replies use the replied-to message's turn. Changed open
+turns get a new card; previous messages are retired without controls. Old-card
+inputs refuse even if retirement edits fail, and known old-card replies stay
+native. Conflicts re-present state without overwriting another client's answer.
+Confirmed sends never repeat; definitely unsent sends retry on refresh;
+ambiguous sends stay unbound without automatic resend, including after restart.
+Missing turn or guarded methods refuses on older cores,
+without a legacy write fallback (minimum verified core: `7fa0d4c75ff6`).
+Generated manual-stage choices use the same AnswerAskExpected path, letting
+core check authority and record movement.
+The human's reply stays in chat. Native ask_close refreshes canonical state,
+ignoring its required legacy decision text; chat-only close keeps its contract.
+
+Only ordinary decisions addressed to the configured paired operator are
+supported here. Unknown/operation-bearing/weighted asks and complete cards
+exceeding 3500 visible UTF16 units refuse whole; use the yard cards for them.
+Run proposals keep run_ask and its bound ask-number confirmation. Native
+home/operator settings, current source identity and the explicit per-call
+ask_card grant are operator bootstrap in yardr/SETUP.md; never set them as an
+agent. `askcard:` is reserved from custom keyboards and command prefixes.

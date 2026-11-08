@@ -230,3 +230,17 @@ human confirmation and canonical carry settlement apply. Additional files,
 deletions and other file-bearing proposals remain refused. See
 [the exact scope and recovery limits](bridge/OPERATIONS.md#captured-single-file-skill-review)
 and [bootstrap requirements](yardr/SETUP.md#single-file-skill-snapshots).
+
+Native ordinary decisions use authenticated `POST /v1/ask-card`, source update
+`ask_card` and CLI `ask-card` with the same bead/ask/routing/key-only contract.
+The configured operator can pick stored options or reply directly with a
+number plus optional words; no-options cards take words with option zero.
+Later/Decline and manual-stage choices use the guarded native primitives with
+the displayed ask's turn (minimum verified core `7fa0d4c75ff6`, no legacy
+fallback). A concurrent answer survives a stale Telegram action. Canonical
+state controls closing and reopening. The shared ledger and socket seam
+retain old run/chat behavior; newly reserved `askcard:` collisions require an
+explicit handler-prefix migration. Complete ordinary cards must fit 3500
+UTF16 units. Operation-bearing, weighted or unfamiliar ordinary payloads
+refuse whole. See setup step 13 for exact scope, operator-only key/grant
+bootstrap and the independent-runtime deployment prerequisite.

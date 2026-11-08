@@ -1,4 +1,4 @@
-"""Native run proposals: socket authority, complete cards and durable interactions."""
+"""Native asks: socket authority, complete cards and durable interactions."""
 import contextlib
 import fcntl
 import hashlib
@@ -34,6 +34,10 @@ class RPCAmbiguous(NativeError):
 
 
 class RPCRefused(NativeError):
+    pass
+
+
+class RPCUnsupported(RPCRefused):
     pass
 
 
@@ -78,6 +82,16 @@ class YardSocketClient:
         self.home, self.source, self.timeout = Path(home), source, timeout
 
     def call(self, method, arguments):
+        # Self-replacement refuses reads before dispatch; writes always reconcile at their caller.
+        for attempt in range(3):
+            try:
+                return self._call(method, arguments)
+            except RPCUnavailable:
+                if method not in ('Bead', 'GetUser') or attempt == 2:
+                    raise
+                time.sleep(.05 * (attempt + 1))
+
+    def _call(self, method, arguments):
         path = self.home / 'yard.sock'
         try:
             info = path.lstat()
@@ -105,6 +119,8 @@ class YardSocketClient:
                     raw = response.read(8 * 1024 * 1024 + 1)
                 finally:
                     response.close()
+                if response.status == 503 and method in ('Bead', 'GetUser'):
+                    raise RPCUnavailable(f'native {method} unavailable (503)')
                 if response.status != 200 or len(raw) > 8 * 1024 * 1024:
                     raise ValueError()
                 value = json.loads(raw, object_pairs_hook=strict_object)
@@ -115,6 +131,9 @@ class YardSocketClient:
                     if (not isinstance(error, dict) or set(error) != {'code', 'message'}
                             or not all(isinstance(v, str) for v in error.values()) or 'result' in value):
                         raise ValueError()
+                    if (method in ('AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected')
+                            and error['code'] == 'error' and error['message'] == 'no such method ' + method):
+                        raise RPCUnsupported('ask_card_requires_guarded_core' + FALLBACK)
                     raise RPCRefused(f'native {method} refused ({error["code"] if error["code"] in {"not-found", "taken", "at-limit", "conflict", "ambiguous", "replacing", "error"} else "unknown"})')
                 return value.get('result')  # successful void calls serialize as {}
             except (OSError, ValueError, http.client.HTTPException, UnicodeError):
@@ -378,7 +397,7 @@ def validate_skill(ask):
 def validate(ask, operator):
     known = {'ask', 'to', 'asker', 'since', 'question', 'context', 'options', 'recommend', 'why', 'about',
              'state', 'option', 'words', 'by', 'return_at', 'picks_before', 'secret', 'concealed', 'given',
-             'run', 'ran', 'setup', 'identity', 'depot_push', 'weight'}
+             'run', 'ran', 'setup', 'identity', 'depot_push', 'weight', 'turn'}
     if set(ask) - known:
         raise NativeError('run_ask_unknown_payload' + FALLBACK)
     if ask.get('options') not in (None, []) or ask.get('about') or ask.get('recommend') or ask.get('why'):
@@ -453,6 +472,69 @@ def render(config, bead, ask):
     if units(plain) > CAP:
         raise NativeError('run_ask_payload_too_large_for_card' + FALLBACK)
     return plain, '\n'.join(h for _, h in parts)
+
+
+def validate_decision(ask, operator):
+    known = {'ask', 'to', 'asker', 'since', 'question', 'context', 'options', 'recommend', 'why', 'about',
+             'state', 'option', 'words', 'by', 'return_at', 'picks_before', 'weight', 'turn'}
+    if set(ask) - known:
+        raise NativeError('ask_card_unsupported_payload' + FALLBACK)
+    if 'turn' not in ask:
+        raise NativeError('ask_card_requires_guarded_core' + FALLBACK)
+    if type(ask['turn']) is not int or not 0 <= ask['turn'] <= 2**63 - 1:
+        raise NativeError('invalid native turn')
+    if ask.get('to') != operator:
+        raise NativeError('ask_card_wrong_recipient')
+    for key in ('question', 'asker', 'to', 'state', 'since'):
+        text(ask.get(key), key)
+    lines(ask.get('context'), 'context')
+    if 'options' not in ask:
+        raise NativeError('invalid native options')
+    options = ask['options']
+    # Go serializes nil slices as null.
+    if options is not None and not isinstance(options, list):
+        raise NativeError('invalid native options')
+    for option in options or []:
+        if not isinstance(option, dict) or set(option) != {'label', 'consequence'}:
+            raise NativeError('invalid native option')
+        for key in ('label', 'consequence'):
+            if not text(option[key], 'option.' + key).strip():
+                raise NativeError('invalid native option.' + key)
+    recommend = ask.get('recommend', 0)
+    if type(recommend) is not int or not 0 <= recommend <= len(options or []):
+        raise NativeError('invalid native recommend')
+    text(ask.get('why', ''), 'why')
+    if not isinstance(ask.get('about', []), list):
+        raise NativeError('invalid native about')
+    for about in ask.get('about', []):
+        if not isinstance(about, dict) or set(about) != {'id', 'title', 'stage'}:
+            raise NativeError('invalid native about')
+        for key in ('id', 'title', 'stage'):
+            text(about[key], 'about.' + key)
+    # Current ordinary weights belong to identity mapping, which needs its own complete review.
+    if ask.get('weight', []) != []:
+        raise NativeError('ask_card_weighted_action_unsupported' + FALLBACK)
+
+
+def render_decision(config, bead, ask):
+    parts = [f"{config['yard']} · {bead['id']} · ask #{ask['ask']}",
+             f"Answering in {config['yard']} as {config['yardr_operator']}",
+             text(bead.get('title'), 'bead.title'), 'Asked by ' + ask['asker'], ask['question'],
+             *ask['context']]
+    for index, option in enumerate(ask.get('options') or [], 1):
+        parts.extend([f"{index}. {option['label']}", option['consequence']])
+    if ask.get('recommend'):
+        parts.append(f"Recommended: {ask['recommend']}. {ask['options'][ask['recommend'] - 1]['label']}")
+    if ask.get('why'):
+        parts.append('Why: ' + ask['why'])
+    for about in ask.get('about', []):
+        parts.append(f"About: {about['id']} · {about['title']} · {about['stage']}")
+    parts.append('Reply directly to this card with ' +
+                 ('an option number and optional words.' if ask.get('options') else 'your answer.'))
+    plain = '\n'.join(without_weight_mark(part) for part in parts)
+    if units(plain) > CAP:
+        raise NativeError('ask_card_payload_too_large_for_card' + FALLBACK)
+    return plain, escape(plain)
 
 
 def skill_bundle(config, bead, ask, proposal):
@@ -532,18 +614,36 @@ class RunAsks:
 
     def rows(self):
         with self.store.connect() as db:
-            return [json.loads(row[0]) for row in db.execute('SELECT data FROM run_asks')]
+            rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM run_asks')]
+        return [self.recover_generation(row) for row in rows]
 
     def get(self, ident):
         with self.store.connect() as db:
             row = db.execute('SELECT data FROM run_asks WHERE id=?', (ident,)).fetchone()
-        return json.loads(row[0]) if row else None
+        return self.recover_generation(json.loads(row[0])) if row else None
 
     def save(self, row):
         with self.store.connect() as db:
             db.execute('INSERT OR REPLACE INTO run_asks VALUES (?,?)', (row['id'], canonical(row)))
 
-    def fetch(self, bead_id, number):
+    def recover_generation(self, row):
+        if (row.get('kind') == 'decision' and isinstance(row.get('generations'), list)
+                and type(row.get('initial_turn')) is int and not self.generation(row, row['turn'])):
+            key, identity = self.send_request(row)
+            saved = self.store.saved_delivery(key)
+            receipt = saved[1] if saved else None
+            message_id = receipt.get('message_id') if receipt else None
+            positive_id = ((type(message_id) is int and message_id > 0)
+                           or (isinstance(message_id, str) and re.fullmatch(r'[1-9][0-9]*', message_id)))
+            if (saved and saved[0] == self.bridge.delivery_fingerprint(identity)
+                    and receipt.get('delivered') is True and positive_id):
+                # A send receipt can commit before its generation row survives a crash.
+                row['message_id'] = int(message_id)
+                row['generations'].append(dict(turn=row['turn'], message_id=row['message_id'], revision=0))
+                self.save(row)
+        return row
+
+    def fetch(self, bead_id, number, kind='run'):
         bead = self.client.call('Bead', {'bead': bead_id, 'viewer': self.config['yardr_operator']})
         if not isinstance(bead, dict) or bead.get('id') != bead_id or not isinstance(bead.get('asks'), list):
             raise NativeError('invalid native Bead response')
@@ -553,7 +653,7 @@ class RunAsks:
         if len(found) != 1:
             raise NativeError('run_ask_not_found')
         ask = found[0]
-        validate(ask, self.config['yardr_operator'])
+        (validate_decision if kind == 'decision' else validate)(ask, self.config['yardr_operator'])
         if ask['state'] not in {'open', 'put aside', 'answered', 'declined', 'taken back'}:
             raise NativeError('invalid native ask state')
         return bead, ask
@@ -561,15 +661,18 @@ class RunAsks:
     def proposal(self, bead, ask, conversation):
         value = dict(binding=self.binding(), bead=bead['id'], title=bead['title'], ask=ask['ask'],
                      to=ask['to'], asker=ask['asker'], question=ask['question'], context=ask['context'],
-                     run=ask['run'], weight=ask.get('weight', []), conversation=conversation)
-        if ask['run']['argv'][:2] == ['skill', 'add']:
+                     run=ask.get('run'), weight=ask.get('weight', []), conversation=conversation)
+        if 'run' not in ask:
+            value.update(options=ask['options'], recommend=ask.get('recommend', 0), why=ask.get('why', ''),
+                         about=ask.get('about', []), since=ask['since'])
+        if 'run' not in ask or ask.get('run', {}).get('argv', [])[:2] == ['skill', 'add']:
             try:
                 home = Path(self.config['yardr_home'])
                 if validate_home(home) != home:
-                    raise NativeError('run_ask_skill_home_changed')
+                    raise NativeError('native_home_changed')
                 info = home.lstat()
             except OSError:
-                raise NativeError('run_ask_skill_home_unavailable') from None
+                raise NativeError('native_home_unavailable') from None
             value['home_identity'] = [info.st_dev, info.st_ino]
         return digest(value)
 
@@ -579,7 +682,7 @@ class RunAsks:
         if row['binding'] != self.binding():
             raise NativeError('run_ask_wrong_yard_or_pairing')
         verify_operator(self.client, self.config)
-        bead, ask = self.fetch(row['bead'], row['ask'])
+        bead, ask = self.fetch(row['bead'], row['ask'], row.get('kind', 'run'))
         if self.proposal(bead, ask, row['conversation']) != row['proposal']:
             row.update(pending=None, state='stale')
             self.save(row)
@@ -588,16 +691,24 @@ class RunAsks:
         return ask
 
     def keyboard(self, row):
+        if row.get('kind') == 'decision':
+            buttons = [[dict(text=f"Choose {index}", callback_data=f"askcard:{row['id']}:pick{index}:{row['turn']}")]
+                       for index, option in enumerate(row['options'], 1)]
+            return buttons + [[dict(text=label, callback_data=f"askcard:{row['id']}:{action}:{row['turn']}")
+                               for label, action in [('Later', 'later'), ('✕ Decline', 'decline')]]]
         actions = [('Cancel', 'cancel')] if row.get('pending') else [(f"✓ Approve in {self.config['yard']}", 'approve')]
         actions.append(('✕ Decline', 'decline'))
         return [[dict(text=label, callback_data=f"runask:{row['id']}:{action}") for label, action in actions]]
 
-    def create(self, bead_id, number, key, conversation, silent=False):
+    def create(self, bead_id, number, key, conversation, silent=False, kind='run'):
         binding = self.binding()
-        request = canonical(dict(bead=bead_id, ask=number, conversation=conversation, silent=silent, binding=binding))
+        request = dict(bead=bead_id, ask=number, conversation=conversation, silent=silent, binding=binding)
+        if kind != 'run':
+            request['kind'] = kind
+        request = canonical(request)
         with self.lock():
             verify_operator(self.client, self.config)
-            bead, ask = self.fetch(bead_id, number)
+            bead, ask = self.fetch(bead_id, number, kind)
             with self.store.connect() as db:
                 saved = db.execute('SELECT id,request FROM run_ask_keys WHERE key=?', (key,)).fetchone()
             if saved and saved[1] != request:
@@ -606,6 +717,8 @@ class RunAsks:
             ident = digest(dict(binding=binding, bead=bead_id, ask=number))[:24]
             row = self.get(ident)
             if row:
+                if row.get('kind', 'run') != kind:
+                    raise NativeError('idempotency_key_conflict')
                 if row['state'] == 'stale':
                     raise NativeError('run_ask_stale_proposal')
                 if row['proposal'] != proposal:
@@ -618,13 +731,20 @@ class RunAsks:
                 if ask['state'] != 'open':
                     raise NativeError('run_ask_not_open')
                 bundle = None
-                if ask['run']['argv'][:2] == ['skill', 'add']:
+                if kind == 'decision':
+                    if len(ask.get('options') or []) + 2 > self.bridge.COMMAND_KEYBOARD_MAX_BUTTONS:
+                        raise NativeError('ask_card_too_many_options' + FALLBACK)
+                    plain, card = render_decision(self.config, bead, ask)
+                elif ask['run']['argv'][:2] == ['skill', 'add']:
                     plain, card, bundle = skill_bundle(self.config, bead, ask, proposal)
                 else:
                     plain, card = render(self.config, bead, ask)
                 row = dict(id=ident, binding=binding, bead=bead_id, ask=number, conversation=conversation,
                            proposal=proposal, plain=plain, html=card, weighty=bool(ask.get('weight')),
                            state='open', pending=None, message_id=None, silent=silent, revision=0)
+                if kind == 'decision':
+                    row.update(kind=kind, options=ask.get('options') or [], turn=ask['turn'],
+                               initial_turn=ask['turn'], generations=[])
                 if bundle:
                     for index, part in enumerate(bundle['parts']):
                         part['key'] = f"runask:{ident}:bundle:{proposal}:{index}"
@@ -636,14 +756,33 @@ class RunAsks:
                     raise NativeError('idempotency_key_conflict')
                 db.execute('INSERT OR IGNORE INTO run_ask_keys VALUES (?,?,?)', (key, ident, request))
             self.save(row)
+            if kind == 'decision':
+                return self.present_decision(row, ask) if ask['state'] == 'open' else self.settle(row, ask)
             receipt = self.send_card(row)
-            if row['message_id'] is not None:
-                if ask['state'] != 'open':
-                    self.settle(row, ask)
+            if row['message_id'] is not None and ask['state'] != 'open':
+                self.settle(row, ask)
             return receipt
 
     def thread(self, row):
         return int(row['conversation'].rpartition(':topic:')[2]) if ':topic:' in row['conversation'] else None
+
+    def send_key(self, row):
+        key = f"runask:{row['id']}:send"
+        if row.get('kind') == 'decision':
+            self.require_generations(row)
+            if row['turn'] != row['initial_turn']:
+                key += ':' + str(row['turn'])
+        return key
+
+    def send_request(self, row, reply=None):
+        identity = dict(text=row['html'],
+                        reply_markup={'inline_keyboard': self.keyboard(dict(row, pending=None))},
+                        disable_notification=row['silent'])
+        if self.thread(row) is not None:
+            identity['message_thread_id'] = self.thread(row)
+        if reply is not None:
+            identity['reply'] = reply
+        return self.send_key(row), identity
 
     def send_card(self, row):
         b = self.bridge
@@ -680,35 +819,38 @@ class RunAsks:
                     self.save(row)
                 previous = part['message_id']
             check_open()
-        extra = dict(reply_markup={'inline_keyboard': self.keyboard(dict(row, pending=None))}, disable_notification=row['silent'])
-        if self.thread(row) is not None:
-            extra['message_thread_id'] = self.thread(row)
-        identity = dict(text=row['html'], **extra)
-        if previous is not None:
-            identity['reply'] = previous
-        receipt = b._reserve_and_deliver(f"runask:{row['id']}:send", identity,
+        key, identity = self.send_request(row, previous)
+        extra = {name: value for name, value in identity.items() if name not in ('text', 'reply')}
+        receipt = b._reserve_and_deliver(key, identity,
                     lambda pending: deliver(row['html'], row['plain'], previous, pending, extra))
         if blocked:
             raise blocked[0]
         if receipt.get('delivered'):
             row['message_id'] = int(receipt['message_id'])
+            if row.get('kind') == 'decision' and not self.generation(row, row['turn']):
+                row['generations'].append(dict(turn=row['turn'], message_id=row['message_id'], revision=0))
             self.save(row)
         return dict(receipt, conversation=dict(b.conversation, conversation_id=row['conversation']))
 
-    def display(self, row, footer='', keyboard=None):
-        if row['message_id'] is None:
+    def display(self, row, footer='', keyboard=None, generation=None):
+        decision = row.get('kind') == 'decision'
+        generation = self.generation(row, row['turn']) if decision and generation is None else generation
+        target = generation if decision else row
+        if target is None or target['message_id'] is None:
             return self.bridge.receipt(reason='ask_message_unknown')
         keyboard = self.keyboard(row) if keyboard is None else keyboard
         # Approval-critical data stays on the card; long canonical outcomes are separate whole parts.
         separate = units(row['plain'] + '\n' + footer) > 4096
         suffix = 'Canonical outcome follows below.' if separate else footer
         desired = dict(footer=footer, keyboard=keyboard)
-        if row.get('display') != desired:
-            row['revision'] += 1
-            row['display'] = desired
+        if target.get('display') != desired:
+            target['revision'] += 1
+            target['display'] = desired
+            if decision and target['turn'] == row['turn']:
+                row['display'] = desired
             self.save(row)
-        key = f"runask:{row['id']}:revision:{row['revision']}"
-        extra = dict(message_id=row['message_id'], reply_markup={'inline_keyboard': keyboard})
+        key = f"runask:{row['id']}" + (f":turn:{target['turn']}" if decision else '') + f":revision:{target['revision']}"
+        extra = dict(message_id=target['message_id'], reply_markup={'inline_keyboard': keyboard})
         b = self.bridge
         receipt = b._reserve_and_deliver(key + ':edit', dict(text=row['html'] + '\n' + escape(suffix), **extra),
                     lambda pending: b._deliver_text(row['html'] + '\n' + escape(suffix), None, pending,
@@ -721,6 +863,8 @@ class RunAsks:
         return receipt
 
     def settle(self, row, ask):
+        if row.get('kind') == 'decision':
+            return self.settle_decision(row, ask)
         state = ask['state']
         if state in ('open', 'put aside'):
             return False
@@ -758,6 +902,77 @@ class RunAsks:
                 self.save(row)
         return receipt
 
+    def require_generations(self, row):
+        if not isinstance(row.get('generations'), list) or type(row.get('initial_turn')) is not int:
+            raise NativeError('ask_card_generation_unconfirmed' + FALLBACK)
+
+    def generation(self, row, turn):
+        return next((g for g in row.get('generations', []) if g['turn'] == turn), None)
+
+    def message_bindings(self, row):
+        if row.get('kind') == 'decision':
+            bindings = [(g['message_id'], g['turn']) for g in row.get('generations', [])]
+            # Unconfirmed rows are recognized for refusal, never upgraded into authority.
+            if row['message_id'] is not None and not any(mid == row['message_id'] for mid, _ in bindings):
+                bindings.append((row['message_id'], None))
+            return bindings
+        return [(row['message_id'], None)]
+
+    def bound_messages(self, message_id):
+        return [(row, turn) for row in self.rows() for mid, turn in self.message_bindings(row)
+                if mid == message_id]
+
+    def present_decision(self, row, ask):
+        self.require_generations(row)
+        if row['turn'] != ask['turn']:
+            row.update(turn=ask['turn'], message_id=None, pending=None, uncertain=False)
+            row.pop('display', None)
+        row['state'] = 'open'
+        self.save(row)
+        # Sends bind one open turn forever; retiring older controls is only presentation.
+        receipt = self.send_card(row)
+        footer = ('Re-presented; answer the newer card' if self.generation(row, row['turn']) else
+                  'The current ask is unavailable in Telegram; use Footplate or the yard cards')
+        for generation in row['generations']:
+            if generation['turn'] != ask['turn']:
+                self.display(row, footer, [], generation)
+        return receipt
+
+    def settle_decision(self, row, ask):
+        self.require_generations(row)
+        state = ask['state']
+        if state == 'open':
+            self.present_decision(row, ask)
+            return False
+        words = text(ask.get('words', ''), 'words')
+        if state == 'answered':
+            option = ask.get('option', 0)
+            if type(option) is not int or (row['options'] and not 1 <= option <= len(row['options'])) or (not row['options'] and option != 0):
+                raise NativeError('invalid native answered option')
+            footer = '✓ Answered'
+            if option:
+                footer += f": {option}. {row['options'][option - 1]['label']}"
+            if words:
+                footer += '\n' + words
+        elif state == 'put aside':
+            footer = '⏳ Put aside'
+            if ask.get('return_at'):
+                footer += ' until ' + text(ask['return_at'], 'return_at')
+        elif state == 'taken back':
+            footer = '✕ Taken back by ' + text(ask.get('by'), 'by') + ': ' + words
+        else:
+            footer = '✕ Declined: ' + words
+        row.update(state=state, pending=None, uncertain=False)
+        self.save(row)
+        latest = self.generation(row, row['turn'])
+        if latest is None and row['generations']:
+            latest = row['generations'][-1]
+        receipt = self.display(row, footer, [], latest)
+        for generation in row['generations']:
+            if generation is not latest:
+                self.display(row, 'Re-presented; answer the newer card', [], generation)
+        return receipt
+
     def claim_update(self, update_id):
         with self.store.connect() as db:
             return db.execute('INSERT OR IGNORE INTO run_ask_updates VALUES (?,?)',
@@ -777,66 +992,118 @@ class RunAsks:
         thread = self.bridge._topic_thread(message)
         if thread != self.thread(row) or (message.get('message_thread_id') is not None and thread is None):
             return False
-        return reply or (type(message.get('message_id')) is int and message['message_id'] == row['message_id'])
+        return reply or (type(message.get('message_id')) is int
+                         and any(mid == message['message_id'] for mid, _ in self.message_bindings(row)))
 
     def callback(self, update_id, query):
-        match = re.fullmatch(r'runask:([0-9a-f]{24}):(approve|decline|cancel)', query.get('data', ''))
+        match = re.fullmatch(r'(runask|askcard):([0-9a-f]{24}):(approve|decline|cancel|later|pick[1-9][0-9]{0,3})(?::(0|[1-9][0-9]{0,18}))?', query.get('data', ''))
         notice = 'Native card not authorized'
         try:
             with self.lock():
-                row = self.get(match[1]) if match else None
+                row = self.get(match[2]) if match else None
                 sender = query.get('from', {})
                 if (not row or sender.get('id') != self.config['user_id'] or sender.get('is_bot') is not False
                         or not self.authorized_message(row, query.get('message'))):
                     return
+                decision = row.get('kind') == 'decision'
+                action = match[3]
+                if match[1] != ('askcard' if decision else 'runask'):
+                    return
+                if decision:
+                    if action not in ('later', 'decline') and not (action.startswith('pick') and 1 <= int(action[4:]) <= len(row['options'])):
+                        return
+                elif match[4] is not None or action not in ('approve', 'decline', 'cancel'):
+                    return
+                input_turn = None
+                if decision:
+                    bindings = self.bound_messages(query['message']['message_id'])
+                    if len(bindings) != 1 or bindings[0][0]['id'] != row['id']:
+                        notice = 'Native card message binding ambiguous'
+                        return
+                    input_turn = bindings[0][1]
                 ask = self.ensure(row)
                 if not self.claim_update(update_id):
                     notice = 'Already handled'
                 elif ask['state'] != 'open':
                     self.settle(row, ask)
                     notice = 'Ask is ' + ask['state']
-                elif match[2] == 'cancel':
+                elif decision and (input_turn is None or match[4] is None or int(match[4]) != input_turn
+                                   or input_turn != ask['turn']):
+                    self.settle(row, ask)
+                    notice = 'Ask changed; answer the newer card'
+                elif action == 'cancel':
                     row['pending'] = None
                     self.save(row)
                     self.display(row)
                     notice = 'Cancelled'
-                elif match[2] == 'approve' and row['weighty']:
+                elif action == 'approve' and row['weighty']:
                     row['pending'] = dict(expires=self.now() + 300, update=update_id)
                     self.save(row)
                     self.display(row, f"type the ask's number, {row['ask']}, to approve this weighty card. Reply directly to this card with {row['ask']}.")
                     notice = f"Reply to this card with {row['ask']}"
                 else:
-                    notice = self.decide(row, match[2], False)
+                    notice = self.decide(row, action, False, turn=input_turn)
         except NativeError as error:
             notice = str(error)
         finally:
             self.bridge._answer_callback(update_id, query['id'], notice[:180], key=f'runask:{update_id}:answer')
 
     def reply(self, update_id, message):
-        if not isinstance(message.get('text'), str):
-            return False
         reply = message.get('reply_to_message')
         if not isinstance(reply, dict) or type(reply.get('message_id')) is not int or reply['message_id'] <= 0:
             return False
-        if 'from' in reply and (not isinstance(reply['from'], dict) or reply['from'].get('id') != self.config['bot_id'] or reply['from'].get('is_bot') is not True):
-            return False
-        if 'chat' in reply and (not isinstance(reply['chat'], dict) or reply['chat'].get('id') != self.config['chat_id']):
-            return False
         with self.lock():
-            with self.store.connect() as db:
-                seen = db.execute('SELECT 1 FROM run_ask_updates WHERE binding=? AND id=?',
-                                  (digest(self.binding()), update_id)).fetchone() if self.client else None
-            if seen and any(row['message_id'] == reply.get('message_id')
-                            and self.authorized_message(row, message, reply=True) for row in self.rows()):
-                return True
-            candidates = [row for row in self.rows() if row['message_id'] == reply.get('message_id')
-                          and row.get('pending') and self.authorized_message(row, message, reply=True)]
-            if len(candidates) != 1:
+            bindings = self.bound_messages(reply['message_id'])
+            known_decision = any(row.get('kind') == 'decision' for row, _ in bindings)
+            text_reply = isinstance(message.get('text'), str) and self.bridge._extract_attachment(message) is None
+            valid_reply = (
+                ('from' not in reply or (isinstance(reply['from'], dict)
+                 and reply['from'].get('id') == self.config['bot_id'] and reply['from'].get('is_bot') is True))
+                and ('chat' not in reply or (isinstance(reply['chat'], dict)
+                     and reply['chat'].get('id') == self.config['chat_id'])))
+            if not known_decision:
+                if not valid_reply or not text_reply:
+                    return False
+                with self.store.connect() as db:
+                    seen = db.execute('SELECT 1 FROM run_ask_updates WHERE binding=? AND id=?',
+                                      (digest(self.binding()), update_id)).fetchone() if self.client else None
+                if seen and any(self.authorized_message(row, message, reply=True) for row, _ in bindings):
+                    return True
+            candidates = [(row, turn) for row, turn in bindings
+                          if row.get('kind') == 'decision'
+                          or (row.get('pending') and self.authorized_message(row, message, reply=True))]
+            if not candidates:
                 return False
-            row = candidates[0]
+            row, input_turn = candidates[0]
+            valid_reply = valid_reply and self.authorized_message(row, message, reply=True)
+            if (len(bindings) if known_decision else len(candidates)) != 1 or not valid_reply:
+                if not known_decision:
+                    return False
+                notice = 'Native card message binding ambiguous' if len(bindings) != 1 else 'Native card not authorized'
+                self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
+                return True
             try:
                 ask = self.ensure(row)
                 if not self.claim_update(update_id):
+                    return True
+                if row.get('kind') == 'decision':
+                    if not text_reply:
+                        raise NativeError('Native card replies must be text only; attachments are not supported')
+                    if ask['state'] != 'open':
+                        self.settle(row, ask)
+                        notice = 'Ask is ' + ask['state']
+                    else:
+                        value = text(message['text'], 'reply words')
+                        if not value.strip() or units(value) > CAP:
+                            raise NativeError('invalid native reply words')
+                        option, words = 0, value
+                        if row['options']:
+                            pick = re.fullmatch(r'([1-9][0-9]{0,3})(?:\s+(.*))?', value.strip(), re.DOTALL)
+                            if not pick or not 1 <= int(pick[1]) <= len(row['options']):
+                                raise NativeError('reply with a stored option number and optional words')
+                            option, words = int(pick[1]), pick[2] or ''
+                        notice = self.decide(row, 'answer', False, option, words, turn=input_turn)
+                    self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
                     return True
                 pending = row['pending']
                 row['pending'] = None
@@ -858,16 +1125,31 @@ class RunAsks:
             self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
             return True
 
-    def decide(self, row, action, weighed):
+    def decide(self, row, action, weighed, option=0, words='', turn=None):
         ask = self.ensure(row)  # last ownership/proposal/state read before approval
         if ask['state'] != 'open':
             self.settle(row, ask)
             return 'Ask is ' + ask['state']
+        decision = row.get('kind') == 'decision'
+        if decision:
+            self.require_generations(row)
+            if turn is None or ask['turn'] != turn:
+                self.settle(row, ask)
+                return 'Ask changed; answer the newer card'
         row.update(pending=None, uncertain=True)
         self.save(row)
         args = dict(bead=row['bead'], ask=row['ask'], actor=self.config['yardr_operator'])
-        method = 'ApproveAsk' if action == 'approve' else 'DeclineAsk'
-        args.update(dict(weighed=weighed, values={}) if action == 'approve' else dict(words='Declined in Telegram'))
+        if decision and (action == 'answer' or action.startswith('pick')):
+            method = 'AnswerAsk'
+            args.update(option=int(action[4:]) if action.startswith('pick') else option, words=words, weighed=False)
+        elif decision and action == 'later':
+            method = 'DeferAsk'
+        else:
+            method = 'ApproveAsk' if action == 'approve' else 'DeclineAsk'
+            args.update(dict(weighed=weighed, values={}) if action == 'approve' else dict(words='Declined in Telegram'))
+        if decision:
+            method += 'Expected'
+            args['turn'] = turn
         refusal = None
         try:
             self.client.call(method, args)
@@ -878,13 +1160,16 @@ class RunAsks:
         try:
             ask = self.ensure(row)
             if self.settle(row, ask):
-                return 'Canonical decision recorded'
+                return 'Ask is ' + ask['state'] if decision else 'Canonical decision recorded'
+            if decision and ask['turn'] != turn:
+                return 'Ask changed; answer the newer card'
             known_open = ask['state'] == 'open'
         except NativeError:
             if row['state'] == 'stale':
                 return 'run_ask_stale_proposal'
         refused = known_open and isinstance(refusal, RPCRefused)
-        self.display(row, 'The yard refused this action; read the card again' if refused else UNCERTAIN)
+        footer = str(refusal) if refused and isinstance(refusal, RPCUnsupported) else 'The yard refused this action; read the card again'
+        self.display(row, footer if refused else UNCERTAIN)
         return str(refusal) if refused else UNCERTAIN
 
     def close(self, message_id=None, ask_key=None):
@@ -894,7 +1179,7 @@ class RunAsks:
                     found = db.execute('SELECT id FROM run_ask_keys WHERE key=?', (ask_key,)).fetchone()
                 row = self.get(found[0]) if found else None
             else:
-                found = [r for r in self.rows() if r['message_id'] == message_id]
+                found = [r for r in self.rows() if any(mid == message_id for mid, _ in self.message_bindings(r))]
                 if len(found) > 1:
                     return self.bridge.receipt(reason='run_ask_message_binding_ambiguous')
                 row = found[0] if found else None
@@ -911,7 +1196,8 @@ class RunAsks:
             return
         with self.lock():
             for row in self.rows():
-                if row['binding'] != self.binding() or row['message_id'] is None or row['state'] == 'stale':
+                if (row['binding'] != self.binding() or row['state'] == 'stale'
+                        or (row['message_id'] is None and row.get('kind') != 'decision')):
                     continue
                 try:
                     ask = self.ensure(row)

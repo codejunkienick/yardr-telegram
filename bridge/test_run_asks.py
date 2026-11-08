@@ -25,11 +25,21 @@ n = getattr(b, 'run_asks', n)
 
 
 def proposal():
-    return dict(ask=7, to='pat', asker='proposer', since='2026-01-01T00:00:00Z',
+    return dict(ask=7, turn=0, to='pat', asker='proposer', since='2026-01-01T00:00:00Z',
                 question='Change the test?', context=['First <context>', 'Second & context'], options=[], state='open',
                 run=dict(argv=['depot', 'test', 'web'], command='yardr depot test web', description='Set its test',
                          does=['current: make test', 'proposed: sh scripts/test.sh'],
                          back='propose the old command', back_by='an operator'))
+
+
+def decision():
+    return dict(ask=7, turn=0, to='pat', asker='proposer', since='2026-01-01T00:00:00Z',
+                question='Where should the links go?', context=['First <context>', 'Second & context'],
+                options=[dict(label='Move', consequence='Move every link.'),
+                         dict(label='Keep', consequence='Keep the links here.'),
+                         dict(label='You decide', consequence='leave it to proposer')],
+                recommend=1, why='The new location is ready.',
+                about=[dict(id='related-1', title='Related <work>', stage='backlog')], state='open')
 
 
 def skill_proposal(extra=''):
@@ -64,6 +74,8 @@ class NativeSocket:
         self.user = dict(name='pat', role='operator', identities={'tgbridge': {'id': '123', 'key': 'Pat'}})
         self.calls = []
         self.mode = None
+        self.read_statuses = []
+        self.bead = dict(id='sample-1', title='Synthetic change')
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -74,20 +86,39 @@ class NativeSocket:
                 args = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 method = self.path.removeprefix('/call/')
                 owner.calls.append((method, args, self.headers.get('X-Yardr-Connection')))
+                if method in ('GetUser', 'Bead') and owner.read_statuses:
+                    self.send_error(owner.read_statuses.pop(0))
+                    return
                 if method == 'GetUser':
                     result = owner.user
                 elif method == 'Bead':
                     if owner.mode == 'unreadable':
                         self.send_error(503)
                         return
-                    result = dict(id='sample-1', title='Synthetic change', asks=[owner.ask])
-                elif method in ('ApproveAsk', 'DeclineAsk'):
-                    if owner.ask['state'] != 'open' or owner.mode == 'refused':
+                    result = dict(owner.bead, asks=[owner.ask])
+                elif method in ('ApproveAsk', 'DeclineAsk', 'AnswerAsk', 'DeferAsk',
+                                'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected'):
+                    if method.endswith('Expected'):
+                        if owner.mode == 'old-method':
+                            self.reply({'error': {'code': 'error', 'message': 'no such method ' + method}})
+                            return
+                        if args.get('turn') != owner.ask.get('turn'):
+                            self.reply({'error': {'code': 'conflict', 'message': 'stale turn'}})
+                            return
+                        method = method.removesuffix('Expected')
+                    replacing = method == 'AnswerAsk' and owner.ask['state'] == 'answered' and owner.ask.get('options')
+                    if (owner.ask['state'] != 'open' and not replacing) or owner.mode == 'refused':
                         self.reply({'error': {'code': 'conflict', 'message': 'refused'}})
                         return
                     if owner.mode != 'lost-open':
-                        owner.ask['state'] = 'answered' if method == 'ApproveAsk' else 'declined'
-                        owner.ask['words'] = 'canonical decision'
+                        owner.ask['turn'] = owner.ask.get('turn', 0) + 1
+                        owner.ask['state'] = {'ApproveAsk': 'answered', 'AnswerAsk': 'answered',
+                                              'DeclineAsk': 'declined', 'DeferAsk': 'put aside'}[method]
+                        owner.ask['words'] = args.get('words', 'canonical decision')
+                        if method == 'AnswerAsk':
+                            owner.ask['option'] = args['option']
+                        if method == 'DeferAsk':
+                            owner.ask['return_at'] = '2026-01-02T00:00:00Z'
                         if method == 'ApproveAsk':
                             owner.ask['ran'] = dict(argv=owner.ask['run']['argv'],
                                                    result=n.PENDING if owner.mode == 'carrying' else 'stored operation applied')
@@ -97,13 +128,13 @@ class NativeSocket:
                     if owner.mode == 'wire-error-commit':
                         self.reply({'error': {'code': 'error', 'message': 'transport failed after commit'}})
                         return
-                    if owner.mode in ('lost-commit', 'lost-open', 'invalid-commit'):
-                        if owner.mode == 'invalid-commit':
-                            self.send_response(502)
+                    if owner.mode in ('lost-commit', 'lost-open', 'invalid-commit', 'bad-request-commit'):
+                        if owner.mode in ('invalid-commit', 'bad-request-commit'):
+                            self.send_response(400 if owner.mode == 'bad-request-commit' else 502)
                             self.end_headers()
                             self.wfile.write(b'not a rollback')
                         return
-                    result = {} if method == 'DeclineAsk' else dict(bead='sample-1', ask=7, result='stored operation applied')
+                    result = dict(bead='sample-1', ask=7, result='stored operation applied') if method == 'ApproveAsk' else None
                 else:
                     self.reply({'error': {'code': 'not-found', 'message': 'unknown method'}})
                     return
@@ -161,6 +192,7 @@ class NativeTests(BridgeTestCase):
         with self.store.connect() as db:
             for table in ('run_asks', 'run_ask_keys', 'run_ask_updates', 'deliveries'):
                 db.execute('DELETE FROM ' + table)
+            db.execute('UPDATE cursor SET offset=0')
         self.native.ask = ask
         self.native.calls.clear()
         self.native.mode = None
@@ -180,7 +212,9 @@ class NativeTests(BridgeTestCase):
         message = dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
                        **{'from': dict(id=999, is_bot=True)})
         message.update(changes)
-        query = dict(id=f'query-{uid}', data=f"runask:{row['id']}:{action}", message=message,
+        prefix = 'askcard' if row.get('kind') == 'decision' else 'runask'
+        suffix = ':' + str(row['turn']) if prefix == 'askcard' else ''
+        query = dict(id=f'query-{uid}', data=f"{prefix}:{row['id']}:{action}{suffix}", message=message,
                      **{'from': dict(id=123, is_bot=False)})
         self.bridge.inbound(dict(update_id=uid, callback_query=query))
         return query
@@ -193,12 +227,749 @@ class NativeTests(BridgeTestCase):
         self.bridge.inbound(dict(update_id=uid, message=message))
 
     def writes(self):
-        return [(method, args) for method, args, _ in self.native.calls if method in ('ApproveAsk', 'DeclineAsk')]
+        return [(method, args) for method, args, _ in self.native.calls if method in
+                ('ApproveAsk', 'DeclineAsk', 'AnswerAsk', 'DeferAsk', 'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected')]
 
     def edits(self):
         return [body for url, body in self.calls if url.endswith('/editMessageText')]
 
+    def create_decision(self, ask=None, **kwargs):
+        self.reset_native(decision() if ask is None else ask)
+        return self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1', **kwargs))
+
+    def test_ordinary_options_words_later_reopen_decline_and_native_close(self):
+        self.assertTrue(self.create_decision()['delivered'])
+        card = self.calls[-1][1]
+        for field in ('Where should the links go?', 'First &lt;context&gt;', 'Second &amp; context',
+                      '1. Move', 'Move every link.', '2. Keep', 'Keep the links here.',
+                      '3. You decide', 'leave it to proposer', 'Recommended: 1. Move',
+                      'Why: The new location is ready.', 'About: related-1 · Related &lt;work&gt; · backlog'):
+            self.assertIn(field, card['text'])
+        self.assertEqual(len(card['reply_markup']['inline_keyboard']), 4)
+        self.assertFalse(self.bridge.api_ask_close(dict(ask_key='decision-1', decision='forged'))['delivered'])
+        self.press('pick3')
+        self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat', option=3, words='', weighed=False))])
+        self.assertIn('Answered: 3. You decide', self.edits()[-1]['text'])
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.press('pick1', uid=41)
+        self.reply('1 changed', uid=42)
+        self.assertEqual(len(self.writes()), 1)
+        self.assertTrue(self.bridge.api_ask_close(dict(ask_key='decision-1', decision='forged'))['delivered'])
+        self.assertNotIn('forged', self.edits()[-1]['text'])
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))['delivered'])
+        self.assertEqual(self.sent_count, 2)  # card and bound-reply notice, never a second card
+
+        self.assertTrue(self.create_decision()['delivered'])
+        self.reply('2 keep them until Monday', uid=43)
+        self.assertEqual(self.writes()[-1][1]['words'], 'keep them until Monday')
+        self.assertEqual(self.writes()[-1][1]['option'], 2)
+        self.assertFalse(any(url.endswith('/deleteMessage') for url, _ in self.calls))
+        ask = decision()
+        ask.update(options=None)
+        ask.pop('recommend')
+        ask.pop('why')
+        self.assertTrue(self.create_decision(ask)['delivered'])
+        self.assertIn('with your answer.', self.calls[-1][1]['text'])
+        self.reply('Use the new location 🙂', uid=44)
+        self.assertEqual(self.writes()[-1], ('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat', option=0,
+                                                             words='Use the new location 🙂', weighed=False)))
+        self.assertTrue(self.create_decision()['delivered'])
+        self.press('later', uid=45)
+        self.assertEqual(self.row()['state'], 'put aside')
+        self.assertIn('until 2026-01-02', self.edits()[-1]['text'])
+        self.assertEqual(self.edits()[-1]['reply_markup']['inline_keyboard'], [])
+        self.reply('1', uid=46)
+        self.assertEqual(self.writes(), [('DeferAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat'))])
+        self.native.ask.update(state='open')
+        self.bridge.run_asks.refresh()
+        self.assertEqual(self.row()['state'], 'open')
+        self.assertEqual(self.edits()[-1]['reply_markup']['inline_keyboard'], [])
+        self.assertNotEqual(self.row()['generations'][0]['message_id'], self.row()['message_id'])
+        self.press('decline', uid=47)
+        self.assertEqual(self.writes()[-1], ('DeclineAskExpected', dict(bead='sample-1', ask=7, turn=1,
+                                                                     actor='pat', words='Declined in Telegram')))
+        self.assertEqual(self.row()['state'], 'declined')
+        self.native.ask.update(state='taken back', by='proposer', words='canonical withdrawal')
+        self.bridge.run_asks.refresh()
+        self.assertIn('Taken back by proposer: canonical withdrawal', self.edits()[-1]['text'])
+
+        self.bridge.sleep = lambda _: None
+        for restart in (False, True):
+            for failure in ('not-sent', 'unconfirmed', 'server-error'):
+                with self.subTest(reopen_restart=restart, edit_failure=failure):
+                    self.assertTrue(self.create_decision()['delivered'])
+                    self.press('later')
+                    transport = self.bridge.request
+                    attempts = []
+
+                    def unavailable(url, body, *args, **kwargs):
+                        if url.endswith('/editMessageText'):
+                            attempts.append(body)
+                            if failure == 'not-sent':
+                                raise b.RequestNotSent('synthetic connection failure')
+                            if failure == 'unconfirmed':
+                                raise b.RequestUnconfirmed('synthetic uncertain edit')
+                            return 503, dict(ok=False, error_code=503)
+                        return transport(url, body, *args, **kwargs)
+
+                    try:
+                        self.bridge.request = unavailable
+                        self.native.ask['state'] = 'open'
+                        self.bridge.run_asks.refresh()
+                        self.assertTrue(attempts)
+                        self.assertEqual(self.row()['state'], 'open')
+                        revision = self.row()['generations'][0]['revision']
+                        if restart:
+                            self.bridge.run_asks = n.RunAsks(self.bridge)
+                    finally:
+                        self.bridge.request = transport
+                    count = len(self.edits())
+                    self.bridge.run_asks.refresh()
+                    self.assertEqual(len(self.edits()), count + 1)
+                    self.assertEqual(self.edits()[-1], attempts[-1])
+                    self.assertNotIn('Put aside', self.edits()[-1]['text'])
+                    self.assertEqual(self.edits()[-1]['reply_markup']['inline_keyboard'], [])
+                    self.assertEqual(self.row()['generations'][0]['revision'], revision)
+                    count = len(self.edits())
+                    self.bridge.run_asks.refresh()
+                    self.assertEqual(len(self.edits()), count)
+                    self.assertEqual([m for m, _ in self.writes()], ['DeferAskExpected'])
+
+        for uncertain_method in ('sendMessage', 'editMessageText'):
+            for state, label in (('answered', 'Answered: 2. Keep'), ('declined', 'Declined'),
+                                 ('taken back', 'Taken back by proposer'), ('put aside', 'Put aside')):
+                with self.subTest(superseding_reopen=state, uncertain_method=uncertain_method):
+                    self.assertTrue(self.create_decision()['delivered'])
+                    self.press('later')
+                    transport = self.bridge.request
+                    def uncertain_retirement(url, body, *args, **kwargs):
+                        if url.endswith('/' + uncertain_method):
+                            raise b.RequestUnconfirmed('synthetic uncertain edit')
+                        return transport(url, body, *args, **kwargs)
+                    with patch.object(self.bridge, 'request', side_effect=uncertain_retirement):
+                        self.native.ask['state'] = 'open'
+                        self.bridge.run_asks.refresh()
+                    self.native.ask.update(state=state, option=2, words='Newer canonical outcome', by='proposer')
+                    self.bridge.run_asks = n.RunAsks(self.bridge)
+                    self.bridge.run_asks.refresh()
+                    self.assertEqual(self.row()['state'], state)
+                    settled = next(body for body in reversed(self.edits()) if body['message_id'] == self.row()['generations'][-1]['message_id'])
+                    self.assertIn(label, settled['text'])
+                    self.assertEqual(self.edits()[-1]['reply_markup']['inline_keyboard'], [])
+                    count = len(self.edits())
+                    self.bridge.run_asks.refresh()
+                    self.assertEqual(len(self.edits()), count)
+                    self.assertEqual([m for m, _ in self.writes()], ['DeferAskExpected'])
+
+    def test_ordinary_refuses_incomplete_unknown_operation_and_weighted_payloads(self):
+        for change in (dict(run=proposal()['run']), dict(secret={}), dict(setup={}), dict(identity={}),
+                       dict(depot_push={}), dict(unknown='sensitive input'), dict(to='another'),
+                       dict(options=[dict(label='incomplete')]), dict(recommend=True), dict(recommend=9),
+                       dict(context='wrong shape'), dict(about=[dict(id='missing')]),
+                       dict(turn=None), dict(turn=True), dict(turn=-1), dict(turn='0'), dict(turn=2**63),
+                       dict(weight=[dict(**{'class': 'outside'}, line='canonical weight')]),
+                       dict(question='oversized 🙂' * 600), dict(question='bad\ud800'),
+                       dict(why='oversized' * 600), dict(options=[dict(label='long' * 900, consequence='all')]),
+                       dict(options=[dict(label='short', consequence='long' * 900)]),
+                       dict(options=[dict(label='x', consequence='x')] * 99),
+                       dict(context=['long' * 900]), dict(about=[dict(id='other', title='long' * 900, stage='new')])):
+            with self.subTest(change=list(change)):
+                self.assertFalse(self.create_decision(dict(decision(), **change))['delivered'])
+                self.assertEqual(self.calls, [])
+                self.assertEqual(self.writes(), [])
+        old = decision()
+        old.pop('turn')
+        receipt = self.create_decision(old)
+        self.assertFalse(receipt['delivered'])
+        self.assertIn('requires_guarded_core', receipt['reason'])
+        self.assertEqual(self.calls, [])
+        for action, method in (('pick1', 'AnswerAskExpected'), ('later', 'DeferAskExpected'),
+                               ('decline', 'DeclineAskExpected'), ('reply', 'AnswerAskExpected')):
+            with self.subTest(old_method=action):
+                self.assertTrue(self.create_decision()['delivered'])
+                self.native.mode = 'old-method'
+                if action == 'reply':
+                    self.reply('2 older core')
+                else:
+                    self.press(action)
+                self.assertEqual([m for m, _ in self.writes()], [method])
+                self.assertEqual(self.native.ask['state'], 'open')
+                self.assertIn('requires_guarded_core', self.edits()[-1]['text'])
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                self.assertEqual(len(self.writes()), 1)
+        self.assertTrue(self.create_decision()['delivered'])
+        remaining = n.CAP - n.units(self.row()['plain'])
+        full = decision()
+        full['question'] += '🙂' * (remaining // 2) + 'x' * (remaining % 2)
+        self.assertTrue(self.create_decision(full)['delivered'])
+        self.assertEqual(n.units(self.row()['plain']), n.CAP)
+        self.assertFalse(self.create_decision(dict(full, question=full['question'] + 'x'))['delivered'])
+        self.assertTrue(self.create_decision()['delivered'])
+        self.assertFalse(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='wrong-kind'))['delivered'])
+        self.native.ask = proposal()
+        self.assertFalse(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='wrong-kind'))['delivered'])
+
+    def test_ordinary_ambiguous_writes_settle_only_from_canonical_state(self):
+        for action in ('pick1', 'later', 'decline', 'reply'):
+            for mode in ('lost-commit', 'invalid-commit', 'bad-request-commit', 'wire-error-commit', 'lost-open', 'lost-unreadable'):
+                with self.subTest(action=action, mode=mode):
+                    self.assertTrue(self.create_decision()['delivered'])
+                    self.native.mode = mode
+                    if action == 'reply':
+                        self.reply('2 canonical note')
+                    else:
+                        self.press(action)
+                    self.assertEqual(len(self.writes()), 1)
+
+                    expected = 'put aside' if action == 'later' else 'declined' if action == 'decline' else 'answered'
+                    if mode in ('lost-open', 'lost-unreadable'):
+                        self.assertIn(n.UNCERTAIN, self.edits()[-1]['text'])
+                        self.assertEqual(self.row()['state'], 'open')
+                    else:
+                        self.assertEqual(self.row()['state'], expected)
+                    self.native.mode = None
+                    self.bridge.run_asks = n.RunAsks(self.bridge)
+                    self.bridge.run_asks.refresh()
+                    self.assertEqual(self.row()['state'], 'open' if mode == 'lost-open' else expected)
+                    self.assertEqual(len(self.writes()), 1)
+
+    def test_ordinary_bindings_staleness_and_replay_reject_without_writes(self):
+        for change in (dict(chat=dict(id=456, type='private')), dict(chat=dict(id=123, type='group')),
+                       {'from': dict(id=456, is_bot=False)}, {'from': dict(id=123, is_bot=True)},
+                       dict(reply_to_message=dict(message_id=999)), dict(message_thread_id=99),
+                       dict(forward_origin=dict(type='user')), dict(reply_to_message=dict(message_id=77,
+                            **{'from': dict(id=888, is_bot=True)}))):
+            with self.subTest(reply=change):
+                self.create_decision()
+                with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                    self.reply('1 forged', **change)
+                self.assertEqual(self.writes(), [])
+        for change in (dict(chat=dict(id=456, type='private')), dict(chat=dict(id=123, type='group')),
+                       {'from': dict(id=123, is_bot=False)}, dict(message_id=999),
+                       dict(forward_origin=dict(type='user')), dict(message_thread_id=99)):
+            with self.subTest(callback=change):
+                self.create_decision()
+                self.press('pick1', **change)
+                self.assertEqual(self.writes(), [])
+        for field, value in (('question', 'Changed'), ('options', decision()['options'][:1]),
+                             ('recommend', 2), ('why', 'Changed'), ('to', 'another'),
+                             ('about', []), ('state', 'taken back')):
+            with self.subTest(stale=field):
+                self.create_decision()
+                self.native.ask[field] = value
+                self.native.ask.update(by='proposer', words='withdrawn')
+                self.press('pick1')
+                self.reply('1 forged')
+                self.assertEqual(self.writes(), [])
+        for role, mapping in (('member', {'id': '123'}), ('operator', {'id': '456'}), ('operator', '123')):
+            self.create_decision()
+            self.native.user.update(role=role, identities={'tgbridge': mapping})
+            self.press('pick1')
+            self.reply('1')
+            self.assertEqual(self.writes(), [])
+        self.create_decision()
+        row = self.row()
+        query = self.press('pick99')
+        for namespace, action in (('runask', 'approve'), ('askcard', 'cancel'), ('askcard', 'approve')):
+            query['data'] = f"{namespace}:{row['id']}:{action}"
+            self.bridge.inbound(dict(update_id=41, callback_query=query))
+        self.assertEqual(self.writes(), [])
+        self.press('pick1', uid=42)
+        self.native.ask.update(state='open')
+        self.bridge.run_asks.refresh()
+        self.press('pick2', uid=42)
+        self.assertEqual(len(self.writes()), 1)
+
+        for action in ('pick1', 'later', 'decline', 'reply'):
+            with self.subTest(missed_reopen=action):
+                self.create_decision()
+                # A put-aside can become due before the bridge sees either transition.
+                self.native.ask.update(turn=1, state='open')
+                if action == 'reply':
+                    self.reply('1 stale')
+                else:
+                    stale_query = self.press(action)
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(self.row()['turn'], 1)
+                self.assertEqual(self.edits()[-1]['reply_markup']['inline_keyboard'], [])
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                count = self.sent_count
+                self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))['delivered'])
+                self.assertEqual(self.sent_count, count)
+                if action != 'reply':
+                    self.bridge.inbound(dict(update_id=401, callback_query=stale_query))
+                    self.assertEqual(self.writes(), [])
+                self.press('pick2', uid=402)
+                self.assertEqual(self.writes()[0][1]['turn'], 1)
+                self.assertEqual(self.native.ask['option'], 2)
+
+        self.bridge.sleep = lambda _: None
+
+        port = self.start_callback_server()
+
+        def poll(*updates):
+            telegram = self.bridge.telegram
+            def fetched(method, body, timeout=15):
+                if method == 'getUpdates':
+                    return 200, dict(ok=True, result=list(updates))
+                return telegram(method, body, timeout)
+            with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                self.bridge.poll_once()
+
+        def queued(row, uid=410, value='1 old words'):
+            return dict(update_id=uid, message=dict(message_id=uid, text=value,
+                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+                reply_to_message=dict(message_id=row['message_id'])))
+
+        def cards():
+            return [body for url, body in self.calls if url.endswith('/sendMessage')
+                    and body.get('reply_markup', {}).get('inline_keyboard')]
+
+        for initial in (True, False):
+            with self.subTest(public_send_key_collision=initial):
+                self.reset_native(decision())
+                manager = self.bridge.run_asks
+                ident = n.digest(dict(binding=manager.binding(), bead='sample-1', ask=7))[:24]
+                original = None
+                if not initial:
+                    self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))['delivered'])
+                    original = self.row()
+                key = f'runask:{ident}:send' + ('' if initial else ':1')
+                sent = self.bridge.api_send(dict(text='An unrelated diagram; reply 1 or 2.', key=key, format='plain'))
+                self.assertIs(sent['delivered'], True)
+                saved_send = self.store.saved_delivery(key)
+                unrelated = dict(message_id=int(sent['message_id']))
+                if initial:
+                    receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))
+                    self.assertFalse(receipt['delivered'])
+                    self.assertEqual(receipt['reason'], 'idempotency_key_conflict')
+                else:
+                    manager.client.call('DeferAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat'))
+                    self.native.ask['state'] = 'open'
+                    poll()
+                canonical = copy.deepcopy(self.native.ask)
+                self.native.calls.clear()
+                count = len(cards())
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                response = queued(unrelated, uid=460, value='2 the second diagram')
+                with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation) as relay:
+                    poll(response)
+                    self.assertEqual(self.writes(), [])
+                    relay.assert_called_once()
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(self.native.ask, canonical)
+                current = self.row()
+                self.assertIsNone(current['message_id'])
+                self.assertEqual([(g['turn'], g['message_id']) for g in current['generations']],
+                                 [] if initial else [(0, original['message_id'])])
+                if original:
+                    retired = next(body for body in reversed(self.edits()) if body['message_id'] == original['message_id'])
+                    self.assertEqual(retired['reply_markup']['inline_keyboard'], [])
+                    self.assertNotIn('newer card', retired['text'])
+                    self.assertIn('unavailable in Telegram', retired['text'])
+                for caller_key in ('decision-1', 'another-decision-key'):
+                    receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key=caller_key))
+                    self.assertFalse(receipt['delivered'])
+                    self.assertEqual(receipt['reason'], 'idempotency_key_conflict')
+                receipt = self.bridge.api_ask_close(dict(message_id=unrelated['message_id'], decision='ignored'))
+                self.assertEqual(receipt['reason'], 'ask_not_found')
+                deliver = self.bridge._reserve_and_deliver
+                conflicts = []
+                def delivery(*args, **kwargs):
+                    receipt = deliver(*args, **kwargs)
+                    if args[0] == key:
+                        conflicts.append(receipt['metadata']['reason'])
+                    return receipt
+                with patch.object(self.bridge, '_reserve_and_deliver', side_effect=delivery):
+                    self.assertFalse(self.bridge.api_ask_close(dict(ask_key='decision-1', decision='ignored'))['delivered'])
+                self.assertEqual(conflicts, ['idempotency_key_conflict'])
+                query = dict(id='collision-461', data=f"askcard:{ident}:pick2:{current['turn']}",
+                    **{'from': dict(id=123, is_bot=False)}, message=dict(message_id=unrelated['message_id'],
+                    chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))
+                with patch.object(self.bridge, '_relay') as relay:
+                    poll(dict(update_id=461, callback_query=query))
+                    if original:
+                        poll(queued(original, uid=462))
+                        query = dict(query, id='collision-463', data=f'askcard:{ident}:pick1:0',
+                            message=dict(query['message'], message_id=original['message_id']))
+                        poll(dict(update_id=463, callback_query=query))
+                    relay.assert_not_called()
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(self.native.ask, canonical)
+                self.assertIsNone(self.row()['message_id'])
+                self.assertEqual(self.row()['generations'], current['generations'])
+                self.assertEqual(len(cards()), count)
+                self.assertEqual(self.store.saved_delivery(key), saved_send)
+
+        self.bridge.state_dir = Path(self.tmp.name) / 'inbound-state'
+        self.bridge.request_download = self.download_transport
+        self.bridge.hook_secret = 'SYNTHETIC-HOOK'
+        for state in ('open', 'retired', 'answered'):
+            for payload in (dict(photo=[dict(file_id='photo', width=1, height=1)]),
+                            dict(photo=[dict(file_id='photo', width=1, height=1)], caption='1 caption'),
+                            dict(document=dict(file_id='document'), caption='1 caption'),
+                            dict(video=dict(file_id='video'), caption='1 caption'),
+                            dict(voice=dict(file_id='voice')), dict(audio=dict(file_id='audio')),
+                            dict(sticker=dict(file_id='sticker')), dict(video_note=dict(file_id='video-note')),
+                            dict(contact=dict(first_name='Example')), dict(location=dict(latitude=0, longitude=0)),
+                            {}, dict(text='1 mixed message', photo=[dict(file_id='photo', width=1, height=1)])):
+                with self.subTest(nontext_reply=payload, generation_state=state):
+                    self.create_decision()
+                    self.download_calls.clear()
+                    original = self.row()
+                    if state == 'retired':
+                        self.native.ask.update(turn=1)
+                    elif state == 'answered':
+                        self.native.ask.update(turn=1, state='answered', option=2, words='External answer', by='pat')
+                    canonical = copy.deepcopy(self.native.ask)
+                    response = queued(original, uid=440)
+                    response['message'].pop('text')
+                    response['message'].update(payload)
+                    poll(response)
+                    poll(response)
+                    self.assertEqual(self.relayed_texts(), [])
+                    self.assertEqual(self.download_calls, [])
+                    self.assertFalse(any(url.endswith('/getFile') for url, _ in self.calls))
+                    self.assertEqual(self.writes(), [])
+                    self.assertEqual(self.native.ask, canonical)
+                    notices = [body for url, body in self.calls if url.endswith('/sendMessage')
+                               and 'text only' in body.get('text', '')]
+                    self.assertEqual(len(notices), 1)
+                    self.assertFalse(any(url.endswith('/deleteMessage') for url, _ in self.calls))
+
+        self.create_decision()
+        self.download_calls.clear()
+        response = queued(dict(message_id=987654), uid=441)
+        response['message'].pop('text')
+        response['message'].update(photo=[dict(file_id='photo', width=1, height=1)], caption='Ordinary attachment')
+        poll(response)
+        self.assertEqual(len(self.relayed_texts()), 1)
+        self.assertIn('Ordinary attachment', self.relayed_texts()[0])
+        self.assertEqual(len(self.download_calls), 1)
+        self.assertEqual(self.writes(), [])
+
+        class Crash(BaseException):
+            pass
+
+        for initial in (True, False):
+            for state in ('open', 'reopened', 'reopened-close', 'reopened-create', 'put aside',
+                          'answered', 'declined', 'taken back', 'proposal-changed', 'unreadable'):
+                with self.subTest(confirmed_send_crash=state, initial=initial):
+                    self.reset_native(decision())
+                    manager = self.bridge.run_asks
+                    turn = 0 if initial else 1
+                    if not initial:
+                        self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))
+                        manager.client.call('DeferAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat'))
+                        self.native.ask['state'] = 'open'
+                    save = manager.save
+                    def crash(row):
+                        if any(g['turn'] == turn for g in row.get('generations', [])):
+                            raise Crash()
+                        save(row)
+                    with patch.object(manager, 'save', side_effect=crash), self.assertRaises(Crash):
+                        if initial:
+                            self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))
+                        else:
+                            poll()
+                    # Read the durable row directly, without triggering receipt recovery.
+                    with self.store.connect() as db:
+                        pending = json.loads(db.execute('SELECT data FROM run_asks').fetchone()[0])
+                    self.assertIsNone(pending['message_id'])
+                    self.assertFalse(any(g['turn'] == turn for g in pending['generations']))
+                    key = f"runask:{pending['id']}:send" + ('' if initial else ':1')
+                    receipt = self.store.saved_receipt(key)
+                    self.assertTrue(receipt['delivered'])
+                    original = dict(message_id=int(receipt['message_id']))
+                    count = len(cards())
+                    if state.startswith('reopened') or state == 'put aside':
+                        manager.client.call('DeferAskExpected', dict(bead='sample-1', ask=7, turn=turn, actor='pat'))
+                        if state.startswith('reopened'):
+                            self.native.ask['state'] = 'open'
+                    elif state == 'answered':
+                        manager.client.call('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=turn,
+                            actor='pat', option=2, words='External answer', weighed=False))
+                    elif state == 'declined':
+                        manager.client.call('DeclineAskExpected', dict(bead='sample-1', ask=7, turn=turn,
+                            actor='pat', words='External decline'))
+                    elif state == 'taken back':
+                        self.native.ask.update(turn=turn + 1, state=state, by='proposer', words='Withdrawn')
+                    elif state == 'proposal-changed':
+                        self.native.ask.update(turn=turn + 1, question='Changed question')
+                    elif state == 'unreadable':
+                        self.native.mode = 'unreadable'
+                    canonical = copy.deepcopy(self.native.ask)
+                    self.native.calls.clear()
+                    self.bridge.run_asks = n.RunAsks(self.bridge)
+                    if state == 'reopened-close':
+                        closed = self.bridge.api_ask_close(dict(message_id=original['message_id'], decision='ignored'))
+                        self.assertFalse(closed['delivered'])
+                        self.assertEqual(closed['reason'], 'run_ask_still_open_in_yard')
+                    elif state == 'reopened-create':
+                        self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7,
+                            key='decision-1'))['delivered'])
+                    if state == 'open':
+                        poll()
+                    else:
+                        response = queued(original, uid=450)
+                        poll(response)
+                        poll(response)
+                    self.assertEqual(self.relayed_texts(), [])
+                    self.assertEqual(self.writes(), [])
+                    self.assertEqual(self.native.ask, canonical)
+                    with self.store.connect() as db:
+                        current = json.loads(db.execute('SELECT data FROM run_asks').fetchone()[0])
+                    recovered = [g for g in current['generations'] if g['turn'] == turn]
+                    self.assertEqual(len(recovered), 1)
+                    self.assertEqual(recovered[0]['message_id'], original['message_id'])
+                    self.assertEqual(len(cards()), count + int(state.startswith('reopened')))
+                    if state not in ('open', 'unreadable'):
+                        retired = [body for body in self.edits() if body['message_id'] == original['message_id']]
+                        self.assertTrue(retired)
+                        self.assertEqual(retired[-1]['reply_markup']['inline_keyboard'], [])
+                    if state.startswith('reopened'):
+                        self.assertIn('Re-presented', retired[-1]['text'])
+                        self.assertIn('newer card', self.calls[-1][1]['text'])
+                        self.bridge.run_asks = n.RunAsks(self.bridge)
+                        poll(queued(original, uid=451))
+                        self.assertEqual(self.relayed_texts(), [])
+                        self.assertEqual(self.writes(), [])
+                        self.assertEqual(self.native.ask, canonical)
+                    if state == 'open' or state.startswith('reopened'):
+                        answer = queued(current, uid=452, value='2 Current words')
+                        poll(answer)
+                        poll(answer, queued(current, uid=453))
+                        self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7,
+                            turn=turn + int(state.startswith('reopened')), actor='pat', option=2,
+                            words='Current words', weighed=False))])
+                        self.assertEqual(len(cards()), count + int(state.startswith('reopened')))
+
+        for options in (True, False):
+            for timing in ('same-batch', 'next-batch', 'http-close', 'http-create'):
+                with self.subTest(queued_reply=timing, options=options):
+                    ask = decision()
+                    if not options:
+                        ask.update(options=[])
+                        ask.pop('recommend')
+                        ask.pop('why')
+                    self.create_decision(ask, silent=True)
+                    original = self.row()
+                    response = queued(original, value='1 old words' if options else 'Old free words')
+                    self.bridge.run_asks.client.call('DeferAskExpected',
+                        dict(bead='sample-1', ask=7, turn=0, actor='pat'))
+                    self.native.ask['state'] = 'open'  # Due reopening retains the defer turn.
+                    self.native.calls.clear()
+                    canonical = copy.deepcopy(self.native.ask)
+                    if timing == 'next-batch':
+                        poll()
+                    elif timing.startswith('http'):
+                        path, body = ('/v1/ask-close', dict(message_id=original['message_id'], decision='ignored')) if timing == 'http-close' else (
+                            '/v1/ask-card', dict(bead='sample-1', ask=7, key='decision-1', silent=True))
+                        status, _ = self.api_call(port, path, body)
+                        self.assertEqual(status, 200)
+                    with patch.object(self.bridge, '_relay') as relay:
+                        poll(response)
+                        relay.assert_not_called()
+                    self.assertEqual(self.writes(), [])
+                    self.assertEqual(self.native.ask, canonical)
+                    self.assertEqual(len(cards()), 2)
+                    self.assertTrue(all(card['disable_notification'] for card in cards()))
+                    current = self.row()
+                    self.assertNotEqual(current['message_id'], original['message_id'])
+                    self.assertEqual([(g['turn'], g['message_id']) for g in current['generations']],
+                                     [(0, original['message_id']), (1, current['message_id'])])
+                    self.assertIn('newer card', self.calls[-1][1]['text'])
+                    retired = [body for body in self.edits() if body['message_id'] == original['message_id']]
+                    self.assertIn('Re-presented', retired[-1]['text'])
+                    self.assertEqual(retired[-1]['reply_markup']['inline_keyboard'], [])
+                    self.bridge.run_asks = n.RunAsks(self.bridge)
+                    poll(queued(original, uid=411, value=response['message']['text']))
+                    self.assertEqual(self.writes(), [])
+                    # Callback data and the message's generation must agree, then be current.
+                    for uid, mid, turn in ((412, original['message_id'], 0),
+                                           (413, original['message_id'], 1), (414, current['message_id'], 0)):
+                        query = dict(id=str(uid), data=f"askcard:{current['id']}:later:{turn}",
+                            **{'from': dict(id=123, is_bot=False)}, message=dict(message_id=mid,
+                            chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))
+                        poll(dict(update_id=uid, callback_query=query))
+                    self.assertEqual(self.writes(), [])
+                    self.assertEqual(self.native.ask, canonical)
+                    answer = queued(current, uid=415, value='2 current words' if options else 'Current free words')
+                    poll(answer)
+                    poll(answer, queued(current, uid=416))
+                    self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7,
+                        turn=1, actor='pat', option=2 if options else 0,
+                        words='current words' if options else 'Current free words', weighed=False))])
+                    self.assertEqual(len(cards()), 2)
+                    self.assertTrue(self.bridge.api_ask_close(dict(message_id=original['message_id'], decision='ignored'))['delivered'])
+
+        for restart in (False, True):
+            for failure in ('not-sent', 'unconfirmed', 'server-error'):
+                with self.subTest(retirement_failure=failure, restart=restart):
+                    self.create_decision()
+                    original = self.row()
+                    self.native.ask.update(turn=1, state='open')
+                    transport = self.bridge.request
+                    attempts = []
+                    def unavailable(url, body, *args, **kwargs):
+                        if url.endswith('/editMessageText') and body['message_id'] == original['message_id']:
+                            attempts.append(body)
+                            if failure == 'not-sent':
+                                raise b.RequestNotSent('synthetic unsent retirement')
+                            if failure == 'unconfirmed':
+                                raise b.RequestUnconfirmed('synthetic uncertain retirement')
+                            return 503, dict(ok=False, error_code=503)
+                        return transport(url, body, *args, **kwargs)
+                    try:
+                        self.bridge.request = unavailable
+                        poll(queued(original))
+                        self.assertTrue(attempts)
+                        self.assertEqual(len(cards()), 2)
+                        self.assertEqual(self.writes(), [])
+                        if restart:
+                            self.bridge.run_asks = n.RunAsks(self.bridge)
+                        poll(queued(original, uid=411))
+                        self.assertEqual(self.writes(), [])
+                        self.press('pick1', uid=412, message_id=original['message_id'])
+                        self.assertEqual(self.writes(), [])
+                        poll(queued(self.row(), uid=413, value='2 after retirement failure'))
+                        self.assertEqual(self.writes()[0][1]['turn'], 1)
+                        self.assertEqual(self.native.ask['option'], 2)
+                    finally:
+                        self.bridge.request = transport
+                    poll()
+                    self.assertEqual(len(cards()), 2)
+                    self.assertEqual(self.edits()[-1]['reply_markup']['inline_keyboard'], [])
+
+        for initial in (False, True):
+            for failure in ('not-sent', 'unconfirmed', 'server-error'):
+                with self.subTest(generation_send=failure, initial=initial):
+                    self.create_decision()
+                    original = self.row()
+                    if initial:
+                        self.reset_native(decision())
+                    else:
+                        self.native.ask.update(turn=1, state='open')
+                    transport = self.bridge.request
+                    attempts = []
+                    def unavailable(url, body, *args, **kwargs):
+                        if url.endswith('/sendMessage') and body.get('reply_markup'):
+                            attempts.append(body)
+                            if failure == 'not-sent':
+                                raise b.RequestNotSent('synthetic unsent generation')
+                            if failure == 'unconfirmed':
+                                raise b.RequestUnconfirmed('synthetic uncertain generation')
+                            return 503, dict(ok=False, error_code=503)
+                        return transport(url, body, *args, **kwargs)
+                    try:
+                        self.bridge.request = unavailable
+                        if initial:
+                            self.assertFalse(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))['delivered'])
+                        else:
+                            poll()
+                        self.assertTrue(attempts)
+                        self.assertFalse(any(g['turn'] == (0 if initial else 1) for g in self.row()['generations']))
+                        if not initial:
+                            retired = next(body for body in reversed(self.edits()) if body['message_id'] == original['message_id'])
+                            self.assertEqual(retired['reply_markup']['inline_keyboard'], [])
+                            self.assertNotIn('newer card', retired['text'])
+                            self.assertIn('unavailable in Telegram', retired['text'])
+                        self.bridge.run_asks = n.RunAsks(self.bridge)
+                        count = len(attempts)
+                    finally:
+                        self.bridge.request = transport
+                    poll()
+                    poll()
+                    if failure == 'not-sent':
+                        self.assertEqual(len(cards()), 1 if initial else 2)
+                        self.assertEqual(self.row()['generations'][-1]['turn'], 0 if initial else 1)
+                        self.reply('2 confirmed', uid=420)
+                        self.assertEqual(len(self.writes()), 1)
+                    else:
+                        self.assertEqual(len(cards()), 0 if initial else 1)
+                        self.assertEqual(len(attempts), count)
+                        unknown = queued(dict(message_id=987654), uid=421)
+                        with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation) as relay:
+                            poll(unknown)
+                            relay.assert_called_once()
+                        self.assertEqual(self.writes(), [])
+                        if not initial:
+                            poll(queued(original, uid=422))
+                        self.assertEqual(self.writes(), [])
+
+        self.create_decision()
+        original = self.row()
+        for missing in ('generations', 'initial_turn'):
+            with self.subTest(unconfirmed_row=missing):
+                row = copy.deepcopy(original)
+                row.pop(missing)
+                self.bridge.run_asks.save(row)
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                with patch.object(self.bridge, '_relay') as relay:
+                    poll(queued(row, uid=430))
+                    relay.assert_not_called()
+                self.assertEqual(self.writes(), [])
+                receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1'))
+                self.assertFalse(receipt['delivered'])
+                self.assertIn('unconfirmed', receipt['reason'])
+        self.bridge.run_asks.save(original)
+        duplicate = copy.deepcopy(original)
+        duplicate['id'] = 'f' * 24
+        self.bridge.run_asks.save(duplicate)
+        with patch.object(self.bridge, '_relay') as relay:
+            poll(queued(original, uid=431))
+            relay.assert_not_called()
+        self.assertEqual(self.writes(), [])
+        self.assertIn('ambiguous', self.calls[-1][1]['text'])
+        self.assertIn('ambiguous', self.bridge.api_ask_close(dict(message_id=original['message_id'], decision='ignored'))['reason'])
+
+    def test_ordinary_same_operator_two_homes_and_read_replacement(self):
+        self.assertTrue(self.create_decision()['delivered'])
+        original = self.row()
+        with tempfile.TemporaryDirectory(prefix='other-') as other:
+            home = Path(other) / 'native'
+            home.mkdir(mode=0o700)
+            server = NativeSocket(home)
+            try:
+                server.ask = decision()
+                self.config.update(yardr_home=str(home), yard='arbitrary-instance')
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.assertFalse(self.bridge.api_ask_close(dict(ask_key='decision-1', decision='forged'))['delivered'])
+                self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='second-yard'))['delivered'])
+                query = dict(id='other-yard', data=f"askcard:{original['id']}:pick1",
+                             **{'from': dict(id=123, is_bot=False)}, message=dict(message_id=original['message_id'],
+                             chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))
+                self.bridge.inbound(dict(update_id=60, callback_query=query))
+                self.assertEqual(self.writes(), [])
+                self.assertFalse(any(m in ('AnswerAsk', 'DeferAsk', 'DeclineAsk', 'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected') for m, _, _ in server.calls))
+            finally:
+                server.close()
+        self.config.update(yardr_home=str(self.home), yard='test-city')
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.native.read_statuses = [503, 503]
+        self.press('pick1', uid=61)
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(self.bridge.run_asks.get(original['id'])['state'], 'answered')
+        self.create_decision()
+        self.native.read_statuses = [503, 503, 503]
+        self.press('pick1', uid=62)
+        self.assertEqual(self.writes(), [])
+        self.create_decision()
+        previous = self.home.with_name('previous-yard')
+        self.home.rename(previous)
+        self.home.mkdir(mode=0o700)
+        replaced = NativeSocket(self.home)
+        try:
+            replaced.ask = decision()
+            self.press('pick1', uid=63)
+            self.assertEqual(self.row()['state'], 'stale')
+            self.assertFalse(any(m in ('AnswerAsk', 'AnswerAskExpected') for m, _, _ in replaced.calls))
+        finally:
+            replaced.close()
+
     def test_routine_render_approve_once_restart_and_canonical_close(self):
+        self.native.ask.pop('turn')  # run cards still accept the older core shape
         self.assertTrue(self.create()['delivered'])
         sent = self.calls[-1][1]['text']
         for field in ['Change the test?', 'Proposed by proposer', 'First &lt;context&gt;', 'Second &amp; context',
@@ -292,6 +1063,15 @@ class NativeTests(BridgeTestCase):
                 self.assertEqual(self.writes(), [])
                 self.assertIn("type the ask's number, 7", b.html_visible_text(self.edits()[-1]['text'])[0])
                 pending = self.row()['pending']
+                for payload in (dict(text=None, photo=[dict(file_id='photo', width=1, height=1)], caption='7'),
+                                dict(text='7', document=dict(file_id='document')), dict(text=None, sticker=dict(file_id='sticker'))):
+                    with self.subTest(nontext_confirmation=payload), \
+                         patch.object(self.bridge, '_relay', return_value=self.bridge.conversation), \
+                         patch.object(self.bridge, '_fetch_inbound_attachment',
+                                      return_value=(Path(self.tmp.name) / 'reply', 1, None)):
+                        self.reply(uid=80, **payload)
+                    self.assertEqual(self.row()['pending'], pending)
+                    self.assertEqual(self.writes(), [])
                 count = len(self.calls)
                 for restart in (False, True):
                     with self.subTest(restart=restart):
@@ -757,6 +1537,26 @@ class NativeTests(BridgeTestCase):
                 self.assertIn('approval recorded', self.edits()[-1]['text'])
                 self.assertNotIn('approved, ran', self.edits()[-1]['text'])
                 self.assertEqual(len(self.writes()), 1)
+        self.create_decision()
+        result = 'Canonical complete words <&> 🙂\n' + '🙂' * 4200
+        self.native.ask.update(state='answered', option=2, words=result)
+        self.bridge.run_asks.refresh()
+        parts = [body['text'] for url, body in self.calls if url.endswith('/sendMessage')][1:]
+        self.assertEqual(''.join(parts), '✓ Answered: 2. Keep\n' + result)
+        self.assertTrue(all(n.units(part) <= 4096 for part in parts))
+        count = self.sent_count
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.run_asks.refresh()
+        self.assertEqual(self.sent_count, count)
+        revision = self.row()['generations'][-1]['revision']
+        self.native.ask.update(option=3, words='Newer canonical choice', picks_before=1)
+        self.bridge.run_asks.refresh()
+        self.assertGreater(self.row()['generations'][-1]['revision'], revision)
+        self.assertIn('3. You decide\nNewer canonical choice', self.edits()[-1]['text'])
+        self.assertEqual(self.edits()[-1]['reply_markup']['inline_keyboard'], [])
+        self.native.ask.update(option=2, words=result, picks_before=2)
+        self.bridge.run_asks.refresh()
+        self.assertGreater(self.sent_count, count)
 
     def test_concurrent_terminal_decisions_execute_once(self):
         self.create()
@@ -769,6 +1569,15 @@ class NativeTests(BridgeTestCase):
             thread.join()
         other.refresh()
         self.assertEqual(len(self.writes()), 1)
+
+        self.create_decision()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda uid: self.press('pick1', uid=uid), (70, 71)))
+        self.assertEqual([method for method, _ in self.writes()], ['AnswerAskExpected'])
+        self.assertEqual(self.row()['state'], 'answered')
+        self.reset_native(proposal())
+        self.create()
+        self.press(uid=72)
 
         publisher = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.bridge.request)
         for number in range(8, 12):
@@ -815,6 +1624,20 @@ class NativeTests(BridgeTestCase):
         self.assertEqual(self.writes(), [])
         self.press(is_topic_message=True, message_thread_id=12)
         self.assertEqual(len(self.writes()), 1)
+        self.reset_native(decision())
+        status, _ = self.api_call(port, '/v1/ask-card', dict(bead='sample-1', ask=7, key='bad-auth'),
+                                  headers={'Authorization': 'Bearer incorrect'})
+        self.assertEqual(status, 403)
+        status, answer = self.api_call(port, '/v1/ask-card', dict(bead='sample-1', ask='7', topic='ops'),
+                                      headers={'Idempotency-Key': 'api-decision'})
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(answer['conversation'], '123:topic:12')
+        for field in ('actor', 'weighed', 'question', 'context', 'options', 'words', 'option', 'weight', 'decision', 'turn'):
+            status, _ = self.api_call(port, '/v1/ask-card', dict(bead='sample-1', ask=7, key='bad', **{field: 'forged'}))
+            self.assertEqual(status, 400)
+        self.press('pick2', uid=41, is_topic_message=True, message_thread_id=12)
+        self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat', option=2, words='', weighed=False))])
 
     def test_write_refusals_unreadable_state_and_relay_failures_do_not_forge_success(self):
         for committed_mode in ('wire-error-commit', 'invalid-commit'):
@@ -870,6 +1693,35 @@ class NativeTests(BridgeTestCase):
         receipt = self.bridge.publish(dict(text='fake approval', idempotency_key='spoof', keyboard=[[dict(
             text='Approve', callback_data=f"runask:{self.row()['id']}:approve")]]))
         self.assertFalse(receipt['delivered'])
+        self.assertEqual(len(self.calls), count)
+        self.reset_native(decision())
+        self.assertFalse(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision'))['delivered'])
+        count = len(self.calls)
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        for key in ('uncertain-decision', 'different-decision-key'):
+            self.assertFalse(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key=key))['delivered'])
+        self.assertEqual(len(self.calls), count)
+        self.assertFalse(self.bridge.publish(dict(text='fake decision', idempotency_key='spoof-decision', keyboard=[[dict(
+            text='Choose 1', callback_data=f"askcard:{self.row()['id']}:pick1")]]))['delivered'])
+        self.assertEqual(len(self.calls), count)
+        self.assertIsNone(self.row()['message_id'])
+        self.assertEqual(self.row()['generations'], [])
+        self.bridge.request = original
+        update = dict(update_id=470, message=dict(message_id=470, text='2 uncertain card',
+            chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+            reply_to_message=dict(message_id=77)))
+        telegram = self.bridge.telegram
+        def fetched(method, body, timeout=15):
+            if method == 'getUpdates':
+                return 200, dict(ok=True, result=[update])
+            return telegram(method, body, timeout)
+        canonical = copy.deepcopy(self.native.ask)
+        with patch.object(self.bridge, 'telegram', side_effect=fetched), patch.object(self.bridge, '_relay') as relay:
+            self.bridge.poll_once()
+            relay.assert_called_once()
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.native.ask, canonical)
+        self.assertEqual(self.row()['generations'], [])
         self.assertEqual(len(self.calls), count)
 
     def test_fresh_role_proposal_and_state_checks_on_confirmation(self):
@@ -953,9 +1805,100 @@ class NativeTests(BridgeTestCase):
                 self.assertIn(message, result.stderr)
         self.assertEqual((bin_dir / 'requests.jsonl').read_text().splitlines(), requests)
         self.assertEqual(self.writes(), [])
+        self.native.ask = dict(decision(), ask=8)
+        command[3] = 'ask-card'
+        command[command.index('--ask') + 1] = '8'
+        command[command.index('--idempotency-key') + 1] = 'installed-decision'
+        for routing in (['--topic', 'ops'], ['--conversation-id', '123:topic:12']):
+            result = subprocess.run(command + routing, cwd=root, env=env, text=True, capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(json.loads(result.stdout)['delivered'])
+        requests = (bin_dir / 'requests.jsonl').read_text().splitlines()
+        self.assertEqual(len(requests), 2)
+        body = next(json.loads(json.loads(line[len('data = '):])) for line in json.loads(requests[-1]).splitlines()
+                    if line.startswith('data = '))
+        self.assertIn('Where should the links go?', body['text'])
+        self.assertEqual((body['chat_id'], body['message_thread_id']), (123, 12))
+        self.assertTrue(body['reply_markup']['inline_keyboard'][0][0]['callback_data'].startswith('askcard:'))
+        self.assertEqual(self.writes(), [])
 
 
 class NativeSettingsTests(unittest.TestCase):
+    def test_native_settings_check_then_atomic_add_preserves_all_other_bytes(self):
+        script = Path(__file__).resolve().parents[1] / 'scripts' / 'native_settings.py'
+        with tempfile.TemporaryDirectory(prefix='native-') as tmp:
+            root = Path(tmp)
+            home = root / 'yard'
+            home.mkdir(mode=0o700)
+            path = root / 'settings.toml'
+            command = [sys.executable, '-B', str(script), '--settings', str(path), '--home', str(home), '--operator', 'pat']
+            env = dict(HOME=tmp, PATH=tmp + ':/usr/local/bin:/usr/bin:/bin')
+
+            def run(*args, timeout=10):
+                result = subprocess.run(command + list(args), env=env, cwd=tmp, capture_output=True, text=True, timeout=timeout)
+                self.assertNotIn('synthetic-secret', result.stdout + result.stderr)
+                return result
+
+            for newline in ('\n', '\r\n'):
+                original = ('# Keep comments\n[bot]\ntoken = "synthetic-secret"\n[yardr] # native keys\n'
+                            'source = "tgbridge"\n[limits]\ncalls = 600\nupdates = 300\n').replace('\n', newline).encode()
+                path.write_bytes(original)
+                path.chmod(0o600)
+                self.assertEqual(run().returncode, 0)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertFalse(path.with_name(path.name + '.before-native').exists())
+                self.assertEqual(run('--apply').returncode, 0)
+                changed = path.read_bytes()
+                insert = (newline + 'home = ' + json.dumps(str(home)) + newline + 'operator = "pat"').encode()
+                self.assertEqual(changed.replace(insert, b'', 1), original)
+                backup = path.with_name(path.name + '.before-native')
+                self.assertEqual(backup.read_bytes(), original)
+                self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(run('--apply').returncode, 0)
+                self.assertEqual(path.read_bytes(), changed)
+                backup.unlink()
+            for bad in ('[yardr]\nhome = "/conflicting"\n', '[yardr]\noperator = "another"\n',
+                        '[yardr]\nhome = "one"\nhome = "two"\n', 'yardr = {source="tgbridge"}\n',
+                        '[yardr]\noperator = "synthetic-secret', '["yardr"]\nsource="tgbridge"\n'):
+                path.write_text(bad)
+                before = path.read_bytes()
+                self.assertNotEqual(run('--apply').returncode, 0)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertFalse(path.with_name(path.name + '.before-native').exists())
+            path.write_text('[yardr]\nsource="tgbridge"\n')
+            path.chmod(0o644)
+            self.assertNotEqual(run('--apply').returncode, 0)
+            path.chmod(0o600)
+            target = root / 'target'
+            path.rename(target)
+            path.symlink_to(target)
+            self.assertNotEqual(run('--apply').returncode, 0)
+            self.assertEqual(target.read_text(), '[yardr]\nsource="tgbridge"\n')
+            path.unlink()
+            path.write_text('[yardr]\nhome="~/yard"\nsource="tgbridge"\n')
+            path.chmod(0o600)
+            self.assertEqual(run('--apply').returncode, 0)
+            self.assertEqual(path.read_text(), '[yardr]\noperator = "pat"\nhome="~/yard"\nsource="tgbridge"\n')
+            path.unlink()
+            path.with_name(path.name + '.before-native').unlink()
+            for extra in ((), ('--apply',)):
+                with self.subTest(settings_fifo=extra):
+                    os.mkfifo(path, 0o600)
+                    try:
+                        self.assertEqual(run(*extra, timeout=2).returncode, 1)
+                        self.assertFalse(path.with_name(path.name + '.before-native').exists())
+                    finally:
+                        path.unlink()
+            path.write_text('[yardr]\nsource="tgbridge"\n')
+            path.chmod(0o600)
+            lock = path.with_name(path.name + '.native.lock')
+            lock.unlink()
+            os.mkfifo(lock, 0o600)
+            self.assertEqual(run('--apply', timeout=2).returncode, 1)
+            self.assertEqual(path.read_text(), '[yardr]\nsource="tgbridge"\n')
+            self.assertFalse(path.with_name(path.name + '.before-native').exists())
+
     def test_optional_pair_private_home_and_all_installed_import_modes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1032,7 +1975,7 @@ class RealNativeTests(BridgeTestCase):
             ask = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][0]
             self.assertEqual(ask.get('weight', []), [])
             self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
-            ids = iter(range(77, 100))
+            ids = iter(range(77, 300))
             def telegram(url, body, *args, **kwargs):
                 status, response = self.transport(url, body, *args, **kwargs)
                 if url.endswith('/sendMessage'):
@@ -1081,6 +2024,189 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(client.call('GetUser', {'name': 'synthetic-member'})['name'], 'synthetic-member')
             additions = client.call('EventsOfKind', ['user_added', 100])
             self.assertEqual(len([event for event in additions if event['data'].get('approved', {}).get('ask') == strong['ask']]), 1)
+
+            def publish_decision(bead_id, ask):
+                receipt = self.bridge.api_ask_card(dict(bead=bead_id, ask=ask['ask'], key=f"ordinary-{ask['ask']}"))
+                self.assertTrue(receipt['delivered'], receipt)
+                return next(r for r in self.bridge.run_asks.rows() if r['bead'] == bead_id and r['ask'] == ask['ask'])
+
+            def assert_fixture(ask, name):
+                actual = dict(ask, ask=7, since='2026-01-01T00:00:00Z')
+                fixture = Path(__file__).with_name('fixtures') / ('ordinary_' + name + '.json')
+                self.assertEqual(actual, json.loads(fixture.read_text()))
+
+            def bound_reply(row, value, update):
+                return dict(update_id=update, message=dict(message_id=1000 + update, text=value,
+                    chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+                    reply_to_message=dict(message_id=row['message_id'], **{'from': dict(id=999, is_bot=True)})))
+
+            cli('bead', 'ask', 'sample-1', 'Where do the links go?', '--to', 'pat', '--context', 'Synthetic ordinary decision',
+                '--option', 'Move: Move the links.', '--option', 'Keep: Keep the links here.', '--recommend', '1', '--why', 'The target is ready.')
+            ordinary = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            assert_fixture(ordinary, 'option')
+            self.assertEqual(ordinary['options'], [dict(label='Move', consequence='Move the links.'),
+                dict(label='Keep', consequence='Keep the links here.'), dict(label='You decide', consequence='leave it to pat')])
+            row = publish_decision('sample-1', ordinary)
+            response = bound_reply(row, '2 keep this note', 300)
+            self.bridge.inbound(response)
+            self.bridge.inbound(response)
+            stored = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            self.assertEqual((stored['state'], stored['option'], stored['words']), ('answered', 2, 'keep this note'))
+            before_reply = client.call('Bead', dict(bead='sample-1', viewer='pat'))
+            self.bridge.inbound(bound_reply(row, '1 stale', 301))
+            self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat')), before_reply)
+
+            for index, (action, method) in enumerate((('pick1', 'AnswerAskExpected'), ('reply', 'AnswerAskExpected'),
+                                                       ('later', 'DeferAskExpected'), ('decline', 'DeclineAskExpected'))):
+                for external in ('AnswerAsk', 'DeferAsk', 'DeclineAsk', 'TakeBackAsk'):
+                    with self.subTest(race=action, external=external):
+                        bead_id = f'race-{index}-{external.lower()}'
+                        cli('bead', 'create', 'Synthetic concurrent decision', '--id', bead_id)
+                        cli('bead', 'ask', bead_id, 'Which option?', '--to', 'pat', '--context', 'Isolated race',
+                            '--option', 'First: Choose first.', '--option', 'Second: Choose second.')
+                        original = client.call('Bead', dict(bead=bead_id, viewer='pat'))['asks'][0]
+                        receipt = self.bridge.api_ask_card(dict(bead=bead_id, ask=original['ask'], key=bead_id))
+                        self.assertTrue(receipt['delivered'], receipt)
+                        row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == bead_id)
+                        actual_call = self.bridge.run_asks.client.call
+                        writes, external_page, external_notes = [], [], []
+
+                        def racing_call(name, args):
+                            if name in ('AnswerAsk', 'DeferAsk', 'DeclineAsk',
+                                        'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected'):
+                                writes.append((name, copy.deepcopy(args)))
+                                if len(writes) == 1:
+                                    other = dict(bead=bead_id, ask=original['ask'], actor='pat')
+                                    if external == 'AnswerAsk':
+                                        other.update(option=2, words='external answer', weighed=False)
+                                    elif external == 'TakeBackAsk':
+                                        other['reason'] = 'external withdrawal'
+                                    elif external == 'DeclineAsk':
+                                        other['words'] = 'external decision'
+                                    client.call(external, other)
+                                    external_page.append(client.call('Bead', dict(bead=bead_id, viewer='pat')))
+                                    external_notes.append(client.call('Notes', [bead_id]))
+                            return actual_call(name, args)
+
+                        update = 500 + index * 10 + ('AnswerAsk', 'DeferAsk', 'DeclineAsk', 'TakeBackAsk').index(external)
+                        if action == 'reply':
+                            response = bound_reply(row, '1 stale Telegram words', update)
+                        else:
+                            response = dict(update_id=update, callback_query=dict(id=f'race-{update}',
+                                data=f"askcard:{row['id']}:{action}:{original['turn']}",
+                                **{'from': dict(id=123, is_bot=False)}, message=dict(message_id=row['message_id'],
+                                chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)})))
+                        with patch.object(self.bridge.run_asks.client, 'call', side_effect=racing_call):
+                            self.bridge.inbound(response)
+                            self.bridge.inbound(response)
+                        after = client.call('Bead', dict(bead=bead_id, viewer='pat'))
+                        notes = client.call('Notes', [bead_id])
+                        self.assertEqual(after, external_page[0])
+                        self.assertEqual(notes, external_notes[0])
+                        self.assertEqual(len([note for note in notes if note['kind'] == 'answer']), 1)
+                        self.assertEqual(after['asks'][0]['turn'], original['turn'] + 1)
+                        if external == 'AnswerAsk':
+                            self.assertEqual((after['asks'][0]['option'], after['asks'][0]['words']), (2, 'external answer'))
+                        self.assertEqual([name for name, _ in writes], [method])
+                        self.assertEqual(writes[0][1]['turn'], original['turn'])
+                        displayed = self.bridge.run_asks.get(row['id'])
+                        self.assertEqual(displayed['state'], after['asks'][0]['state'])
+                        self.assertEqual(displayed['display']['keyboard'], [])
+
+                        if action == 'reply' and external == 'DeferAsk':
+                            # Real defer/reopen: the actual asker's next note brings it back.
+                            cli('bead', 'note', bead_id, 'Synthetic proposer follow-up')
+                            reopened = client.call('Bead', dict(bead=bead_id, viewer='pat'))
+                            self.assertEqual((reopened['asks'][0]['state'], reopened['asks'][0]['turn']), ('open', 1))
+                            before = client.call('Notes', [bead_id])
+                            telegram_call = self.bridge.telegram
+
+                            def poll(response):
+                                def fetched(method, body, timeout=15):
+                                    if method == 'getUpdates':
+                                        return 200, dict(ok=True, result=[response])
+                                    return telegram_call(method, body, timeout)
+                                with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                                    self.bridge.poll_once()
+
+                            with patch.object(self.bridge.run_asks.client, 'call', wraps=actual_call) as rpc:
+                                poll(bound_reply(row, '1 queued before reopen', 610))
+                                self.assertFalse(any(call.args[0].endswith('Expected') for call in rpc.call_args_list))
+                                self.assertEqual(client.call('Bead', dict(bead=bead_id, viewer='pat')), reopened)
+                                self.assertEqual(client.call('Notes', [bead_id]), before)
+                                current = self.bridge.run_asks.get(row['id'])
+                                self.assertNotEqual(current['message_id'], row['message_id'])
+                                self.bridge.run_asks = n.RunAsks(self.bridge)
+                            with patch.object(self.bridge.run_asks.client, 'call', wraps=actual_call) as rpc:
+                                poll(bound_reply(current, '2 after real reopen', 611))
+                                poll(bound_reply(current, '1 replay cannot replace', 612))
+                                writes = [call.args for call in rpc.call_args_list if call.args[0].endswith('Expected')]
+                                self.assertEqual(writes, [('AnswerAskExpected', dict(bead=bead_id, ask=original['ask'],
+                                    turn=1, option=2, words='after real reopen', actor='pat', weighed=False))])
+                            final = client.call('Bead', dict(bead=bead_id, viewer='pat'))['asks'][0]
+                            self.assertEqual((final['state'], final['turn'], final['option'], final['words']),
+                                             ('answered', 2, 2, 'after real reopen'))
+                            answers = [note for note in client.call('Notes', [bead_id]) if note['kind'] == 'answer']
+                            self.assertEqual(len(answers), 2)  # One defer note and exactly one option answer.
+                            recorded = [json.loads(note['text']) for note in answers]
+                            self.assertEqual(len([answer for answer in recorded if not answer.get('later')]), 1)
+                            self.assertEqual([(answer['option'], answer['words']) for answer in recorded if 'option' in answer],
+                                             [(2, 'after real reopen')])
+
+            cli('bead', 'ask', 'sample-1', 'What should it say?', '--to', 'pat', '--context', 'A free-word answer')
+            ordinary = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            self.assertEqual(ordinary['options'], [])
+            assert_fixture(ordinary, 'words')
+            row = publish_decision('sample-1', ordinary)
+            self.bridge.inbound(bound_reply(row, 'A complete ordinary answer 🙂', 302))
+            stored = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            self.assertEqual((stored['state'], stored['words']), ('answered', 'A complete ordinary answer 🙂'))
+            for offset, action in enumerate(('later', 'decline')):
+                cli('bead', 'ask', 'sample-1', 'Decide this later?', '--to', 'pat', '--context', 'Isolated primitive')
+                ordinary = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+                row = publish_decision('sample-1', ordinary)
+                query = dict(id=f'ordinary-{offset}', data=f"askcard:{row['id']}:{action}:{row['turn']}",
+                    **{'from': dict(id=123, is_bot=False)}, message=dict(message_id=row['message_id'],
+                    chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))
+                self.bridge.inbound(dict(update_id=303 + offset, callback_query=query))
+                stored = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+                self.assertEqual(stored['state'], 'put aside' if action == 'later' else 'declined')
+
+            cli('user', 'add', 'other-human')
+            cli('group', 'add', 'humans', '--runner', 'manual', '--members', 'pat,other-human')
+            flow = root / 'decision.flow'
+            flow.write_text('decide -> ready on done | backlog on changes\nready -> backlog\nbacklog -> decide\n')
+            cli('flow', 'set', 'synthetic', '-f', str(flow))
+            stage_dir = home / 'flows' / 'synthetic'
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            (stage_dir / 'decide.md').write_text('## Ask\nkind: choice\nquestion: Is the work ready?\ncontext:\n'
+                '- Read the complete result.\nrecommend: 1\nwhy: The checks passed.\noptions:\n'
+                'done: Move to ready with your note.\nchanges: Return to backlog with your note.\n')
+            cli('route', 'add', '--stage', 'decide', '--group', 'humans')
+            cli('bead', 'create', 'Synthetic stage decision', '--id', 'stage-1', '--stage', 'decide', '--meta', 'flow=synthetic')
+            page = client.call('Bead', dict(bead='stage-1', viewer='pat'))
+            self.assertEqual(len(page['asks']), 2, page)
+            stage = next(a for a in page['asks'] if a['to'] == 'pat')
+            assert_fixture(stage, 'stage')
+            self.assertEqual(stage['asker'], 'yard')
+            self.assertEqual([o['label'] for o in stage['options']], ['done', 'changes'])
+            row = publish_decision('stage-1', stage)
+            forged = bound_reply(row, '1 forged note', 305)
+            forged['message']['reply_to_message']['message_id'] = 99999
+            with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                self.bridge.inbound(forged)
+            self.assertEqual(client.call('Bead', dict(bead='stage-1', viewer='pat')), page)
+            response = bound_reply(row, '1 Reviewed stage note', 306)
+            self.bridge.inbound(response)
+            self.bridge.inbound(response)
+            after = client.call('Bead', dict(bead='stage-1', viewer='pat'))
+            self.assertEqual(after['stage'], 'ready')
+            self.assertEqual(next(a for a in after['asks'] if a['to'] == 'pat')['state'], 'answered')
+            self.assertEqual(next(a for a in after['asks'] if a['to'] == 'other-human')['state'], 'taken back')
+            self.assertEqual(len([note for note in client.call('Notes', ['stage-1']) if note['kind'] == 'answer'
+                                  and json.loads(note['text']).get('words') == 'Reviewed stage note']), 1)
+            self.bridge.inbound(bound_reply(row, '2 stale stage note', 307))
+            self.assertEqual(client.call('Bead', dict(bead='stage-1', viewer='pat')), after)
 
             # The new core supplies the carried review; Telegram must deliver it all before buttons.
             fixture = skill_proposal()
@@ -1238,6 +2364,36 @@ class RealNativeTests(BridgeTestCase):
                         self.assertEqual(target.read_bytes(), drifted)
                     (source_dir / 'SKILL.md').unlink()
                     source_dir.rmdir()
+            # Reapplying the supported source pack preserves an installation's bindings and grants.
+            release = str(Path(__file__).resolve().parents[1] / 'yardr')
+            legacy = root / 'legacy-pack'
+            shutil.copytree(release, legacy)
+            declaration = legacy / 'tgbridge.yaml'
+            legacy_text = declaration.read_text()
+            declaration.write_text(legacy_text[:legacy_text.index('  run_ask:\n')] + legacy_text[legacy_text.index('  ask_close:\n'):])
+            credential = root / 'synthetic.env'
+            credential.write_text('TGBRIDGE_SECRET=synthetic-test-only\n')
+            credential.chmod(0o600)
+            cli('pack', 'apply', str(legacy), '--yes')
+            for setting in ('base=imd', 'calls_per_hour=600', 'updates_per_hour=300', 'env_file=' + str(credential)):
+                cli('source', 'set', 'tgbridge', setting)
+            cli('source', 'grant', 'tgbridge', 'send', '--group', 'humans')
+            before_source = client.call('GetSource', ['tgbridge'])
+            before_group = client.call('GetGroup', ['humans'])
+            cli('pack', 'check', release)
+            cli('pack', 'apply', release, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
+            upgraded = client.call('GetSource', ['tgbridge'])
+            self.assertIn('  ask_card:', upgraded['declaration'])
+            self.assertIn('  run_ask:', upgraded['declaration'])
+            self.assertEqual({k: v for k, v in upgraded.items() if k not in ('declaration', 'added_at')},
+                             {k: v for k, v in before_source.items() if k not in ('declaration', 'added_at')})
+            self.assertEqual(client.call('GetGroup', ['humans']), before_group)
+            cli('source', 'grant', 'tgbridge', 'ask_card', '--group', 'humans')
+            granted = client.call('GetGroup', ['humans'])
+            cli('pack', 'apply', release, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
+            self.assertEqual(client.call('GetSource', ['tgbridge']), upgraded)
+            self.assertEqual(client.call('GetGroup', ['humans']), granted)
+            self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-test-only\n')
         finally:
             server.terminate()
             server.wait(timeout=10)

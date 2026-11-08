@@ -2187,3 +2187,82 @@ installation, failure and uncertain transport remain distinct canonical
 states. Polling/restart and ask_close reconcile the same native answer;
 caller-supplied decision text cannot declare success. Filesystem writes and
 recovery belong entirely to the core server, never the bridge.
+
+## Ordinary native ask cards
+
+Authenticated `POST /v1/ask-card`, CLI `ask-card` and source update `ask_card`
+accept only bead/positive ask, routing, silent and a stable key (body key or
+Idempotency-Key). They use the existing run_asks module and SQLite tables,
+lock, paired-human checks and configured home's socket. Old rows without a
+kind remain run cards. There is no caller-selected yard, operator or payload.
+Unknown canonical shapes and operation-bearing/weighted asks refuse whole.
+The current ordinary weight gate belongs to unsupported identity mappings;
+run cards keep their bound number confirmation. Read-only 503s during core
+replacement get at most three attempts with bounded delay; writes are never
+automatically retried. Error bodies and HTTP errors after writes remain
+ambiguous until a canonical Bead reread establishes the result.
+
+The full question/context/options/consequences/about/recommendation/why must
+fit the existing 3500-unit card bound and 100-button limit (98 options plus
+Later/Decline). Buttons use the displayed stored option
+number; they do not synthesize You decide. Direct replies take `N optional
+words`, or the whole answer with option zero on a no-options card. The message,
+conversation/topic, bot and paired human must match; forwards, stale proposals,
+replays and changed role/identity/home bindings cannot answer. Replies remain
+in chat. Later/Decline use native primitives. Put-aside cards lose controls;
+due/reopened canonical asks get a new message for their new open turn. Answered,
+declined and taken-back states have no live controls. Long canonical words use
+the existing bounded, keyed outcome-message path. Native ask_close ignores
+caller decision text and derives status from Bead; chat-only close is unchanged.
+
+Ordinary cards require canonical `turn` and use only `AnswerAskExpected`
+{bead, ask, turn, option, words, actor, weighed}, `DeferAskExpected`
+{bead, ask, turn, actor} and `DeclineAskExpected`
+{bead, ask, turn, words, actor} on this instance's socket. Unsupported weighted
+asks refuse before this path; ordinary answers send weighed=false. The minimum
+verified core is `7fa0d4c75ff6`. Missing turn or method refuses as an older core,
+without falling back to legacy writes. A concurrent mutation conflicts
+atomically; every write result still reconciles through Bead, including errors
+after a committed write. The turn is kept separately from immutable proposal
+content. Each Telegram message presents exactly one open generation (bead,
+ask, turn) for its whole life, bound only from a confirmed send receipt.
+Callbacks must carry that message's turn; direct replies take the turn from
+the replied-to message's binding. Both must still match canonical state; the
+core guard closes the final read/write race.
+
+A changed open turn sends a new complete card, honoring the original silent
+setting. Previous cards are retired by footer edits without controls; their
+inputs refuse even when retirement edits fail or remain uncertain. Replies
+to any known generation are consumed as native input, including stale replies;
+unknown message ids keep ordinary chat behavior. Native ask_close accepts any
+generation's message id. Each generation has a stable delivery key: the first
+keeps `runask:<id>:send`, later turns use `runask:<id>:send:<turn>`. Confirmed
+sends never repeat; definitely unsent sends retry on later refreshes; ambiguous
+sends stay unbound and require reconciliation, never an automatic resend.
+Restart preserves these receipts and bindings. Recovery binds only a confirmed
+receipt with a positive integer message id whose stored fingerprint matches
+the card's exact send request (complete HTML, turn-bound keyboard, silent
+setting and topic). A key already used by another send leaves that turn unsent
+and unbound with an idempotency conflict, including after restart, repost or
+close. The unrelated message keeps ordinary chat behavior and cannot answer
+the native ask. If no replacement card is bound, older cards lose controls
+and direct the operator to the yard, without claiming a newer card exists.
+Ordinary rows lacking generation bindings refuse as unconfirmed; these
+unreleased rows have no upgrade path.
+Run/skill rows retain their existing ledger upgrade and edit behavior.
+
+Manual stage cards use exactly the same path and stored options. AnswerAskExpected
+checks actual stage membership/current stay and records the words and movement
+atomically; canonical sibling take-backs reconcile on polling. The bridge
+requires to=the configured operator even if another person has a sibling ask.
+An externally changed option answer can update the canonical outcome; the
+bridge displays it on refresh, while a settled card cannot initiate revisions.
+
+The only newly reserved callback namespace is `askcard:`. Settings and custom
+publish keyboards diagnose collisions explicitly. Rename an overlapping
+add-on prefix and its generated callbacks before adopting; existing conflicting
+buttons need operator reconciliation. This is a compatibility exception, not
+a claim that every old custom-prefix configuration loads unchanged. No ledger
+migration or deletion is needed. The setup guide's ordinary-decision section
+covers the minimum grant, private home/operator check/apply helper, verified
+core baseline and pending independent-runtime deployment prerequisite.

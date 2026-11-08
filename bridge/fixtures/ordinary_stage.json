@@ -1,0 +1,25 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "yard",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Is the work ready? — stage-1: Synthetic stage decision",
+  "context": [
+    "Bead: stage-1 — Synthetic stage decision (branch yard/stage-1)",
+    "Read the complete result."
+  ],
+  "options": [
+    {
+      "label": "done",
+      "consequence": "Move to ready with your note."
+    },
+    {
+      "label": "changes",
+      "consequence": "Return to backlog with your note."
+    }
+  ],
+  "recommend": 1,
+  "why": "The checks passed.",
+  "state": "open",
+  "turn": 0
+}

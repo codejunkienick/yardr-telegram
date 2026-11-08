@@ -309,3 +309,122 @@ An ambiguous part/card is never blindly resent, even with another key or
 a restart; use existing delivery-ledger reconciliation with the operator.
 Keep SQLite state. Details and rendering limits are in
 [operations](../bridge/OPERATIONS.md#captured-single-file-skill-review).
+
+## 13. Ordinary native decisions (operator; optional)
+
+`ask_card` uses the same native home/operator and identity checks as step 12.
+It supports ordinary option questions, questions wanting words, and actual
+store-generated manual-stage cards. It refuses run, secret, setup, identity,
+depot-push, unknown or weighted payloads before posting. In the current core,
+ordinary weight belongs to identity mapping, which requires a different review;
+no unconditional `weighed` approval is sent. Run cards retain their existing
+bound ask-number confirmation.
+
+Ordinary cards require core `7fa0d4c75ff6` or a compatible build exposing
+`Bead.asks[].turn` and `AnswerAskExpected`, `DeferAskExpected` and
+`DeclineAskExpected`. The isolated real integration verifies these named RPC
+objects, option/word answers, and generated stage movement with note and sibling
+take-back. The former `709c9ca24c94` baseline lacks the atomic guard and cannot
+safely answer ordinary cards. Missing turn or method refuses without a legacy
+write fallback. The skill-review baseline above is unchanged.
+
+Do not assume the native keys exist. The operator can check, then add only
+missing keys to a private settings file without printing it:
+
+```sh
+python3 scripts/native_settings.py --settings <private-settings> \
+  --home <this-instance-home> --operator <operator>
+# Review the check, then use exactly the same arguments with --apply.
+python3 scripts/native_settings.py --settings <private-settings> \
+  --home <this-instance-home> --operator <operator> --apply
+```
+
+Both keys must match if already present. Conflicts, unfamiliar table spelling,
+unsafe ownership/modes and a pre-existing backup refuse. Apply preserves all
+other bytes, keeps an owner-only `<settings>.before-native` backup, and replaces
+the file atomically under an instance-local lock. Check mode writes nothing.
+Keep the backup private; it contains the original settings. This helper neither
+starts a service nor changes source configuration or roles.
+
+After the operator has reviewed the source pack update, the sole new per-call
+grant for ordinary cards is:
+
+```sh
+yardr source grant tgbridge ask_card --crew yardmaster
+```
+
+If this installation also lacks `run_ask`, grant it separately as in step 12.
+Retain existing grants; do not grant all updates or change any builder role.
+Core help confirms `source grant <source> <call> --crew <crew>`; neither this
+command nor `pack apply` has a `--run` option.
+
+Create the canonical ask first, then post it with a stable key:
+
+```sh
+yardr bead ask <bead> "Where should the links go?" --to <operator> \
+  --context "The replacement is ready." --option "Move: Move the links." \
+  --option "Keep: Keep them here." --recommend 1 --why "The target is ready."
+yardr call tgbridge ask_card bead=<bead> ask=<ask-number> topic=general key=decision-1
+# Direct CLI, through the same ledger:
+python3 bridge/bridge.py --settings <private-settings> ask-card \
+  --bead <bead> --ask <ask-number> --idempotency-key decision-1
+```
+
+The human taps Choose N, or replies directly to the card with `N optional
+words`. A no-options ask takes a direct reply containing the answer. The bridge
+keeps that reply in chat. It displays every canonical option, including You
+decide only when core provides it, with every consequence, context, about-bead,
+recommendation and reason. The complete card must fit 3500 visible UTF16 units;
+otherwise nothing posts. The existing 100-button bound leaves at most 98
+options after Later/Decline; larger option sets refuse whole. Later puts it aside natively, Decline declines it,
+and neither answers or executes an operation. Polling and native ask_close
+show the canonical state, including put-aside, due/reopened, taken-back and
+later outcome edits. Generated stage choices use AnswerAskExpected: core checks stage
+authority and moves the bead, retaining optional words on the answer note.
+There is no client-side inference of stage authority from markdown or asker.
+
+Every ordinary mutation names the input message's confirmed generation turn.
+Each message presents one open turn forever. A changed open turn sends a new
+card under a stable per-turn delivery key and retires the previous card without
+controls. Stale replies/buttons refuse even if the retirement edit fails, and
+known old-card replies stay native rather than reaching chat. A conflicting
+external answer, defer, decline or take-back writes nothing; the bridge rereads
+and presents canonical state. Confirmed sends never repeat; definitely unsent
+sends retry on refresh; ambiguous sends remain unbound without automatic resend.
+Restart preserves generation bindings. Ordinary rows without generation
+bindings refuse as unconfirmed; ordinary cards were not previously released.
+Run/skill/chat rows retain their existing contracts and upgrades.
+
+`askcard:` is newly reserved for the bridge. Before upgrading, migrate any
+custom `callback_prefix` overlapping it (also shorter prefixes such as
+`askcard`) to a distinct namespace, updating the handler's generated callbacks.
+Existing messages with old handler buttons need operator reconciliation;
+do not expect those buttons to be reinterpreted as native decisions. Loading a
+colliding configuration names the reserved prefix explicitly. Existing chat
+`ask:` and native `runask:` contracts and old ledger rows remain supported.
+
+### Source update and independent runtime handoff
+
+The ordinary-card code adds no installer or restart interface. At this release,
+`install.sh` still renders the checkout path; the separately planned independent
+runtime installer/migration is a deployment prerequisite. Do not activate a new
+version by restarting a shared mutable checkout. After that interface lands,
+the operator must review its exact install/check/restart and rollback commands
+for this instance. The generic code needs bridge/bridge.py, adjacent run_asks.py
+and the existing runtime assets; the new optional settings helper is
+scripts/native_settings.py. No other instance needs to be available.
+
+For source-pack preparation use `yardr pack check <reviewed-release>/yardr`
+(the check is the plan; there is no `pack plan` command). Check uses the
+installation's current bindings and accepts no source-base/source-env flags.
+The reviewed apply must explicitly retain the installation's existing
+`--source-base tgbridge=<existing-alias>` and
+`--source-env tgbridge=<existing-credential-file>` bindings. Existing named bases remain supported;
+check the resulting declaration offers run_ask and ask_card, and retains all
+existing calls, credential binding, call/update limits and grants. An isolated
+real-core test applies this pack twice with an existing named base, private
+credential file, 600/300 limits and a per-call grant, verifying preservation.
+Do not print the credential file. Live metadata checks, apply, any missing key
+setup, grants, independent install and restart belong to that instance's
+operator after review; no final deployment command sequence is asserted while
+the independent-runtime interface is pending.

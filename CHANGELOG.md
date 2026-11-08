@@ -6,6 +6,19 @@ sees and does, not how the code is organised.
 
 ## [Unreleased]
 
+### Added
+
+- Native ordinary option/word and manual-stage cards via `ask_card`, with
+  paired-human replies, Later/Decline and canonical close/reopen status.
+- Operator-only check/apply helper for missing native home/operator keys.
+
+### Changed
+
+- Ordinary native cards require core `7fa0d4c75ff6` or compatible guarded ask
+  methods; stale Telegram answers cannot replace another client's decision.
+- `askcard:` is reserved for native decisions; overlapping custom callback
+  prefixes must be renamed before upgrading.
+
 ### Fixed
 
 - The operations guide now states the per-topic inbound rule where it

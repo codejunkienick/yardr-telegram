@@ -68,9 +68,14 @@ rename each `[[topic]] agent` to `crew`.
 ~/work/yardr-telegram/install.sh --settings ~/.config/odyssey-telegram/telegram-bridge.toml
 ```
 
-It mints the callback secret and the hook secret (owner-only, never
-printed), checks the host, and renders `odyssey-telegram.service`. Start
-nothing yet.
+Run it from a checkout with no tracked changes: it installs that HEAD as
+this yard's own copy under `~/.local/share/yardr-telegram/odyssey-telegram`
+(`--root` names another root). It mints the callback secret and the hook
+secret (owner-only, never printed), checks the host from the copy, points
+the root's `current` at it, and renders `odyssey-telegram.service` and the
+launcher `bin/telegram-bridge` there. Start nothing yet. The checkout is no
+longer what runs: install again after a pull to update this yard, and
+`install.sh --settings <file> --rollback` returns it to the release before.
 
 ## 4. The yard's hook listener (shell; odyssey only)
 
@@ -152,11 +157,12 @@ so renaming it keeps its route.
 ## 9. Start (shell)
 
 ```sh
-B=~/work/yardr-telegram/bridge/bridge.py S=~/.config/odyssey-telegram/telegram-bridge.toml
-python3 $B --settings $S probe
-systemctl --user daemon-reload && systemctl --user enable --now odyssey-telegram.service
-python3 $B --settings $S set-commands
-python3 $B --settings $S topics          # creates the [[topic]]s once; run each subscribe: line
+B=~/.local/share/yardr-telegram/odyssey-telegram/bin/telegram-bridge   # carries --settings
+$B probe
+systemctl --user daemon-reload && systemctl --user enable odyssey-telegram.service
+systemctl --user restart odyssey-telegram.service   # starts it, or restarts it after an install
+$B set-commands
+$B topics          # creates the [[topic]]s once; run each subscribe: line
 ```
 
 ## 10. Telling (shell, optional)
@@ -207,10 +213,10 @@ a current operator user with the current source identity, checked at every
 interaction. The same Telegram id in another yard gives no access here.
 
 After reviewed code is installed, run `install.sh --settings <file>` and
-`python3 bridge/bridge.py --settings <file> check-install`, then use the
-normal service restart for that bridge. The installer imports `run_asks.py`
-from beside `bridge.py`, including its runpy and absolute service launch
-modes; keep the checkout together. The unit's existing sandbox restrictions
+`<root>/bin/telegram-bridge check-install`, then use the normal service
+restart for that bridge. Each release carries `run_asks.py` beside its
+`bridge.py`, which loads it from there under the service, the launcher
+and the installer alike. The unit's existing sandbox restrictions
 stay in place: no yard database/config/credential write access is added.
 `check-install` checks the socket owner/type and the actual operator mapping.
 Live settings, source apply, grants and restart belong to this operator
@@ -365,8 +371,8 @@ yardr bead ask <bead> "Where should the links go?" --to <operator> \
   --context "The replacement is ready." --option "Move: Move the links." \
   --option "Keep: Keep them here." --recommend 1 --why "The target is ready."
 yardr call tgbridge ask_card bead=<bead> ask=<ask-number> topic=general key=decision-1
-# Direct CLI, through the same ledger:
-python3 bridge/bridge.py --settings <private-settings> ask-card \
+# Direct CLI, through the service's own release and ledger:
+<root>/bin/telegram-bridge ask-card \
   --bead <bead> --ask <ask-number> --idempotency-key decision-1
 ```
 
@@ -405,14 +411,25 @@ colliding configuration names the reserved prefix explicitly. Existing chat
 
 ### Source update and independent runtime handoff
 
-The ordinary-card code adds no installer or restart interface. At this release,
-`install.sh` still renders the checkout path; the separately planned independent
-runtime installer/migration is a deployment prerequisite. Do not activate a new
-version by restarting a shared mutable checkout. After that interface lands,
-the operator must review its exact install/check/restart and rollback commands
-for this instance. The generic code needs bridge/bridge.py, adjacent run_asks.py
-and the existing runtime assets; the new optional settings helper is
-scripts/native_settings.py. No other instance needs to be available.
+The ordinary-card code adds no installer or restart interface of its own.
+Never activate a new version by restarting a shared mutable checkout: each
+instance runs its own release copy under `<root>` (step 3), so update this
+instance from a reviewed, clean checkout:
+
+```sh
+<checkout>/install.sh --settings <settings> --dry-run
+<checkout>/install.sh --settings <settings>
+<root>/bin/telegram-bridge check-install
+```
+
+Then run the `next:` line the install printed (probe, daemon-reload, enable,
+restart, set-commands). To go back, run
+`<root>/current/install.sh --settings <settings> --rollback` and the `next:`
+line it prints; after the first migration from a checkout unit there is no
+previous release, so restore `<root>/service.previous` over the service file
+instead. The release carries bridge/bridge.py, adjacent run_asks.py, the
+runtime assets and scripts/native_settings.py. No other instance needs to be
+available, and none is changed.
 
 For source-pack preparation use `yardr pack check <reviewed-release>/yardr`
 (the check is the plan; there is no `pack plan` command). Check uses the

@@ -20,8 +20,8 @@ The rows live only here; SKILL.md holds none.
 | pack | transcriber/voice_transcribe.py | '--vad', '-vm' | Silero VAD |
 | pack | transcriber/voice_transcribe.py | LOOP_MIN_REPEATS = 3 | loop guard |
 | pack | transcriber/voice_transcribe.py | argv += ['-mc', '0'] | retry without context |
-| pack | install.sh | link="$HOME/.local/bin/voice-transcribe" | voice-transcribe link in ~/.local/bin |
-| pack | install.sh | target="$pack/transcriber/voice_transcribe.py" | fallback script when the link is missing |
-| pack | install.sh | install.sh --settings <file> [--dry-run] | operator runs install.sh with the settings file |
+| pack | install.sh | files[root / 'bin/voice-transcribe'] = ( | the instance's own voice-transcribe launcher |
+| pack | install.sh | ".local/share/yardr-telegram" | the default install root |
+| pack | install.sh | install.sh --settings <file> [--root <dir>] [--dry-run] | operator runs install.sh with the settings file |
 <!-- /citations -->
 ```

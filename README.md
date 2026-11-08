@@ -68,7 +68,7 @@ Release history: `CHANGELOG.md`.
 | `bridge/OPERATIONS.md` | the operations guide: settings, launch, delivery recovery, transcription |
 | `bridge/test_*.py` | `sh scripts/test.sh` (fake Telegram and whisper-cli, an optional isolated real yardr store, and the pack tests; no external network). Set `TEST_PORT_RANGE=LOW-HIGH` to bind test servers inside that range. Pick a range that excludes ports the host's own services use. |
 | `settings.example.toml` | every settings key, with example values |
-| `install.sh` | checks a yard's settings and host, mints the two secrets, links `voice-transcribe`, renders its service |
+| `install.sh` | installs one yard's bridge as its own release copy of a clean commit under its root, checks its settings and host, mints the two secrets, renders its service and launchers; `--rollback` returns to the previous release |
 | `yardr/` | the yardr pack: the declared source `tgbridge` (`tgbridge.yaml`), its `normalize` and `thread` commands, and `SETUP.md`, the steps for a yard |
 | `YARDR.md` | the contract between the bridge and a yard: the inbound body, the yard API, the settings |
 | `systemd/telegram-bridge.service.in` | the Linux unit template; on macOS the agent is rendered by `bridge.py render-unit` |
@@ -117,8 +117,16 @@ In the `/start` update, `message.from.id` goes to `[bot] user_id`,
 `message.chat.id` to `[bot] chat_id` (equal to user_id), and `update_id`
 to `pairing_update_id`.
 
-Run `install.sh` and the unit from a checkout that stays put: the unit
-names `bridge.py` by absolute path. To move a bot from a Gas City bridge,
+Each yard's bridge is its own instance: `install.sh --settings <file>`
+copies the checkout's committed HEAD (it refuses tracked changes) to
+`<root>/releases/<commit>` and points `<root>/current` at it, with the
+root `~/.local/share/yardr-telegram/<unit stem>` unless `--root` names
+another. The unit runs `<root>/current/bridge/bridge.py`, and
+`<root>/bin/telegram-bridge` and `<root>/bin/voice-transcribe` run the same
+copy with the settings' python, so the checkout can change, move or go
+without touching a running yard, and updating, rolling back
+(`install.sh --rollback`) or removing one instance changes no other. A
+release's own Python dependencies are committed under `vendor/`. To move a bot from a Gas City bridge,
 stop that bridge's unit first (two pollers on one bot conflict), and point
 `state_dir` at a copy of its state directory, so the ledger, the offset,
 the pins and the topics carry over.
@@ -126,7 +134,9 @@ the pins and the topics carry over.
 ## Uninstall
 
 1. (shell) `systemctl --user disable --now <unit>`, then
-   `rm ~/.config/systemd/user/<unit> && systemctl --user daemon-reload`.
+   `rm ~/.config/systemd/user/<unit> && systemctl --user daemon-reload`,
+   then `rm -rf <root>` (`~/.local/share/yardr-telegram/<unit stem>` by
+   default): its releases, launchers and `service.previous`.
 2. (shell) In the yard: `yardr hook rm tgbridge`, then
    `yardr unsubscribe <crew> tgbridge` for each subscribed crew member, then
    `yardr source rm tgbridge`.
@@ -134,8 +144,9 @@ the pins and the topics carry over.
    the state directory. That directory holds the ledger and the message log,
    so keep a private copy if the bridge may return.
 4. (shell) Keep the host's shared pieces while another bridge runs: the
-   queue `~/.local/state/voice-transcribe`, the whisper.cpp build and models,
-   and `~/.local/bin/voice-transcribe`.
+   queue `~/.local/state/voice-transcribe` and the whisper.cpp build and
+   models. `~/.local/bin/voice-transcribe` is yours: an install never
+   creates, changes or removes it.
 5. (you, optional) Delete the bot with BotFather.
 
 ## Skills

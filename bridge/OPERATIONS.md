@@ -116,41 +116,94 @@ requests.
 
 ## Install and launch
 
-`<repo>/install.sh --settings <settings>` checks the settings and the host
-(python, curl, owner-only credentials, and with transcription on: ffmpeg,
-whisper-cli, the models and their SHA-256), creates the callback secret,
-the hook secret and the transcription queue when they are missing (each
-secret owner-only and never printed), links
-`~/.local/bin/voice-transcribe`, and on Linux and WSL 2 renders the systemd
-unit into `~/.config/systemd/user/<unit>`. On macOS it writes the
-LaunchAgent plist into `~/Library/LaunchAgents/<label>.plist`, where
-`<label>` is the `unit` name without its `.service` suffix, and prints
-the launchctl next line. It is
-idempotent, never starts or stops a service and never contacts Telegram or
-the yard; `--dry-run` only reports. The yard's side, from its hook listener
-to the subscriptions, is `yardr/SETUP.md`, steps 4 to 8.
-Then, in the user's shell (an agent asks the user, or runs it only where
-it may manage the user's services), on Linux and WSL 2:
+`<repo>/install.sh --settings <settings> [--root <root>]` installs one
+bridge instance as its own release copy. `<repo>` must be a git checkout
+with no tracked changes; its HEAD is the release. The root defaults to
+`~/.local/share/yardr-telegram/<unit stem>` (the `unit` name without
+`.service`) and holds:
+
+- `releases/<commit>/`: a `git archive` of the commit, with `RELEASE`
+  (commit, source path, UTC time) and `SHA256SUMS`;
+- `current` and `previous`: links to releases;
+- `bin/telegram-bridge` (`<python> <root>/current/bridge/bridge.py
+  --settings <settings>`) and `bin/voice-transcribe`;
+- `service.previous`: the service file the install last replaced.
+
+An installed instance runs, reads and writes nothing inside the source it
+was installed from: not its root, not the settings file, and not `python`, a
+secret, `state_dir`, `lock_dir`, `health_file`, `yardr.home`, a handler, a
+handler write path, a configured `transcribe.gpu_check`, `whisper_cli` or
+`models_dir`. A value counts as inside when resolving it, with every link
+followed at every component, passes through `<repo>`, so a
+`<repo>/.venv/bin/python` that links to the host's python counts. The
+refusal names the entry and its remedy: copy a program or model out and
+point the setting at the copy; stop the service, move a file or directory
+out and point the setting at it; point `python` at an interpreter outside
+(such as `/usr/bin/python3` or a venv made elsewhere). The settings are
+never rewritten, and an installed release's `check-install` checks the same
+against the `source` its `RELEASE` records.
+
+In order, it:
+
+1. checks python and the settings, and refuses anything that depends on
+   `<repo>`, one line per entry, before it writes anything;
+2. stages HEAD under `releases/.stage-*`, or reuses `releases/<commit>`
+   when its files match the staged sums, and refuses it when they do not;
+3. creates the callback secret, the hook secret and the transcription queue
+   when they are missing (each owner-only, a secret never printed). These
+   are the only writes outside the root before step 4, and are kept
+   whatever happens next;
+4. runs the staged copy's `check-install` (python, curl, owner-only
+   credentials, and with transcription on: ffmpeg, whisper-cli, the models
+   and their SHA-256). A failure removes the stage and changes nothing else;
+5. activates: `previous` becomes the old `current`, and `current` the
+   release. It then writes the service file and the launchers, each only
+   when it changed. Every one is written beside its place first, and a
+   failure puts back what was already replaced. On Linux and WSL 2 the
+   service file is the systemd unit `~/.config/systemd/user/<unit>`; on
+   macOS it is the LaunchAgent plist `~/Library/LaunchAgents/<label>.plist`,
+   where `<label>` is the `unit` name without its `.service` suffix. A
+   replaced service file is kept in `service.previous`, and the old and
+   new bridge paths are printed.
+
+`install.sh --settings <settings> --rollback` runs from any release (for
+example `<root>/current/install.sh`) and needs no git. It verifies
+`previous` against its `SHA256SUMS`, runs its `check-install`, and swaps
+`current` and `previous`. After the first install there is no previous
+release: restoring `service.previous` over the service file is that
+rollback. Releases are never pruned: a running bridge keeps the release
+its `current` resolved to when it started. Removing an instance is
+disabling its service, removing its service file and `rm -rf <root>`.
+
+A release's pinned pure-Python dependencies are committed under `vendor/`,
+which `bridge.py` puts first on `sys.path`. Nothing is installed with pip
+or fetched from the network. `install.sh` is idempotent, never starts or
+stops a service, never touches `~/.local/bin/voice-transcribe` and never
+contacts Telegram or the yard; `--dry-run` only reports and writes nothing.
+The yard's side, from its hook listener to the subscriptions, is
+`yardr/SETUP.md`, steps 4 to 8. Then, in the user's shell (an agent asks
+the user, or runs it only where it may manage the user's services), on
+Linux and WSL 2:
 
 ```sh
-python3 <repo>/bridge/bridge.py --settings <settings> probe
+<root>/bin/telegram-bridge probe
 systemctl --user daemon-reload
-systemctl --user enable --now <unit>
+systemctl --user enable <unit>
+systemctl --user restart <unit>      # starts it, or restarts it on the new release
 systemctl --user status <unit>
-python3 <repo>/bridge/bridge.py --settings <settings> set-commands
+<root>/bin/telegram-bridge set-commands
 ```
 
 On macOS (in a shell whose `python3` on PATH is 3.11 or later, e.g.
 `/opt/homebrew/bin` first on PATH: `install.sh` refuses an older
-`python3` on PATH, and the commands below run bare `python3`; the
-settings' `python` is the interpreter the agent itself runs):
+`python3` on PATH; the launcher and the agent run the settings' `python`):
 
 ```sh
-python3 <repo>/bridge/bridge.py --settings <settings> probe
+<root>/bin/telegram-bridge probe
 launchctl bootout gui/$(id -u)/<label> 2>/dev/null
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist
 launchctl print gui/$(id -u)/<label>
-python3 <repo>/bridge/bridge.py --settings <settings> set-commands
+<root>/bin/telegram-bridge set-commands
 ```
 
 `probe` prints `Telegram identity and webhook checks passed` and
@@ -163,8 +216,10 @@ Once the service runs, `yardr source check tgbridge` checks the yard's side
 this host: the systemd unit text on Linux and WSL 2, the launchd
 LaunchAgent plist on macOS, and `check-install` runs the checks alone
 (`--gpu-probe` adds the GPU probe, below; without it no transcription
-runs). On Linux and WSL 2 the unit runs
-`<python> <repo>/bridge/bridge.py --settings <settings> run` with the state
+runs). In an installed release `check-install` also says whether its files
+match its `SHA256SUMS`; a checkout prints no such line. On Linux and WSL 2
+the unit runs
+`<python> <root>/current/bridge/bridge.py --settings <settings> run` with the state
 directory and the lock directory as its only writable paths, plus the
 transcription queue with transcription on and every `handler_write_paths`
 entry. The settings file, token, callback secret and hook secret are
@@ -173,7 +228,7 @@ directory, and the unit sets RestrictSUIDSGID, LockPersonality,
 RestrictRealtime, RestrictNamespaces, SystemCallArchitectures=native and
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK, all of which
 the GPU probe carries too. On macOS the plist runs
-`<python> <repo>/bridge/bridge.py --settings <settings> run --conflict-exit-status 0`
+`<python> <root>/current/bridge/bridge.py --settings <settings> run --conflict-exit-status 0`
 with the state directory as its working directory, loads at login, restarts after 15 s, allows 45 s to stop, sets `PATH` to `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`, and writes its output to `~/Library/Logs/<label>.log`. `run` accepts `--conflict-exit-status <0-255>` (default 2, a `run` flag only): on Linux and WSL 2 a polling conflict exits 2 and the unit does not restart it, while the macOS agent passes 0 (below).
 
 `run` serves the yard API on `127.0.0.1:<port>` only ("The yard API") and
@@ -1884,7 +1939,9 @@ characters. Oversize audio keeps the plain skip note.
 
 `voice-transcribe [--model NAME|PATH] [--force] [--quiet] <file|dir>...` is the
 same transcriber by hand: it writes `<name>.txt` next to each audio file and
-prints the text (`install.sh` links it into `~/.local/bin`). It transcribes
+prints the text. Each instance has its own, `<root>/bin/voice-transcribe`,
+which runs its current release's transcriber with the settings' python;
+`install.sh` leaves `~/.local/bin/voice-transcribe` to the operator. It transcribes
 in `VOICE_TRANSCRIBE_LANGUAGE` when set (the bridge sets it from
 `[transcribe] language`), otherwise English. It runs on the
 CPU unless `VOICE_TRANSCRIBE_METHOD` is `auto` or `gpu` (with

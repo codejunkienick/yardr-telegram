@@ -21,10 +21,12 @@ yardr call tgbridge send text="<caption>" attachment=/absolute/path.png topic=<n
 ```
 
 On the host itself, outside a crew member's pane, the bridge's own command
-line does the same with every flag below:
+line does the same with every flag below, through the instance's launcher
+in its install root (`~/.local/share/yardr-telegram/<unit stem>` unless the
+operator chose another), which carries the bridge's settings:
 
 ```sh
-python3 ~/work/yardr-telegram/bridge/bridge.py --settings <the bridge's settings> send \
+<install root>/bin/telegram-bridge send \
   --body-file <caption-file> --idempotency-key <stable-key> --attachment /absolute/path.png
 ```
 

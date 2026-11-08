@@ -11,6 +11,8 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | def api_send(self, request, key_header=None): | the yard API sends the files the call names |
 | pack | bridge/bridge.py | elif args.command in ('send', 'reply-current'): | the host's command line sends the same way |
 | pack | bridge/bridge.py | def settings_path(explicit, environ=None): | --settings names the bridge's settings |
+| pack | install.sh | files[root / 'bin/telegram-bridge'] = ( | the instance's launcher carries its settings |
+| pack | install.sh | ".local/share/yardr-telegram" | the default install root |
 | pack | bridge/bridge.py | def infer_attachment_kind(path): | kind from extension |
 | pack | bridge/bridge.py | 'photo': ('sendPhoto', 'photo', 10 * 1024 * 1024), | size caps |
 | pack | bridge/bridge.py | caption_exceeds_1024_utf16_units | caption cap |

@@ -11,6 +11,10 @@ sees and does, not how the code is organised.
 - Native ordinary option/word and manual-stage cards via `ask_card`, with
   paired-human replies, Later/Decline and canonical close/reopen status.
 - Operator-only check/apply helper for missing native home/operator keys.
+- `check-install` in an installed release says whether its files match
+  its `SHA256SUMS`.
+- A release's pinned pure-Python dependencies have one place, `vendor/`,
+  which the bridge puts first on its import path.
 
 ### Changed
 
@@ -18,6 +22,31 @@ sees and does, not how the code is organised.
   methods; stale Telegram answers cannot replace another client's decision.
 - `askcard:` is reserved for native decisions; overlapping custom callback
   prefixes must be renamed before upgrading.
+- Each yard's bridge is installed as its own release copy. `install.sh
+  --settings <file>` copies the checkout's committed HEAD to
+  `~/.local/share/yardr-telegram/<unit stem>/releases/<commit>` (`--root`
+  names another root), checks it there, and points `current` at it. It
+  refuses a checkout with tracked changes. The service runs `<root>/current/bridge/bridge.py`,
+  so changing, moving or deleting the checkout no longer reaches a
+  running yard, and updating, rolling back or removing one yard changes
+  no other. `install.sh --rollback` returns to the previous release. The
+  first install keeps the service file it replaced in
+  `<root>/service.previous`.
+- Commands go through the instance's launchers: `<root>/bin/telegram-bridge`
+  (with the settings built in) and `<root>/bin/voice-transcribe`. The
+  `next:` line uses them, and restarts a running service.
+- `install.sh` no longer creates or repoints `~/.local/bin/voice-transcribe`;
+  an existing link is left as it is.
+- `install.sh` refuses, before it writes anything, a root, settings file or
+  any path the settings name (`python`, the secrets, state, lock, health
+  file, `yardr.home`, handlers and their write paths, a configured
+  `gpu_check`, whisper-cli and models) that depends on the checkout, links
+  followed at every component, so `<checkout>/.venv/bin/python` is refused.
+  It prints one line per entry with its remedy, and never rewrites the
+  settings. An installed release's `check-install` checks the same against
+  the source its `RELEASE` records, and a reinstall that reuses a release
+  of the same commit checks the settings against the source that release
+  records too, whichever checkout runs it.
 
 ### Fixed
 

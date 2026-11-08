@@ -94,7 +94,14 @@ def valid_reaction_emoji(value):
             and not any(c.isspace() or (c.isascii() and c.isalnum()) for c in value)
             and not Bridge._CONTROL_RE.search(value))
 PACK_DIR = Path(__file__).resolve().parents[1]
+# The path the bridge was started by, links kept: an installed instance's
+# unit and launcher name <root>/current/bridge/bridge.py, and render-unit says so.
+BRIDGE_PATH = Path(os.path.abspath(__file__))
 sys.dont_write_bytecode = True  # the pack directory is read-only under the unit
+# The release's pinned pure-Python dependencies, committed under vendor/,
+# ahead of every other entry, a PYTHONPATH one included.
+if (PACK_DIR / 'vendor').is_dir():
+    sys.path[:] = [str(PACK_DIR / 'vendor')] + [p for p in sys.path if p != str(PACK_DIR / 'vendor')]
 _transcriber_spec = importlib.util.spec_from_file_location(
     'voice_transcribe', PACK_DIR / 'transcriber' / 'voice_transcribe.py')
 _native_spec = importlib.util.spec_from_file_location('run_asks', Path(__file__).resolve().with_name('run_asks.py'))
@@ -5249,7 +5256,7 @@ def load_settings(path, home=None):
         callback_secret_file=callback_secret_file,
         pairing_update_id=_int_setting(data.get('pairing_update_id', -1), 'pairing_update_id', -1, 2 ** 63 - 1),
         transcribe=transcribe, whisper_cli=whisper_cli, models_dir=models_dir, model=model, vad_model=vad_model,
-        language=language,
+        language=language, gpu_check=gpu_check if 'gpu_check' in raw_transcribe else None,
         queue_dir=queue_dir, agent=agent, handler_write_paths=_handler_write_paths(data))
 
 
@@ -5257,7 +5264,7 @@ def render_unit(settings, template=None, bridge_path=None):
     """The systemd user unit that runs this bridge for one city. Every path is
     one the settings loader already restricted to a safe absolute form, so
     nothing here can inject a systemd specifier, a quote or a second word."""
-    bridge_path = Path(bridge_path or Path(__file__).resolve())
+    bridge_path = Path(bridge_path or BRIDGE_PATH)
     for value, what in ((bridge_path, 'bridge path'), (settings.path, 'settings path')):
         _path_setting(str(value), what)
     text = Path(template or UNIT_TEMPLATE).read_text()
@@ -5302,24 +5309,23 @@ def service_file(settings, platform=None, home=None):
     return base / 'systemd' / 'user' / settings.unit
 
 
-def service_next_line(settings, bridge_path, platform=None, home=None):
+def service_next_line(settings, launcher, platform=None, home=None):
     """The 'next:' line install.sh prints: the probe, the service-manager
-    reload or bootstrap for this platform, and set-commands."""
+    commands that start a fresh service or restart a running one on this
+    platform, and set-commands, all through the instance's launcher."""
     plat = voice_transcribe.host_platform() if platform is None else platform
-    bridge = str(bridge_path)
     if plat == 'darwin':
         label = launchd_label(settings)
         plist = service_file(settings, platform=plat, home=home)
-        return (f'next: python3 {bridge} --settings {settings.path} probe; '
+        return (f'next: {launcher} probe; '
                 f'launchctl bootout gui/$(id -u)/{label} 2>/dev/null; '
                 f'launchctl bootstrap gui/$(id -u) {plist}; '
-                f'python3 {bridge} --settings {settings.path} set-commands '
-                '(yardr/SETUP.md, step 9)')
-    return (f'next: python3 {bridge} --settings {settings.path} probe; '
+                f'{launcher} set-commands (yardr/SETUP.md, step 9)')
+    return (f'next: {launcher} probe; '
             'systemctl --user daemon-reload; '
-            f'systemctl --user enable --now {settings.unit}; '
-            f'python3 {bridge} --settings {settings.path} set-commands '
-            '(yardr/SETUP.md, step 9)')
+            f'systemctl --user enable {settings.unit}; '
+            f'systemctl --user restart {settings.unit}; '
+            f'{launcher} set-commands (yardr/SETUP.md, step 9)')
 
 
 def render_service(settings, platform=None, home=None, bridge_path=None):
@@ -5330,7 +5336,7 @@ def render_service(settings, platform=None, home=None, bridge_path=None):
     plat = voice_transcribe.host_platform() if platform is None else platform
     if plat != 'darwin':
         return render_unit(settings, bridge_path=bridge_path)
-    bridge_path = Path(bridge_path or Path(__file__).resolve())
+    bridge_path = Path(bridge_path or BRIDGE_PATH)
     for value, what in ((bridge_path, 'bridge path'), (settings.path, 'settings path')):
         _path_setting(str(value), what)
     home_path = Path(home) if home else Path.home()
@@ -5359,6 +5365,176 @@ def _sha256(path):
         for chunk in iter(lambda: stream.read(1 << 20), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+
+# An installed release: RELEASE (commit, source, time) and SHA256SUMS, in
+# sha256sum's format, beside the files of the commit install.sh archived.
+RELEASE_FILES = ('RELEASE', 'SHA256SUMS')
+_RELEASE_SUM_RE = re.compile(r'([0-9a-f]{64})  ([A-Za-z0-9._@+/-]+)')
+
+
+def release_sums(directory):
+    """SHA256SUMS text for every regular file under directory, by path, but
+    RELEASE and SHA256SUMS; ValueError on anything else in the tree."""
+    directory, lines = Path(directory), []
+    for path in sorted(directory.rglob('*')):
+        relative = path.relative_to(directory).as_posix()
+        if relative in RELEASE_FILES or (path.is_dir() and not path.is_symlink()):
+            continue
+        if path.is_symlink() or not path.is_file() or not _RELEASE_SUM_RE.fullmatch('0' * 64 + '  ' + relative):
+            raise ValueError(f'release file {relative!r} is not a plainly named regular file')
+        lines.append(f'{_sha256(path)}  {relative}\n')
+    return ''.join(lines)
+
+
+def release_mismatch(directory):
+    """None when every file SHA256SUMS lists under directory has its listed
+    SHA-256 and nothing else is there but RELEASE and the bytecode caches of
+    listed sources, else why not, naming a path and never a file's content."""
+    if Path(directory).is_symlink():
+        return 'it is a link, not a release of its own'
+    directory = Path(directory).resolve()
+    try:
+        lines = (directory / 'SHA256SUMS').read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return 'SHA256SUMS is missing or unreadable'
+    if not lines:
+        return 'SHA256SUMS lists no files'
+    for number, line in enumerate(lines, 1):
+        match = _RELEASE_SUM_RE.fullmatch(line)
+        parts = match[2].split('/') if match else ()
+        if not match or any(part in ('', '.', '..') for part in parts) or match[2] in RELEASE_FILES:
+            return f'SHA256SUMS line {number} is malformed'
+        path = directory / match[2]
+        if path.is_symlink() or not path.is_file() or not Path(os.path.realpath(path)).is_relative_to(directory):
+            return f'{match[2]} is missing'
+        if _sha256(path) != match[1]:
+            return f'{match[2]} does not match SHA256SUMS'
+    listed = {line.split('  ', 1)[1] for line in lines}
+    sources = {name.removesuffix('.py') for name in listed if name.endswith('.py')}
+    for path in sorted(directory.rglob('*')):
+        relative = path.relative_to(directory).as_posix()
+        if relative in listed or relative in RELEASE_FILES or (path.is_dir() and not path.is_symlink()):
+            continue
+        # A bytecode cache Python wrote beside a listed source, such as under launchd.
+        parent = path.parent
+        if (parent.name == '__pycache__' and path.suffix == '.pyc' and not path.is_symlink()
+                and (parent.parent / path.name.split('.', 1)[0]).relative_to(directory).as_posix() in sources):
+            continue
+        return f'{relative} is not listed in SHA256SUMS'
+    return None
+
+
+# An installed instance runs, reads and writes nothing inside the source
+# tree its release was installed from: install.sh refuses such settings,
+# and an installed release's check-install fails on them.
+SOURCE_LINKS_MAX = 40
+_SOURCE_REMEDIES = dict(
+    copy='copy it out of the source, point {name} at the copy, then run install.sh again',
+    move='stop the service, move it out of the source, point {name} at the new path, then run install.sh again',
+    interpreter='point python at an interpreter outside the source, such as /usr/bin/python3 '
+                'or a venv made outside it, then run install.sh again')
+
+
+def source_entry(value, source):
+    """How resolving value as the kernel does (each component, every link
+    followed, every hop compared) enters source: None, 'inside' when the
+    pathname itself does, (link, its readlink text) for the outermost link
+    whose resolution does, or 'unresolvable' past SOURCE_LINKS_MAX links."""
+    source = os.path.normpath(source)
+    prefix = source.rstrip('/') + '/'
+    links = 0
+
+    def walk(path, directory):
+        # (None or how source was entered, the directory reached); a missing
+        # or unexaminable component is taken as written.
+        nonlocal links
+        here = '/' if path.startswith('/') else directory
+        for part in path.split('/'):
+            if part in ('', '.'):
+                continue
+            if part == '..':
+                here = os.path.dirname(here)
+                continue
+            joined = os.path.join(here, part)
+            if joined == source or joined.startswith(prefix):
+                return 'inside', joined
+            try:
+                target = os.readlink(joined) if stat.S_ISLNK(os.lstat(joined).st_mode) else None
+            except OSError:
+                target = None
+            if target is None:
+                here = joined
+                continue
+            links += 1
+            if links > SOURCE_LINKS_MAX:
+                return 'unresolvable', joined
+            entered, here = walk(target, here)
+            if entered == 'unresolvable':
+                return entered, here
+            if entered:
+                return (joined, target), here
+        return None, here
+
+    return walk(os.fspath(value), os.getcwd())[0]
+
+
+def source_dependencies(source, settings=None, root=None):
+    """One line for each value an instance would run, read or write inside
+    source, by source_entry, in inventory order: the root, then the
+    settings file and every path the settings name. Empty when none does."""
+    entries = []
+    if root is not None:
+        entries.append(('the root', root, None))
+    if settings is not None:
+        config = settings.config
+        entries += [('the settings file', settings.path, None), ('python', settings.python, 'interpreter'),
+                    ('token_file', settings.token_file, 'move'),
+                    ('callback_secret_file', settings.callback_secret_file, 'move'),
+                    ('yardr.hook_secret_file', settings.hook_secret_file, 'move'),
+                    ('lock_dir', settings.lock_dir, 'move'), ('state_dir', settings.state_dir, 'move')]
+        if config.get('health_file'):
+            entries.append(('health_file', config['health_file'], 'move'))
+        if config.get('yardr_home'):
+            entries.append(('yardr.home', config['yardr_home'], 'move'))
+        entries += [(f"[[command]] {command['name']} handler", command['handler'], 'copy')
+                    for command in config.get('commands', ()) if command.get('handler')]
+        entries += [(f'handler_write_paths entry {index}', path, 'move')
+                    for index, path in enumerate(settings.handler_write_paths, 1)]
+        if settings.gpu_check is not None:
+            entries.append(('transcribe.gpu_check', settings.gpu_check, 'copy'))
+        entries += [('transcribe.whisper_cli', settings.whisper_cli, 'copy'),
+                    ('transcribe.models_dir', settings.models_dir, 'copy')]
+    lines = []
+    for name, value, remedy in entries:
+        entered = source_entry(value, source)
+        if entered is None:
+            continue
+        what = f'{name} {value}' if remedy is None else f'settings {name} {value}'
+        if entered == 'unresolvable':
+            lines.append(f'{what} cannot be resolved (more than {SOURCE_LINKS_MAX} links)')
+            continue
+        where = (f'is inside the source {source}' if entered == 'inside'
+                 else f'depends on the source {source} through {entered[0]} -> {entered[1]}')
+        if name == 'the root':
+            lines.append(f'{what} {where}; choose one outside it')
+        elif remedy is None:
+            lines.append(f'{what} {where}: copy it out of the source (mode 600), '
+                         f'then run install.sh --settings <the copy>')
+        else:
+            lines.append(f'{what} {where}: ' + _SOURCE_REMEDIES[remedy].format(name=name))
+    return lines
+
+
+def release_source(directory):
+    """The source= line of directory's RELEASE, or None without one."""
+    try:
+        lines = (Path(directory) / 'RELEASE').read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    found = [line.removeprefix('source=') for line in lines if line.startswith('source=')]
+    return found[0] if len(found) == 1 and found[0].startswith('/') else None
 
 
 def recorded_sums(path=None):
@@ -5400,7 +5576,8 @@ def _interpreter_version(python):
 
 def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, platform=None,
                      version=_interpreter_version, osrelease='/proc/sys/kernel/osrelease',
-                     systemd_dir='/run/systemd/system', linger_dir='/var/lib/systemd/linger', home=None):
+                     systemd_dir='/run/systemd/system', linger_dir='/var/lib/systemd/linger', home=None,
+                     pack=None):
     """[(ok, line)] for everything the bridge needs on this host; never prints
     a credential. The transcriber checks run only when it is enabled. A line
     starting with WARN is ok (not a failure): check-install prints it as a
@@ -5411,6 +5588,18 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
 
     def check(ok, line):
         results.append((bool(ok), line))
+
+    # An installed release checks its own files; a development checkout has none of these.
+    pack = PACK_DIR if pack is None else Path(pack)
+    if any((pack / name).exists() for name in RELEASE_FILES):
+        problem = release_mismatch(pack)
+        check(problem is None, f'release files: {problem}' if problem else 'release files match SHA256SUMS')
+        source = release_source(pack)
+        if source is None:
+            check(False, 'RELEASE names no source (a source= line)')
+        else:
+            for line in source_dependencies(source, settings) or [None]:
+                check(line is None, line or f'nothing the settings name depends on the source {source}')
 
     def warn(line):
         results.append((True, f'WARN  {line}'))

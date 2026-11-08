@@ -51,10 +51,10 @@ The reason is one of: `no speech detected` (silence or noise),
 confined to its configured CPUs`, `transcriber missing
 (...)` (the host's whisper.cpp install or the pack's adapter), `invalid
 output`, `output too large`, `transcriber exited with an error`. A `missing`
-reason is an install problem for the operator
-(`~/work/yardr-telegram/install.sh`); the others are per note.
+reason is an install problem for the operator (the bridge's
+`install.sh`); the others are per note.
 
-`voice-transcribe` is the link install.sh puts in `~/.local/bin`. If it is missing, run `python3 ~/work/yardr-telegram/transcriber/voice_transcribe.py` with the same arguments, or ask the operator to run `~/work/yardr-telegram/install.sh --settings <file>`.
+`voice-transcribe` below is the bridge instance's own launcher, `<install root>/bin/voice-transcribe` (the install root is `~/.local/share/yardr-telegram/<unit stem>` unless the operator chose another); it runs that instance's installed transcriber. If it is missing, ask the operator to run the bridge's `install.sh --settings <file>`.
 
 Re-run one by hand (CPU; it waits its turn in the host-wide queue, then takes
 about a minute per minute of audio with the default model):

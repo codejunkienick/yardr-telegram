@@ -1583,6 +1583,7 @@ class NativeTests(NativeCase):
                 target[path[-1]] = value
                 result = self.create()
                 self.assertFalse(result['delivered'], result)
+                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
                 self.assertEqual(self.sent_count, 0)
                 self.assertEqual(self.writes(), [])
         for section in (
@@ -1611,7 +1612,7 @@ class NativeTests(NativeCase):
                 self.reset_native(source_proposal('new', extra=section + '\n'))
                 result = self.create()
                 self.assertFalse(result['delivered'], result)
-                self.assertEqual(result['reason'], 'invalid native source declaration')
+                self.assertEqual(result['reason'], 'invalid native source declaration' + n.FALLBACK)
                 self.assertEqual(self.sent_count, 0)
                 self.assertEqual(self.writes(), [])
         for field in ('files', 'old', 'inventory', 'removed'):
@@ -1695,7 +1696,9 @@ class NativeTests(NativeCase):
                     target = target[key]
                 target[path[-1]] = value
                 self.reset_native(ask)
-                self.assertFalse(self.create()['delivered'])
+                result = self.create()
+                self.assertFalse(result['delivered'], result)
+                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
                 self.assertEqual(self.sent_count, 0)
                 self.assertEqual(self.writes(), [])
         for change in ('unknown', 'kind', 'ask', 'missing', 'extra', 'duplicate', 'file-count'):
@@ -1717,7 +1720,9 @@ class NativeTests(NativeCase):
                     files.extend(dict(path=f'extra-{i}', text='') for i in range(65))
                 repack(ask)
                 self.reset_native(ask)
-                self.assertFalse(self.create()['delivered'])
+                result = self.create()
+                self.assertFalse(result['delivered'], result)
+                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
                 self.assertEqual(self.sent_count, 0)
         for overflow in (False, True):
             with self.subTest(snapshot_bytes_overflow=overflow):

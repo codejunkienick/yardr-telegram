@@ -692,12 +692,15 @@ def validate(ask, operator):
     if skill:
         validate_skill(ask)
     elif argv[:2] == ['source', 'add']:
-        validate_source(ask)
+        try:
+            validate_source(ask)
+        except NativeError as error:
+            raise NativeError(str(error) + FALLBACK) from None
     elif argv[:2] == ['pack', 'apply']:
         try:
             validate_pack(ask)
         except NativeError:
-            raise NativeError('run_ask_invalid_source_pack_use_terminal; use yardr pack apply <dir> in a terminal') from None
+            raise NativeError('run_ask_invalid_source_pack_use_terminal; use yardr pack apply <dir> in a terminal' + FALLBACK) from None
     elif argv[:2] in GROUP_ROWS:
         parse_group(ask)
 

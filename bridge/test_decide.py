@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 from test_bridge import BridgeTestCase, write_settings  # noqa: E402
-from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, source_proposal, proposal  # noqa: E402
+from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, pack_proposal, repack, source_proposal, proposal  # noqa: E402
 
 n = b.run_asks
 OPS = 7
@@ -205,6 +205,55 @@ class DecideTests(DecideCase):
                 self.assertEqual(sends[-1]['reply_parameters']['message_id'], parts[-1]['message_id'])
                 self.assertIn(command, sends[-1]['text'])
                 self.assertEqual([b['text'] for b in self.buttons(sends[-1])], ['✓ Approve in test-city', '✕ Decline'])
+                self.assertEqual(self.writes(), [])
+
+        unsupported = []
+        for kind in ('git', 'dir'):
+            pending = dict(proposal(), ask=13, question='Apply the depot pack?')
+            pending['run'] = dict(argv=['pack', 'apply', 'starter'], command='yardr pack apply starter',
+                description='Import a pack into the yard: set the yard to what the pack says',
+                does=[f'pack starter (embedded in yardr test), of kind {kind}, into depot web: synthetic plan'],
+                back='yardr pack apply starter', back_by='the operator',
+                pack=dict(name='starter', kind=kind, label='embedded in yardr test', depot='web',
+                          plan={}, mappings=[], summary=[], files=[]))
+            unsupported.append((kind, pending))
+        pending = dict(pack_proposal(), ask=13)
+        manifest = next(f for f in pending['run']['pack']['directory']['files'] if f['path'] == 'pack.yaml')
+        manifest['text'] += 'future: true\n'
+        repack(pending)
+        unsupported.append(('manifest', pending))
+        pending = dict(source_proposal(), ask=13)
+        pending['run']['carried'][0]['future'] = True
+        unsupported.append(('source', pending))
+        for index, (kind, pending) in enumerate(unsupported):
+            with self.subTest(unsupported_bundle=kind):
+                self.reset_native(pending)
+                self.native.beads = {
+                    'sample-1': dict(id='sample-1', title='Synthetic decision', asks=[decision()]),
+                    'file-1': dict(id='file-1', title='Synthetic unsupported bundle', asks=[pending]),
+                }
+                body, list_id = self.listing(uid=30 + 3*index)
+                self.assertTrue(body['text'].startswith('2 open decisions in test-city for pat\n'), body['text'])
+                self.assertIn('Where should the links go?\ndecision · sample-1#7', body['text'])
+                self.assertIn(pending['question'], body['text'])
+                self.assertIn('file-1#13 · Synthetic unsupported bundle · asked by proposer\n'
+                              'Not complete in Telegram; use Footplate or the yard cards.', body['text'])
+                self.assertEqual([b['text'] for b in self.buttons(body)], ['1. sample-1#7', '↻ Refresh'])
+                self.assertEqual(self.bridge.run_asks.rows(), [])
+                sent = self.sent_count
+                receipt = self.bridge.api_run_ask(dict(bead='file-1', ask=13, key='unsupported-' + kind))
+                self.assertFalse(receipt['delivered'], receipt)
+                self.assertTrue(receipt['reason'].endswith(n.FALLBACK), receipt)
+                if kind != 'source':
+                    self.assertIn('use yardr pack apply <dir> in a terminal', receipt['reason'])
+                self.assertEqual(self.sent_count, sent)
+                self.command('/decide file-1#13', 31 + 3*index)
+                self.assertIn('ask a Telegram card cannot show whole', self.sends()[-1]['text'])
+                self.assertNotIn('reply_markup', self.sends()[-1])
+                self.tap(self.buttons(body)[0]['callback_data'], list_id, 32 + 3*index)
+                self.assertEqual(self.answers()[-1], 'Card sent')
+                self.assertIn('Where should the links go?', self.sends()[-1]['text'])
+                self.assertTrue(self.buttons(self.sends()[-1]))
                 self.assertEqual(self.writes(), [])
 
     def test_stale_selection_reports_the_canonical_outcome_and_never_reopens(self):

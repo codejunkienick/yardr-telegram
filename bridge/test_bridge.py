@@ -1430,6 +1430,7 @@ class BridgeTests(BridgeTestCase):
             ('> outer\n> > inner', '&gt; outer\n&gt; \n&gt; &gt; inner', '> outer\n> \n> > inner'),
             ('<b>literal</b> & x', '&lt;b&gt;literal&lt;/b&gt; &amp; x', '<b>literal</b> & x'),
             ('[link](https://x.y/?a=1&b=2) [tg](tg://user?id=1)', '<a href="https://x.y/?a=1&amp;b=2">link</a> <a href="tg://user?id=1">tg</a>', 'link tg'),
+            ('[link][ref]\n\n[ref]: https://x.y/ "title"', '<a href="https://x.y/">link</a>', 'link'),
             ('![*alt*](https://x.y/a.png)', 'alt (https://x.y/a.png)', 'alt (https://x.y/a.png)'),
             ('` a  b\nc `', '<code>a  b c</code>', 'a  b c'),
             ('```python\r\n a < b\t \r\n\r\n```', '<pre><code class="language-python"> a &lt; b\t \n\n</code></pre>', ' a < b\t \n\n'),

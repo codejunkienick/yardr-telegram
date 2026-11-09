@@ -2460,6 +2460,8 @@ and recorded outcomes have separate spacing. Labels, consequences, provenance,
 recommendations and outcomes remain escaped literal text. Narrative Markdown
 links and mentions display their label and destination as text, never HTML
 links; raw HTML stays literal and unsupported Markdown uses the send subset.
+Link reference definitions, used or unused, refuse the whole native card and
+direct the operator to Footplate or the yard cards.
 Only canonical weight lines may retain the native warning marker. Commands
 and quoted file/review bytes remain literal.
 

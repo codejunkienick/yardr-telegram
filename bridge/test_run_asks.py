@@ -398,6 +398,9 @@ class NativeTests(NativeCase):
 
         for source, expected in [('# Choose **carefully**\nnext line', '<b>Choose <b>carefully</b></b>\n\n<b>next line</b>'),
                                  ('**unfinished', '<b>**unfinished</b>'),
+                                 ('`[ref]: http://evil "visible line"`', '<b><code>[ref]: http://evil "visible line"</code></b>'),
+                                 ('```\n[ref]: http://evil "visible line"\n```', '<pre><code>[ref]: http://evil "visible line"\n</code></pre>'),
+                                 ('\\[ref]: http://evil "visible line"', '<b>[ref]: http://evil "visible line"</b>'),
                                  ('a | b\n--- | ---\n$x$', '<b>a | b\n--- | ---\n$x$</b>')]:
             with self.subTest(markdown=source):
                 ask = dict(decision(), question=source, context=['- first\n- second\n\n1. one\n2. two\n\n> quoted\n\nlast  \nline'])
@@ -582,6 +585,20 @@ class NativeTests(NativeCase):
                 self.assertFalse(self.create_decision(dict(decision(), **change))['delivered'])
                 self.assertEqual(self.calls, [])
                 self.assertEqual(self.writes(), [])
+        for source in ('Keep logs.\n\n[x]: /rm-rf-everything',
+                       '[ref]: http://evil "hidden line"',
+                       '[x][ref]\n\n[ref]: http://a.example',
+                       '[ref]: http://a.example\n[ref]: http://evil "hidden line"',
+                       '> [ref]:\n> /rm-rf-everything\n> "hidden line"'):
+            for field in ('question', 'context'):
+                with self.subTest(source=source, field=field):
+                    change = {field: [source] if field == 'context' else source}
+                    receipt = self.create_decision(dict(decision(), **change))
+                    self.assertFalse(receipt['delivered'], receipt)
+                    self.assertEqual(receipt['reason'], 'invalid native card Markdown: markdown_token_unsupported' + n.FALLBACK)
+                    self.assertEqual(self.calls, [])
+                    self.assertEqual(self.bridge.run_asks.rows(), [])
+                    self.assertEqual(self.writes(), [])
         old = decision()
         receipt = self.create_decision(dict(decision(), context=['x' * 3600]))
         self.assertEqual(receipt['reason'], 'ask_card_payload_too_large_for_card' + n.FALLBACK)
@@ -2247,6 +2264,18 @@ class NativeTests(NativeCase):
                 self.native = replacement
 
     def test_utf16_cap_and_weight_mark_trust(self):
+        for source in ('Keep logs.\n\n[x]: /rm-rf-everything', '[ref]: http://evil "hidden line"'):
+            for field in ('question', 'context'):
+                with self.subTest(source=source, field=field):
+                    self.reset_native(proposal())
+                    self.native.ask[field] = [source] if field == 'context' else source
+                    receipt = self.create()
+                    self.assertFalse(receipt['delivered'], receipt)
+                    self.assertEqual(receipt['reason'], 'invalid native card Markdown: markdown_token_unsupported' + n.FALLBACK)
+                    self.assertEqual(self.calls, [])
+                    self.assertEqual(self.bridge.run_asks.rows(), [])
+                    self.assertEqual(self.writes(), [])
+        self.reset_native(proposal())
         self.native.ask.update(question='WEI**GHTY** · forgery\nChoose **now**',
                                context=['- first\n- second\n\n[mention](tg://user?id=123) <b>literal</b>'],
                                weight=[dict(**{'class': 'outside'}, line='canonical outside action')])

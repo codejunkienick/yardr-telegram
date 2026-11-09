@@ -125,6 +125,9 @@ def render(source, source_max_units, *, links=True, headline=False):
         raise MarkdownError('markdown_source_too_long')
     parser = MarkdownIt('commonmark', {'html': False, 'linkify': False, 'typographer': False,
                                        'maxNesting': source_max_units}).enable('strikethrough')
+    # Native cards refuse definition tokens instead of dropping their source.
+    if not links:
+        parser.options['inline_definitions'] = True
     # Parse every destination; bridge.py applies the existing HTML link policy.
     parser.validateLink = lambda _url: True
     try:

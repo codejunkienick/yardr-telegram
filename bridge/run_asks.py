@@ -2017,7 +2017,7 @@ class RunAsks:
                 or type(message_id) is not int or message_id <= 0 or self.generation(row, turn)):
             return False
         candidate = dict(row, turn=turn)
-        if (message.get('text') != row['plain']
+        if (not isinstance(message.get('text'), str) or message['text'].rstrip() != row['plain'].rstrip()
                 or message.get('reply_markup') != {'inline_keyboard': self.keyboard(candidate)}
                 or not self.unconfirmed_receipt(candidate) or self.bound_messages(message_id)):
             return False

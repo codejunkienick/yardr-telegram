@@ -2517,7 +2517,7 @@ class NativeTests(NativeCase):
             status, response = transport(url, body, *args, **kwargs)
             if url.endswith('/sendMessage'):
                 delivered.append(dict(response['result'], chat=dict(id=123, type='private'),
-                    **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0],
+                    **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0].strip(),
                     is_topic_message=True, message_thread_id=body['message_thread_id'],
                     reply_markup=copy.deepcopy(body['reply_markup'])))
                 raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
@@ -2633,7 +2633,7 @@ class NativeTests(NativeCase):
             data=sent['reply_markup']['inline_keyboard'][0][0]['callback_data'],
             **{'from': dict(id=123, is_bot=False)}, message=dict(message_id=77,
             chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)},
-            text=b.html_visible_text(sent['text'])[0], reply_markup=copy.deepcopy(sent['reply_markup']))))
+            text=b.html_visible_text(sent['text'])[0].strip(), reply_markup=copy.deepcopy(sent['reply_markup']))))
         with patch.object(self.bridge, 'telegram', side_effect=fetched):
             self.bridge.poll_once()
         self.assertEqual(self.bridge.run_asks.get(row['id'])['message_id'], 77)
@@ -2643,19 +2643,28 @@ class NativeTests(NativeCase):
         self.assertTrue(self.bridge.api_ask_close(dict(ask_key='uncertain-decision', decision='ignored'))['delivered'])
         self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
 
-        def unconfirmed():
+        def unconfirmed(legacy=False):
             self.reset_native(decision())
             delivered = []
             def lost_response(url, body, *args, **kwargs):
                 status, response = original(url, body, *args, **kwargs)
                 if url.endswith('/sendMessage'):
                     delivered.append(dict(response['result'], chat=dict(id=123, type='private'),
-                        **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0],
+                        **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0].strip(),
                         reply_markup=copy.deepcopy(body['reply_markup'])))
                     raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
                 return status, response
             with patch.object(self.bridge, 'request', side_effect=lost_response):
                 receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision'))
+            if legacy:
+                # Pre-formatting ledgers reserved sends without the footer spacing newline.
+                row = self.row()
+                row.update(html=row['html'].rstrip('\n'), plain=row['plain'].rstrip('\n'))
+                self.bridge.run_asks.save(row)
+                key, identity = self.bridge.run_asks.send_request(row)
+                with self.store.connect() as db:
+                    db.execute('UPDATE deliveries SET fingerprint=? WHERE key=?',
+                               (self.bridge.delivery_fingerprint(identity), key))
             self.assertFalse(receipt['delivered'])
             self.assertEqual(len(delivered), 1)
             self.assertIsNone(self.row()['message_id'])
@@ -2663,7 +2672,8 @@ class NativeTests(NativeCase):
                          message=delivered[0], **{'from': dict(id=123, is_bot=False)})
             return self.row(), query, receipt
 
-        for case in ('operator', 'bot', 'chat', 'topic', 'forward', 'legacy-forward', 'text', 'keyboard', 'inaccessible', 'invalid-id',
+        for case in ('operator', 'bot', 'chat', 'topic', 'forward', 'legacy-forward', 'text', 'leading-text',
+                     'missing-text', 'invalid-text', 'keyboard', 'inaccessible', 'invalid-id',
                      'missing-turn', 'wrong-turn', 'other-row', 'message-collision', 'fingerprint',
                      'missing-receipt', 'refused', 'not-sent', 'unknown-receipt', 'proposal', 'role'):
             with self.subTest(unconfirmed_refusal=case):
@@ -2681,6 +2691,12 @@ class NativeTests(NativeCase):
                     query['message']['forward_origin' if case == 'forward' else 'forward_date'] = dict(type='user') if case == 'forward' else 123
                 elif case == 'text':
                     query['message']['text'] += '\nChanged'
+                elif case == 'leading-text':
+                    query['message']['text'] = ' ' + query['message']['text']
+                elif case == 'missing-text':
+                    query['message'].pop('text')
+                elif case == 'invalid-text':
+                    query['message']['text'] = None
                 elif case == 'keyboard':
                     query['message'].pop('reply_markup')
                 elif case == 'inaccessible':
@@ -2734,9 +2750,9 @@ class NativeTests(NativeCase):
                     self.assertIn('decide in Footplate or the yard', self.calls[-1][1]['text'])
                     self.assertIn('delete this Telegram card manually', self.calls[-1][1]['text'])
 
-        for crash in ('before-binding', 'after-binding', None):
-            with self.subTest(unconfirmed_crash=crash):
-                row, query, receipt = unconfirmed()
+        for crash, legacy in (('before-binding', False), ('after-binding', False), (None, False), (None, True)):
+            with self.subTest(unconfirmed_crash=crash, legacy=legacy):
+                row, query, receipt = unconfirmed(legacy=legacy)
                 key = f"runask:{row['id']}:send"
                 saved = self.store.saved_delivery(key)
                 close = self.bridge.api_ask_close(dict(ask_key='uncertain-decision', decision='ignored'))
@@ -2769,7 +2785,11 @@ class NativeTests(NativeCase):
                 self.bridge.inbound(dict(update_id=475, callback_query=query))
                 self.assertEqual(len(self.writes()), 1)
                 self.assertEqual(self.native.ask['state'], 'answered')
-                self.assertEqual(self.bridge.run_asks.get(row['id'])['message_id'], query['message']['message_id'])
+                current = self.bridge.run_asks.get(row['id'])
+                self.assertEqual(current['message_id'], query['message']['message_id'])
+                self.assertEqual(len(current['generations']), 1)
+                self.assertTrue(current['generations'][0]['reconciled'])
+                self.assertEqual((current['plain'], current['html']), (row['plain'], row['html']))
                 self.assertEqual(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision')), receipt)
                 self.assertEqual(self.store.saved_delivery(key), saved)
                 self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
@@ -3228,7 +3248,7 @@ class RealNativeTests(BridgeTestCase):
                 status, response = telegram(url, body, *args, **kwargs)
                 if url.endswith('/sendMessage'):
                     delivered.append(dict(response['result'], chat=dict(id=123, type='private'),
-                        **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0],
+                        **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0].strip(),
                         reply_markup=copy.deepcopy(body['reply_markup'])))
                     raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
                 return status, response

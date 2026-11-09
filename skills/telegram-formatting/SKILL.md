@@ -27,8 +27,10 @@ yardr reply <seq> "<the answer>"
 - The answer lands where the delivery came from: the same topic, or the
   main chat (General).
 - Text that is valid Telegram HTML ("Formatting" below) is sent formatted;
-  anything else goes as plain text, tags and all. Write HTML for anything
-  longer than two lines.
+  anything else goes as plain text, tags and all. Explicit Markdown is
+  available with `yardr reply <seq> --format markdown <text>` (or `-` for
+  stdin), after the reviewed source declares `thread.formats: [markdown]`
+  and core supports explicit reply formats. No flag keeps legacy auto.
 - `--file <path>` (repeatable) sends files with it: pictures as photos,
   anything else as documents, the text as the caption where it fits in
   1024 characters ("telegram-attachments" skill).
@@ -50,7 +52,8 @@ yardr call tgbridge send text="$(cat body.html)" topic=homelab format=html silen
   main chat); `conversation=<id>` names one by id instead. With neither it
   goes to the main chat.
 - `format=auto` is the default (HTML when the text is valid HTML), `html`
-  refuses text that is not, `plain` sends tags as text.
+  refuses text that is not, `plain` sends tags as text. `format=markdown`
+  explicitly renders the subset below; auto never detects Markdown fences.
 - `silent=true` for a message that needs no action: something landed, a
   review passed, a merge, a status, a progress note, an FYI. Its
   notification makes no sound (it still appears), so the phone rings only
@@ -130,7 +133,7 @@ and `format=html` refuses anything that is not.
 - Tags: `<b>`, `<i>`, `<u>`, `<s>`, `<code>`, `<pre>`, `<a href="https://...">`,
   `<blockquote>`, `<blockquote expandable>` and `<tg-spoiler>`, lowercase,
   attributes in double quotes. Nothing else: no `<br>`, `<p>`, `<ul>`, `<span>`
-  or Markdown. Line breaks are newlines; bullets are a `•` or `-` at the line
+  or Markdown in this HTML mode. Line breaks are newlines; bullets are a `•` or `-` at the line
   start.
 - Escape every `&`, `<` and `>` in the text as `&amp;`, `&lt;` and `&gt;` (in a
   link's URL too), including text copied from a bead, a log or a diff. The
@@ -154,6 +157,35 @@ and `format=html` refuses anything that is not.
   without formatting under the same key; the receipt says
   `format_fallback_reason`. The bridge's delivery ledger and message log
   record it.
+
+### Explicit Markdown
+
+Use `--format markdown` for ordinary replies, `format=markdown` for source
+send/pin calls, or `--format markdown` on the installed bridge CLI. Strong,
+emphasis, strike and headings render as HTML tags. Paragraphs/line breaks
+become newlines, lists use text markers, rules use `---`, nested quotes use
+textual `> ` prefixes. Links use the existing HTTP/HTTPS/TG policy. Raw HTML
+is literal; images show alt plus destination without fetching; table/math
+extensions are disabled. Unfinished delimiters stay literal and unclosed
+fences end at document end.
+
+Code is escaped. CRLF/CR normalize to LF, inline code follows CommonMark
+space rules, and fenced code keeps parsed spaces/tabs and trailing LF.
+NUL/lone surrogates refuse. Original source and generated HTML each fit
+16384 UTF-16 units, visible text 4096 (captions 1024), with ask answer room
+reserved. Unknown modes/input/tokens refuse before sending.
+
+Keep the original source and mode when retrying. An unresolved reply must
+be reconciled under its original key/mode before changing format. Ordinary
+ask edits append escaped answers to stored HTML without parsing again.
+Native approvals, commands, skill files, full diffs and bundle bytes/hashes
+keep their exact native escaped path. For a copyable terminal command, use
+one HTML `pre`-only message where required, outside Markdown conversion.
+
+See `docs/formatting.md` in the pack repository for full whitespace and
+packaging policy. The pinned parser ships with each installed release;
+never install dependencies while sending a message. Installation and
+source-pack activation belong to the operator after review/local assembly.
 
 ## Asks with buttons
 

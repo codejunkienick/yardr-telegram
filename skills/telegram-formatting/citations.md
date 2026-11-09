@@ -69,6 +69,12 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | 'html_text_not_escaped' | unescaped text refused |
 | pack | bridge/bridge.py | agent = _text_setting(data.get('crew', 'yardmaster'), 'crew') | the yard's crew member, default yardmaster |
 | pack | bridge/bridge.py | telegram_html_parse_rejected_400 | one plain fallback, same key |
+| pack | bridge/markdown.py | def render(source, source_max_units): | pure bounded CommonMark display conversion |
+| pack | bridge/bridge.py | def formatted_text(text, fmt): | generated HTML uses the existing validator |
+| pack | yardr/tgbridge.yaml | formats: [markdown] | explicit ordinary reply capability |
+| pack | yardr/tgbridge/thread | fmt = given.get('format', 'auto') | explicit mode, legacy auto when omitted |
+| pack | docs/formatting.md | ## Rendering policy | supported subset, whitespace and evidence boundaries |
+| pack | vendor/README.md | # Pinned Markdown runtime | pins, notices and offline packaging |
 | pack | bridge/bridge.py | def _log_sent(self, conversation, request, receipt): | the message log records the send |
 | pack | bridge/OPERATIONS.md | ## Asks | asks with buttons follow this section |
 | pack | bridge/OPERATIONS.md | each question of a multi-question ask goes out as its own message with its own key and keyboard | one message per question |

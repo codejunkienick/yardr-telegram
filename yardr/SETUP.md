@@ -716,3 +716,23 @@ Point any relinked skills and the voice-transcribe link back the same way.
   checkout and its old unit.
 - Reset the alias, re-key the source or grant the calls again: the apply
   keeps them.
+
+## Explicit Markdown replies
+
+Install only the reviewed merged checkout with the existing installer, then
+check the installed release and follow its `next:` line. Apply `<root>/pack`
+using step 5, retaining the selected source alias and existing env-file binding.
+The declaration adds `thread.formats: [markdown]`; core `0035b8c13e27` or a
+compatible explicit reply-format transport is required. The core alone does
+not activate the source capability. No new grants, settings or Python installs
+are needed for formatting. The release includes pinned parser packages and
+licenses; CLI/Linux/macOS launchers all use the existing `python` setting.
+
+Use `yardr reply <seq> --format markdown <text>` (also `-` for stdin and
+`--file` for attachments), or `yardr call tgbridge send text=<text>
+format=markdown --json`. Omit the flag for legacy auto. Test an ordinary
+reply and visible history after activation; a refusal, timeout or unknown
+outcome follows existing reconciliation rather than another key/mode.
+Rollback/reapply uses the previous release and its matching rendered pack.
+See [formatting](../docs/formatting.md) for the supported subset, whitespace
+and exact evidence policy. Source tests are not live/client/macOS validation.

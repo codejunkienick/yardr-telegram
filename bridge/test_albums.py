@@ -153,6 +153,23 @@ class AlbumTests(BridgeTestCase):
                                             'caption': '<b>A</b> &amp; B', 'parse_mode': 'HTML'})
         self.assertEqual(self.media(1)[0], {'type': 'photo', 'media': 'attach://file0', 'caption': 'A & B'})
         self.assertEqual(self.calls, [])
+        self.album_calls.clear()
+        self.album_answers = [HTML_REJECTED]
+        request = self.album(self.files('photo', 'photo'), key='md-album', text='**A** & B', format='markdown',
+                             silent=True, reply_to_message_id='5')
+        receipt = self.bridge.publish(request)
+        self.assertTrue(receipt['delivered'])
+        self.assertEqual(receipt['format_fallback_reason'], 'telegram_html_parse_rejected_400')
+        self.assertEqual(self.media(0)[0]['caption'], '<b>A</b> &amp; B')
+        self.assertEqual(self.media(0)[0]['parse_mode'], 'HTML')
+        self.assertNotIn('caption', self.media(0)[1])
+        self.assertEqual(self.media(1)[0]['caption'], 'A & B')
+        self.assertNotIn('parse_mode', self.media(1)[0])
+        self.assertTrue(all(fields['disable_notification'] == 'true' for _, fields, _ in self.album_calls))
+        self.assertTrue(all(json.loads(fields['reply_parameters']) == {'message_id': 5} for _, fields, _ in self.album_calls))
+        self.assertEqual(self.bridge.publish(request), receipt)
+        self.assertEqual(len(self.album_calls), 2)
+        self.assertEqual(self.calls, [])
 
     def test_another_rejection_falls_back_to_one_text_message(self):
         self.album_answers = [REJECTED]

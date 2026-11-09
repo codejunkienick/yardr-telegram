@@ -1704,6 +1704,42 @@ class InstanceTests(unittest.TestCase):
         self.assertIn(f'wrote pack {b_root}/pack (base http://127.0.0.1:18951)', out)
         self.assert_pack(a_root, 18941)
         self.assert_pack(b_root, 18951)
+        reproduced = self.root / 'reproduced-vendor'
+        result = subprocess.run([sys.executable, '-B', str(self.source / 'scripts/vendor_markdown.py'),
+                                 str(self.source / 'vendor/wheels'), str(reproduced)],
+                                env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        files = {p.relative_to(reproduced).as_posix(): p.read_bytes() for p in reproduced.rglob('*') if p.is_file()}
+        original = {p.relative_to(self.source / 'vendor').as_posix(): p.read_bytes()
+                    for p in (self.source / 'vendor').rglob('*') if p.is_file()
+                    and p.name != 'README.md' and p.suffix != '.whl'}
+        self.assertEqual(files, original)
+        bad_wheels = self.root / 'bad-wheels'
+        shutil.copytree(self.source / 'vendor/wheels', bad_wheels)
+        next(bad_wheels.iterdir()).write_bytes(b'tampered')
+        refused = self.root / 'refused-vendor'
+        result = subprocess.run([sys.executable, '-B', str(self.source / 'scripts/vendor_markdown.py'),
+                                 str(bad_wheels), str(refused)], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('wheel hash mismatch', result.stderr)
+        self.assertFalse(refused.exists())
+
+        def markdown_runtime(root):
+            probe = ('import json, runpy, sys; runpy.run_path(sys.argv[1]); import markdown_it, mdurl; '
+                     'from importlib.metadata import version; '
+                     'print(json.dumps([sys.executable, markdown_it.__file__, mdurl.__file__, '
+                     'version("markdown-it-py"), version("mdurl")]))')
+            result = subprocess.run([sys.executable, '-B', '-c', probe, str(root / 'current/bridge/bridge.py')],
+                                    env=self.env, cwd=self.root, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            python, parser, url, parser_version, url_version = json.loads(result.stdout)
+            self.assertEqual(python, sys.executable)
+            self.assertEqual(Path(parser), (root / 'current/vendor/markdown_it/__init__.py').resolve())
+            self.assertEqual(Path(url), (root / 'current/vendor/mdurl/__init__.py').resolve())
+            self.assertEqual((parser_version, url_version), ('4.2.0', '0.1.2'))
+
+        markdown_runtime(a_root)
+        markdown_runtime(b_root)
         b_tops = (b_root, b_settings, self.root / 'birch' / 'private', self.root / 'birch' / 'state', b_unit)
         b_before = tree_digest(*b_tops)
         self.assertIn(str(b_root / 'bin/telegram-bridge'), b_before)
@@ -1719,7 +1755,7 @@ class InstanceTests(unittest.TestCase):
         self.assertEqual(tree_digest(a_root, a_unit, self.root / 'alder'), a_before)
         unchanged('dry-run')
 
-        (self.source / 'vendor').mkdir()
+        (self.source / 'vendor').mkdir(exist_ok=True)
         (self.source / 'vendor' / 'yardr_fixture_vendored.py').write_text('VALUE = "alder"\n')
         with (self.source / 'yardr/SETUP.md').open('a') as stream:
             stream.write('\nA line of the second release.\n')
@@ -1748,6 +1784,8 @@ class InstanceTests(unittest.TestCase):
         self.assertTrue((a_root / first_pack).is_dir())
         self.assert_pack(a_root, 18941)
         unchanged('upgrade')
+        markdown_runtime(a_root)
+        markdown_runtime(b_root)
 
         # The vendor slot: A's release resolves the module inside itself; B's commit has none.
         probe = ('import runpy, sys; runpy.run_path(sys.argv[1]); import yardr_fixture_vendored as v; '
@@ -1779,6 +1817,8 @@ class InstanceTests(unittest.TestCase):
         self.assertEqual(os.readlink(a_root / 'pack'), first_pack)  # the prior release's own generation
         self.assert_pack(a_root, 18941)
         unchanged('rollback')
+        markdown_runtime(a_root)
+        markdown_runtime(b_root)
 
         out = self.ok(self.run_install(a_settings))
         self.assertIn(f'release {second} reused from {a_root}/releases/{second}', out)
@@ -1817,6 +1857,7 @@ class InstanceTests(unittest.TestCase):
         unchanged('removal of A')
         shutil.rmtree(self.source)
         unchanged('removal of the source')
+        markdown_runtime(b_root)
         self.assertFalse((self.home / '.local/bin/voice-transcribe').exists())  # never created
 
         # B restarted from its own copy, with the source and A gone.
@@ -1836,6 +1877,14 @@ class InstanceTests(unittest.TestCase):
         with b.Store(self.root / 'birch/state/telegram-bridge.sqlite3', 0).connect() as db:
             rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM run_asks')]
         self.assertEqual([(row['conversation'], row['message_id']) for row in rows], [('123', 90)])
+        body = self.root / 'offline.md'
+        body.write_text('**Offline** `<b>literal</b>`')
+        sent = self.launch(b_root, 'send', '--body-file', str(body), '--format', 'markdown',
+                           '--idempotency-key', 'markdown-after-source-removal')
+        self.assertEqual(sent.returncode, 0, sent.stdout + sent.stderr)
+        requests = (self.bin / 'requests.jsonl').read_text().splitlines()
+        self.assertEqual(len(requests), 2)
+        self.assertIn('<b>Offline</b> <code>&lt;b&gt;literal&lt;/b&gt;</code>', json.loads(requests[-1]))
 
     def assert_pack(self, root, port):
         """root/pack is a generation under packs/ holding the current

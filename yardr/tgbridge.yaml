@@ -32,7 +32,7 @@ calls:
       text:         { type: string, max: 16000 }
       topic:        { type: string, max: 128, optional: true }
       conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$", optional: true }
-      format:       { type: enum, values: [auto, plain, html], optional: true }
+      format:       { type: enum, values: [auto, plain, html, markdown], optional: true }
       silent:       { type: bool, optional: true }
       keyboard:     { type: string, max: 8000, optional: true }
       text_options: { type: bool, optional: true }
@@ -75,7 +75,7 @@ calls:
     params:
       slot:   { type: string, pattern: "^[a-z0-9_-]{1,32}$" }
       text:   { type: string, max: 16000 }
-      format: { type: enum, values: [auto, plain, html], optional: true }
+      format: { type: enum, values: [auto, plain, html, markdown], optional: true }
     request:
       method: POST
       path: /v1/pin
@@ -186,6 +186,7 @@ hear:
 # read is the bridge's message log, each message whole (the yard keeps
 # 500 characters of a delivery).
 thread:
+  formats: [markdown]
   reply:  [tgbridge/thread, reply]      # in  {thread, parent, body, key, files?}  out {id}
   posted: [tgbridge/thread, posted]     # in  {thread, key}                       out {id} or {}
   read:   [tgbridge/thread, read]       # in  {thread}                            out {messages: [...]}

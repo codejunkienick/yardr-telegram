@@ -603,13 +603,18 @@ class ActionTests(CommandCase):
         self.assertEqual(self.ledger()['command:40:0']['format_fallback_reason'], 'telegram_html_parse_rejected_400')
 
     def test_several_actions_run_in_order_under_their_own_keys(self):
-        self.set_handler(answer(dict(type='send', text='one'), dict(type='edit', message_id=7, text='two'),
+        self.set_handler(answer(dict(type='send', text='**one**', format='markdown'), dict(type='edit', message_id=7, text='`two`', format='markdown'),
                                 dict(type='send', text='three')))
         self.drain(self.message('/deploy'))
         self.assertEqual(self.telegram.methods(), ['sendMessage', 'editMessageText', 'sendMessage'])
         ledger = self.ledger()
         self.assertEqual(sorted(ledger), ['command:40:0', 'command:40:1', 'command:40:2'])
         self.assertTrue(all(receipt['delivered'] for receipt in ledger.values()))
+        self.assertEqual(self.telegram.of('sendMessage')[0]['text'], '<b>one</b>')
+        self.assertEqual(self.telegram.of('editMessageText')[0]['text'], '<code>two</code>')
+        self.assertEqual(self.telegram.of('editMessageText')[0]['parse_mode'], 'HTML')
+        saved = self.store.saved_delivery('command:40:1')[0]
+        self.assertEqual(saved, b.Bridge.delivery_fingerprint(dict(type='edit', message_id=7, text='`two`', format='markdown')))
 
     def test_an_empty_action_list_does_nothing(self):
         self.set_handler(answer())
@@ -677,7 +682,10 @@ class FailureTests(CommandCase):
             (answer(dict(type='send', text='x', parse_mode='HTML')), 'unknown_action_key'),
             (answer(dict(type='send')), 'unknown_action_key'),
             (answer(dict(type='edit', text='x')), 'unknown_action_key'),
-            (answer(dict(type='send', text='x', format='markdown')), 'invalid_text'),
+            *[(answer(dict(type='send', text='x', format=fmt)), 'format_unsupported')
+              for fmt in ('rich', None, False, 5, [], {})],
+            (answer(dict(type='send', text='ok'), dict(type='edit', message_id=7, text='\0', format='markdown')), 'markdown_source_invalid_unicode'),
+            (answer(dict(type='send', text='[unsafe](file:///private)', format='markdown')), 'html_link_scheme_not_allowed'),
             (answer(dict(type='send', text='   ')), 'invalid_text'),
             (answer(dict(type='send', text='😀' * 2049)), 'invalid_text'),
             (answer(dict(type='send', text=7)), 'invalid_text'),

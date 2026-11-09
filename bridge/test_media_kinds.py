@@ -86,28 +86,47 @@ class MediaKindTests(BridgeTestCase):
         self.assertEqual(len(self.multipart_calls), 1)
 
     def test_video_note_goes_out_as_send_video_note_with_no_caption(self):
-        receipt = self.bridge.publish(self.request('video_note', ''))
-        self.assertTrue(receipt['delivered'])
-        url, fields, field, path = self.multipart_calls[0]
-        self.assertTrue(url.endswith('/sendVideoNote'))
-        self.assertEqual((field, Path(path).name), ('video_note', 'circle.mp4'))
-        self.assertEqual(fields, {'chat_id': '123'})
-        html = self.request('video_note', '', key='media-2')
-        html['format'] = 'html'
-        self.assertTrue(self.bridge.publish(html)['delivered'])
-        self.assertNotIn('parse_mode', self.multipart_calls[1][1])
+        for fmt in ('plain', 'html', 'markdown'):
+            for boundary in ('publish', 'api'):
+                with self.subTest(format=fmt, boundary=boundary):
+                    key = f'empty-{fmt}-{boundary}'
+                    request = self.request('video_note', '', key=key, format=fmt)
+                    if boundary == 'publish':
+                        receipt = self.bridge.publish(request)
+                    else:
+                        receipt = self.bridge.api_send(dict(key=key, text='', format=fmt,
+                            attachments=[request['attachment']['path']], attachment_kind='video_note'))
+                    self.assertTrue(receipt['delivered'])
+                    url, fields, field, path = self.multipart_calls[-1]
+                    self.assertTrue(url.endswith('/sendVideoNote'))
+                    self.assertEqual((field, Path(path).name), ('video_note', 'circle.mp4'))
+                    self.assertEqual(fields, {'chat_id': '123'})
+                    self.assertTrue(self.ledger(key)['delivered'])
+        self.assertEqual(len(self.multipart_calls), 6)
+        self.assertEqual(self.calls, [])
 
     def test_a_video_note_with_text_is_refused_before_any_send(self):
-        for text in ('a caption', '<b>x</b>', ' ', '\n'):
-            receipt = self.bridge.publish(self.request('video_note', text))
-            self.assertEqual(receipt['metadata']['reason'], 'video_note_takes_no_caption')
+        samples = [('plain', text) for text in ('a caption', '<b>x</b>', ' ', '\n')]
         # Markup that renders to no visible text is still a body.
-        for text in ('<b></b>', '<i> </i>', ' \n'):
-            html = self.request('video_note', text)
-            html['format'] = 'html'
-            self.assertEqual(self.bridge.publish(html)['metadata']['reason'], 'video_note_takes_no_caption')
-        self.assertEqual((self.multipart_calls, self.calls), ([], []))
-        self.assertIsNone(self.ledger('media-1'))
+        samples += [('html', text) for text in ('<b></b>', '<i> </i>', ' \n')]
+        samples += [('markdown', text) for text in ('**caption**', ' ', '\n', '\r\n',
+                                                   '[ref]: https://example.invalid\n')]
+        for index, (fmt, text) in enumerate(samples):
+            for boundary in ('publish', 'api'):
+                with self.subTest(format=fmt, text=text, boundary=boundary):
+                    key = f'caption-{index}-{boundary}'
+                    request = self.request('video_note', text, key=key, format=fmt)
+                    if boundary == 'publish':
+                        receipt = self.bridge.publish(request)
+                        reason = receipt.get('metadata', {}).get('reason')
+                    else:
+                        receipt = self.bridge.api_send(dict(key=key, text=text, format=fmt,
+                            attachments=[request['attachment']['path']], attachment_kind='video_note'))
+                        reason = receipt.get('reason')
+                    self.assertFalse(receipt['delivered'])
+                    self.assertEqual(reason, 'video_note_takes_no_caption')
+                    self.assertEqual((self.multipart_calls, self.calls), ([], []))
+                    self.assertIsNone(self.ledger(key))
 
     def test_only_the_video_note_takes_an_empty_body(self):
         for kind in ('voice', 'photo', 'video', 'document'):

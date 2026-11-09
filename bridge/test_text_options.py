@@ -55,6 +55,12 @@ class OptionsPublishTests(BridgeTestCase):
         self.assertEqual(result['metadata']['reason'], 'options_need_keyboard')
         self.assertEqual(self.calls, [])
         self.assertEqual(self.deliveries(), 0)
+        request = dict(self.publish(key='opt-markdown', text='**Pick**\n**A:** one\n**B:** two'), format='markdown')
+        self.assertEqual(self.bridge.publish(request)['metadata']['reason'], 'options_need_keyboard')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.deliveries(), 0)
+        self.assertTrue(self.bridge.publish(dict(request, text_options=True))['delivered'])
+        self.assertEqual(self.calls[0][1]['text'], '<b>Pick</b>\n<b>A:</b> one\n<b>B:</b> two')
 
     def test_bulleted_and_dashed_lettered_options_are_refused(self):
         for key, text in (('opt-bullet', 'Pick one:\n• A) one\n• B) two'),

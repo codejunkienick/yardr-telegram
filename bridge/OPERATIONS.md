@@ -377,7 +377,7 @@ object.
 
 | route | body | answer |
 | --- | --- | --- |
-| `POST /v1/send` | `text`; `key`, else the `Idempotency-Key` header (required); `conversation` (an id) or `topic` (a name), default the paired chat; `format` (`auto`, `plain` or `html`; default `auto`); `silent`; `keyboard` (rows, or rows as a JSON string); `text_options`; `reply_to`; `attachments` (a host path, or a list of them); `attachment_kind` | `{delivered, message_id, conversation}`, with `reason` and `failure_kind` when not delivered |
+| `POST /v1/send` | `text`; `key`, else the `Idempotency-Key` header (required); `conversation` (an id) or `topic` (a name), default the paired chat; `format` (`auto`, `plain`, `html` or `markdown`; default `auto`); `silent`; `keyboard` (rows, or rows as a JSON string); `text_options`; `reply_to`; `attachments` (a host path, or a list of them); `attachment_kind` | `{delivered, message_id, conversation}`, with `reason` and `failure_kind` when not delivered |
 | `POST /v1/tell` | `title`, `text`, optional `link`, `conversation` or `topic` | as `/v1/send` |
 | `POST /v1/posted` | `key`, else the `Idempotency-Key` header | `{"message_id": "<id>"}` when the ledger holds a confirmed send under the key, else `{}` |
 | `POST /v1/read` | `conversation` or `topic`; optional `limit`, 1-200, default 50 | `{"messages": [{id, direction, from, text, at}, ...]}`, oldest first ("The message log") |
@@ -425,7 +425,9 @@ a source an hour, 10 of them updates, unless the source says otherwise
 
 `yardr reply <seq>` runs the thread command `reply`: `/v1/send` on the
 delivery's conversation, with the reply's `key`, `format: auto` and its
-files as `attachments`. A `delivered: false` fails it with `the bridge did
+files as `attachments`. With `--format markdown`, the declared thread carries
+the original source and explicit mode through the same send path (requires
+a core with explicit reply-format support). A `delivered: false` fails it with `the bridge did
 not deliver the reply: <reason> (<failure_kind>)`. The thread command
 `posted` (`/v1/posted`) lets the yard find a reply whose answer was lost,
 and `read` (`/v1/read`, `limit` 50) is what `yardr thread show <seq>` shows.
@@ -552,7 +554,7 @@ read up to 64 KiB.
 **Handler output** is exactly one JSON object `{"actions": [...]}`, at most
 64 KiB and 32 actions, each exactly one of:
 
-- `{"type": "send", "text": ..., "format": "plain"|"html", "keyboard": ...}`
+- `{"type": "send", "text": ..., "format": "plain"|"html"|"markdown", "keyboard": ...}`
 - `{"type": "edit", "message_id": <int>, "text": ..., "format": ..., "keyboard": ...}`
   (edits a message the bot sent; without `keyboard` the edit removes the buttons)
 - `{"type": "answer_callback", "text": ..., "alert": <bool>}` (a press only, at
@@ -906,10 +908,10 @@ The `telegram-formatting` skill is the writer's guide.
 `/v1/send` and `/v1/pin`) send the body with Telegram's HTML `parse_mode`.
 On the command line it is an explicit opt-in; without it nothing changes for
 a caller or its ledger rows. The yard API's `format` defaults to `auto`, and
-`yardr reply` always sends `auto`: HTML when the body holds a `<` or `&` and
+`yardr reply` without `--format` sends `auto`: HTML when the body holds a `<` or `&` and
 is valid under the rules below, plain text otherwise, so `auto` never
 refuses a body for an HTML rule, and one with a stray `<` goes as the words
-it is. `pin --format` takes `plain` or `html` only.
+it is. `pin --format` takes `plain`, `html` or `markdown`.
 
 - Allowed tags, lowercase, attribute values in double quotes: `b`, `strong`,
   `i`, `em`, `u`, `s`, `code`, `pre` (a `<code class="language-x">` directly
@@ -937,6 +939,11 @@ it is. `pin --format` takes `plain` or `html` only.
   format is `idempotency_key_conflict`, like another body. `auto` is resolved
   first, so the ledger holds `html` or plain.
 - The message log keeps an HTML send's visible text.
+
+Explicit `markdown` on the same API/CLI/command boundaries renders a bounded
+CommonMark subset to this HTML path. Defaults stay unchanged. See
+[the rendering policy and packaging](../docs/formatting.md) for literal HTML,
+code whitespace, lists/quotes, limits, identity and operator activation.
 
 ### Silent messages (`--silent`)
 
@@ -1041,7 +1048,7 @@ objects that were sent is returned". Its parameters include
 
 ## Pinned messages
 
-`yardr call tgbridge pin slot=<name> text=<text> [format=auto|plain|html]`
+`yardr call tgbridge pin slot=<name> text=<text> [format=auto|plain|html|markdown]`
 (`/v1/pin`), or on the host
 `bridge.py --settings <settings> pin --slot <name> --body-file <path> [--format html]`,
 keeps one pinned bot message per slot in

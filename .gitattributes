@@ -1,0 +1,4 @@
+# Preserve upstream wheel metadata bytes, including trailing blank lines.
+/vendor/markdown_it_py-4.2.0.dist-info/METADATA whitespace=-blank-at-eof
+/vendor/markdown_it_py-4.2.0.dist-info/entry_points.txt whitespace=-blank-at-eof
+/vendor/mdurl-0.1.2.dist-info/METADATA whitespace=-blank-at-eof

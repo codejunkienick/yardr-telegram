@@ -84,7 +84,7 @@ key from a failure; a malformed request answers 400 and a bad secret 403.
 
 | route | body | answer |
 |---|---|---|
-| `POST /v1/send` | `conversation` (default the paired chat) or `topic` (a name), `text`, `key` (else the `Idempotency-Key` header), optional `format` (`plain`, `html`, `auto`; default `auto`), `silent`, `keyboard` (rows, or rows as a JSON string), `text_options`, `reply_to`, `attachments` (host paths), `attachment_kind` | `{delivered, message_id, conversation, reason?, failure_kind?}` |
+| `POST /v1/send` | `conversation` (default the paired chat) or `topic` (a name), `text`, `key` (else the `Idempotency-Key` header), optional `format` (`plain`, `html`, `markdown`, `auto`; default `auto`), `silent`, `keyboard` (rows, or rows as a JSON string), `text_options`, `reply_to`, `attachments` (host paths), `attachment_kind` | `{delivered, message_id, conversation, reason?, failure_kind?}` |
 | `POST /v1/tell` | `conversation`, `title`, `text`, optional `link` | as `/v1/send`; plain text, the title on its own first line. The yard tells with no key, so the key is the content's hash and the minute: the same tell retried within the minute is sent once |
 | `POST /v1/posted` | `key` | `{message_id}` when the ledger holds a confirmed send under the key, else `{}` |
 | `POST /v1/read` | `conversation`, optional `limit` (1-200, default 50) | `{messages: [{id, direction, from, text, at}]}`, oldest first |
@@ -259,3 +259,9 @@ yard (core `UserAsks`) with `<bead>#<ask>` IDs, and a button or
 listed without a button, and a closed one reports its outcome. It is the
 bridge's own command only with native keys, which also reserve `decide:`. See
 [the operations guide](bridge/OPERATIONS.md#decide-the-operators-open-decisions).
+
+Explicit `format=markdown` renders the documented CommonMark subset through
+the existing HTML validator/delivery path. Ordinary `yardr reply <seq> --format
+markdown <text>` requires the installed core format transport and reviewed
+`thread.formats: [markdown]` source declaration; no flag keeps legacy auto.
+See [formatting](docs/formatting.md) for policy, limits and packaging.

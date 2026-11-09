@@ -98,6 +98,17 @@ class PinTests(BridgeTestCase):
         before = list(self.calls)
         self.assert_pinned(self.bridge.pin('waiting', 'Nothing waiting'), 501, 0, changed=False)
         self.assertEqual(self.calls, before)
+        self.assertTrue(self.bridge.pin('markdown', '**Wait**', 'markdown')['delivered'])
+        self.assertEqual(self.bodies('sendMessage')[-1]['text'], '<b>Wait</b>')
+        self.assertEqual(self.bodies('sendMessage')[-1]['parse_mode'], 'HTML')
+        before = list(self.calls)
+        self.assertFalse(self.bridge.pin('markdown', '**Wait**', 'markdown')['changed'])
+        self.assertEqual(self.calls, before)
+        self.assertTrue(self.bridge.pin('markdown', '**Next**', 'markdown')['delivered'])
+        self.assertEqual(self.bodies('editMessageText')[-1]['text'], '<b>Next</b>')
+        self.assertEqual(self.bodies('editMessageText')[-1]['parse_mode'], 'HTML')
+        saved = self.store.saved_delivery('pin:markdown:g1:r1')[0]
+        self.assertEqual(saved, b.Bridge.delivery_fingerprint(dict(type='edit', message_id=502, text='**Next**', format='markdown')))
         # The format is part of what was applied: the same text as HTML edits.
         self.assert_pinned(self.bridge.pin('waiting', 'Nothing waiting', 'html'), 501, 1)
         self.assertEqual(self.methods()[-1], 'editMessageText')
@@ -321,7 +332,10 @@ class PinTests(BridgeTestCase):
                  ('x' * 4097, 'plain', 'text_required_maximum_4096_utf16_units'),
                  ('  \n', 'plain', 'text_required_maximum_4096_utf16_units'),
                  ('<b>open', 'html', 'html_tags_unbalanced'),
-                 ('A', 'markdown', 'format_unsupported')]
+                 ('A', 'rich', 'format_unsupported'),
+                 ('**' + 'x' * 4097 + '**', 'markdown', 'text_required_maximum_4096_utf16_units'),
+                 ('[x](file:///private)', 'markdown', 'html_link_scheme_not_allowed'),
+                 ('\0', 'markdown', 'markdown_source_invalid_unicode')]
         for text, fmt, reason in cases:
             with self.subTest(fmt=fmt, text=text[:12]):
                 self.assertEqual(self.bridge.pin('waiting', text, fmt)['metadata']['reason'], reason)
@@ -419,6 +433,12 @@ class PinCliTests(unittest.TestCase):
         self.assertEqual(self.requests, [('unpinChatMessage', dict(chat_id=123, message_id=42))])
         self.assertEqual(self.cli('--slot', 'waiting', '--unpin'), 'pin waiting not pinned\n')
         self.assertEqual(self.requests, [])
+        self.body.write_text('**Waiting** `<raw>`')
+        self.assertEqual(self.cli('--slot', 'markdown', '--body-file', str(self.body), '--format', 'markdown'),
+                         'pinned message ID 42 (slot markdown, revision 0)\n')
+        self.assertEqual(self.requests[0][1]['text'], '<b>Waiting</b> <code>&lt;raw&gt;</code>')
+        self.assertEqual(self.requests[0][1]['parse_mode'], 'HTML')
+        self.assertEqual([method for method, _ in self.requests], ['sendMessage', 'pinChatMessage'])
 
     def test_unpin_reports_an_ended_unconfirmed_send(self):
         self.answer = lambda url, body: (502, {'ok': False, 'error_code': 502})

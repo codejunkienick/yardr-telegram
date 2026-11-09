@@ -914,6 +914,16 @@ class BridgeTests(BridgeTestCase):
         self.assertTrue(result['delivered'])
         self.assertEqual(result['message_id'], '88')
         self.assertEqual(len(self.multipart_calls), 1)
+
+        for index, (source, accepted) in enumerate([('**' + '🙂' * 512 + '**', True),
+                                                    ('**' + '🙂' * 512 + 'x**', False)]):
+            request = dict(self.publish(key=f'md-caption-{index}', text=source), format='markdown',
+                           attachment=dict(path=path, kind='photo'))
+            receipt = self.bridge.publish(request)
+            self.assertEqual(receipt['delivered'], accepted, receipt)
+            if accepted:
+                self.assertEqual(self.multipart_calls[-1][1]['caption'], '<b>' + '🙂' * 512 + '</b>')
+                self.assertEqual(self.multipart_calls[-1][1]['parse_mode'], 'HTML')
         url, fields, file_field, file_path = self.multipart_calls[0]
         self.assertTrue(url.endswith('/sendPhoto'))
         self.assertEqual(file_field, 'photo')
@@ -1410,6 +1420,46 @@ class BridgeTests(BridgeTestCase):
         self.assertEqual(self.calls[0][1]['parse_mode'], 'HTML')
         self.assertEqual(self.calls[0][1]['text'], text)
         self.assertEqual(self.calls[0][1]['link_preview_options'], {'is_disabled': True})
+        cases = [
+            ('# Heading\n\n**bold** *em* ~~strike~~', '<b>Heading</b>\n\n<b>bold</b> <i>em</i> <s>strike</s>', 'Heading\n\nbold em strike'),
+            ('one\nline  \nbreak\n\npara', 'one\nline\nbreak\n\npara', 'one\nline\nbreak\n\npara'),
+            ('- first\n- second\n  - nested', '• first\n• second\n  \n  • nested', '• first\n• second\n  \n  • nested'),
+            ('0. zero\n1. one', '0. zero\n1. one', '0. zero\n1. one'),
+            ('1. one\n2. two', '1. one\n2. two', '1. one\n2. two'),
+            ('3. three\n4. four\n\n---', '3. three\n4. four\n\n---', '3. three\n4. four\n\n---'),
+            ('> outer\n> > inner', '&gt; outer\n&gt; \n&gt; &gt; inner', '> outer\n> \n> > inner'),
+            ('<b>literal</b> & x', '&lt;b&gt;literal&lt;/b&gt; &amp; x', '<b>literal</b> & x'),
+            ('[link](https://x.y/?a=1&b=2) [tg](tg://user?id=1)', '<a href="https://x.y/?a=1&amp;b=2">link</a> <a href="tg://user?id=1">tg</a>', 'link tg'),
+            ('![*alt*](https://x.y/a.png)', 'alt (https://x.y/a.png)', 'alt (https://x.y/a.png)'),
+            ('` a  b\nc `', '<code>a  b c</code>', 'a  b c'),
+            ('```python\r\n a < b\t \r\n\r\n```', '<pre><code class="language-python"> a &lt; b\t \n\n</code></pre>', ' a < b\t \n\n'),
+            ('```bad.lang more\rx & y\r', '<pre><code>x &amp; y\n</code></pre>', 'x & y\n'),
+            ('    a\t  b\n', '<pre><code>a\t  b\n</code></pre>', 'a\t  b\n'),
+            ('**unfinished', '**unfinished', '**unfinished'),
+            ('**bold *inner***', '<b>bold <i>inner</i></b>', 'bold inner'),
+            ('\\*literal\\* &amp;', '*literal* &amp;', '*literal* &'),
+            ('<https://example.invalid>', '<a href="https://example.invalid">https://example.invalid</a>', 'https://example.invalid'),
+            ('a | b\n--- | ---\n$x$ $$y$$', 'a | b\n--- | ---\n$x$ $$y$$', 'a | b\n--- | ---\n$x$ $$y$$'),
+            ('🙂 👩\u200d💻 **𐐀**', '🙂 👩\u200d💻 <b>𐐀</b>', '🙂 👩\u200d💻 𐐀'),
+        ]
+        for index, (source, html, visible) in enumerate(cases):
+            with self.subTest(source=source):
+                def transport(url, body, *args, **kwargs):
+                    status, answer = self.transport(url, body, *args, **kwargs)
+                    answer['result']['message_id'] = 100 + index
+                    return status, answer
+                self.bridge.request = transport
+                request = dict(self.publish(key=f'md-{index}', text=source), format='markdown')
+                receipt = self.bridge.publish(request)
+                self.assertTrue(receipt['delivered'], receipt)
+                self.assertEqual(self.calls[-1][1]['text'], html)
+                self.assertEqual(self.calls[-1][1]['parse_mode'], 'HTML')
+                logged = next(m for m in self.store.read_messages('123', 50) if m['id'] == str(100 + index))
+                self.assertEqual(logged['text'], visible)
+                self.assertEqual(self.store.saved_delivery(f'md-{index}')[0], b.Bridge.delivery_fingerprint(request))
+                count = len(self.calls)
+                self.assertEqual(self.bridge.publish(request), receipt)
+                self.assertEqual(len(self.calls), count)
 
     def test_html_allowlist_accepts_every_documented_tag(self):
         text = ('<b>b</b><strong>s</strong><i>i</i><em>e</em><u>u</u><s>s</s><code>c</code>'
@@ -1466,9 +1516,38 @@ class BridgeTests(BridgeTestCase):
 
     def test_html_unknown_format_is_refused(self):
         request = self.publish()
-        request['format'] = 'markdown'
+        request['format'] = 'rich'
         self.assertEqual(self.bridge.publish(request)['metadata']['reason'], 'format_unsupported')
         self.assertEqual(self.calls, [])
+        for source, reason in [('\0', 'markdown_source_invalid_unicode'), ('\ud800', 'markdown_source_invalid_unicode'),
+                               ('[x](javascript:alert(1))', 'html_link_scheme_not_allowed'),
+                               ('[x](/relative)', 'html_link_scheme_not_allowed'),
+                               ('[x](mailto:a@b.c)', 'html_link_scheme_not_allowed'),
+                               ('>' * 500 + ' x', 'markdown_nesting_too_deep'),
+                               ('x' * 16385, 'markdown_source_too_long')]:
+            receipt = self.bridge.publish(dict(self.publish(text=source), format='markdown'))
+            self.assertEqual(receipt['metadata']['reason'], reason)
+        from markdown_it.token import Token
+        for tokens in ([Token('unknown', '', 0)], [object()], [Token('paragraph_close', 'p', -1)],
+                       [Token('inline', '', 0, children=[Token('unknown', '', 0)])],
+                       [Token('paragraph_open', 'p', 1)]):
+            with patch.object(b.markdown.MarkdownIt, 'parse', return_value=tokens):
+                receipt = self.bridge.publish(dict(self.publish(text='private input'), format='markdown'))
+                self.assertFalse(receipt['delivered'])
+                self.assertNotIn('private input', str(receipt))
+        tokens = b.markdown.MarkdownIt('commonmark').parse('0. zero\n1. one')
+        for index, start in enumerate((None, False, True, 0.0, 1.0, '', ' ', '0', [], {})):
+            with self.subTest(start=start):
+                tokens[0].attrs['start'] = start
+                key = f'md-invalid-start-{index}'
+                with patch.object(b.markdown.MarkdownIt, 'parse', return_value=tokens):
+                    receipt = self.bridge.publish(dict(self.publish(key=key, text='private input'), format='markdown'))
+                self.assertFalse(receipt['delivered'])
+                self.assertEqual(receipt['metadata']['reason'], 'markdown_list_invalid')
+                self.assertNotIn('private input', str(receipt))
+                self.assertIsNone(self.store.saved_delivery(key))
+        self.assertEqual(self.calls, [])
+        self.assertIsNone(self.store.saved_delivery('delivery-1'))
 
     def test_html_limits_count_the_visible_text(self):
         # 4096 visible units in far more markup is within Telegram's limit ...
@@ -1486,6 +1565,14 @@ class BridgeTests(BridgeTestCase):
         source = self.bridge.publish(self.html('<b></b>' * 3000 + 'x', key='source'))
         self.assertEqual(source['metadata']['reason'], 'html_source_too_long')
         self.assertEqual(len(self.calls), 1)
+
+        # The Unicode boundaries count rendered text; the original source has its own cap.
+        for index, (source, accepted) in enumerate([('**' + '🙂' * 2048 + '**', True),
+                                                    ('**' + '🙂' * 2048 + 'x**', False),
+                                                    ('**' + '👩\u200d💻' * 819 + 'x**', True),
+                                                    ('**' + '👩\u200d💻' * 819 + 'xx**', False)]):
+            receipt = self.bridge.publish(dict(self.publish(key=f'md-limit-{index}', text=source), format='markdown'))
+            self.assertEqual(receipt['delivered'], accepted, receipt)
 
     def test_html_parse_rejection_resends_once_as_plain_under_the_same_key(self):
         self.bridge.request = self.parse_rejecting_transport()
@@ -1506,6 +1593,19 @@ class BridgeTests(BridgeTestCase):
             rows = db.execute('SELECT receipt FROM deliveries').fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(json.loads(rows[0][0])['format_fallback_reason'], 'telegram_html_parse_rejected_400')
+        self.calls.clear()
+        self.bridge.request = self.parse_rejecting_transport()
+        request = dict(self.publish(key='md-fallback', text='**Brief** a < b & [link](https://x.y)'),
+                       format='markdown', silent=True, reply_to_message_id='12')
+        result = self.bridge.publish(request)
+        self.assertTrue(result['delivered'])
+        self.assertEqual(result['format_fallback_reason'], 'telegram_html_parse_rejected_400')
+        self.assertEqual([body['text'] for _, body in self.calls],
+                         ['<b>Brief</b> a &lt; b &amp; <a href="https://x.y">link</a>', 'Brief a < b & link'])
+        self.assertTrue(all(body['disable_notification'] for _, body in self.calls))
+        self.assertTrue(all(body['reply_parameters'] == {'message_id': 12} for _, body in self.calls))
+        self.assertEqual(self.bridge.publish(request), result)
+        self.assertEqual(len(self.calls), 2)
 
     def test_html_parse_rejection_falls_back_only_once(self):
         def transport(url, body, *args, **kwargs):
@@ -1533,6 +1633,15 @@ class BridgeTests(BridgeTestCase):
         result = self.bridge.publish(self.html('<b>y</b>', key='ambiguous'))
         self.assertEqual(result['metadata']['reason'], 'ambiguous_delivery_requires_manual_reconciliation')
         self.assertEqual(len(self.calls), 2)
+        request = dict(self.publish(key='md-ambiguous', text='**unknown**'), format='markdown')
+        result = self.bridge.publish(request)
+        self.assertEqual(result['metadata']['reason'], 'ambiguous_delivery_requires_manual_reconciliation')
+        self.assertEqual(self.bridge.publish(request), result)
+        self.assertEqual(len(self.calls), 3)
+        self.bridge.request = rejected
+        request = dict(self.publish(key='md-rejected', text='**refused**'), format='markdown')
+        self.assertEqual(self.bridge.publish(request)['metadata']['reason'], 'telegram_rejected_not_sent_400')
+        self.assertEqual(len(self.calls), 4)
 
     def test_html_fallback_send_that_is_unconfirmed_stays_ambiguous(self):
         state = dict(n=0)
@@ -1605,13 +1714,15 @@ class BridgeTests(BridgeTestCase):
         self.assertNotIn('parse_mode', self.calls[0][1])
         self.assertEqual(self.calls[0][1]['text'], 'stuck report\n[attachment rejected: telegram_rejected_not_sent_400]')
 
-    def test_cli_format_defaults_to_plain_and_accepts_html_only(self):
+    def test_cli_format_defaults_to_plain_and_accepts_explicit_formats(self):
         parser = b._build_parser()
         self.assertEqual(parser.parse_args(['send', '--body-file', 'x', '--idempotency-key', 'k']).format, 'plain')
         self.assertEqual(parser.parse_args(['send', '--body-file', 'x', '--idempotency-key', 'k',
                                             '--format', 'html']).format, 'html')
+        self.assertEqual(parser.parse_args(['send', '--body-file', 'x', '--idempotency-key', 'k',
+                                            '--format', 'markdown']).format, 'markdown')
         with patch('sys.stderr', new_callable=io.StringIO), self.assertRaises(SystemExit):
-            parser.parse_args(['send', '--body-file', 'x', '--idempotency-key', 'k', '--format', 'markdown'])
+            parser.parse_args(['send', '--body-file', 'x', '--idempotency-key', 'k', '--format', 'rich'])
 
     def test_dispatch_outbound_html_publishes_with_the_html_parse_mode(self):
         parser = b._build_parser()
@@ -1619,6 +1730,12 @@ class BridgeTests(BridgeTestCase):
         message_id = b._dispatch_outbound(self.bridge, args, '<b>hello</b>')
         self.assertEqual(message_id, '77')
         self.assertEqual(self.calls[0][1]['parse_mode'], 'HTML')
+        args = parser.parse_args(['reply-current', '--body-file', 'x.md', '--idempotency-key', 'md-cli',
+                                  '--format', 'markdown', '--silent'])
+        self.assertEqual(b._dispatch_outbound(self.bridge, args, '**hello**'), '77')
+        self.assertEqual(self.calls[-1][1]['text'], '<b>hello</b>')
+        self.assertEqual(self.calls[-1][1]['parse_mode'], 'HTML')
+        self.assertTrue(self.calls[-1][1]['disable_notification'])
 
     def test_dispatch_outbound_html_refusal_prints_the_receipt_line(self):
         parser = b._build_parser()
@@ -1947,6 +2064,18 @@ class AskTests(BridgeTestCase):
         [relayed] = [body for url, body in self.calls if url == self.bridge.hook_url]
         self.assertEqual(relayed['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick one')
 
+        self.calls.clear()
+        request = dict(self.ask(key='md-tap', text='**Pick** `<raw>`'), format='markdown', silent=True)
+        self.assertTrue(self.bridge.publish(request)['delivered'])
+        with patch.object(b.markdown, 'render', side_effect=AssertionError('must not reparse')):
+            self.bridge.drain([self.press(uid=43, key='md-tap')])
+        [edit] = self.sent('editMessageText')
+        self.assertEqual(edit['text'], '<b>Pick</b> <code>&lt;raw&gt;</code>\n✓ Yes')
+        self.assertEqual(edit['parse_mode'], 'HTML')
+        self.assertEqual(edit['reply_markup'], {'inline_keyboard': []})
+        [relayed] = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertEqual(relayed['text'], '[ask answer | choice: Yes | message: 77]\nquestion: Pick <raw>')
+
     def test_html_ask_edit_fallback_appends_the_choice_in_plain(self):
         def transport(url, body, *args, **kwargs):
             if url.endswith('/editMessageText') and body.get('parse_mode') == 'HTML':
@@ -2041,6 +2170,9 @@ class AskTests(BridgeTestCase):
         self.assertEqual(refused['metadata']['reason'], 'invalid_keyboard')
         fitting = self.bridge.publish(self.ask(key='room-ask', text='q' * 4080))
         self.assertTrue(fitting['delivered'])
+        for length, accepted in ((4090, True), (4091, False)):
+            request = dict(self.ask(key=f'md-room-{length}', text='**' + 'q' * length + '**'), format='markdown')
+            self.assertEqual(self.bridge.publish(request)['delivered'], accepted)
 
     def photo_ask(self, key='photo-ask-1', caption='Pick one?', keyboard=None):
         request = self.publish(key=key, text=caption)
@@ -2087,6 +2219,15 @@ class AskTests(BridgeTestCase):
         self.assertEqual(ask['answer'], 'Yes')
         self.assertEqual(ask['kind'], 'photo')
         self.assertEqual(self.store.offset(), 42)
+        self.calls.clear()
+        request = dict(self.photo_ask(key='md-photo-tap', caption='**Pick** `<raw>`'), format='markdown')
+        self.assertTrue(self.bridge.publish(request)['delivered'])
+        self.assertEqual(self.multipart_calls[-1][1]['caption'], '<b>Pick</b> <code>&lt;raw&gt;</code>')
+        with patch.object(b.markdown, 'render', side_effect=AssertionError('must not reparse')):
+            self.bridge.drain([self.press(uid=43, key='md-photo-tap', message_id=88)])
+        [edit] = self.sent('editMessageCaption')
+        self.assertEqual(edit['caption'], '<b>Pick</b> <code>&lt;raw&gt;</code>\n✓ Yes')
+        self.assertEqual(edit['parse_mode'], 'HTML')
 
     def test_photo_ask_ambiguous_caption_edit_still_relays_once(self):
         for mode in ('timeout', '5xx'):
@@ -2193,6 +2334,10 @@ class AskTests(BridgeTestCase):
         self.assertIsNone(self.bridge.store.get_ask(self.ask_id('photo-long')))
         fitting = self.bridge.publish(self.photo_ask(key='photo-room', caption='q' * 1000))
         self.assertTrue(fitting['delivered'])
+        for length, accepted in ((1018, True), (1019, False)):
+            request = dict(self.photo_ask(key=f'md-photo-room-{length}', caption='**' + 'q' * length + '**'),
+                           format='markdown')
+            self.assertEqual(self.bridge.publish(request)['delivered'], accepted)
 
     def test_photo_ask_rejected_photo_fails_without_text_fallback(self):
         def multipart_reject(url, fields, file_field, file_path, timeout=20):

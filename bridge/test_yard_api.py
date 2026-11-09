@@ -279,7 +279,9 @@ class YardApiTests(BridgeTestCase):
             (dict(text='blank key', key='  '), 'key is required'),
             (dict(text='number key', key=5), 'key is required'),
             (dict(key='k', text=5), 'text must be a string'),
-            (dict(key='k', text='x', format='markdown'), 'format must be plain, html or auto'),
+            (dict(key='k', text=None, format='markdown'), 'markdown text must be a string'),
+            (dict(key='k', text='x', format='rich'), 'format must be plain, html, markdown or auto'),
+            *[(dict(key='k', text='x', format=value), 'format must be') for value in (None, '', False, [], {}, 5)],
             (dict(key='k', text='x', topic='nope'), 'topic nope is not configured'),
             (dict(key='k', text='x', conversation='124'), b.UNRESOLVED_CONVERSATION),
             (dict(key='k', text='x', conversation='123:topic:99'), b.UNRESOLVED_CONVERSATION),
@@ -327,6 +329,9 @@ class YardApiTests(BridgeTestCase):
             (dict(text='plain words'), None),
             (dict(text='<b>literal</b>', format='plain'), None),
             (dict(text='<i>x</i>', format='html'), 'HTML'),
+            (dict(text='```\necho hello\n```'), None),
+            (dict(text='```\n<b>x</b>\n```'), 'HTML'),
+            (dict(text='a & b; echo "$x" && ls < input'), None),
         ]
         for index, (body, parse_mode) in enumerate(cases):
             with self.subTest(body=body):
@@ -337,6 +342,26 @@ class YardApiTests(BridgeTestCase):
                 [(_, sent)] = self.telegram_calls()
                 self.assertEqual(sent['text'], body['text'])
                 self.assertEqual(sent.get('parse_mode'), parse_mode)
+
+        def transport(url, body, *args, **kwargs):
+            status, answer = self.transport(url, body, *args, **kwargs)
+            answer['result']['message_id'] = 98
+            return status, answer
+        self.bridge.request = transport
+        body = dict(text='**Ready** & <b>literal</b> 👩\u200d💻', format='markdown', key='markdown-api',
+                    silent=True, reply_to='21')
+        status, answer = self.call('/v1/send', body)
+        self.assertTrue(answer['delivered'])
+        sent = self.telegram_calls()[-1][1]
+        self.assertEqual(sent['text'], '<b>Ready</b> &amp; &lt;b&gt;literal&lt;/b&gt; 👩\u200d💻')
+        self.assertEqual(sent['parse_mode'], 'HTML')
+        self.assertEqual(sent['disable_notification'], True)
+        self.assertEqual(sent['reply_parameters'], dict(message_id=21))
+        self.assertEqual(self.bridge.api_read({})['messages'][-1]['text'], 'Ready & <b>literal</b> 👩\u200d💻')
+        count = len(self.calls)
+        self.assertEqual(self.call('/v1/send', body)[1], answer)
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.call('/v1/send', dict(body, format='plain'))[1]['reason'], 'idempotency_key_conflict')
 
     def test_the_idempotency_key_header_keys_a_send_whose_body_has_none(self):
         status, answer = self.call('/v1/send', dict(text='by header'), headers={'Idempotency-Key': 'hdr-1'})
@@ -511,10 +536,18 @@ class YardApiTests(BridgeTestCase):
         status, answer = self.call('/v1/pin', dict(slot='waiting', unpin=True))
         self.assertEqual((status, answer['delivered']), (200, True))
         self.assertEqual([method for method, _ in self.telegram_calls()], ['unpinChatMessage'])
+        self.calls.clear()
+        request = dict(slot='markdown', text='**Waiting** `<raw>`', format='markdown')
+        self.assertTrue(self.call('/v1/pin', request)[1]['delivered'])
+        self.assertEqual(self.telegram_calls()[0][1]['text'], '<b>Waiting</b> <code>&lt;raw&gt;</code>')
+        self.assertEqual(self.telegram_calls()[0][1]['parse_mode'], 'HTML')
+        self.calls.clear()
+        self.assertFalse(self.call('/v1/pin', request)[1]['changed'])
+        self.assertEqual(self.telegram_calls(), [])
 
     def test_pin_refuses_a_bad_slot_text_or_format(self):
         for body in (dict(slot='Bad Slot', text='x'), dict(text='x'), dict(slot='s'), dict(slot='s', text='  '),
-                     dict(slot='s', text='x', format='markdown'), dict(slot='s', unpin='perhaps')):
+                     dict(slot='s', text='x', format='rich'), dict(slot='s', unpin='perhaps')):
             with self.subTest(body=body):
                 status, answer = self.call('/v1/pin', body)
                 self.assertEqual(status, 400)

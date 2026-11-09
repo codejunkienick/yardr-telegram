@@ -87,6 +87,14 @@ class AskCloseTests(BridgeTestCase):
         self.assertEqual(edit['reply_markup'], {'inline_keyboard': []})
         self.assertEqual(self.sent('editMessageText'), [])
         self.assertTrue(self.store.get_ask(self.ask_id('photo-ask-1'))['decided'])
+        self.calls.clear()
+        request = dict(self.photo_ask(key='md-photo-close', caption='**Choose** `<raw>`'), format='markdown')
+        self.assertTrue(self.bridge.publish(request)['delivered'])
+        with patch.object(b.markdown, 'render', side_effect=AssertionError('must not reparse')):
+            self.assertTrue(self.bridge.close_ask('**Keep** <exact>', ask_key='md-photo-close')['delivered'])
+        [edit] = self.sent('editMessageCaption')
+        self.assertEqual(edit['caption'], '<b>Choose</b> <code>&lt;raw&gt;</code>\n✓ Decided: **Keep** &lt;exact&gt;')
+        self.assertEqual(edit['parse_mode'], 'HTML')
 
     def test_an_html_ask_escapes_the_decision_and_falls_back_to_plain(self):
         def transport(url, body, *args, **kwargs):
@@ -115,6 +123,16 @@ class AskCloseTests(BridgeTestCase):
         self.assertNotIn('parse_mode', second)
         self.assertEqual(second['text'], 'Pick one\n✓ Decided: x < y')
         self.assertEqual(second['reply_markup'], {'inline_keyboard': []})
+        self.calls.clear()
+        request = dict(self.ask(key='markdown-close', text='**Pick** `<b>raw</b>`'), format='markdown')
+        self.assertTrue(self.bridge.publish(request)['delivered'])
+        saved = self.store.get_ask(self.ask_id('markdown-close'))
+        self.assertEqual((saved['question'], saved['format']), ('<b>Pick</b> <code>&lt;b&gt;raw&lt;/b&gt;</code>', 'html'))
+        with patch.object(b.markdown, 'render', side_effect=AssertionError('must not reparse')):
+            self.assertTrue(self.bridge.close_ask('**Keep** <x> & y', ask_key='markdown-close')['delivered'])
+        first, second = self.sent('editMessageText')
+        self.assertEqual(first['text'], saved['question'] + '\n✓ Decided: **Keep** &lt;x&gt; &amp; y')
+        self.assertEqual(second['text'], 'Pick <b>raw</b>\n✓ Decided: **Keep** <x> & y')
 
     def test_ask_key_and_message_id_close_the_same_ask(self):
         self.assertTrue(self.bridge.publish(self.ask())['delivered'])

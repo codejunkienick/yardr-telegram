@@ -102,6 +102,9 @@ sys.dont_write_bytecode = True  # the pack directory is read-only under the unit
 # ahead of every other entry, a PYTHONPATH one included.
 if (PACK_DIR / 'vendor').is_dir():
     sys.path[:] = [str(PACK_DIR / 'vendor')] + [p for p in sys.path if p != str(PACK_DIR / 'vendor')]
+_markdown_spec = importlib.util.spec_from_file_location('telegram_markdown', Path(__file__).resolve().with_name('markdown.py'))
+markdown = importlib.util.module_from_spec(_markdown_spec)
+_markdown_spec.loader.exec_module(markdown)
 _transcriber_spec = importlib.util.spec_from_file_location(
     'voice_transcribe', PACK_DIR / 'transcriber' / 'voice_transcribe.py')
 _native_spec = importlib.util.spec_from_file_location('run_asks', Path(__file__).resolve().with_name('run_asks.py'))
@@ -466,6 +469,19 @@ def html_visible_text(text):
         return None, 'html_tags_unbalanced'
     visible.append(text[position:])
     return ''.join(visible), None
+
+
+def formatted_text(text, fmt):
+    """Display HTML and fallback text, separate from the logical source."""
+    if fmt == 'markdown':
+        try:
+            text = markdown.render(text, HTML_SOURCE_MAX_UNITS)
+        except markdown.MarkdownError as error:
+            return None, None, str(error)
+    if fmt in ('html', 'markdown'):
+        plain, error = html_visible_text(text)
+        return text, plain, error
+    return text, None, None
 
 
 # One lettered option line: optional whitespace and a bullet (•, -, *), one
@@ -2579,13 +2595,13 @@ class Bridge:
         """(text, plain) of a send or edit: plain is the visible text for html,
         else None. The limits are those of publish()."""
         text, fmt = action['text'], action.get('format', 'plain')
-        if fmt not in ('plain', 'html') or not isinstance(text, str):
+        if fmt not in ('plain', 'html', 'markdown'):
+            raise self._HandlerFailure('format_unsupported')
+        if not isinstance(text, str):
             raise self._HandlerFailure('invalid_text')
-        plain = None
-        if fmt == 'html':
-            plain, error = html_visible_text(text)
-            if error:
-                raise self._HandlerFailure('invalid_html')
+        text, plain, error = formatted_text(text, fmt)
+        if error:
+            raise self._HandlerFailure(error if fmt == 'markdown' else 'invalid_html')
         visible = text if plain is None else plain
         if not visible.strip() or utf16_units(visible) > 4096:
             raise self._HandlerFailure('invalid_text')
@@ -2702,6 +2718,8 @@ class Bridge:
                 continue
             text, plain = self._command_text(action)
             parsed = dict(type=action['type'], text=text, format=action.get('format', 'plain'))
+            if parsed['format'] == 'markdown':
+                parsed['source'] = action['text']
             if action['type'] == 'edit':
                 if type(action['message_id']) is not int or action['message_id'] <= 0:
                     raise self._HandlerFailure('invalid_message_id')
@@ -2746,7 +2764,9 @@ class Bridge:
         method = 'sendMessage'
         if action['type'] == 'edit':
             method, extra['message_id'] = 'editMessageText', action['message_id']
-        identity = {k: v for k, v in action.items() if k != 'plain'}
+        identity = {k: v for k, v in action.items() if k not in ('plain', 'source')}
+        if action.get('format') == 'markdown':
+            identity['text'] = action['source']
         if action['type'] == 'send' and thread_id is not None:
             extra['message_thread_id'] = identity['message_thread_id'] = thread_id
         return self._reserve_and_deliver(key, identity, lambda pending: self._deliver_text(
@@ -3393,8 +3413,10 @@ class Bridge:
             return
         try:
             text = request.get('text') or ''
-            if request.get('format') == 'html':
-                text = html_visible_text(text)[0] or text
+            if request.get('format') in ('html', 'markdown'):
+                _, text, error = formatted_text(text, request['format'])
+                if error:
+                    return
             files = request.get('attachments') or ([request['attachment']] if request.get('attachment') else [])
             names = [Path(f.get('path', '')).name for f in files if isinstance(f, dict)]
             if names:
@@ -3449,6 +3471,8 @@ class Bridge:
         """POST /v1/send: one message, file or album through the ledger."""
         text = request.get('text', '')
         if text is None:
+            if request.get('format') == 'markdown':
+                raise ApiError('markdown text must be a string')
             text = ''
         if not isinstance(text, str):
             raise ApiError('text must be a string')
@@ -3456,14 +3480,14 @@ class Bridge:
         if not isinstance(key, str) or not key.strip():
             raise ApiError('key is required, in the body or the Idempotency-Key header')
         conversation = self._api_conversation(request)
-        fmt = request.get('format') or 'auto'
+        fmt = request.get('format', 'auto')
         if fmt == 'auto':
             fmt = auto_format(text)
-        if fmt not in ('plain', 'html'):
-            raise ApiError('format must be plain, html or auto')
+        if fmt not in ('plain', 'html', 'markdown'):
+            raise ApiError('format must be plain, html, markdown or auto')
         body = dict(conversation=conversation, idempotency_key=key, text=text)
-        if fmt == 'html':
-            body['format'] = 'html'
+        if fmt in ('html', 'markdown'):
+            body['format'] = fmt
         if self._api_bool(request.get('silent'), 'silent'):
             body['silent'] = True
         if self._api_bool(request.get('text_options'), 'text_options'):
@@ -3583,11 +3607,11 @@ class Bridge:
             text = request.get('text')
             if not isinstance(text, str) or not text.strip():
                 raise ApiError('text is required to pin')
-            fmt = request.get('format') or 'auto'
+            fmt = request.get('format', 'auto')
             if fmt == 'auto':
                 fmt = auto_format(text)
-            if fmt not in ('plain', 'html'):
-                raise ApiError('format must be plain, html or auto')
+            if fmt not in ('plain', 'html', 'markdown'):
+                raise ApiError('format must be plain, html, markdown or auto')
             receipt = self.pin(slot, text, fmt)
         answer = self._api_answer(receipt)
         if 'changed' in receipt:
@@ -3665,7 +3689,7 @@ class Bridge:
         fmt = request.get('format', 'plain')
         if fmt == 'plain':
             request = {k: v for k, v in request.items() if k != 'format'}
-        elif fmt != 'html':
+        elif fmt not in ('html', 'markdown'):
             return self.receipt(reason='format_unsupported')
         # Silent likewise joins the fingerprint only when true: false is the
         # same as absent and is dropped, so a send without it is unchanged
@@ -3683,11 +3707,9 @@ class Bridge:
             return self.receipt(reason='text_options_must_be_boolean')
         if not isinstance(text, str):
             return self.receipt(reason='text_required_maximum_4096_utf16_units')
-        plain = None
-        if fmt == 'html':
-            plain, error = html_visible_text(text)
-            if error:
-                return self.receipt(reason=error)
+        text, plain, error = formatted_text(text, fmt)
+        if error:
+            return self.receipt(reason=error)
         visible = text if plain is None else plain
         attachment = request.get('attachment')
         # An album (2-10 files, sendMediaGroup) is the field attachments; one
@@ -3755,7 +3777,7 @@ class Bridge:
                    for row in rows for button in row):
                 return self.receipt(reason='invalid_keyboard')
         if attachment is not None:
-            error = self._attachment_error(attachment, text, visible)
+            error = self._attachment_error(attachment, request['text'], visible)
             if error:
                 return self.receipt(reason=error)
         # Every ask button names the send's own derived id: a valid shape
@@ -3791,7 +3813,7 @@ class Bridge:
                 kind = 'photo' if attachment is not None else 'text'
                 conversation_id = None if thread_id is None else request['conversation']['conversation_id']
                 for ask_id in ask_ids:
-                    self.store.record_ask(ask_id, text, fmt, [button for row in rows for button in row
+                    self.store.record_ask(ask_id, text, 'html' if fmt == 'markdown' else fmt, [button for row in rows for button in row
                                                              if (self._ask_choice(button['callback_data']) or (None,))[0] == ask_id],
                                           kind, conversation_id)
             extra = {}
@@ -3860,19 +3882,18 @@ class Bridge:
         its reason and step (send, pin or edit)."""
         if not isinstance(slot, str) or not self.PIN_SLOT_RE.fullmatch(slot):
             return self.receipt(reason='pin_slot_invalid')
-        if fmt not in ('plain', 'html'):
+        if fmt not in ('plain', 'html', 'markdown'):
             return self.receipt(reason='format_unsupported')
         if not isinstance(text, str):
             return self.receipt(reason='text_required_maximum_4096_utf16_units')
-        plain = None
-        if fmt == 'html':
-            plain, error = html_visible_text(text)
-            if error:
-                return self.receipt(reason=error)
+        source = text
+        text, plain, error = formatted_text(text, fmt)
+        if error:
+            return self.receipt(reason=error)
         visible = text if plain is None else plain
         if not visible.strip() or utf16_units(visible) > 4096:
             return self.receipt(reason='text_required_maximum_4096_utf16_units')
-        applied = hashlib.sha256(json.dumps(dict(text=text, format=fmt), sort_keys=True).encode()).hexdigest()
+        applied = hashlib.sha256(json.dumps(dict(text=source, format=fmt), sort_keys=True).encode()).hexdigest()
         changed = False
         ended = None  # (receipt, step) of the last deleted-message answer
         with self._pin_lock(slot):
@@ -3923,7 +3944,7 @@ class Bridge:
                 # crash or an unconfirmed edit is edited again next time.
                 self.store.set_pin(slot, revision=revision, fingerprint=None)
                 edit, _ = self._pin_call(prefix + f':r{revision}',
-                                         dict(type='edit', message_id=mid, text=text, format=fmt),
+                                         dict(type='edit', message_id=mid, text=source, format=fmt),
                                          lambda pending: self._deliver_pin_edit(text, plain, mid, pending))
                 if edit.get('delivered') is True:
                     self.store.set_pin(slot, fingerprint=applied)
@@ -4568,8 +4589,8 @@ def _build_parser():
     parser.add_argument('--keyboard-file', type=Path,
                         help='file holding an inline keyboard as JSON rows (send, reply-current; '
                              'a keyboard send publishes directly in this process)')
-    parser.add_argument('--format', choices=('plain', 'html'), default='plain',
-                        help='html sends Telegram HTML (allowlisted tags, caller-escaped text)')
+    parser.add_argument('--format', choices=('plain', 'html', 'markdown'), default='plain',
+                        help='html sends validated Telegram HTML; markdown renders the documented CommonMark subset')
     parser.add_argument('--silent', action='store_true',
                         help='send, reply-current: notify with no sound '
                              '(publishes directly in this process)')
@@ -4754,8 +4775,8 @@ def _dispatch_outbound(bridge, args, text, conversation=None):
     silent = getattr(args, 'silent', False)
     text_options = getattr(args, 'text_options', False)
     request = dict(conversation=conversation, idempotency_key=args.idempotency_key, text=text)
-    if args.format == 'html':
-        request['format'] = 'html'
+    if args.format in ('html', 'markdown'):
+        request['format'] = args.format
     if silent:
         request['silent'] = True
     if text_options:

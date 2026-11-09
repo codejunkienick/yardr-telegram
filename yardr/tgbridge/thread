@@ -59,7 +59,13 @@ def reply(given):
     thread, key = given.get('thread'), given.get('key')
     if not isinstance(thread, str) or not thread or not isinstance(key, str) or not key:
         fail('reply needs thread and key')
-    payload = {'conversation': thread, 'text': given.get('body') or '', 'key': key, 'format': 'auto'}
+    fmt = given.get('format', 'auto')
+    if 'format' in given and fmt != 'markdown':
+        fail('reply format must be markdown when supplied')
+    body = given.get('body', '')
+    if not isinstance(body, str):
+        fail('reply body must be text')
+    payload = {'conversation': thread, 'text': body, 'key': key, 'format': fmt}
     files = given.get('files') or []
     if files:
         payload['attachments'] = files

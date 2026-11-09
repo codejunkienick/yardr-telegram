@@ -219,3 +219,11 @@ name = "deploy"
 description = "Deploy a branch"
 handler = "/home/<user>/bin/telegram-deploy"
 ```
+
+### Explicit Markdown
+
+Ordinary replies may select `yardr reply <seq> --format markdown <text>`;
+source/API sends and pins take `format=markdown`, and the bridge CLI takes
+`--format markdown`. Existing auto/plain/HTML defaults stay unchanged.
+The pinned parser ships offline in each release through the existing
+installer. See [formatting policy and operator handoff](docs/formatting.md).

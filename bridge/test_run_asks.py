@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
+import testports
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2695,6 +2697,95 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(client.call('GetSource', ['tgbridge']), upgraded)
             self.assertEqual(client.call('GetGroup', ['humans']), granted)
             self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-test-only\n')
+            # Real CLI -> RPC reservation -> declared thread -> API -> Telegram fake.
+            port = self.start_callback_server()
+            markdown_pack = Path(rendered('markdown-pack', port))
+            for filename in ('pack.yaml', 'tgbridge.yaml'):
+                path = markdown_pack / filename
+                path.write_text(path.read_text().replace('tgbridge', 'mdbridge'))
+            (markdown_pack / 'tgbridge').rename(markdown_pack / 'mdbridge')
+            (markdown_pack / 'tgbridge.yaml').rename(markdown_pack / 'mdbridge.yaml')
+            reply_credential = root / 'markdown.env'
+            reply_credential.write_text('TGBRIDGE_SECRET=CAPABILITY\n')
+            reply_credential.chmod(0o600)
+            cli('pack', 'apply', str(markdown_pack), '--yes', '--source-env', 'mdbridge=' + str(reply_credential))
+            cli('user', 'identity', 'pat', '--source', 'mdbridge', '--id', '123')
+            cli('crew', 'add', 'writer', '--dir', str(root), '--set', 'kind=codex',
+                '--set', 'env_file=' + str(reply_credential))
+            hook_secret = root / 'markdown-hook.secret'
+            hook_secret.write_text('synthetic-hook')
+            hook_secret.chmod(0o600)
+            cli('hook', 'add', 'mdbridge', '--source', 'mdbridge', '--secret-file', str(hook_secret))
+            # Core's settings reject port 0; ask the kernel for a free loopback port.
+            probe = testports.bind_test_server(http.server.BaseHTTPRequestHandler)
+            hook_port = probe.server_address[1]
+            probe.server_close()
+            cli('settings', 'set', 'hook_addr', f'127.0.0.1:{hook_port}')
+            server.terminate()
+            server.wait(timeout=10)
+            log_path = root / 'isolated-server.log'
+            with log_path.open('w') as log:
+                server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root,
+                                          stdout=log, stderr=log)
+            deadline = time.monotonic() + 15
+            while True:
+                match = re.search(r'hook receiver ready.*?addr[= ](?:"?)(127\.0\.0\.1:\d+)', log_path.read_text())
+                if match:
+                    break
+                if server.poll() is not None or time.monotonic() > deadline:
+                    self.fail('isolated hook receiver did not start: ' + log_path.read_text())
+                time.sleep(.02)
+            incoming = dict(id='mdbridge:123:800', kind='message', chat='123', conversation='123', topic='general',
+                            message_id='800', text='Synthetic ordinary reply', **{'from': dict(id='123', name='Pat')})
+            req = urllib.request.Request('http://' + match[1] + '/hooks/mdbridge', data=json.dumps(incoming).encode(),
+                                         headers={'Content-Type': 'application/json', 'X-Tgbridge-Secret': 'synthetic-hook'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                delivery = json.load(response)['seq']
+            self.calls.clear()
+            source = '  **Ready**\n\n```sh\necho "<b>literal</b>"\n```\n'
+            env['TGBRIDGE_SECRET'] = 'CAPABILITY'  # the isolated CLI caller's own synthetic credential
+            cli('reply', str(delivery), '--crew', 'writer', '--format', 'markdown', source)
+            [wire] = [body for url, body in self.calls if url.endswith('/sendMessage')]
+            self.assertEqual(wire['parse_mode'], 'HTML')
+            self.assertEqual(wire['text'], '<b>Ready</b>\n\n<pre><code class="language-sh">echo "&lt;b&gt;literal&lt;/b&gt;"\n</code></pre>')
+            self.assertEqual(self.store.read_messages('123', 50)[-1]['text'], 'Ready\n\necho "<b>literal</b>"\n')
+            cli('reply', str(delivery), '--crew', 'writer', '--format', 'markdown', source)
+            self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
+            # Explicit bytes survived the native store and adapter in the bridge fingerprint.
+            expected = dict(conversation=self.bridge.conversation, text=source, format='markdown')
+            with self.store.connect() as db:
+                rows = db.execute('SELECT key, fingerprint FROM deliveries').fetchall()
+            matching = [key for key, fp in rows if fp == b.Bridge.delivery_fingerprint(dict(expected, idempotency_key=key))]
+            self.assertEqual(len(matching), 1)
+            # The declared source enum also reaches the API through the real core caller.
+            result = json.loads(cli('call', 'mdbridge', 'send', 'text=**Source**', 'format=markdown', '--json'))
+            self.assertTrue(result['delivered'])
+            self.assertEqual(self.calls[-1][1]['text'], '<b>Source</b>')
+            result = json.loads(cli('call', 'mdbridge', 'send', 'text=```\necho legacy\n```', '--json'))
+            self.assertTrue(result['delivered'])
+            self.assertEqual(self.calls[-1][1]['text'], '```\necho legacy\n```')
+            self.assertNotIn('parse_mode', self.calls[-1][1])
+            cli('reply', str(delivery), '--crew', 'writer', '  ```\necho reply\n```  \n')
+            self.assertEqual(self.calls[-1][1]['text'], '```\necho reply\n```')
+            self.assertNotIn('parse_mode', self.calls[-1][1])
+            before = len(self.calls)
+            refused = subprocess.run(command + ['reply', str(delivery), '--crew', 'writer', '--format', 'html', 'same'],
+                                     env=env, cwd=root, text=True, capture_output=True, timeout=20)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn('format', refused.stderr)
+            self.assertEqual(len(self.calls), before)
+
+            captured = []
+            def multipart(url, fields, field, path, timeout=20):
+                captured.append((dict(fields), Path(path).read_bytes()))
+                return self.multipart_transport(url, fields, field, path, timeout)
+            self.bridge.request_multipart = multipart
+            evidence = b'\x89PNG\r\n**literal file bytes**\0\xff\n'
+            file = root / 'exact.png'
+            file.write_bytes(evidence)
+            cli('reply', str(delivery), '--crew', 'writer', '--format', 'markdown', '**Photo**', '--file', str(file))
+            self.assertEqual(captured, [({'chat_id': '123', 'caption': '<b>Photo</b>', 'parse_mode': 'HTML'}, evidence)])
+            self.assertEqual(hashlib.sha256(file.read_bytes()).digest(), hashlib.sha256(evidence).digest())
         finally:
             server.terminate()
             server.wait(timeout=10)

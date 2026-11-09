@@ -199,6 +199,54 @@ def decide_views():
     return views
 
 
+def markdown_cards():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_bridge import AskTests
+    case = AskTests()
+    case.setUp()
+    cards = []
+
+    def capture(label, body):
+        rows = body.get('reply_markup', {}).get('inline_keyboard', [])
+        controls = ''.join('<button>' + escape(button['text']) + '</button>' for row in rows for button in row)
+        cards.append('<section><h2>' + escape(label) + '</h2><article><div class="body">'
+                     + body['text'] + '</div><div class="buttons">' + controls + '</div></article></section>')
+
+    try:
+        samples = [
+            ('Markdown · rendered subset', '# Ready\n\n**Strong**, *emphasis*, ~~strike~~ and [link](https://example.invalid)\n\n- first\n- second\n\n0. zero\n1. one\n\n> outer\n> > inner\n\n![diagram](https://example.invalid/a.png)'),
+            ('Literal HTML and escaped code', '<b>literal HTML</b> & text\n\n```sh\nprintf "<b>%s</b>\\n" "$value"\n```\n\n` a  b\nc `'),
+        ]
+        for index, (label, source) in enumerate(samples):
+            result = case.bridge.api_send(dict(key=f'preview-md-{index}', text=source, format='markdown'))
+            if not result['delivered']:
+                raise RuntimeError('synthetic Markdown sample refused')
+            capture(label, case.sent('sendMessage')[-1])
+        request = dict(case.ask(key='preview-md-ask', text='**Choose** `<literal>`\n\nReady to proceed?'), format='markdown')
+        if not case.bridge.publish(request)['delivered']:
+            raise RuntimeError('synthetic Markdown ask refused')
+        capture('Ordinary ask · before tap', case.sent('sendMessage')[-1])
+        case.bridge.drain([case.press(key='preview-md-ask')])
+        capture('Ordinary ask · after tap', case.sent('editMessageText')[-1])
+        request = dict(case.ask(key='preview-md-close', text='**Choose** `<literal>`'), format='markdown')
+        case.bridge.publish(request)
+        case.bridge.close_ask('**Keep** <exact> & answer', ask_key='preview-md-close')
+        capture('Ordinary ask · escaped close answer', case.sent('editMessageText')[-1])
+        refusals = []
+        for key, source in [('unsafe-link', '[x](file:///private)'), ('length', '**' + '🙂' * 2049 + '**'),
+                            ('options', '**A:** first\n**B:** second')]:
+            before = len(case.calls)
+            result = case.bridge.api_send(dict(key='preview-refuse-' + key, text=source, format='markdown'))
+            if result['delivered'] or len(case.calls) != before:
+                raise RuntimeError('synthetic refusal sent a message')
+            refusals.append(key + ': ' + result['reason'] + '\nNo reservation or Telegram send')
+        capture('Refusals · local state, nothing delivered', {'text': escape('\n\n'.join(refusals))})
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
 def main():
     spec = importlib.util.spec_from_file_location('native_cards', Path(__file__).resolve().parents[1] / 'bridge' / 'run_asks.py')
     native = importlib.util.module_from_spec(spec)
@@ -245,8 +293,12 @@ def main():
     for flag in ('--group-add', '--group-set', '--group-set-no-prompt'):
         if flag in sys.argv:
             cards = group_cards(flag[2:].replace('-', '_'))
+    if '--markdown' in sys.argv:
+        cards = markdown_cards()
     heading = ('/decide' if '--decide' in sys.argv else 'Native ordinary decisions' if '--decisions' in sys.argv
                else 'Native operator run cards')
+    if '--markdown' in sys.argv:
+        heading = 'Explicit Markdown · actual emitted HTML'
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}

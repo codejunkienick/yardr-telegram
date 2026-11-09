@@ -29,7 +29,7 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | album_kind_not_groupable | no voice or video note in an album |
 | pack | bridge/OPERATIONS.md | `--keyboard-file` with an album refuses as `invalid_keyboard` (P1) | no buttons in an album |
 | pack | bridge/OPERATIONS.md | ## Topics | topic sends follow this section |
-| pack | yardr/tgbridge/thread | payload = {'conversation': thread, 'text': given.get('body') or '', 'key': key, 'format': 'auto'} | a reply goes into the delivery's own conversation |
+| pack | yardr/tgbridge/thread | payload = {'conversation': thread, 'text': body, 'key': key, 'format': fmt} | a reply goes into the delivery's own conversation |
 | pack | bridge/bridge.py | def _api_conversation(self, request): | topic=<name> sends into a topic by name |
 | pack | bridge/OPERATIONS.md | a decimal string as a multipart field of | files and albums carry the topic's thread |
 | pack | bridge/OPERATIONS.md | an album's text fallback) | the text fallback stays in the topic |

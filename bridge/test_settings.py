@@ -1487,9 +1487,23 @@ class InstallScriptTests(unittest.TestCase):
         release = self.instance / 'releases' / self.commit
         self.assertEqual((release / 'RELEASE').read_text().splitlines()[:2],
                          [f'commit={self.commit}', f'source={self.source}'])
+        self.assertEqual(list(release.rglob('__pycache__')), [])
+        self.assertNotIn('__pycache__/', (release / 'SHA256SUMS').read_text())
         self.assertIsNone(b.release_mismatch(release))
         self.assertEqual([p.name for p in (self.instance / 'releases').iterdir()], [self.commit])  # no stage left
         self.assertEqual(done.stdout.strip().splitlines()[-1], self.next_line())
+
+        caches = ['__pycache__/module.cpython-314.pyc', 'bridge/__pycache__/bridge.cpython-314.pyc',
+                  'transcriber/__pycache__/adapter.cpython-314.pyc']
+        for name in caches:
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'cache')
+        ignored = subprocess.run(['git', '-C', str(self.source), 'check-ignore', '--stdin'],
+                                 input='\n'.join(caches) + '\n', env=git_env(self.home),
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(ignored.returncode, 0, ignored.stderr)
+        self.assertEqual(ignored.stdout.splitlines(), caches)
 
         again = self.install()  # idempotent: the secret and the release are kept, nothing is rewritten
         self.assertEqual(again.returncode, 0, again.stderr)

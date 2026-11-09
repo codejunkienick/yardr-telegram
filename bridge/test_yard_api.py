@@ -648,7 +648,7 @@ class TellTests(BridgeTestCase):
 
 
 class SessionFlagTests(unittest.TestCase):
-    def test_the_gc_session_flag_is_accepted_and_ignored(self):
+    def test_legacy_session_flag_is_accepted_and_ignored(self):
         # The sysmon watch and pricewatch add-ons still pass --session.
         args = b._build_parser().parse_args(['--settings', '/x.toml', 'send', '--session', 'mayor',
                                              '--body-file', '/b', '--idempotency-key', 'k'])

@@ -1,11 +1,9 @@
 # yardr-telegram: the Telegram bridge for a yardr yard
 
-This repository is a fork of the Gas City telegram pack
-(forked at 19973ca; the original project attribution is retained).
-The bridge, its ledger, topics, asks, pins, reactions, typing,
-transcription and the `[[command]]` add-on protocol are unchanged. What
-changes is the conversation layer behind them: gc's `extmsg` API is gone,
-and a yardr yard takes its place.
+The bridge connects Telegram to a yardr yard through a verified inbound
+hook and a loopback API. It owns the delivery ledger, topics, asks, pins,
+reactions, typing, transcription and the `[[command]]` add-on protocol;
+the yard owns conversations and crew routing.
 
 One bridge serves one yard with one bot. A second yard gets its own bot,
 settings file, native home/operator/socket, state directory, port, unit
@@ -62,8 +60,8 @@ Content-Type: application/json
 The yard verifies the secret (`hook.verify.scheme: secret`), dedupes on
 `id` (`delivery: {body: id}`), normalizes it with `yardr/tgbridge/normalize`
 and routes it by subscription. A 2xx answer with a positive `seq` (a
-duplicate answers the earlier one) is the accept point that gc's durable
-transcript entry was: the bridge advances its cursor, sets the `seen`
+duplicate answers the earlier one) is the durable accept point:
+the bridge advances its cursor, sets the `seen`
 reaction and opens typing. Anything else keeps the cursor, logs why, and
 the update is tried again: another status, no `seq`, and
 `{"dropped": true}`, which the yard answers 200 for a sender it does not
@@ -117,17 +115,20 @@ subscribe: yardr subscribe yardmaster tgbridge --scope all --where type=message 
 
 ## Settings
 
-`settings.example.toml` lists every key. Against the gc pack:
+`settings.example.toml` lists every key:
 
-- `yard` replaces `city`: the yard's name, in the default unit name
+- `yard`: the yard's name, in the default unit name
   (`<yard>-telegram.service`) and in conversation refs.
-- `crew` replaces `agent`: the crew member a topic's subscription line
+- `crew`: the crew member a topic's subscription line
   names (default `yardmaster`), and whose quota the notice watches (the internal method keeps its legacy name).
-  `[[topic]] crew` replaces `[[topic]] agent`.
-- `[yardr]` is new: `hook_url` (`http://127.0.0.1:<port>/hooks/<name>`,
+  `[[topic]] crew` overrides it for one topic.
+- `[yardr]`: `hook_url` (`http://127.0.0.1:<port>/hooks/<name>`,
   loopback only), `hook_secret_file` (owner-only), `source` (default
   `tgbridge`, the declared source's name, for printed lines).
-- `gc_base_url` and `gc_api_token_file` are refused.
+
+Legacy `city`, `agent`, `gc_base_url` and `gc_api_token_file` settings
+are refused with the replacement key named. A legacy `[[topic]] agent`
+must likewise become `crew`. See [compatibility names and their checks](docs/public-readiness.md#retained-compatibility-names).
 
 ## The yardr pack
 
@@ -163,21 +164,20 @@ updates, by default; a yard that talks through the chat raises both
 
 ## Add-ons
 
-The add-ons talk to the bridge, not to gc, and keep working unchanged
-except where noted:
+Add-ons talk to this instance's bridge. Their handler and configuration
+requirements are:
 
 | add-on | change |
 |---|---|
-| telegram-quota | `/quota`, `/resets` and the legacy command name `/mayor_model` belong to the external handler. A yardr-aware handler uses `yardr crew set <crew> kind=… model=…` and `yardr crew restart <crew>`; the bridge does not edit agent configuration |
+| telegram-quota | `/quota` and `/resets` belong to the external handler. A handler that changes a crew member's model uses `yardr crew set <crew> kind=… model=…` and `yardr crew restart <crew>`; the bridge does not edit crew configuration |
 | telegram-waiting | the external snapshot producer must target the configured yard; the bridge does not supply or migrate it |
 | telegram-sysmon | settings only: `bridge_py` and `settings_file` point at this bridge |
 | telegram-pricewatch | settings only, as sysmon |
 | telegram-secret-drop | `send_command` targets this instance's launcher; secret storage and its CLI are owned by the external handler |
 
-## What is left out, on purpose
+## Conversation storage and routing
 
-- gc's transcript of each conversation: the bridge's message log
-  (`/v1/read`) replaces it.
+- The bridge's message log (`/v1/read`) holds each conversation's full text.
 - Binding topics: a topic is routed by a subscription in the yard, made
   once by the operator from the line `topics` prints.
 

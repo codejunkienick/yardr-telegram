@@ -41,7 +41,13 @@ class PublicReadinessTests(unittest.TestCase):
     def test_export_matches_every_committed_byte_mode_and_provenance(self):
         (self.repo / 'LICENSE').write_text('Copyright the authors\n')
         # Generic paths, compatibility names and attribution are allowed.
-        (self.repo / 'README.md').write_text('/home/alex /Users/example odyssey imd city mayor gc\n')
+        (self.repo / 'README.md').write_text('/home/alex /Users/example odyssey imd city mayor\n'
+                                           'GC_RECEIPT gc_base_url gc_api_token_file\n'
+                                           '_print_gc_receipt GC_SETTINGS mayor_quota_episode\n')
+        (self.repo / 'bridge').mkdir()
+        (self.repo / 'bridge/test_bridge.py').write_text('import g' + 'c\ng' + 'c.collect()\n')
+        (self.repo / 'bridge/test_settings.py').write_text("legacy = '.g" + "c'\n"
+                                                        "names = ['G" + "C_CITY', 'G" + "C_CITY_PATH', 'G" + "C_']\n")
         executable = self.repo / 'helper'
         executable.write_bytes(b'#!/bin/sh\nprintf usable\\n\n')
         executable.chmod(0o755)
@@ -54,11 +60,12 @@ class PublicReadinessTests(unittest.TestCase):
         manifest = json.loads((target / 'manifest.json').read_text())
         self.assertEqual(manifest['commit'], self.git('rev-parse', 'HEAD'))
         self.assertEqual(manifest['tree'], self.git('rev-parse', 'HEAD^{tree}'))
-        self.assertEqual(summary['files'], 3)
+        self.assertEqual(summary['files'], 5)
         archive = target / manifest['archive']
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), manifest['archive_sha256'])
         with tarfile.open(archive) as tar:
-            self.assertEqual(sorted(tar.getnames()), ['LICENSE', 'README.md', 'helper'])
+            self.assertEqual(sorted(tar.getnames()), ['LICENSE', 'README.md', 'bridge', 'bridge/test_bridge.py',
+                                                     'bridge/test_settings.py', 'helper'])
             for entry in manifest['files']:
                 content = (self.repo / entry['path']).read_bytes()
                 self.assertEqual(tar.extractfile(entry['path']).read(), content)
@@ -94,6 +101,41 @@ class PublicReadinessTests(unittest.TestCase):
         self.assertEqual(records[-1]['findings'], 7)
         self.assertEqual([(r['line'], r['count']) for r in records if r.get('path') == 'README.md'], [(1, 1), (2, 1), (3, 1)])
         self.assertEqual((self.repo / 'photo.bin').read_bytes(), b'human attachment\0kept')
+
+        for name in ('README.md', 'ledger.sqlite', 'photo.bin', '.env'):
+            (self.repo / name).unlink()
+        cases = (
+            ('README.md', 'Fork of Gas' + ' City'),
+            ('YARDR.md', 'Gas' + '\nCITY dependency'),
+            ('settings.example.toml', '# gas' + '-city default'),
+            ('skills/example/SKILL.md', 'gas' + '_city setup'),
+            ('bridge/bridge.py', '# G' + 'C accepted the relay'),
+            ('bridge/test_settings.py', '# g' + "c's configuration"),
+            ('bridge/test_bridge.py', 'import g' + 'c  # Gas' + ' City dependency'),
+            ('scripts/public_readiness.py', '# g' + 'c integration'),
+            ('CHANGELOG.md', 'forked at 1997' + '3ca'),
+            ('docs/example.md', 'uses ext' + 'msg'),
+            ('yardr/SETUP.md', 'load .g' + 'c/site.toml'),
+            ('example.py', 'g' + 'c_new_api = None'),
+            ('example.py', '_new_g' + 'c_api = None'),
+            ('README.md', 'GC_RECEIPT means Gas' + ' City delivery'),
+        )
+        for index, (name, text) in enumerate(cases):
+            with self.subTest(path=name, case=index):
+                path = self.repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('GC_RECEIPT gc_base_url\n' + text + '\n')
+                self.commit()
+                destination = self.root / ('relationship-' + str(index))
+                result = self.scan('--export', destination)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertFalse(destination.exists())
+                records = [json.loads(line) for line in result.stdout.splitlines()]
+                count = 2 if index == 6 else 1
+                self.assertEqual(records[:-1], [dict(path=name, line=2, category='relationship-reference', count=count)])
+                self.assertEqual(records[-1]['findings'], count)
+                self.assertNotIn(text, result.stdout + result.stderr)
+                path.unlink()
 
     def test_dirty_tree_unknown_entries_and_archive_omissions_refuse_before_export(self):
         (self.repo / 'README.md').write_text('fixture\n')

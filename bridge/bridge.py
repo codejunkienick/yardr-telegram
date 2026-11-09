@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Private Telegram transport for a yardr yard; no agent or decision engine.
 
-One process per city, configured only by that city's settings file
-(settings.example.toml in this pack); nothing city-specific lives here."""
+One process per yard, configured only by that yard's settings file
+(settings.example.toml in this pack); nothing yard-specific lives here."""
 import argparse
 import contextlib
 import datetime
@@ -565,11 +565,11 @@ class Store:
                 db.execute('ALTER TABLE asks ADD COLUMN decided INTEGER NOT NULL DEFAULT 0')
             if 'conversation_id' not in columns:
                 db.execute('ALTER TABLE asks ADD COLUMN conversation_id TEXT')
-            # The paired user's newest message GC durably accepted: one row,
+            # The paired user's newest message the yard durably accepted: one row,
             # the target of `react` without --message-id.
             db.execute('CREATE TABLE IF NOT EXISTS accepted (id INTEGER PRIMARY KEY CHECK (id = 1), '
                        'message_id INTEGER NOT NULL, accepted_at TEXT NOT NULL)')
-            # The same per conversation GC accepted it on (<chat_id>, or a
+            # The same per conversation the yard accepted it on (<chat_id>, or a
             # topic's <chat_id>:topic:<thread_id>): the target of `react
             # --conversation-id/--topic`. The accepted row keeps its meaning.
             db.execute('CREATE TABLE IF NOT EXISTS accepted_conversations (conversation_id TEXT PRIMARY KEY, '
@@ -584,7 +584,7 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS topic_attempts (name TEXT PRIMARY KEY, attempt INTEGER NOT NULL)')
             # Topics the paired user created ([auto_topics]): Telegram's name
             # as last seen (NULL until known) and whether it was implicit,
-            # the agent, and when GC confirmed the binding (NULL until then).
+            # the crew member and the unused legacy binding timestamp.
             # Its own table: a Telegram-given name in topics.name could meet
             # a settings name added later.
             db.execute('CREATE TABLE IF NOT EXISTS auto_topics (thread_id INTEGER PRIMARY KEY, name TEXT, '
@@ -676,7 +676,7 @@ class Store:
             db.execute('UPDATE deliveries SET receipt=? WHERE key=?', (json.dumps(receipt), key))
 
     def record_ask(self, ask_id, question, fmt, options, kind='text', conversation_id=None):
-        """Remember one mayor ask button group: the first record wins, so a
+        """Remember one crew ask button group: the first record wins, so a
         repeated send of the same ask never resets its answered flag. Kind is
         'text' or 'photo': the question is the message text or the photo caption.
         conversation_id is the topic's conversation id for an ask sent in a
@@ -721,7 +721,7 @@ class Store:
 
     def close_ask(self, ask_id, decision):
         """In one ledger write mark the ask answered and decided with the
-        decision, and relayed (nothing goes to GC: the mayor made it); True
+        decision, and relayed (nothing is relayed: the crew made it); True
         when this write won, False when a tap or another close came first.
         The guard is the only serialisation of a tap (the daemon) against a
         close (the CLI): they are separate processes."""
@@ -731,7 +731,7 @@ class Store:
                               ' WHERE ask_id=? AND answered=0', (decision, ask_id)).rowcount == 1
 
     def mark_ask_relayed(self, ask_id):
-        """Record the ask as relayed once GC confirms the answer entry."""
+        """Record the ask as relayed once the yard confirms the answer entry."""
         with self.connect() as db:
             db.execute('UPDATE asks SET relayed=1 WHERE ask_id=?', (ask_id,))
 
@@ -1109,10 +1109,10 @@ class Bridge:
         self.display_name = config.get('user_display_name') or 'User'
         self.unit = config.get('unit')
         self.menu = tuple(config.get('menu') or ())
-        # The city's own commands ([[command]]), by name in file order; the
+        # The yard's own commands ([[command]]), by name in file order; the
         # settings loader has validated every entry.
         self.commands = {command['name']: command for command in config.get('commands') or ()}
-        # The city's topics of the paired chat ([[topic]]), each {name, agent}
+        # The yard's topics of the paired chat ([[topic]]), each {name, agent}
         # in file order; their thread ids live in the ledger.
         self.topic_settings = tuple(config.get('topics') or ())
         # Whether the topics the paired user creates are served ([auto_topics]);
@@ -1851,7 +1851,7 @@ class Bridge:
         header = self._forward_header(state['forwarded']) if 'forwarded' in state else None
         text = self._format_voice_transcript(state['kind'], state['duration'], mid, path, transcript, reason, header)
         # The provider id is the idempotency key: a retry after a relay whose
-        # acknowledgement was lost lands on the same GC entry, never a second one.
+        # acknowledgement was lost lands on the same yard entry, never a second one.
         # A note written in a topic follows it: its thread is resolved at each
         # relay, so a topic recorded or bound meanwhile gets its transcript; a
         # file without "thread_id" relays as General.
@@ -2018,7 +2018,7 @@ class Bridge:
 
     def _record_auto_topic(self, thread_id, message):
         """With [auto_topics] on, for an update in topic thread `thread_id`
-        that relays nothing (a service message, a city command, a message the
+        that relays nothing (a service message, a yard command, a message the
         bridge skips): record the thread's auto row, as for its first update,
         so the topic is served before any relay. An edit records nothing
         (_observe_auto_topic). The yard routes a served topic by its
@@ -2153,7 +2153,7 @@ class Bridge:
                 # The marker is what lets a restart find this job; without it the
                 # follow-up would be lost. Retain the cursor so the update is
                 # reprocessed: the first note re-relays under the same provider
-                # id (GC dedups it) and the marker is written again.
+                # id (the yard deduplicates it) and the marker is written again.
                 print(f'voice transcript queue not updated (msg {mid}); cursor retained', file=sys.stderr, flush=True)
                 raise
             self._enqueue_transcription((mid, day_dir))
@@ -2163,7 +2163,7 @@ class Bridge:
     # at most one), so a repeat can never stack a second reaction.
 
     def _accepted(self, mid, conversation_id, thread_id):
-        """The accept point: GC durably accepted message `mid` from the paired
+        """The accept point: the yard durably accepted message `mid` from the paired
         user on `conversation_id`, written in Telegram thread `thread_id`
         (None for General; a fallback relay's thread differs from its
         conversation). Record it as the last accepted message of the chat and
@@ -2375,9 +2375,9 @@ class Bridge:
             if self.typing_windows.get(window['thread']) is window and window['extended'] == extended:
                 del self.typing_windows[window['thread']]
 
-    # ---- city commands ([[command]]) -----------------------------------------
+    # ---- yard commands ([[command]]) -----------------------------------------
     # A registered slash command or a button press under a registered
-    # callback prefix goes to the city's handler, never to GC. The handler gets
+    # callback prefix goes to the yard's handler without a relay. The handler gets
     # one JSON object and returns {"actions": [...]}; the bridge validates the
     # whole answer before it acts, then sends and edits through the delivery
     # ledger under command:<update_id>:<index> and answers a callback under
@@ -2391,7 +2391,7 @@ class Bridge:
     COMMAND_BUTTON_TEXT_MAX = 256
     COMMAND_ANSWER_MAX = 200
     CALLBACK_DATA_MAX_BYTES = 64
-    # The bridge-owned callback prefix for mayor ask buttons
+    # The bridge-owned callback prefix for crew ask buttons
     # (callback_data ask:<ask-id>:<choice>). No [[command]] callback_prefix
     # may equal or overlap it; no handler output may use it.
     ASK_CALLBACK_PREFIX = 'ask:'
@@ -2779,7 +2779,7 @@ class Bridge:
 
     def _answer_callback(self, update_id, query_id, text='', alert=False, key=None):
         """Answer one callback query once, under command:<update_id>:answer for
-        city commands and ask:<update_id>:answer for mayor asks."""
+        yard commands and ask:<update_id>:answer for crew asks."""
         body = dict(callback_query_id=query_id)
         if text:
             body['text'] = text
@@ -2896,7 +2896,7 @@ class Bridge:
         self.run_command(command, update_id, payload, query_id=query['id'], thread_id=self._topic_thread(message))
 
     def inbound_ask(self, update_id, query, data):
-        """One tap on a mayor ask button: record the answer, relay it once,
+        """One tap on a crew ask button: record the answer, relay it once,
         then edit the ask message to show the choice.
 
         P1 A keyboard goes with no attachment or with exactly one photo; any
@@ -2904,19 +2904,19 @@ class Bridge:
         invalid_keyboard. D1's text-only rule is widened to one photo.
         A1 A valid press names an existing ask, the message the ask was sent
         as, an authorised user and one of the ask's options; anything else
-        keeps the drop-and-answer-empty behaviour and never reaches the mayor.
+        keeps the drop-and-answer-empty behaviour and never reaches the crew.
         A2 On the first valid press, in order: (1) answer the callback once
         (key ask:<update_id>:answer); (2) in one ledger write mark the ask
         answered with the choice and the update id; (3) relay exactly one
         durable inbound entry naming the question, the option and the original
         message id, with provider message id ask-<ask-id>, and record the ask
-        as relayed once GC confirms it; (4) only then attempt the edit that
+        as relayed once the yard confirms it; (4) only then attempt the edit that
         appends "\\n✓ <label>" to the text or caption and removes the buttons,
         under the per-ask key ask:<ask-id>:edit (editMessageText for a text
         ask, editMessageCaption for a photo ask). The offset advances once the
         relay is confirmed; the edit outcome never holds it, un-answers or
         relays again.
-        A3 When GC does not confirm the relay the offset is retained and the
+        A3 When the yard does not confirm the relay the offset is retained and the
         retry relays once under the same provider id, records relayed, then
         edits; the callback is answered no second time and the edit happens
         at most once. A4 A later press on an answered and relayed ask runs
@@ -2951,7 +2951,7 @@ class Bridge:
             return
         if ask['answered']:
             if not ask.get('relayed'):
-                # A3: the first press answered but GC never confirmed the
+                # A3: the first press answered but the yard never confirmed the
                 # relay, so the offset was retained. The retry relays once
                 # under the same provider id, records relayed, then edits.
                 # The callback answer is saved under the same update key, so
@@ -2990,7 +2990,7 @@ class Bridge:
 
         The relay uses provider message id ask-<ask-id> so an update id equal
         to an earlier relayed Telegram message id can never deduplicate it.
-        GC confirmation records relayed; a GC failure raises and retains the
+        Yard confirmation records relayed; a yard failure raises and retains the
         offset for the A3 retry. The edit is its own step (_edit_ask): it runs
         at most once under the per-ask key ask:<ask-id>:edit and never holds
         the offset or relays again. The answer is two parts: a first line
@@ -3057,10 +3057,10 @@ class Bridge:
                           'decision_required', 'decision_breaks_line', 'decision_exceeds_room')
 
     def close_ask(self, decision, message_id=None, ask_key=None):
-        """A6: close one open ask with the decision the mayor made, selected
+        """A6: close one open ask with the decision the crew made, selected
         by its sent message id or by its send's idempotency key (exactly
         one). One guarded ledger write marks it answered, decided and
-        relayed (nothing goes to GC), then the edit step removes the buttons
+        relayed (nothing is relayed), then the edit step removes the buttons
         and appends "\\n✓ Decided: <decision>". A later tap gets only the
         already-answered answer. The same decision again is the idempotent
         repeat (the saved edit receipt; a not-sent edit sends again).
@@ -3156,7 +3156,7 @@ class Bridge:
             uid = self._update_id(update)
             if uid < self.store.offset():
                 continue
-            self.inbound(update)  # errors retain offset; GC dedups provider_message_id
+            self.inbound(update)  # errors retain offset; the yard deduplicates provider_message_id
             self.store.advance(uid + 1)
 
     def receipt(self, delivered=False, reason='', failure_kind='permanent', **extra):
@@ -3240,7 +3240,7 @@ class Bridge:
         sent (under the same key, same reservation) when Telegram cannot parse
         the markup. The first send was then definitively not delivered, so
         the fallback can never duplicate the message. `method` and `extra`
-        (a keyboard, an edited message's id) serve the city commands; `extra`
+        (a keyboard, an edited message's id) serve the yard commands; `extra`
         also carries a silent send's disable_notification and a topic's
         message_thread_id, so the fallback is silent and in the topic too."""
         body = dict(chat_id=self.config['chat_id'], text=text, link_preview_options={'is_disabled': True})
@@ -4352,7 +4352,7 @@ class Bridge:
                         f'"[topic: thread <id> | not configured" line the agent receives and run {command} '
                         f'--record {quoted} --thread-id <id>; if it is not, run {command} --retry {quoted}')
 
-    # Poll heartbeat for a city's health check: proof that getUpdates is
+    # Poll heartbeat for a yard's health check: proof that getUpdates is
     # still succeeding, written at most once a minute. It judges health
     # by its age and pid, so a failed write only costs one stderr line.
     HEARTBEAT_INTERVAL = 60
@@ -4426,9 +4426,9 @@ class Bridge:
 
     def mayor_quota_episode(self, now=None, agent=None):
         """Return (episode_key, until_ms) when a fresh health report (the
-        settings' health_file, rewritten by the city every few minutes)
+        settings' health_file, rewritten by the yard every few minutes)
         records `agent`'s session (default the served agent: the settings'
-        agent, default mayor) as quota_wait until a future time, else None.
+        crew, default yardmaster) as quota_wait until a future time, else None.
 
         Read-only and fail-closed: no health_file setting, a missing/malformed health
         file (not written yet, or mid-rewrite), a missing, unparseable or stale
@@ -4621,8 +4621,7 @@ def _build_parser():
                         help='file holding the message text (send, reply-current)')
     parser.add_argument('--idempotency-key',
                         help='one stable key per logical message: a retry reuses it with the same body; a new message takes a new key')
-    # Accepted and ignored: the gc pack's sending session. The sysmon watch
-    # and pricewatch add-ons still pass it, and nothing routes on it here.
+    # Accepted and ignored for existing add-ons; nothing routes on it here.
     parser.add_argument('--session', help=argparse.SUPPRESS)
     parser.add_argument('--conversation-id',
                         help="optional: the settings' bot.chat_id, or <chat id>:topic:<thread id> of a configured "
@@ -4865,8 +4864,8 @@ def _dispatch_outbound(bridge, args, text, conversation=None):
 def _react(bridge, args):
     """Set the --reaction on --message-id, else on the last message accepted
     on the conversation --conversation-id or --topic names, else on the last
-    accepted message, directly from this process: GC's outbound relay cannot
-    carry a reaction. Each call has its own ledger key, so an earlier
+    accepted message, directly from this process through the shared ledger.
+    Each call has its own ledger key, so an earlier
     ambiguous one never blocks it. Returns the message id."""
     if args.reaction in ('seen', 'done'):
         emoji = bridge.reactions[args.reaction]
@@ -4900,8 +4899,8 @@ def _react(bridge, args):
     return message_id
 
 
-# ---- per-city settings ------------------------------------------------------
-# Everything that differs between two cities running this bridge comes from
+# ---- per-yard settings ------------------------------------------------------
+# Everything that differs between two yards running this bridge comes from
 # one owner-only TOML file outside the repository (settings.example.toml in
 # the pack): ids, credential paths, state directory, port, menu, transcriber.
 # Unknown keys are refused, so a typo can never silently fall back to a
@@ -4918,7 +4917,7 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
                  'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
 # The yard this bridge relays to (YARDR.md, "Settings").
 YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator'}
-# Keys of the gc pack this fork refuses by name, each with what replaced it.
+# Legacy keys refused by name, each with its replacement.
 GC_SETTINGS = {'city': 'yard', 'agent': 'crew', 'gc_base_url': '[yardr] hook_url',
                'gc_api_token_file': '[yardr] hook_secret_file'}
 BOT_KEYS = {'bot_id', 'user_id', 'chat_id', 'account_id'}
@@ -4927,7 +4926,7 @@ COMMAND_KEYS = {'name', 'description', 'handler', 'url', 'menu', 'callback_prefi
 RESERVED_COMMANDS = ('start',)
 # Telegram's limit on one chat's command menu.
 MENU_MAX = 100
-# A city command's handler URL: plain http to 127.0.0.1 or [::1], an explicit
+# A yard command's handler URL: plain http to 127.0.0.1 or [::1], an explicit
 # port and a path; nothing else is ever contacted.
 _HANDLER_URL_RE = re.compile(r'http://(127\.0\.0\.1|\[::1\]):([0-9]{1,5})(/[A-Za-z0-9._~/-]{0,200})')
 # A callback prefix: printable ASCII without spaces, at most callback_data's 64 bytes.
@@ -4947,8 +4946,8 @@ TRANSCRIBE_KEYS = {'enabled', 'whisper_cli', 'models_dir', 'model', 'vad_model',
                    'timeout_per_minute', 'gpu', 'gpu_min_free_mb', 'method', 'gpu_check', 'language'}
 TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
 _LANGUAGE_RE = voice_transcribe.LANGUAGE_RE
-# Neutral defaults: the whisper.cpp build and models every city on the host
-# shares (never under a city), the large turbo model with Silero VAD, every
+# Neutral defaults: the whisper.cpp build and models every yard on the host
+# shares (never under a yard), the large turbo model with Silero VAD, every
 # CPU the bridge has, a run limit of 120 s plus 120 s per minute of audio, and
 # the CPU only (the legacy gpu = true means method = "auto").
 TRANSCRIBE_DEFAULTS = dict(enabled=False, whisper_cli='~/work/whisper.cpp/build/bin/whisper-cli',
@@ -4956,7 +4955,7 @@ TRANSCRIBE_DEFAULTS = dict(enabled=False, whisper_cli='~/work/whisper.cpp/build/
                            vad_model='silero-v6.2.0', threads=4, cpus='', timeout=120, timeout_per_minute=120,
                            gpu=False, gpu_min_free_mb=2048, language='en')
 # The host-wide transcription queue, under the home directory of the user
-# every city's bridge runs as. Deliberately not a setting: two cities naming
+# every yard's bridge runs as. Deliberately not a setting: two yards naming
 # different queues would run whisper at the same time.
 QUEUE_SUBDIR = voice_transcribe.QUEUE_SUBDIR
 _CPU_LIST_RE = voice_transcribe.CPU_LIST_RE
@@ -4971,7 +4970,7 @@ class SettingsError(TransportError):
 
 
 class Settings:
-    """One city's validated settings. `config` is the dict Bridge takes."""
+    """One yard's validated settings. `config` is the dict Bridge takes."""
 
     def __init__(self, **fields):
         self.__dict__.update(fields)
@@ -5162,7 +5161,7 @@ def _topic_settings(data, agent):
         if not isinstance(item, dict):
             fail('not a [[topic]] table')
         if 'agent' in item:
-            fail('agent is the gc pack\'s key: name the crew member with crew')
+            fail('agent is a legacy key: name the crew member with crew')
         unknown = sorted(set(item) - TOPIC_KEYS)
         if unknown:
             fail(f'unknown key {unknown[0]}')
@@ -5200,7 +5199,7 @@ def _handler_write_paths(data):
 
 
 def load_settings(path, home=None):
-    """The validated Settings of one city, or SettingsError naming the first problem.
+    """The validated Settings of one yard, or SettingsError naming the first problem.
     `home` (default: this user's) holds the host-wide transcription queue."""
     import tomllib
     path = Path(path)
@@ -5212,7 +5211,7 @@ def load_settings(path, home=None):
     if 'quota' in data:
         raise SettingsError('settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")')
     for key in sorted(set(data) & set(GC_SETTINGS)):
-        raise SettingsError(f'settings: {key} is the gc pack\'s key; this bridge reads {GC_SETTINGS[key]} (YARDR.md)')
+        raise SettingsError(f'settings: {key} is a legacy key; use {GC_SETTINGS[key]} (YARDR.md)')
     unknown = sorted(set(data) - SETTINGS_KEYS)
     if unknown:
         raise SettingsError(f'settings: unknown key {unknown[0]}')
@@ -5369,7 +5368,7 @@ def load_settings(path, home=None):
 
 
 def render_unit(settings, template=None, bridge_path=None):
-    """The systemd user unit that runs this bridge for one city. Every path is
+    """The systemd user unit that runs this bridge for one yard. Every path is
     one the settings loader already restricted to a safe absolute form, so
     nothing here can inject a systemd specifier, a quote or a second word."""
     bridge_path = Path(bridge_path or BRIDGE_PATH)
@@ -6182,7 +6181,7 @@ def main():
         if not result['delivered']:
             raise TransportError('native card not delivered: ' + result['reason'])
     elif args.command == 'ask-close':
-        # Directly in this process through the shared ledger; GC is never called.
+        # Directly in this process through the shared ledger.
         receipt = bridge.close_ask(args.decision, message_id=args.message_id, ask_key=args.ask_key)
         if receipt.get('delivered') is not True:
             reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
@@ -6201,7 +6200,7 @@ def main():
             parser.error('react requires --reaction seen|done|none|<emoji>')
         print('Telegram reaction set; message ID ' + str(_react(bridge, args)))
     elif args.command == 'pin':
-        # Directly in this process through the shared ledger; GC is never called.
+        # Directly in this process through the shared ledger.
         slot = args.slot
         receipt = bridge.unpin(slot) if args.unpin else bridge.pin(slot, args.body_file.read_text(), args.format)
         if receipt.get('delivered') is not True:

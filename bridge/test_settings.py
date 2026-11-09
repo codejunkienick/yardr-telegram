@@ -137,17 +137,25 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(pattern=pattern, replace=replace):
                 self.refused(pattern, **replace)
 
-    def test_the_gc_packs_keys_are_refused_by_name(self):
+    def test_legacy_keys_are_refused_by_name(self):
         for key, value, replacement in (('city', '"test-city"', 'yard'), ('agent', '"mayor"', 'crew'),
                                         ('gc_base_url', '"http://127.0.0.1:8372"', '[yardr] hook_url'),
-                                        ('gc_api_token_file', '"/srv/gc-token"', '[yardr] hook_secret_file')):
+                                        ('gc_api_token_file', '"/srv/legacy-token"', '[yardr] hook_secret_file')):
             with self.subTest(key=key):
+                path = write_settings(self.root, **{key: value})
                 with self.assertRaises(b.SettingsError) as caught:
-                    b.load_settings(write_settings(self.root, **{key: value}))
-                self.assertEqual(str(caught.exception),
-                                 f"settings: {key} is the gc pack's key; this bridge reads {replacement} (YARDR.md)")
-        # Named even in a gc pack file that has no yard key at all.
-        with self.assertRaisesRegex(b.SettingsError, "^settings: city is the gc pack's key"):
+                    b.load_settings(path)
+                expected = f'settings: {key} is a legacy key; use {replacement} (YARDR.md)'
+                env = dict(HOME=str(self.root), PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin',
+                           XDG_CONFIG_HOME=str(self.root / 'config'), XDG_STATE_HOME=str(self.root / 'state'))
+                result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge/bridge.py'),
+                                         '--settings', str(path), 'probe'], env=env, cwd=self.root,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (1, '', expected + '\n'))
+                self.assertEqual(str(caught.exception), expected)
+        # Named even in a legacy settings file that has no yard key at all.
+        with self.assertRaisesRegex(b.SettingsError, "^settings: city is a legacy key"):
             b.load_settings(write_settings(self.root, yard=None, city='"test-city"'))
 
     def test_the_yardr_table_is_required_and_names_its_keys(self):
@@ -780,7 +788,7 @@ class SettingsLookupTests(unittest.TestCase):
             self.assertEqual(b.settings_path(None), Path('/x/process.toml'))
 
     def test_nothing_else_finds_settings(self):
-        # No city root, no .gc/site.toml, no default under ~/.config.
+        # No legacy root or configuration directory, no default under ~/.config.
         (self.root / '.gc').mkdir()
         (self.root / '.gc' / 'site.toml').write_text('workspace_name = "some-city"\n')
         for environ in ({}, {b.SETTINGS_ENV: ''}, {'GC_CITY': str(self.root), 'GC_CITY_PATH': str(self.root)}):
@@ -807,7 +815,7 @@ class SettingsLookupTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stderr.strip()), (1, f'settings file not found: {missing}'))
         result = subprocess.run([sys.executable, bridge, f'--city-root={self.root}', 'run'],
                                 env=env, capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 2)  # the gc pack's flag is gone
+        self.assertEqual(result.returncode, 2)  # the legacy flag is refused
         self.assertIn('unrecognized arguments: --city-root', result.stderr)
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), [])  # nothing created
 

@@ -112,9 +112,9 @@ class TopicSettingsTests(unittest.TestCase):
             (topic_tables(('ops', 'not a crew')), 'topic entry 1: crew is missing or malformed'),
             ('\n[[topic]]\nname = "ops"\ncrew = 5\n', 'topic entry 1: crew is missing or malformed'),
             ('\n[[topic]]\nname = "ops"\nagent = "yardmaster"\n',
-             "topic entry 1: agent is the gc pack's key: name the crew member with crew"),
+             "topic entry 1: agent is a legacy key: name the crew member with crew"),
             (topic_tables(('ops', None)) + 'agent = 5\n',
-             "topic entry 1: agent is the gc pack's key: name the crew member with crew"),
+             "topic entry 1: agent is a legacy key: name the crew member with crew"),
             ('\n[[topic]]\nname = "ops"\nthread_id = 5\n', 'topic entry 1: unknown key thread_id'),
             (topic_tables(*((f't{n}', None) for n in range(51))), 'topic entry 51: more than 50 [[topic]] tables'),
             ('topic = "ops"\n', 'topic must be a list of [[topic]] tables'),
@@ -130,6 +130,16 @@ class TopicSettingsTests(unittest.TestCase):
                         b.load_settings(path)
                     self.assertEqual(str(raised.exception), 'settings: ' + message)
                 else:
+                    if message.startswith('topic entry 1: agent is a legacy key:'):
+                        path = write_settings(self.root)
+                        path.write_text(path.read_text() + tables)
+                        env = dict(HOME=str(self.root), PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin',
+                                   XDG_CONFIG_HOME=str(self.root / 'config'), XDG_STATE_HOME=str(self.root / 'state'))
+                        result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge/bridge.py'),
+                                                 '--settings', str(path), 'probe'],
+                                                env=env, cwd=self.root, capture_output=True, text=True, timeout=30)
+                        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                         (1, '', 'settings: ' + message + '\n'))
                     self.refuses(tables, 'settings: ' + message)
         self.assertEqual(len(self.load(topic_tables(*((f't{n}', None) for n in range(50)))).config['topics']), 50)
 

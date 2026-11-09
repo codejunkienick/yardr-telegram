@@ -210,7 +210,7 @@ print(runpy.run_path(sys.argv[1])["release_mismatch"](release) or "" if same els
   fi
 fi
 
-# The host-wide transcription queue every city's bridge shares; the unit
+# The host-wide transcription queue every yard's bridge shares; the unit
 # cannot create it (its home is read-only), so it is made here.
 if [ -n "$queue_dir" ] && [ ! -d "$queue_dir" ]; then
   if [ "$dry_run" = 1 ]; then

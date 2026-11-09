@@ -17,7 +17,7 @@ first; the initial key/hook steps below are for a new installation.
 Each step says who does it: (you) in Telegram, (shell) in your terminal,
 (agent or shell) for what an agent may also run.
 
-Two pollers cannot share a bot: a bot a Gas City bridge still polls is
+Two pollers cannot share a bot: a bot an existing bridge still polls is
 taken over only after that bridge's unit is stopped.
 
 ## 1. The bot (you)
@@ -64,7 +64,7 @@ account_id = "<getMe username>"
 ```
 
 Add `[[menu]]`, `[[command]]`, `[[topic]]`, `[reactions]`, `[typing]` and
-`[transcribe]` tables as the example shows. Moving a bot from a Gas City
+`[transcribe]` tables as the example shows. Moving a bot from an existing
 bridge: copy that bridge's state directory to `state_dir` first, so the
 offset, the ledger, the pins and the topics' thread ids carry over, and
 rename each `[[topic]] agent` to `crew`.

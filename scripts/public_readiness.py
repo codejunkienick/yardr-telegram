@@ -11,13 +11,21 @@ import sys
 import tarfile
 
 
-# Deliberately narrow: compatibility names, generic homes and attribution are valid.
+# Deliberately narrow: generic homes and author/third-party attribution are valid.
 PATTERNS = {
     'bot-token': rb'(?<![0-9])[0-9]{6,12}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])',
     'private-key': rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----',
     'operator-path': rb'/(?:home|Users)/ni' + rb'ck(?:/|\b)',
 }
 RUNTIME_NAMES = {'telegram-bot-token', 'callback-secret', 'hook-secret', '.env'}
+# Exact compatibility tokens do not exempt the rest of their line or file.
+RELATIONSHIP = re.compile(
+    rb'gas[\s_-]*city|\bextms[g]\b|\b19973[c]a\b|'
+    rb'(?<!\w)\.?g[c](?:[_.]\w*)?\b|\b\w+_g[c]_\w+\b', re.IGNORECASE)
+COMPATIBILITY_NAMES = {b'GC_RECEIPT', b'_print_gc_receipt', b'GC_SETTINGS',
+                       b'gc_base_url', b'gc_api_token_file'}
+LOOKUP_FIXTURES = {b'.g' + b'c', b'G' + b'C_CITY', b'G' + b'C_CITY_PATH', b'G' + b'C_'}
+GARBAGE_COLLECTION = {b'import g' + b'c', b'g' + b'c.collect()'}
 # Reviewed offline wheelhouse, not a general exemption for binary attachments.
 WHEELS = {
     'vendor/wheels/pyyaml-6.0.3.tar.gz': 'd76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f',
@@ -65,6 +73,23 @@ def scan(files):
                 count = len(re.findall(pattern, line))
                 if count:
                     findings.append(dict(path=name, line=number, category=category, count=count))
+        if b'\0' not in content:
+            counts = {}
+            for match in RELATIONSHIP.finditer(content):
+                token = match.group()
+                if token in COMPATIBILITY_NAMES:
+                    continue
+                if name == 'bridge/test_settings.py' and token in LOOKUP_FIXTURES:
+                    continue
+                start = content.rfind(b'\n', 0, match.start()) + 1
+                end = content.find(b'\n', match.end())
+                line = content[start:end if end != -1 else len(content)].strip()
+                if name == 'bridge/test_bridge.py' and line in GARBAGE_COLLECTION:
+                    continue
+                number = content.count(b'\n', 0, match.start()) + 1
+                counts[number] = counts.get(number, 0) + 1
+            for number, count in sorted(counts.items()):
+                findings.append(dict(path=name, line=number, category='relationship-reference', count=count))
         if path.name in RUNTIME_NAMES or path.suffix in ('.db', '.sqlite', '.sqlite3', '.env'):
             findings.append(dict(path=name, line=0, category='runtime-file', count=1))
         if b'\0' in content and WHEELS.get(name) != hashlib.sha256(content).hexdigest():

@@ -13,7 +13,7 @@ times in a row is retried once without text context and the result with
 fewer repeats is kept. No transcript is refused because of its language
 or script.
 
-Settings come from the environment (the Telegram bridge passes its city's
+Settings come from the environment (the Telegram bridge passes its yard's
 settings this way):
   VOICE_TRANSCRIBE_WHISPER_CLI  whisper-cli binary (~/work/whisper.cpp/build/bin/whisper-cli)
   VOICE_TRANSCRIBE_MODEL_DIR    ggml models directory (~/work/whisper.cpp/models)

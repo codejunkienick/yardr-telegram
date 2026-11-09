@@ -77,8 +77,8 @@ sees and does, not how the code is organised.
 
 - The operations guide now states the per-topic inbound rule where it
   states the settings-agent rule: a message in a topic is accepted
-  only when GC routes it on that topic's conversation to that topic's
-  agent, which may differ from the settings agent.
+  only when the yard routes it on that topic's conversation to that topic's
+  crew member, which may differ from the settings crew member.
 
 ## [0.2.0] - 2026-10-28
 

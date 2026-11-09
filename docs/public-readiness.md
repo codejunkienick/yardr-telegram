@@ -74,6 +74,30 @@ chat/run/source/CLI/API contracts remain compatible. New required callback
 namespaces are the explicit configuration exception below. No automatic DB
 rewrite or broad credential rebinding is part of public preparation.
 
+## Retained compatibility names
+
+The project retains its MIT notice, `Copyright (c) 2026 the telegram-pack
+authors`, exactly as recorded in [LICENSE](../LICENSE). The following names
+remain stable for existing installations and delivery consumers:
+
+| Name or format | Reason and compatibility evidence |
+| --- | --- |
+| `GC_RECEIPT` and its `_print_gc_receipt` helper | Delivery consumers parse this prefix and its complete JSON receipt. `bridge/test_bridge.py`, `test_send_retry.py`, `test_ask_close.py`, `test_pin.py` and `test_text_options.py` exercise actual send/CLI failure paths, including permanent, transient and ambiguous outcomes. |
+| `reply-current`, ignored `--session`, conversation `scope_id` and `session_id`, `provider_message_id` | Existing CLI callers and delivery keys keep their meaning. `bridge/test_send_retry.py` drives the CLI alias; `test_yard_api.py` checks the session flag and HTTP routes; `test_bridge.py` pins send fingerprints and retries the same inbound provider ID. |
+| Ledger tables/columns, including `accepted`, `accepted_conversations`, `auto_topics.agent`, `auto_topics.bound_at`, `asks.decided` and `asks.conversation_id` | Existing rows retain their values. `TopicLedgerTests.test_an_existing_base_ledger_opens_unchanged`, `AutoTopicLedgerTests` (including reopening a populated binding timestamp) and the old-ledger case in `test_ask_close.py` verify additive upgrades, repeated opens and usable asks. Stored crew names are preserved. |
+| `city`, `agent`, `gc_base_url`, `gc_api_token_file`, `[[topic]] agent` and the internal `GC_SETTINGS` map | These input keys remain explicitly refused, with the replacement key named; they never select a backend. `SettingsTests.test_legacy_keys_are_refused_by_name` and `TopicSettingsTests` exercise the loader. Only diagnostic prose changes. |
+| `mayor_quota_episode`, internal `agent` and `city_commands` names | Existing method/config names remain intact. The quota cases in `bridge/test_bridge.py`, settings config assertions and command tests exercise them using yard health reports and configured handlers. |
+| `odyssey`, `imd` source aliases | `yardr/tgbridge.yaml` keeps their existing loopback hosts. `RenderedPackTests` verifies rendered bytes; the isolated real-store source-upgrade case in `bridge/test_run_asks.py` checks apply/reapply, selected aliases, credentials and grants. `InstanceTests` checks independent install/upgrade/rollback. |
+
+Legacy configuration-directory/environment identifiers occur only in the
+negative lookup fixtures in `bridge/test_settings.py`: those fixtures prove
+that only `--settings` or `TELEGRAM_BRIDGE_SETTINGS` selects settings, and
+that the removed root flag refuses. The scanner permits those exact fixture
+tokens only in that file. Python garbage-collector calls in
+`bridge/test_bridge.py` have a separate exact-line exception. Synthetic scope
+and crew labels in tests exercise arbitrary stored names and queue isolation.
+No persisted or wire identifier is renamed by this preparation.
+
 ## Capabilities and grants
 
 Only grant calls a crew actually uses. `yardr source grant tgbridge <call>
@@ -128,9 +152,13 @@ The scan reads committed blobs only and refuses a dirty/untracked tree. It
 reports category, path, line and counts, never matched bytes. It checks bot-token
 syntax, private-key markers, known former operator absolute paths in product
 files, accidentally tracked runtime secret/DB names and unreviewed NUL-bearing
-binaries. Only the two hash-pinned offline wheels are approved binary inputs.
-It allows generic `/home` or `/Users` examples, author/legal links, compatibility
-names and path migration fixtures. It does not read private settings, env,
+binaries. Only hash-pinned offline archives are approved binary inputs.
+It also rejects former backend relationship/provenance references, including
+case/separator variants, split-line names, the former fork revision and API
+name, and unknown prefixed identifiers. The exact compatibility tokens and
+fixture exceptions above do not exempt surrounding prose or entire files.
+It allows generic `/home` or `/Users` examples, author/legal links, retained
+compatibility names and path migration fixtures. It does not read private settings, env,
 units, stores or Git history. It never deletes attachments or scrubs executable
 data. Review each finding at its source privately; do not paste values into
 logs. A clean result is a focused gate, not a general secret detector: opaque
@@ -152,8 +180,9 @@ is not an installable checkout.
 
 1. Complete normal/expert review and local landing. Run the committed-head
    gate again on the actual landing tree with `YARDR_LANDING=1`.
-2. Regenerate scan/export from that clean landed commit; landing may squash
-   and change its commit ID. The final compatibility/publication auditor must
+2. Regenerate scan/export from that clean landed commit before freezing the
+   candidate tree and running the final audit; landing may squash and change
+   its commit ID. The final compatibility/publication auditor must
    compare that exact tree/manifest/archive and review the remaining contextual
    identifiers, attribution, attachments, license sources and old history
    separately. This work does not certify historical exposure or rewrite it.

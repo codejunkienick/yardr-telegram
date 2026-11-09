@@ -76,6 +76,13 @@ class AutoTopicLedgerTests(BridgeTestCase):
         self.assertTrue(first[0]['detected_at'].endswith('+00:00'))
         self.assertFalse(self.store.add_auto_topic(601, 'helper'))
         self.assertEqual(self.store.auto_topic_rows(), first)
+        # An existing row keeps its crew and unused binding timestamp on reopen.
+        first[0]['bound_at'] = '2026-10-27T00:00:00+00:00'
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('UPDATE auto_topics SET bound_at=? WHERE thread_id=601', (first[0]['bound_at'],))
+        reopened = b.Store(self.path, 10)
+        self.assertFalse(reopened.add_auto_topic(601, 'yardmaster'))
+        self.assertEqual(reopened.auto_topic_rows(), first)
 
     def test_name_and_name_implicit_are_set(self):
         self.store.add_auto_topic(601, 'mayor')

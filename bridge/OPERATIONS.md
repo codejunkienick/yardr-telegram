@@ -67,12 +67,12 @@ missing file, a file others can read, an unknown key or a bad value refuses
 every command with one line naming the problem; nothing falls back to a
 default yard.
 
-A settings file of the gc pack does not load as it is. Its keys are refused
+Legacy settings keys do not load as they are. They are refused
 by name, each with the key that replaced it:
-`settings: city is the gc pack's key; this bridge reads yard (YARDR.md)`,
+`settings: city is a legacy key; use yard (YARDR.md)`,
 and so for `agent` (`crew`), `gc_base_url` (`[yardr] hook_url`) and
 `gc_api_token_file` (`[yardr] hook_secret_file`); a `[[topic]]` `agent`
-refuses as `settings: topic entry <n>: agent is the gc pack's key: name the
+refuses as `settings: topic entry <n>: agent is a legacy key: name the
 crew member with crew`.
 
 | key | required | meaning |
@@ -870,7 +870,7 @@ does the same:
 python3 <repo>/bridge/bridge.py --settings <settings> send --body-file <path> --idempotency-key <stable-key>
 ```
 
-`reply-current` is the same command as `send`, under the gc pack's name.
+`reply-current` is a compatibility alias for `send`.
 `--keyboard-file <path>` attaches an inline keyboard ("Asks" above);
 `--silent` notifies with no sound ("Silent messages" below).
 `pin` keeps one pinned message per slot ("Pinned messages" below).
@@ -878,8 +878,8 @@ Optional `--conversation-id` is the paired chat's id or a configured
 topic's `<chat_id>:topic:<thread_id>`, exactly as the delivery names its
 conversation, and `--topic <name>` names a configured topic instead: the
 message lands in that topic. With neither, a send lands in General
-("Topics"). `--session` is accepted and ignored: the gc pack's sending
-session, which some add-ons still pass.
+("Topics"). `--session` is accepted and ignored for compatibility with
+existing add-ons; it does not select a destination.
 
 Every send is direct: the process that takes it, the daemon for the yard
 API and the CLI process for the command line, delivers it through the
@@ -891,8 +891,8 @@ confirms it ("The message log").
 The command line prints `Telegram delivery confirmed; message ID <id>`. A
 send that is not delivered prints one
 `GC_RECEIPT {"delivered": false, "failure_kind": ..., "reason": ...}` line on
-stderr and exits 1; the line keeps the gc pack's name because the sysmon
-watch and pricewatch add-ons parse it. The yard API answers `delivered`,
+stderr and exits 1; the receipt prefix is stable because delivery consumers
+parse it. The yard API answers `delivered`,
 `message_id`, `conversation` and, when not delivered, `reason` and
 `failure_kind` ("The yard API").
 
@@ -1239,8 +1239,8 @@ accepted all the same ("Inbound").
 
 The ledger's `auto_topics` table keeps the topics the paired user created:
 the thread id, Telegram's name as last seen and whether it was implicit, the
-crew member, when it was first seen, and `bound_at`, which the gc pack set
-and nothing reads now. No message
+crew member, when it was first seen, and the legacy `bound_at` field,
+retained without being read. No message
 text is stored. A thread a `topics` row holds (a settings topic, or a row
 whose name left the settings) is never an auto topic: `bridge.py topics
 --record <name> --thread-id <id>` on an auto topic's thread is allowed and
@@ -1400,7 +1400,7 @@ whose name left the settings, stays as above). The first such update, a
 message, a command, a service message or one the bridge skips, records
 its `auto_topics` row for the settings' `crew`; only `forum_topic_edited`
 records none. The row keeps that crew member, and its `subscribe:` line
-names it; a row copied from a gc bridge's state keeps the gc agent's name,
+names it; a row from an existing state directory keeps its stored crew name,
 so check the line before running it.
 
 **Naming**, from Telegram's service data only; whether Telegram sends the

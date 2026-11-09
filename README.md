@@ -2,9 +2,8 @@
 
 A private Telegram bridge for a [yardr](https://github.com/yardr-dev/yardr)
 yard: one paired chat with the yard's crew, its topics, tap-button asks,
-pins, reactions, typing and on-host voice transcription. It is a fork of
-the Gas City telegram pack (YARDR.md says what changed and why). The
-bridge runs as a service of its own, and the yard reaches it as the
+pins, reactions, typing and on-host voice transcription. The bridge runs
+as a service of its own, and the yard reaches it as the
 declared source `tgbridge` (`yardr/`).
 
 (Terms such as the paired chat and the ledger: `bridge/OPERATIONS.md`, "Terms".)
@@ -78,7 +77,7 @@ Release history: `CHANGELOG.md`.
 ## Prerequisites
 
 - Linux with a systemd user session (`systemctl --user status`). macOS
-  has a launchd renderer inherited from the original pack (`bridge/OPERATIONS.md`,
+  has a launchd renderer (`bridge/OPERATIONS.md`,
   "Install and launch"), untested with yardr.
 - Python 3.11 or later (`python3 --version`), and curl.
 - yardr with source packs, hook verification, thread commands and the yard
@@ -134,7 +133,7 @@ without touching a running yard, and updating, rolling back
 release's own Python dependencies, when it has any, are committed under
 `vendor/`. Why and how: `docs/design/independent-instances.md`; moving a
 bridge whose unit still runs a checkout: `yardr/SETUP.md`, "Move an existing
-bridge to its own installation". To move a bot from a Gas City bridge,
+bridge to its own installation". To move a bot from an existing bridge,
 stop that bridge's unit first (two pollers on one bot conflict), and point
 `state_dir` at a copy of its state directory, so the ledger, the offset,
 the pins and the topics carry over.

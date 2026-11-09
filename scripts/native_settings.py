@@ -11,6 +11,16 @@ import sys
 import tempfile
 import tomllib
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+from bridge import SettingsError, load_settings
+
+
+def validate_settings(raw):
+    with tempfile.NamedTemporaryFile(prefix='native-settings-') as candidate:
+        candidate.write(raw)
+        candidate.flush()
+        load_settings(candidate.name)
+
 
 def private_file(path, flags):
     fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
@@ -52,6 +62,7 @@ def configure(path, home, operator, apply=False):
             if key in yard and present != value:
                 raise ValueError('conflicting yardr.' + key + '; no settings changed')
         if not missing:
+            validate_settings(before)
             return 'native settings match'
         # Refuse inline or unfamiliar table spellings rather than reserialize secret-bearing TOML.
         matches = list(re.finditer(r'^\[yardr\][ \t]*(?:#[^\r\n]*)?\r?$', source, re.MULTILINE))
@@ -66,6 +77,7 @@ def configure(path, home, operator, apply=False):
         changed = tomllib.loads(after.decode())
         if changed != dict(parsed, yardr=dict(yard, **missing)):
             raise ValueError('native settings edit could not preserve the document')
+        validate_settings(after)
         if not apply:
             return 'would add ' + ', '.join('yardr.' + key for key in missing)
         current = path.lstat()
@@ -102,6 +114,9 @@ def main():
     args = parser.parse_args()
     try:
         print(configure(args.settings, args.home, args.operator, args.apply))
+    except SettingsError as error:
+        print('native settings refused: ' + str(error), file=sys.stderr)
+        return 1
     except (OSError, ValueError):
         # TOML and filesystem exceptions can contain secrets or raw input.
         print('native settings refused; check ownership, TOML, home/operator conflicts and backup existence', file=sys.stderr)

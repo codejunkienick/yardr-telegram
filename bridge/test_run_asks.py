@@ -2401,9 +2401,10 @@ class NativeSettingsTests(unittest.TestCase):
                 self.assertNotIn('synthetic-secret', result.stdout + result.stderr)
                 return result
 
+            valid = ('# Keep comments; synthetic-secret\n' + write_settings(root).read_text().replace(
+                '[yardr]', '[yardr] # native keys\nsource = "tgbridge"') + '\n[typing]\nseconds = 3\n')
             for newline in ('\n', '\r\n'):
-                original = ('# Keep comments\n[bot]\ntoken = "synthetic-secret"\n[yardr] # native keys\n'
-                            'source = "tgbridge"\n[limits]\ncalls = 600\nupdates = 300\n').replace('\n', newline).encode()
+                original = valid.replace('\n', newline).encode()
                 path.write_bytes(original)
                 path.chmod(0o600)
                 self.assertEqual(run().returncode, 0)
@@ -2417,9 +2418,45 @@ class NativeSettingsTests(unittest.TestCase):
                 self.assertEqual(backup.read_bytes(), original)
                 self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                loaded = b.load_settings(path)
+                self.assertEqual((loaded.config['yardr_home'], loaded.config['yardr_operator']), (str(home), 'pat'))
+                self.assertEqual(run().stdout.strip(), 'native settings match')
                 self.assertEqual(run('--apply').returncode, 0)
                 self.assertEqual(path.read_bytes(), changed)
                 backup.unlink()
+            conflicts = [
+                ('\n[[command]]\nname = "decide"\ndescription = "Custom decision"\n'
+                 'url = "http://127.0.0.1:1/custom"\n', 'command entry 1 (decide) clashes with /decide'),
+                ('\n[[menu]]\ncommand = "decide"\ndescription = "Custom decision"\n', '[[menu]] /decide clashes'),
+                (''.join(f'\n[[menu]]\ncommand = "custom{i}"\ndescription = "Custom entry"\n'
+                         for i in range(b.MENU_MAX - len(loaded.config['menu']))), '101 menu entries'),
+            ]
+            conflicts.extend(('\n[[command]]\nname = "custom"\ndescription = "Custom command"\n'
+                              'url = "http://127.0.0.1:1/custom"\ncallback_prefix = ' + json.dumps(prefix) + '\n',
+                              'callback_prefix overlaps the bridge-owned decide: prefix')
+                             for prefix in ('decide:', 'dec', 'decide:custom'))
+            for extra, diagnostic in conflicts:
+                path.write_text(valid + extra)
+                self.assertNotIn('yardr_home', b.load_settings(path).config)
+                for native in (False, True):
+                    original = valid + extra
+                    if native:
+                        original = original.replace('[yardr] # native keys',
+                            f'[yardr] # native keys\nhome = "{home}"\noperator = "pat"')
+                    for args in ((), ('--apply',)):
+                        with self.subTest(diagnostic=diagnostic, native=native, args=args):
+                            path.write_text(original)
+                            before = path.read_bytes()
+                            try:
+                                result = run(*args)
+                                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                                self.assertIn(diagnostic, result.stderr)
+                                self.assertEqual(result.stdout, '')
+                                self.assertEqual(path.read_bytes(), before)
+                                self.assertFalse(backup.exists())
+                            finally:
+                                if backup.exists():
+                                    backup.unlink()
             for bad in ('[yardr]\nhome = "/conflicting"\n', '[yardr]\noperator = "another"\n',
                         '[yardr]\nhome = "one"\nhome = "two"\n', 'yardr = {source="tgbridge"}\n',
                         '[yardr]\noperator = "synthetic-secret', '["yardr"]\nsource="tgbridge"\n'):
@@ -2438,10 +2475,14 @@ class NativeSettingsTests(unittest.TestCase):
             self.assertNotEqual(run('--apply').returncode, 0)
             self.assertEqual(target.read_text(), '[yardr]\nsource="tgbridge"\n')
             path.unlink()
-            path.write_text('[yardr]\nhome="~/yard"\nsource="tgbridge"\n')
+            partial = valid.replace('[yardr] # native keys', '[yardr] # native keys\nhome="~/yard"')
+            path.write_text(partial)
             path.chmod(0o600)
             self.assertEqual(run('--apply').returncode, 0)
-            self.assertEqual(path.read_text(), '[yardr]\noperator = "pat"\nhome="~/yard"\nsource="tgbridge"\n')
+            self.assertEqual(path.read_text(), partial.replace('[yardr] # native keys',
+                '[yardr] # native keys\noperator = "pat"'))
+            with patch.dict(os.environ, HOME=tmp):
+                self.assertEqual(b.load_settings(path).config['yardr_home'], str(home))
             path.unlink()
             path.with_name(path.name + '.before-native').unlink()
             for extra in ((), ('--apply',)):

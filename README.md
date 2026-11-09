@@ -53,9 +53,9 @@ Release history: `CHANGELOG.md`.
   user answers some other way, the crew member closes the ask with the
   decision made (`yardr call tgbridge ask_close`): its buttons go and it
   shows the decision.
-- Each yard gets its own bot, settings file, bridge process and delivery
-  ledger on one host, and the bridges share one copy of the code and one
-  whisper.cpp build.
+- Each yard gets its own bot, settings file, bridge process, delivery
+  ledger and installed copy of the code on one host, and the bridges share
+  one whisper.cpp build, its models and the transcription queue.
 - The operator gets setup checks from `install.sh` and `check-install`
   before the bridge runs, and a service for each yard: a systemd user
   unit on Linux and WSL 2, a launchd agent on macOS.
@@ -126,7 +126,10 @@ another. The unit runs `<root>/current/bridge/bridge.py`, and
 copy with the settings' python, so the checkout can change, move or go
 without touching a running yard, and updating, rolling back
 (`install.sh --rollback`) or removing one instance changes no other. A
-release's own Python dependencies are committed under `vendor/`. To move a bot from a Gas City bridge,
+release's own Python dependencies, when it has any, are committed under
+`vendor/`. Why and how: `docs/design/independent-instances.md`; moving a
+bridge whose unit still runs a checkout: `yardr/SETUP.md`, "Move an existing
+bridge to its own installation". To move a bot from a Gas City bridge,
 stop that bridge's unit first (two pollers on one bot conflict), and point
 `state_dir` at a copy of its state directory, so the ledger, the offset,
 the pins and the topics carry over.
@@ -136,7 +139,7 @@ the pins and the topics carry over.
 1. (shell) `systemctl --user disable --now <unit>`, then
    `rm ~/.config/systemd/user/<unit> && systemctl --user daemon-reload`,
    then `rm -rf <root>` (`~/.local/share/yardr-telegram/<unit stem>` by
-   default): its releases, launchers and `service.previous`.
+   default): its releases, launchers, packs and `service.previous`.
 2. (shell) In the yard: `yardr hook rm tgbridge`, then
    `yardr unsubscribe <crew> tgbridge` for each subscribed crew member, then
    `yardr source rm tgbridge`.

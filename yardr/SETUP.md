@@ -460,7 +460,7 @@ instead. The release carries bridge/bridge.py, adjacent run_asks.py, the
 runtime assets and scripts/native_settings.py. No other instance needs to be
 available, and none is changed.
 
-For source-pack preparation use `yardr pack check <reviewed-release>/yardr`
+For source-pack preparation use `yardr pack check <root>/pack`
 (the check is the plan; there is no `pack plan` command). Check uses the
 installation's current bindings and accepts no source-base/source-env flags.
 The reviewed apply must explicitly retain the installation's existing
@@ -472,5 +472,206 @@ real-core test applies this pack twice with an existing named base, private
 credential file, 600/300 limits and a per-call grant, verifying preservation.
 Do not print the credential file. Live metadata checks, apply, any missing key
 setup, grants, independent install and restart belong to that instance's
-operator after review; no final deployment command sequence is asserted while
-the independent-runtime interface is pending.
+operator after review. A bridge whose unit still runs a checkout moves first,
+by [Move an existing bridge to its own installation](#move-an-existing-bridge-to-its-own-installation).
+
+## Move an existing bridge to its own installation
+
+For a bridge whose unit still runs `bridge.py` from a checkout. Its settings,
+token, secrets, state directory, port, bot, source credential, alias and
+grants all stay as they are; what moves is the code the unit runs, the
+launchers, the pack's origin and the skill links. Move one instance at a time:
+no other instance is changed or needs to be running. The design and what it
+does not promise: `docs/design/independent-instances.md`.
+
+The placeholders: `<settings>` the bridge's settings file, `<unit>` its
+`unit` (`<yard>-telegram.service` by default), `<root>` its install root
+(`~/.local/share/yardr-telegram/<unit stem>` unless you pass `--root <root>`
+to every `install.sh`), `<state_dir>` its `state_dir`, `<checkout>` the
+reviewed checkout, `<alias>` the named base the source has selected, if any,
+`<credential file>` the source's env file, and `<service file>` the unit file
+the dry-run names (`$XDG_CONFIG_HOME/systemd/user/<unit>`, by default
+`~/.config/systemd/user/<unit>`). Run every `yardr` command with
+this yard's `YARDR_HOME`. On macOS the service steps are the `launchctl`
+ones in `bridge/OPERATIONS.md`, "Install and launch".
+
+### Dry-run (shell)
+
+From the reviewed, merged checkout, with no tracked changes:
+
+```sh
+git -C <checkout> status --short --untracked-files=no   # prints nothing
+<checkout>/install.sh --settings <settings> --dry-run
+```
+
+It writes nothing and does not contact Telegram. Where the settings name a
+`[yardr] home`, its checks ask that yard's socket for the operator (a read),
+so that yard must be running. Look for:
+
+- `would stage <commit> as <root>/releases/<commit>`;
+- `would replace <service file>: bridge <checkout>/bridge/bridge.py -> <root>/current/bridge/bridge.py; the old file is kept in <root>/service.previous`;
+- an `ok` (or `WARN`) on every check line, and no `FAIL`;
+- `would write pack <root>/pack (base http://127.0.0.1:<port>)`.
+
+It also prints the whole unit it would write: that text names private paths,
+so do not paste it anywhere. Stop and fix the settings, then dry-run again, on:
+
+- `would create callback secret …` or `would create hook secret …`: a running
+  bridge has both, so the settings name the wrong file, and a new secret would
+  match neither the yard's credential nor its hook;
+- a line naming a setting that `is inside the source` or `depends on the
+  source … through …`: that path would go with the checkout. Do what the line
+  says (copy a program or model out, move a file with the unit stopped, or
+  point `python` at an interpreter outside the checkout). install.sh never
+  rewrites the settings.
+
+`would create <queue directory> (mode 700)` is expected where transcription is
+on and the host's shared queue does not exist yet.
+
+### Install (shell)
+
+```sh
+<checkout>/install.sh --settings <settings>
+```
+
+It copies the commit to `<root>/releases/<commit>`, checks the copy, points
+`current` at it, writes the new unit (the old one goes to
+`<root>/service.previous`), `<root>/bin/telegram-bridge`,
+`<root>/bin/voice-transcribe` and `<root>/pack`. It starts and stops nothing:
+the running bridge keeps its old code until the restart below.
+
+### Snapshot the state (shell, optional)
+
+With the unit stopped, so the ledger is not written mid-copy, into a new
+owner-only directory (`mkdir` fails if `<snapshot>` exists: pick another):
+
+```sh
+systemctl --user stop <unit>
+mkdir -m 700 <snapshot> && tar -C <state_dir> -cf <snapshot>/state.tar .
+```
+
+Keep `<snapshot>` outside the root and the checkout. A rollback does not
+need it: a release reads the ledger the next one wrote. Restore it only for a
+damaged state directory, with the unit stopped; it lacks every send made since.
+
+### Restart the same unit (shell)
+
+```sh
+<root>/bin/telegram-bridge probe
+systemctl --user daemon-reload
+systemctl --user restart <unit>
+<root>/bin/telegram-bridge set-commands
+```
+
+The same unit, the same bot: one poller, before and after.
+
+### Verify (shell)
+
+```sh
+systemctl --user show -p ExecStart <unit>   # its argv[]= names <root>/current/bridge/bridge.py
+systemctl --user is-active <unit>           # active
+<root>/bin/telegram-bridge check-install    # ok release files match SHA256SUMS, ok nothing the settings name depends on the source <checkout>
+yardr source check tgbridge                 # health answers 200
+```
+
+### The source pack (shell)
+
+Read the bindings the source has, without printing the credential:
+
+```sh
+yardr source show tgbridge          # "(base <alias>)" when an alias is selected
+yardr source show tgbridge --json   # source.env_file is the <credential file>
+yardr pack check <root>/pack
+```
+
+`pack check` plans against the current bindings and takes no binding flags.
+Apply with the bindings the source already has: `--source-base` only where an
+alias is selected, `--source-env` always.
+
+```sh
+yardr pack apply <root>/pack --source-base tgbridge=<alias> --source-env tgbridge=<credential file>
+# or, with no alias selected:
+yardr pack apply <root>/pack --source-env tgbridge=<credential file>
+yardr pack list                     # tgbridge is imported from <root>/pack
+yardr source check tgbridge
+```
+
+The apply keeps the alias and its credential pairing, the limits, the grants
+and the user identity; `yardr source show tgbridge` still shows the same base.
+Later installs and rollbacks publish into `<root>/pack`, and `yardr pack apply
+tgbridge` reads it from there.
+
+### The crew's skills (shell)
+
+Each crew skill folder that links a skill into the checkout links the
+instance's copy instead, through `current`, so it follows installs and
+rollbacks:
+
+```sh
+ls -l <crew skill folder>
+ln -sfn <root>/current/skills/<name> <crew skill folder>/<name>
+```
+
+for each of `telegram-formatting`, `telegram-attachments` and
+`telegram-voice-transcripts` it links. A skill copied rather than linked is
+left as it is.
+
+### The voice-transcribe link (shell, your choice)
+
+An older install made `~/.local/bin/voice-transcribe` a link into a checkout;
+install.sh no longer creates, changes or removes it. Each instance has its
+own `<root>/bin/voice-transcribe`, and every one joins the same host queue.
+Choose one:
+
+```sh
+readlink ~/.local/bin/voice-transcribe
+# leave it, as long as the checkout it names stays; or one instance's own:
+ln -sfn <root>/bin/voice-transcribe ~/.local/bin/voice-transcribe
+# or none, so callers name <root>/bin/voice-transcribe:
+rm ~/.local/bin/voice-transcribe
+```
+
+### Roll back (shell)
+
+After a later install, when there is a previous release:
+
+```sh
+<root>/current/install.sh --settings <settings> --rollback --dry-run
+<root>/current/install.sh --settings <settings> --rollback
+<root>/bin/telegram-bridge probe
+systemctl --user daemon-reload
+systemctl --user restart <unit>
+yardr pack check <root>/pack        # where it shows a change, apply as above
+```
+
+It verifies `previous` against its `SHA256SUMS`, swaps `current` and
+`previous`, and returns `<root>/pack` to that release's own. A second
+`--rollback` goes forward again.
+
+Undoing this first move, when there is no previous release (`--rollback`
+says so and names `service.previous`):
+
+```sh
+systemctl --user stop <unit>
+install -m 644 <root>/service.previous <service file>   # the file the refusal names
+systemctl --user daemon-reload
+systemctl --user start <unit>
+```
+
+The unit runs the checkout again, so the checkout must still be there. The
+pack applied above still works with it (the same port or alias); apply
+`<checkout>/yardr` with the same flags only to move the recorded origin back.
+Point any relinked skills and the voice-transcribe link back the same way.
+
+### Never
+
+- Copy the token, a secret, the credential file or the settings into the
+  root, the checkout, a note or a chat: install.sh reads them where they are.
+- Start a second unit, or a second `run`, for the same bot: two pollers
+  conflict, and two ledgers lose track of each other's sends. Restart the
+  existing `<unit>`.
+- Delete the checkout, the state directory or `<root>/service.previous`
+  before the verification and the pack steps pass: the undo above runs the
+  checkout and its old unit.
+- Reset the alias, re-key the source or grant the calls again: the apply
+  keeps them.

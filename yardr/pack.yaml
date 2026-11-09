@@ -3,7 +3,7 @@
 # machine (YARDR.md); this pack declares the source the yard talks to it
 # through, hears what it relays, and answers through it.
 #
-#   yardr pack apply ~/work/yardr-telegram/yardr --source-env tgbridge=<file>
+#   yardr pack apply <install root>/pack --source-env tgbridge=<file>
 #
 # The source is named tgbridge, never telegram: yardr's own telegram pack
 # is a webhook on the same Bot API, and the two cannot serve one bot.

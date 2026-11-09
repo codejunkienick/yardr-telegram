@@ -127,7 +127,10 @@ with no tracked changes; its HEAD is the release. The root defaults to
 - `current` and `previous`: links to releases;
 - `bin/telegram-bridge` (`<python> <root>/current/bridge/bridge.py
   --settings <settings>`) and `bin/voice-transcribe`;
-- `service.previous`: the service file the install last replaced.
+- `service.previous`: the service file the install last replaced;
+- `packs/<digest>/` and `pack`: a release's `yardr/` with its `base` line
+  naming the settings' port, and the link to the active release's one, which
+  the yard applies (`yardr/SETUP.md`, step 5).
 
 An installed instance runs, reads and writes nothing inside the source it
 was installed from: not its root, not the settings file, and not `python`, a
@@ -158,8 +161,10 @@ In order, it:
    and their SHA-256). A failure removes the stage and changes nothing else;
 5. activates: `previous` becomes the old `current`, and `current` the
    release. It then writes the service file and the launchers, each only
-   when it changed. Every one is written beside its place first, and a
-   failure puts back what was already replaced. On Linux and WSL 2 the
+   when it changed, and moves `pack` last. Every one is written beside its
+   place first, and a failure puts back what was already replaced. One
+   activation of a root runs at a time (a `flock` on it), and a signal waits
+   until the renames or their undo are done. On Linux and WSL 2 the
    service file is the systemd unit `~/.config/systemd/user/<unit>`; on
    macOS it is the LaunchAgent plist `~/Library/LaunchAgents/<label>.plist`,
    where `<label>` is the `unit` name without its `.service` suffix. A
@@ -169,15 +174,15 @@ In order, it:
 `install.sh --settings <settings> --rollback` runs from any release (for
 example `<root>/current/install.sh`) and needs no git. It verifies
 `previous` against its `SHA256SUMS`, runs its `check-install`, and swaps
-`current` and `previous`. After the first install there is no previous
-release: restoring `service.previous` over the service file is that
-rollback. Releases are never pruned: a running bridge keeps the release
+`current` and `previous`; `pack` returns to that release's own. After the
+first install there is no previous release: restoring `service.previous`
+over the service file is that rollback. Releases are never pruned: a running bridge keeps the release
 its `current` resolved to when it started. Removing an instance is
 disabling its service, removing its service file and `rm -rf <root>`.
 
-A release's pinned pure-Python dependencies are committed under `vendor/`,
-which `bridge.py` puts first on `sys.path`. Nothing is installed with pip
-or fetched from the network. `install.sh` is idempotent, never starts or
+A release's pinned pure-Python dependencies, when it has any, are committed
+under `vendor/`, which `bridge.py` puts first on `sys.path`. Nothing is
+installed with pip or fetched from the network. `install.sh` is idempotent, never starts or
 stops a service, never touches `~/.local/bin/voice-transcribe` and never
 contacts Telegram or the yard; `--dry-run` only reports and writes nothing.
 The yard's side, from its hook listener to the subscriptions, is

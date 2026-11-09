@@ -3,9 +3,9 @@
 # the chat's / commands and keeps the delivery ledger; the yard reaches it
 # on loopback, and it reaches the yard's hook listener on loopback.
 #
-# One bridge serves one yard with one bot, each on its own port: base is
-# the personal yard's bridge, and `yardr source set tgbridge base=imd`
-# points the company yard at its own.
+# One bridge serves one yard with one bot, each on its own port: install.sh
+# renders base with the instance's port into <install root>/pack. The named
+# bases are legacy aliases an installation that selected one keeps.
 name: tgbridge
 about: The operator's Telegram chat and its topics, through the yardr-telegram bridge on this machine.
 base: http://127.0.0.1:8941

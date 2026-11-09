@@ -1,8 +1,10 @@
 # Contributing
 
-Thanks for helping improve this pack. One copy of the code serves every
-city that adopts it, each configured only by its own settings file, so
-changes must stay true for every adopter.
+Thanks for helping improve this pack. Every city that adopts it runs its own
+installed copy of the same code, each configured only by its own settings
+file, so changes must stay true for every adopter. Instances on one host may
+run different releases, and an operator may roll one back
+(`docs/design/independent-instances.md`).
 
 ## Run the tests
 
@@ -24,6 +26,18 @@ Every settings key a live city's file already holds keeps loading with
 the same meaning. A new behaviour is a new key with a default that
 preserves the old behaviour; never repurpose or silently drop a key.
 A settings problem refuses to load with one line naming it.
+
+## Release compatibility
+
+- The SQLite ledger a release writes stays readable by the release before
+  it, so `install.sh --rollback` works without restoring state.
+- The shared transcription queue's on-disk protocol (`QUEUE_SUBDIR`,
+  `queue.lock` and the tickets in `transcriber/voice_transcribe.py`) stays
+  compatible across releases: instances on one host may run different ones
+  against the same queue.
+- An installed runtime imports only the standard library and its own
+  release's `vendor/`: nothing from the checkout, another instance, a shared
+  virtual environment or the network.
 
 ## What belongs here
 

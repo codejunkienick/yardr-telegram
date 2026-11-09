@@ -1213,6 +1213,8 @@ class Bridge:
         unit polls; running it again sets the same list again.
         """
         entries = list(self.menu) + [(c['name'], c['description']) for c in self.commands.values() if c['menu']]
+        if self.native_decide():
+            entries.append((self.DECIDE_COMMAND['name'], self.DECIDE_COMMAND['description']))
         commands = [dict(command=name, description=text) for name, text in entries]
         scope = dict(type='chat', chat_id=self.config['chat_id'])
         status, data = self.telegram('setMyCommands', dict(commands=commands, scope=scope))
@@ -2056,6 +2058,10 @@ class Bridge:
         if self.run_asks.reply(self._update_id(update), message):
             return
         found = self._match_command(text) if forward is None and attachment is None and isinstance(text, str) else None
+        if found is not None and found[0] is self.DECIDE_COMMAND:
+            self._record_auto_topic(thread_id, message)
+            self.run_asks.decide_command(self._update_id(update), found[1], thread_id)
+            return
         if found is not None:
             # A command goes to its handler, never to the yard.
             command, args = found
@@ -2369,6 +2375,9 @@ class Bridge:
     # may equal or overlap it; no handler output may use it.
     ASK_CALLBACK_PREFIX = 'ask:'
     RESERVED_CALLBACK_PREFIXES = ('ask:', 'runask:', 'askcard:')
+    # Owned by the bridge only with native [yardr] home and operator; another bridge's /decide stays its own.
+    DECIDE_CALLBACK_PREFIX = 'decide:'
+    DECIDE_COMMAND = dict(name='decide', description='Open decisions waiting on you', menu=True)
     ASK_ALREADY_ANSWERED = 'Already answered'
     # The line a close (ask-close) appends to the ask's text or caption.
     ASK_DECIDED_PREFIX = '\n✓ Decided: '
@@ -2386,11 +2395,22 @@ class Bridge:
         """(command, args) for a registered /<name> or /<name>@<this bot>, alone
         or followed by a space and arguments; None for anything else."""
         match = self._COMMAND_TEXT_RE.match(text)
-        if not match or match.group(1) not in self.commands:
+        native = match and match.group(1) == 'decide' and self.native_decide()
+        if not match or (match.group(1) not in self.commands and not native):
             return None
         if match.group(2) is not None and match.group(2).lower() != str(self.account).lower():
             return None  # addressed to another bot
-        return self.commands[match.group(1)], match.group(3) or ''
+        return self.DECIDE_COMMAND if native else self.commands[match.group(1)], match.group(3) or ''
+
+    def native_decide(self):
+        """True when /decide and decide: buttons are the bridge's own: native [yardr] home and operator are set."""
+        return bool(self.config.get('yardr_home') and self.config.get('yardr_operator'))
+
+    def decide_conversation(self, thread_id):
+        """The conversation /decide answers in: the paired chat, or a configured or served topic; None for another thread."""
+        if thread_id is None:
+            return self.conversation
+        return self.conversation_for_id(f"{self.config['chat_id']}:topic:{thread_id}")
 
     def _callback_command(self, data):
         for command in self.commands.values():
@@ -2622,7 +2642,8 @@ class Bridge:
                     # never be relayed. Refuse rather than mislabel an answer.
                     return None, 'invalid_keyboard'
                 seen.add(data)
-                if data.startswith(('runask:', 'askcard:')):
+                if data.startswith(('runask:', 'askcard:')) or (
+                        self.native_decide() and data.startswith(self.DECIDE_CALLBACK_PREFIX)):
                     return None, 'foreign_callback_data'
                 if data.startswith(self.ASK_CALLBACK_PREFIX):
                     if self._ask_choice(data) is None:
@@ -2825,6 +2846,9 @@ class Bridge:
             reason = 'no_registered_prefix'
         elif data.startswith(('runask:', 'askcard:')):
             self.run_asks.callback(update_id, query)
+            return
+        elif data.startswith(self.DECIDE_CALLBACK_PREFIX) and self.native_decide():
+            self.run_asks.decide_callback(update_id, query)
             return
         elif data.startswith(self.ASK_CALLBACK_PREFIX):
             self.inbound_ask(update_id, query, data)
@@ -4996,13 +5020,16 @@ def _handler_url_setting(value, what):
     return value
 
 
-def _command_settings(data, menu):
+def _command_settings(data, menu, native=False):
     """The validated [[command]] entries, in file order, each with its
-    defaults filled in. `start` and every [[menu]] command always clash."""
+    defaults filled in. `start` and every [[menu]] command always clash;
+    with native [yardr] keys, `decide` and its decide: prefix do too."""
     entries = data.get('command', [])
     if not isinstance(entries, list) or len(entries) > MENU_MAX or any(not isinstance(e, dict) for e in entries):
         raise SettingsError(f'settings: command must be a list of at most {MENU_MAX} [[command]] tables')
     menu_names = {name for name, _ in menu}
+    reserved = RESERVED_COMMANDS + (('decide',) if native else ())
+    prefixes = Bridge.RESERVED_CALLBACK_PREFIXES + ((Bridge.DECIDE_CALLBACK_PREFIX,) if native else ())
     commands = []
     for index, item in enumerate(entries, 1):
         name = _text_setting(item.get('name'), f'command entry {index} name', _COMMAND_RE)
@@ -5012,7 +5039,7 @@ def _command_settings(data, menu):
             raise SettingsError(f'settings: unknown key {unknown[0]} in {label}')
         if any(name == other['name'] for other in commands):
             raise SettingsError(f'settings: {label} repeats a command name')
-        if name in RESERVED_COMMANDS or name in menu_names:
+        if name in reserved or name in menu_names:
             raise SettingsError(f'settings: {label} clashes with /{name}, which the bridge or [[menu]] already has')
         command = dict(name=name, description=_text_setting(item.get('description'), f'{label} description', limit=256),
                        menu=_bool_setting(item.get('menu', True), f'{label} menu'),
@@ -5029,15 +5056,15 @@ def _command_settings(data, menu):
         for other in commands:
             if prefix.startswith(other['callback_prefix']) or other['callback_prefix'].startswith(prefix):
                 raise SettingsError(f"settings: {label} callback_prefix overlaps the one of /{other['name']}")
-        for reserved in Bridge.RESERVED_CALLBACK_PREFIXES:
-            if prefix.startswith(reserved) or reserved.startswith(prefix):
-                raise SettingsError(f'settings: {label} callback_prefix overlaps the bridge-owned {reserved} prefix')
+        for owned in prefixes:
+            if prefix.startswith(owned) or owned.startswith(prefix):
+                raise SettingsError(f'settings: {label} callback_prefix overlaps the bridge-owned {owned} prefix')
         command['callback_prefix'] = prefix
         commands.append(command)
-    shown = len(menu) + sum(1 for command in commands if command['menu'])
+    shown = len(menu) + sum(1 for command in commands if command['menu']) + bool(native)
     if shown > MENU_MAX:
         raise SettingsError(f'settings: {shown} menu entries ([[menu]] and [[command]] with menu = true); '
-                            f'Telegram takes at most {MENU_MAX}')
+                            f'Telegram takes at most {MENU_MAX}' + (' (with the native /decide)' if native else ''))
     return tuple(commands)
 
 
@@ -5148,7 +5175,9 @@ def load_settings(path, home=None):
             raise SettingsError(f'settings: menu entry {index + 1} needs exactly command and description')
         menu_entries.append((_text_setting(item['command'], f'menu entry {index + 1} command', _COMMAND_RE),
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
-    city_commands = _command_settings(data, menu_entries)
+    if native and any(name == 'decide' for name, _ in menu_entries):
+        raise SettingsError('settings: [[menu]] /decide clashes with the native /decide the bridge owns with [yardr] home and operator')
+    city_commands = _command_settings(data, menu_entries, bool(native))
 
     config = dict(yard=yard, account_id=account, hook_url=hook_url, yardr_source=source,
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),

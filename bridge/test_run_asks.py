@@ -76,6 +76,9 @@ class NativeSocket:
         self.mode = None
         self.read_statuses = []
         self.bead = dict(id='sample-1', title='Synthetic change')
+        # Several beads, as the core's Bead and UserAsks read them; None keeps the one ask above.
+        self.beads = None
+        self.raw_queue = None
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -95,32 +98,41 @@ class NativeSocket:
                     if owner.mode == 'unreadable':
                         self.send_error(503)
                         return
-                    result = dict(owner.bead, asks=[owner.ask])
+                    if owner.beads is not None and args['bead'] not in owner.beads:
+                        self.reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
+                        return
+                    result = owner.beads[args['bead']] if owner.beads is not None else dict(owner.bead, asks=[owner.ask])
+                elif method == 'UserAsks':
+                    if owner.mode == 'unreadable':
+                        self.send_error(503)
+                        return
+                    result = owner.queue(args) if owner.raw_queue is None else owner.raw_queue
                 elif method in ('ApproveAsk', 'DeclineAsk', 'AnswerAsk', 'DeferAsk',
                                 'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected'):
+                    target = owner.target(args)
                     if method.endswith('Expected'):
                         if owner.mode == 'old-method':
                             self.reply({'error': {'code': 'error', 'message': 'no such method ' + method}})
                             return
-                        if args.get('turn') != owner.ask.get('turn'):
+                        if args.get('turn') != target.get('turn'):
                             self.reply({'error': {'code': 'conflict', 'message': 'stale turn'}})
                             return
                         method = method.removesuffix('Expected')
-                    replacing = method == 'AnswerAsk' and owner.ask['state'] == 'answered' and owner.ask.get('options')
-                    if (owner.ask['state'] != 'open' and not replacing) or owner.mode == 'refused':
+                    replacing = method == 'AnswerAsk' and target['state'] == 'answered' and target.get('options')
+                    if (target['state'] != 'open' and not replacing) or owner.mode == 'refused':
                         self.reply({'error': {'code': 'conflict', 'message': 'refused'}})
                         return
                     if owner.mode != 'lost-open':
-                        owner.ask['turn'] = owner.ask.get('turn', 0) + 1
-                        owner.ask['state'] = {'ApproveAsk': 'answered', 'AnswerAsk': 'answered',
+                        target['turn'] = target.get('turn', 0) + 1
+                        target['state'] = {'ApproveAsk': 'answered', 'AnswerAsk': 'answered',
                                               'DeclineAsk': 'declined', 'DeferAsk': 'put aside'}[method]
-                        owner.ask['words'] = args.get('words', 'canonical decision')
+                        target['words'] = args.get('words', 'canonical decision')
                         if method == 'AnswerAsk':
-                            owner.ask['option'] = args['option']
+                            target['option'] = args['option']
                         if method == 'DeferAsk':
-                            owner.ask['return_at'] = '2026-01-02T00:00:00Z'
+                            target['return_at'] = '2026-01-02T00:00:00Z'
                         if method == 'ApproveAsk':
-                            owner.ask['ran'] = dict(argv=owner.ask['run']['argv'],
+                            target['ran'] = dict(argv=target['run']['argv'],
                                                    result=n.PENDING if owner.mode == 'carrying' else 'stored operation applied')
                     if owner.mode == 'lost-unreadable':
                         owner.mode = 'unreadable'
@@ -154,13 +166,38 @@ class NativeSocket:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
+    def beads_view(self):
+        return self.beads if self.beads is not None else {self.bead['id']: dict(self.bead, asks=[self.ask])}
+
+    def target(self, args):
+        if self.beads is None:
+            return self.ask
+        return next(a for a in self.beads[args['bead']]['asks'] if a['ask'] == args['ask'])
+
+    def queue(self, args):
+        # The core's UserAsks: open asks to the name, oldest first, decided beside them.
+        rows = []
+        for bead in self.beads_view().values():
+            for ask in bead['asks']:
+                if ask['to'] != args['name'] or ask['state'] != 'open':
+                    continue
+                row = dict(bead=bead['id'], bead_title=bead['title'], topic='', ask=ask['ask'], question=ask['question'],
+                           asker=ask['asker'], since=ask['since'], turn=ask.get('turn', 0))
+                for key in ('secret', 'run', 'setup', 'identity', 'depot_push', 'weight'):
+                    if ask.get(key):
+                        row[key] = ask[key]
+                rows.append(row)
+        return dict(open=sorted(rows, key=lambda row: row['ask']), decided=[])
+
     def close(self):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
 
 
-class NativeTests(BridgeTestCase):
+class NativeCase(BridgeTestCase):
+    """A bridge on the fake native socket and fake Telegram; carries no tests."""
+
     def setUp(self):
         super().setUp()
         self.home = Path(self.tmp.name) / 'yard'
@@ -237,6 +274,8 @@ class NativeTests(BridgeTestCase):
         self.reset_native(decision() if ask is None else ask)
         return self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1', **kwargs))
 
+
+class NativeTests(NativeCase):
     def test_ordinary_options_words_later_reopen_decline_and_native_close(self):
         self.assertTrue(self.create_decision()['delivered'])
         card = self.calls[-1][1]

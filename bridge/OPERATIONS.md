@@ -2323,3 +2323,59 @@ a claim that every old custom-prefix configuration loads unchanged. No ledger
 migration or deletion is needed. The setup guide's ordinary-decision section
 covers the minimum grant, private home/operator check/apply helper, verified
 core baseline and pending independent-runtime deployment prerequisite.
+
+## /decide: the operator's open decisions
+
+With native `[yardr] home` and `operator` set, `/decide` is the bridge's own
+command. It is never relayed and runs no add-on. Without those keys a
+`[[command]]` named `decide` and its `decide:` prefix keep their handler, as
+before.
+
+`/decide` verifies the paired user, chat and bot as every command does, then
+the operator's role and Telegram identity through `GetUser`, then reads the
+core's public `UserAsks` {name, viewer} for that operator on this instance's
+socket. The core filters the recipient and states: answered, declined, taken
+back and put-aside asks are not listed; a put-aside ask returns when the core
+returns it. Nothing is cached between taps: every page, refresh and selection
+reads the queue again. An unknown field or shape in the queue refuses the
+whole list.
+
+The list is plain text, six entries a page, oldest first: the question (cut
+to 100 UTF-16 units, never inside a combining or joined character), then the
+kind, the ID, the bead's title and the asker. An ID is `<bead>#<ask>`: the
+bead is unique in this yard and the ask is that bead's note seq; each bridge
+serves one yard, so no ID is looked up anywhere else. Decisions, words
+questions, run and single-file skill proposals get a button. Secret, setup,
+identity, depot-push, weighted, terminal-only run (file-carrying or
+input-wanting) and linked-yard (`bead@peer`) asks are listed with
+"Not complete in Telegram" and no button; selecting one says so and sends no
+card or generic approval. Prev/Next/Refresh edit the list message in place;
+a page past the end shows the last page.
+
+A button (`decide:o:<id>`, the native row id) or `/decide <bead>#<ask>` opens
+the card through the same `create` path as `ask_card`/`run_ask`: same row id,
+render, delivery key, ledger and callbacks, so an open card is never sent
+twice. If the card is already delivered, the bridge says so, replying to the
+card when it is in the same conversation. A card keeps the conversation and
+silent setting it was first sent with; when the bridge no longer serves that
+conversation, `/decide` refuses rather than relocate it. `/decide <bead>` opens
+the bead's only open ask, or lists its IDs when there are several. A selection
+of an ask no longer open reports its canonical outcome (answered with option
+and words, a run's approved, failed or to be carried out with its result, put
+aside until, declined, taken back by) and sends no card. An ambiguous card
+send is reported as unconfirmed and never retried by `/decide`.
+
+The command answers in the thread it came from when that is the paired chat
+or a configured or served topic; any other thread gets a refusal there and
+nothing is read. A callback must come from the paired user on an unforwarded
+message of this bot in the paired chat and a served thread. An ID from another
+binding or a tampered button is "out of date". A yard that does not answer
+gets "The yard <yard> is unavailable"; nothing is listed or opened.
+
+With native keys, settings refuse a `[[command]]` or `[[menu]]` named
+`decide` and a `callback_prefix` overlapping `decide:`, and publish keyboards
+refuse `decide:` buttons. `set-commands` adds `/decide` to the menu (it
+counts toward Telegram's 100). The core needs `UserAsks` (public Calls
+contract) beside the ordinary-card baseline; no new grant, setting, table
+migration or service. The bridge adds one SQLite table, `decide_ids`, mapping
+a button id to its bead and ask.

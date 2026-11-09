@@ -18,6 +18,7 @@ CAP = 3500
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
+READS = ('Bead', 'GetUser', 'UserAsks')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 
 
@@ -87,7 +88,7 @@ class YardSocketClient:
             try:
                 return self._call(method, arguments)
             except RPCUnavailable:
-                if method not in ('Bead', 'GetUser') or attempt == 2:
+                if method not in READS or attempt == 2:
                     raise
                 time.sleep(.05 * (attempt + 1))
 
@@ -119,7 +120,7 @@ class YardSocketClient:
                     raw = response.read(8 * 1024 * 1024 + 1)
                 finally:
                     response.close()
-                if response.status == 503 and method in ('Bead', 'GetUser'):
+                if response.status == 503 and method in READS:
                     raise RPCUnavailable(f'native {method} unavailable (503)')
                 if response.status != 200 or len(raw) > 8 * 1024 * 1024:
                     raise ValueError()
@@ -394,6 +395,22 @@ def validate_skill(ask):
         raise NativeError('invalid native skill complete review or weight')
 
 
+def run_scope(run):
+    """The argv of a run proposal a card can carry whole; refuses input and file-carrying runs."""
+    for key in ('ask', 'carried'):
+        if key in run and not isinstance(run[key], list):
+            raise NativeError('invalid native run.' + key)
+    if run.get('ask'):
+        raise NativeError('run_ask_requires_input_use_terminal' + FALLBACK)
+    argv = lines(run.get('argv'), 'run.argv')
+    if not argv or not all(argv):
+        raise NativeError('invalid native run.argv')
+    if ((run.get('carried') and argv[:2] != ['skill', 'add']) or run.get('pack') is not None
+            or argv[:2] in (['source', 'add'], ['pack', 'apply'], ['crew', 'add'])):
+        raise NativeError('run_ask_carries_files_use_terminal' + FALLBACK)
+    return argv
+
+
 def validate(ask, operator):
     known = {'ask', 'to', 'asker', 'since', 'question', 'context', 'options', 'recommend', 'why', 'about',
              'state', 'option', 'words', 'by', 'return_at', 'picks_before', 'secret', 'concealed', 'given',
@@ -410,17 +427,8 @@ def validate(ask, operator):
     run = ask['run']
     if set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack', 'ask'}:
         raise NativeError('run_ask_unknown_payload' + FALLBACK)
-    for key in ('ask', 'carried'):
-        if key in run and not isinstance(run[key], list):
-            raise NativeError('invalid native run.' + key)
-    if run.get('ask'):
-        raise NativeError('run_ask_requires_input_use_terminal' + FALLBACK)
-    argv = lines(run.get('argv'), 'run.argv')
-    if not argv or not all(argv):
-        raise NativeError('invalid native run.argv')
+    argv = run_scope(run)
     skill = argv[:2] == ['skill', 'add']
-    if (run.get('carried') and not skill) or run.get('pack') is not None or argv[:2] in (['source', 'add'], ['pack', 'apply'], ['crew', 'add']):
-        raise NativeError('run_ask_carries_files_use_terminal' + FALLBACK)
     for key in ('question', 'asker', 'to', 'state'):
         text(ask.get(key), key)
     lines(ask.get('context'), 'context')
@@ -537,6 +545,51 @@ def render_decision(config, bead, ask):
     return plain, escape(plain)
 
 
+def outcome(ask, options):
+    """The canonical outcome line of a decision that is no longer open."""
+    state, words = ask['state'], text(ask.get('words', ''), 'words')
+    if state == 'answered':
+        option = ask.get('option', 0)
+        if type(option) is not int or (options and not 1 <= option <= len(options)) or (not options and option != 0):
+            raise NativeError('invalid native answered option')
+        footer = '✓ Answered'
+        if option:
+            footer += f": {option}. {options[option - 1]['label']}"
+        if words:
+            footer += '\n' + words
+    elif state == 'put aside':
+        footer = '⏳ Put aside'
+        if ask.get('return_at'):
+            footer += ' until ' + text(ask['return_at'], 'return_at')
+    elif state == 'taken back':
+        footer = '✕ Taken back by ' + text(ask.get('by'), 'by') + ': ' + words
+    else:
+        footer = '✕ Declined: ' + words
+    return footer
+
+
+def run_outcome(ask):
+    """(state, canonical outcome) of a run ask that is answered, declined or taken back."""
+    state = ask['state']
+    if state == 'answered':
+        ran = ask.get('ran')
+        if (not isinstance(ran, dict) or set(ran) - {'argv', 'result', 'pending_reason', 'failed'}
+                or lines(ran.get('argv'), 'ran.argv') != ask['run'].get('argv')
+                or type(ran.get('failed', False)) is not bool):
+            raise NativeError('invalid native ran response')
+        result = text(ran.get('result'), 'ran.result', controls=True)
+        pending_reason = text(ran.get('pending_reason', ''), 'ran.pending_reason', controls=True)
+        state = 'failed' if ran.get('failed') else 'carrying' if result == PENDING else 'approved'
+        label = {'failed': '✕ approved, failed', 'carrying': '⏳ approved, to be carried out',
+                 'approved': '✓ approval recorded' if not result else '✓ approved, ran'}[state]
+        footer = label + ': ' + text(ask['run'].get('command'), 'run.command') + '\n' + result
+        if pending_reason:
+            footer += '\n' + pending_reason
+        return state, footer
+    words = text(ask.get('words', ''), 'words')
+    return state, '✕ ' + ('Taken back by ' + text(ask.get('by'), 'by') if state == 'taken back' else 'Declined') + ': ' + words
+
+
 def skill_bundle(config, bead, ask, proposal):
     run, carried = ask['run'], ask['run']['carried'][0]
     file = carried['files'][0]
@@ -586,6 +639,75 @@ def chunks(value, limit=3500):
         yield ''.join(chunk)
 
 
+DECIDE_PAGE = 6
+BEAD_ID = r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}'
+QUEUE_REQUIRED = {'bead', 'bead_title', 'ask', 'question', 'asker', 'turn'}
+QUEUE_KEYS = QUEUE_REQUIRED | {'topic', 'since', 'secret', 'concealed', 'run', 'setup', 'identity', 'depot_push', 'weight'}
+UNSHOWN = (('secret', 'secret'), ('setup', 'setup'), ('identity', 'identity'), ('depot_push', 'depot push'))
+
+
+def queue(value):
+    """The open rows of a canonical UserAsks queue, each with its kind and whether a card shows it whole."""
+    if (not isinstance(value, dict) or set(value) != {'open', 'decided'}
+            or not isinstance(value['open'], list) or not isinstance(value['decided'], list)):
+        raise NativeError('invalid native UserAsks response')
+    entries = []
+    for row in value['open']:
+        if (not isinstance(row, dict) or set(row) - QUEUE_KEYS or not QUEUE_REQUIRED <= set(row)
+                or type(row['ask']) is not int or not 0 < row['ask'] < 2**64
+                or type(row['turn']) is not int or row['turn'] < 0 or not isinstance(row['bead'], str)
+                or not re.fullmatch(BEAD_ID + '(@' + BEAD_ID + ')?', row['bead'])):
+            raise NativeError('invalid native UserAsks response')
+        for key in ('bead_title', 'question', 'asker', 'topic', 'since'):
+            text(row.get(key, ''), 'UserAsks.' + key)
+        kind, shown = queue_kind(row)
+        entries.append(dict(bead=row['bead'], ask=row['ask'], title=row['bead_title'], question=row['question'],
+                            asker=row['asker'], kind=kind, shown=shown))
+    if len({(entry['bead'], entry['ask']) for entry in entries}) != len(entries):
+        raise NativeError('invalid native UserAsks response')
+    return entries
+
+
+def queue_kind(row):
+    if '@' in row['bead']:
+        return 'linked yard', False
+    for key, kind in UNSHOWN:
+        if row.get(key) is not None:
+            return kind, False
+    if row.get('run') is not None:
+        if not isinstance(row['run'], dict):
+            raise NativeError('invalid native UserAsks run')
+        try:
+            argv = run_scope(row['run'])
+        except NativeError as error:
+            if not str(error).endswith(FALLBACK):
+                raise
+            return 'terminal-only run', False
+        return ('skill' if argv[:2] == ['skill', 'add'] else 'run'), True
+    if row.get('weight'):
+        return 'weighted decision', False
+    return 'decision', True
+
+
+def card_kind(entry):
+    return 'run' if entry['kind'] in ('run', 'skill') else 'decision'
+
+
+def short(value, limit):
+    """One line of at most limit UTF-16 units, cut before a combining or joined character."""
+    value = ' '.join(value.split())
+    if units(value) <= limit:
+        return value
+    end, size = 0, units('…')
+    while size + units(value[end]) <= limit:
+        size += units(value[end])
+        end += 1
+    while end > 0 and (unicodedata.combining(value[end]) or value[end] in '\u200d\ufe0e\ufe0f'
+                       or '\U0001f3fb' <= value[end] <= '\U0001f3ff' or value[end - 1] == '\u200d'):
+        end -= 1
+    return value[:end].rstrip() + '…'
+
+
 class RunAsks:
     def __init__(self, bridge, client=None, now=time.time):
         self.bridge, self.store, self.config, self.now = bridge, bridge.store, bridge.config, now
@@ -596,6 +718,7 @@ class RunAsks:
             with self.store.connect() as db:
                 db.execute('CREATE TABLE IF NOT EXISTS run_asks (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
                 db.execute('CREATE TABLE IF NOT EXISTS run_ask_updates (binding TEXT NOT NULL, id INTEGER NOT NULL, PRIMARY KEY(binding,id))')
+                db.execute('CREATE TABLE IF NOT EXISTS decide_ids (id TEXT PRIMARY KEY, bead TEXT NOT NULL, ask TEXT NOT NULL)')
 
     @contextlib.contextmanager
     def lock(self):
@@ -611,6 +734,9 @@ class RunAsks:
             raise NativeError('native_run_asks_not_configured')
         return {key: str(self.config.get(key, 'tgbridge' if key == 'yardr_source' else '')) for key in
                 ('yard', 'yardr_home', 'yardr_operator', 'yardr_source', 'bot_id', 'user_id', 'chat_id')}
+
+    def ident(self, bead_id, number):
+        return digest(dict(binding=self.binding(), bead=bead_id, ask=number))[:24]
 
     def rows(self):
         with self.store.connect() as db:
@@ -714,7 +840,7 @@ class RunAsks:
             if saved and saved[1] != request:
                 raise NativeError('idempotency_key_conflict')
             proposal = self.proposal(bead, ask, conversation)
-            ident = digest(dict(binding=binding, bead=bead_id, ask=number))[:24]
+            ident = self.ident(bead_id, number)
             row = self.get(ident)
             if row:
                 if row.get('kind', 'run') != kind:
@@ -730,15 +856,7 @@ class RunAsks:
             else:
                 if ask['state'] != 'open':
                     raise NativeError('run_ask_not_open')
-                bundle = None
-                if kind == 'decision':
-                    if len(ask.get('options') or []) + 2 > self.bridge.COMMAND_KEYBOARD_MAX_BUTTONS:
-                        raise NativeError('ask_card_too_many_options' + FALLBACK)
-                    plain, card = render_decision(self.config, bead, ask)
-                elif ask['run']['argv'][:2] == ['skill', 'add']:
-                    plain, card, bundle = skill_bundle(self.config, bead, ask, proposal)
-                else:
-                    plain, card = render(self.config, bead, ask)
+                plain, card, bundle = self.card(bead, ask, kind, proposal)
                 row = dict(id=ident, binding=binding, bead=bead_id, ask=number, conversation=conversation,
                            proposal=proposal, plain=plain, html=card, weighty=bool(ask.get('weight')),
                            state='open', pending=None, message_id=None, silent=silent, revision=0)
@@ -762,6 +880,16 @@ class RunAsks:
             if row['message_id'] is not None and ask['state'] != 'open':
                 self.settle(row, ask)
             return receipt
+
+    def card(self, bead, ask, kind, proposal):
+        """(plain, html, bundle) of a new card; one Telegram cannot show whole raises a FALLBACK error."""
+        if kind == 'decision':
+            if len(ask.get('options') or []) + 2 > self.bridge.COMMAND_KEYBOARD_MAX_BUTTONS:
+                raise NativeError('ask_card_too_many_options' + FALLBACK)
+            return (*render_decision(self.config, bead, ask), None)
+        if ask['run']['argv'][:2] == ['skill', 'add']:
+            return skill_bundle(self.config, bead, ask, proposal)
+        return (*render(self.config, bead, ask), None)
 
     def thread(self, row):
         return int(row['conversation'].rpartition(':topic:')[2]) if ':topic:' in row['conversation'] else None
@@ -868,23 +996,7 @@ class RunAsks:
         state = ask['state']
         if state in ('open', 'put aside'):
             return False
-        if state == 'answered':
-            ran = ask.get('ran')
-            if (not isinstance(ran, dict) or set(ran) - {'argv', 'result', 'pending_reason', 'failed'}
-                    or lines(ran.get('argv'), 'ran.argv') != ask['run']['argv']
-                    or type(ran.get('failed', False)) is not bool):
-                raise NativeError('invalid native ran response')
-            result = text(ran.get('result'), 'ran.result', controls=True)
-            pending_reason = text(ran.get('pending_reason', ''), 'ran.pending_reason', controls=True)
-            state = 'failed' if ran.get('failed') else 'carrying' if result == PENDING else 'approved'
-            label = {'failed': '✕ approved, failed', 'carrying': '⏳ approved, to be carried out',
-                     'approved': '✓ approval recorded' if not result else '✓ approved, ran'}[state]
-            footer = label + ': ' + ask['run']['command'] + '\n' + result
-            if pending_reason:
-                footer += '\n' + pending_reason
-        else:
-            words = text(ask.get('words', ''), 'words')
-            footer = '✕ ' + ('Taken back by ' + text(ask.get('by'), 'by') if state == 'taken back' else 'Declined') + ': ' + words
+        state, footer = run_outcome(ask)
         row.update(state=state, pending=None, uncertain=False)
         self.save(row)
         receipt = self.display(row, footer, [])
@@ -944,24 +1056,7 @@ class RunAsks:
         if state == 'open':
             self.present_decision(row, ask)
             return False
-        words = text(ask.get('words', ''), 'words')
-        if state == 'answered':
-            option = ask.get('option', 0)
-            if type(option) is not int or (row['options'] and not 1 <= option <= len(row['options'])) or (not row['options'] and option != 0):
-                raise NativeError('invalid native answered option')
-            footer = '✓ Answered'
-            if option:
-                footer += f": {option}. {row['options'][option - 1]['label']}"
-            if words:
-                footer += '\n' + words
-        elif state == 'put aside':
-            footer = '⏳ Put aside'
-            if ask.get('return_at'):
-                footer += ' until ' + text(ask['return_at'], 'return_at')
-        elif state == 'taken back':
-            footer = '✕ Taken back by ' + text(ask.get('by'), 'by') + ': ' + words
-        else:
-            footer = '✕ Declined: ' + words
+        footer = outcome(ask, row['options'])
         row.update(state=state, pending=None, uncertain=False)
         self.save(row)
         latest = self.generation(row, row['turn'])
@@ -1207,3 +1302,219 @@ class RunAsks:
                         self.display(row, 'Weighty confirmation expired; tap Approve again')
                 except NativeError:
                     continue
+
+    # ---- /decide: the operator's open canonical decisions, opened as the same native cards ----
+
+    def queue(self):
+        verify_operator(self.client, self.config)
+        operator = self.config['yardr_operator']
+        return queue(self.client.call('UserAsks', dict(name=operator, viewer=operator)))
+
+    def decide_list(self, page=1):
+        """The text and keyboard of one page of a fresh read of the queue; a page past its end shows the last."""
+        entries, operator = self.queue(), self.config['yardr_operator']
+        where = f"{self.config['yard']} for {operator}"
+        if not entries:
+            return f'No open decisions in {where}.', [[dict(text='↻ Refresh', callback_data='decide:p:1')]]
+        pages = -(-len(entries) // DECIDE_PAGE)
+        page = min(page, pages)
+        first = (page - 1) * DECIDE_PAGE
+        head = f"{len(entries)} open decision{'s' if len(entries) != 1 else ''} in {where}"
+        out = [head + (f' · page {page}/{pages}' if pages > 1 else ''),
+               'An ID is bead#ask: tap its button or send /decide <ID>.']
+        keyboard, ids = [], []
+        for index, entry in enumerate(entries[first:first + DECIDE_PAGE], first + 1):
+            label = f"{entry['bead']}#{entry['ask']}"
+            out += ['', f"{index}. {short(entry['question'], 100)}",
+                    f"{entry['kind']} · {label} · {short(entry['title'], 48)} · asked by {short(entry['asker'], 32)}"]
+            # showable can recover and save a row: never inside the decide_ids write below.
+            if self.showable(entry):
+                ident = self.ident(entry['bead'], entry['ask'])
+                ids.append((ident, entry['bead'], str(entry['ask'])))
+                keyboard.append([dict(text=f'{index}. {label}', callback_data=f'decide:o:{ident}')])
+            else:
+                out.append('Not complete in Telegram; use Footplate or the yard cards.')
+        with self.store.connect() as db:
+            db.executemany('INSERT OR IGNORE INTO decide_ids VALUES (?,?,?)', ids)
+        nav = [('‹ Prev', page - 1)] if page > 1 else []
+        nav.append(('↻ Refresh', page))
+        nav += [('Next ›', page + 1)] if page < pages else []
+        keyboard.append([dict(text=label, callback_data=f'decide:p:{number}') for label, number in nav])
+        return '\n'.join(out), keyboard
+
+    def showable(self, entry):
+        """Whether selecting entry opens a card: one already sent, or one that renders whole now."""
+        if not entry['shown']:
+            return False
+        if self.card_message(self.get(self.ident(entry['bead'], entry['ask']))):
+            return True
+        kind = card_kind(entry)
+        try:
+            bead, ask = self.fetch(entry['bead'], entry['ask'], kind)
+            self.card(bead, ask, kind, self.proposal(bead, ask, ''))
+        except NativeError as error:
+            if not str(error).endswith(FALLBACK):
+                raise
+            return False
+        return True
+
+    def card_message(self, row):
+        if row is None:
+            return None
+        if row.get('kind') == 'decision':
+            generation = self.generation(row, row['turn'])
+            return generation and (generation['message_id'], row['conversation'])
+        return row['message_id'] and (row['message_id'], row['conversation'])
+
+    def decide_open(self, bead_id, number, conversation):
+        """(notice, card message) after one selection; the notice is None once a card was sent."""
+        label = f'{bead_id}#{number}'
+        entry = next((e for e in self.queue() if e['bead'] == bead_id and e['ask'] == number), None)
+        if entry is None:
+            return self.decide_closed(bead_id, number), None
+        if not self.showable(entry):
+            return f"{label} is a {entry['kind']} ask a Telegram card cannot show whole; use Footplate or the yard cards.", None
+        ident = self.ident(bead_id, number)
+        row = self.get(ident)
+        kind, silent = card_kind(entry), False
+        if row:
+            # A card already sent keeps its own conversation, silence and kind, never relocated.
+            if self.bridge.conversation_for_id(row['conversation']) is None:
+                return f'The card for {label} belongs to a conversation this bridge no longer serves; use Footplate or the yard cards.', None
+            conversation, silent, kind = row['conversation'], row['silent'], row.get('kind', 'run')
+        before = self.card_message(row)
+        try:
+            receipt = self.create(bead_id, number, f'decide:{ident}:{digest(conversation)[:12]}', conversation, silent, kind)
+        except NativeError as error:
+            if str(error) != 'run_ask_not_open':
+                raise
+            return self.decide_closed(bead_id, number), None
+        after = self.card_message(self.get(ident))
+        if receipt.get('delivered') is not True:
+            reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
+            return f'The card for {label} is not confirmed sent ({reason}); nothing was answered.', None
+        if before is not None and before == after:
+            return f'The card for {label} is already open.', after
+        return None, after
+
+    def decide_closed(self, bead_id, number):
+        """What a selection of an ask that is not in the open queue reads: its canonical outcome."""
+        label, operator = f'{bead_id}#{number}', self.config['yardr_operator']
+        if '@' in bead_id:
+            return f'{label} is not an open ask in your queue; answer a linked yard ask in Footplate.'
+        try:
+            bead = self.client.call('Bead', {'bead': bead_id, 'viewer': operator})
+        except RPCRefused:
+            return f"No ask {label} in {self.config['yard']}."
+        if not isinstance(bead, dict) or bead.get('id') != bead_id or not isinstance(bead.get('asks'), list):
+            raise NativeError('invalid native Bead response')
+        found = [a for a in bead['asks'] if isinstance(a, dict) and a.get('ask') == number]
+        if not found:
+            return f"No ask {label} in {self.config['yard']}."
+        ask = found[0]
+        if ask.get('to') != operator:
+            return f'Ask {label} is not addressed to {operator}.'
+        if ask.get('state') == 'open':
+            return f'Ask {label} is open but not in your queue; use Footplate or the yard cards.'
+        if ask.get('state') not in ('put aside', 'answered', 'declined', 'taken back'):
+            raise NativeError('invalid native ask state')
+        if isinstance(ask.get('run'), dict) and ask['state'] != 'put aside':
+            return f'Ask {label} is no longer open: ' + run_outcome(ask)[1]
+        options = ask.get('options') or []
+        if not isinstance(options, list) or not all(isinstance(o, dict) and isinstance(o.get('label'), str) for o in options):
+            raise NativeError('invalid native options')
+        return f'Ask {label} is no longer open: ' + outcome(ask, options)
+
+    def decide_select(self, value, conversation):
+        """(notice, card message) for /decide <value>: an ID, or a bead with one open ask."""
+        match = re.fullmatch(f'({BEAD_ID}(?:@{BEAD_ID})?)(?:#([1-9][0-9]{{0,19}}))?', value.strip())
+        if not match or (match[2] and int(match[2]) >= 2**64):
+            return f'{short(value, 64)} is no decision ID; send /decide for the list. An ID is bead#ask.', None
+        if match[2]:
+            return self.decide_open(match[1], int(match[2]), conversation)
+        found = [e for e in self.queue() if e['bead'] == match[1]]
+        if len(found) == 1:
+            return self.decide_open(found[0]['bead'], found[0]['ask'], conversation)
+        if not found:
+            return f'No open decision on {match[1]} for you; send /decide for the list.', None
+        ids = ', '.join(f"{e['bead']}#{e['ask']}" for e in found[:10]) + (', …' if len(found) > 10 else '')
+        return f'{match[1]} has {len(found)} open decisions ({ids}); send /decide <ID>.', None
+
+    def decide_error(self, error):
+        if isinstance(error, (RPCUnavailable, RPCAmbiguous)):
+            return f"The yard {self.config['yard']} is unavailable; nothing was listed or opened."
+        return str(error)
+
+    def decide_notice(self, key, value, thread, reply=None):
+        b = self.bridge
+        for index, part in enumerate(chunks(value, 4000)):
+            extra = {} if thread is None else dict(message_thread_id=thread)
+            identity = dict(text=part, reply=reply if index == 0 else None, **extra)
+            b._reserve_and_deliver(f'{key}:{index}', identity, lambda pending, part=part, index=index:
+                                   b._deliver_text(part, reply if index == 0 else None, pending, extra=extra))
+
+    def decide_command(self, update_id, args, thread):
+        conversation = self.bridge.decide_conversation(thread)
+        notice, card = None, None
+        try:
+            if conversation is None:
+                notice = 'This topic is not one the bridge serves; send /decide in the chat or a served topic.'
+            elif not args.strip():
+                body, keyboard = self.decide_list()
+                self.bridge._command_message(f'decide:{update_id}:list', dict(
+                    type='send', text=body, keyboard=keyboard, plain=None), thread)
+                return
+            else:
+                notice, card = self.decide_select(args, conversation['conversation_id'])
+        except NativeError as error:
+            notice = self.decide_error(error)
+        if notice:
+            reply = card[0] if card and card[1] == conversation['conversation_id'] else None
+            self.decide_notice(f'decide:{update_id}:notice', notice, thread, reply)
+
+    def decide_message(self, message):
+        if not isinstance(message, dict) or any(key in message for key in self.bridge.FORWARD_KEYS):
+            return False
+        chat, sender = message.get('chat'), message.get('from')
+        return (isinstance(chat, dict) and isinstance(sender, dict) and type(chat.get('id')) is int
+                and chat['id'] == self.config['chat_id'] and chat.get('type') == 'private'
+                and type(sender.get('id')) is int and sender['id'] == self.config['bot_id'] and sender.get('is_bot') is True
+                and type(message.get('message_id')) is int and message['message_id'] > 0
+                and (message.get('message_thread_id') is None or self.bridge._topic_thread(message) is not None))
+
+    def decide_callback(self, update_id, query):
+        match = re.fullmatch(r'decide:(?:o:([0-9a-f]{24})|p:([1-9][0-9]{0,5}))', query.get('data') or '')
+        message, sender = query.get('message'), query.get('from')
+        notice = 'Decision list not authorized'
+        try:
+            thread = self.bridge._topic_thread(message) if isinstance(message, dict) else None
+            conversation = self.bridge.decide_conversation(thread)
+            if (not match or not isinstance(sender, dict) or type(sender.get('id')) is not int
+                    or sender['id'] != self.config['user_id'] or sender.get('is_bot') is not False
+                    or not self.decide_message(message) or conversation is None):
+                return
+            if match[2]:
+                body, keyboard = self.decide_list(int(match[2]))
+                extra = dict(message_id=message['message_id'], reply_markup={'inline_keyboard': keyboard})
+                b = self.bridge
+                receipt = b._reserve_and_deliver(f'decide:{update_id}:edit', dict(text=body, **extra),
+                    lambda pending: b._deliver_text(body, None, pending, method='editMessageText', extra=extra,
+                                                    not_modified=True))
+                notice = '' if receipt.get('delivered') else 'The list is not updated; send /decide again'
+                return
+            with self.store.connect() as db:
+                found = db.execute('SELECT bead, ask FROM decide_ids WHERE id=?', (match[1],)).fetchone()
+            # The ID hashes the binding: a list from another yard/home on this store is out of date.
+            if found is None or self.ident(found[0], int(found[1])) != match[1]:
+                notice = 'This list is out of date; send /decide again'
+                return
+            result, card = self.decide_open(found[0], int(found[1]), conversation['conversation_id'])
+            notice = 'Card sent' if result is None else result
+            if result is not None:
+                reply = card[0] if card and card[1] == conversation['conversation_id'] else None
+                self.decide_notice(f'decide:{update_id}:notice', result, thread, reply)
+        except NativeError as error:
+            notice = self.decide_error(error)
+            self.decide_notice(f'decide:{update_id}:notice', notice, thread)
+        finally:
+            self.bridge._answer_callback(update_id, query['id'], notice[:180], key=f'decide:{update_id}:answer')

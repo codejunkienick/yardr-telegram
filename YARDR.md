@@ -244,3 +244,10 @@ explicit handler-prefix migration. Complete ordinary cards must fit 3500
 UTF16 units. Operation-bearing, weighted or unfamiliar ordinary payloads
 refuse whole. See setup step 13 for exact scope, operator-only key/grant
 bootstrap and the independent-runtime deployment prerequisite.
+
+`/decide` lists the configured operator's open canonical decisions in this
+yard (core `UserAsks`) with `<bead>#<ask>` IDs, and a button or
+`/decide <ID>` opens the same native card; asks a card cannot show whole are
+listed without a button, and a closed one reports its outcome. It is the
+bridge's own command only with native keys, which also reserve `decide:`. See
+[the operations guide](bridge/OPERATIONS.md#decide-the-operators-open-decisions).

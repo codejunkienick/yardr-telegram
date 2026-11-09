@@ -110,6 +110,49 @@ def decision_cards():
     return cards
 
 
+def decide_views():
+    # The real /decide paths over the offline fake core and fake Telegram used by its tests.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_decide import DecideTests, ask
+    case = DecideTests()
+    case.setUp()
+    views = []
+
+    def capture(label, body):
+        html = body['text'] if body.get('parse_mode') == 'HTML' else escape(body['text'])
+        rows = body.get('reply_markup', {}).get('inline_keyboard', [])
+        reply = body.get('reply_parameters', {}).get('message_id')
+        controls = ''.join('<div class="buttons">' + ''.join('<button>' + escape(item['text']) + '</button>'
+                           for item in row) + '</div>' for row in rows)
+        views.append('<section><h2>' + escape(label) + '</h2><article>'
+                     + ('<div class="navigation">Reply to message ' + str(reply) + '</div>' if reply else '')
+                     + '<div class="body">' + html + '</div>' + controls + '</article></section>')
+    try:
+        case.config['yard'] = 'example'
+        body, list_id = case.listing()
+        capture('/decide · open decisions', body)
+        data = next(b['callback_data'] for b in case.buttons(body) if b['text'] == '5. sample-1#7')
+        case.tap(data, list_id, 2)
+        capture('Tap 5 · the same native card a notification sends', case.sends()[-1])
+        case.command('/decide sample-1#7', 3)
+        capture('/decide sample-1#7 again · no second card', case.sends()[-1])
+        case.press('pick2', uid=4)
+        case.tap(data, list_id, 5)
+        capture('Stale tap · canonical outcome, no card', case.sends()[-1])
+        for number in range(20, 28):
+            case.native.beads[f'many-{number}'] = dict(id=f'many-{number}', title='Many synthetic beads',
+                                                       asks=[ask(number, f'Synthetic question {number}?')])
+        case.tap('decide:p:3', list_id, 6)
+        capture('Next › to page 3 · edited in place', case.edits()[-1])
+        case.native.beads = {}
+        case.command('/decide', 7)
+        capture('/decide · nothing open', case.sends()[-1])
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return views
+
+
 def main():
     spec = importlib.util.spec_from_file_location('native_cards', Path(__file__).resolve().parents[1] / 'bridge' / 'run_asks.py')
     native = importlib.util.module_from_spec(spec)
@@ -151,7 +194,10 @@ def main():
         cards = skill_cards()
     if '--decisions' in sys.argv:
         cards = decision_cards()
-    heading = 'Native ordinary decisions' if '--decisions' in sys.argv else 'Native operator run cards'
+    if '--decide' in sys.argv:
+        cards = decide_views()
+    heading = ('/decide' if '--decide' in sys.argv else 'Native ordinary decisions' if '--decisions' in sys.argv
+               else 'Native operator run cards')
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}

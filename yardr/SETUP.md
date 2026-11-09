@@ -428,6 +428,16 @@ do not expect those buttons to be reinterpreted as native decisions. Loading a
 colliding configuration names the reserved prefix explicitly. Existing chat
 `ask:` and native `runask:` contracts and old ledger rows remain supported.
 
+### /decide
+
+With the native keys set, `/decide` in the paired chat lists the operator's
+open decisions from the core's `UserAsks` and opens a supported one as the same
+native card (`/decide <bead>#<ask>`). It needs no grant beyond step 13 and no
+new setting. Run `set-commands` again after enabling native keys to add it to
+the menu. A `[[command]]` or `[[menu]]` named `decide`, or a `callback_prefix`
+overlapping `decide:`, refuses to load with native keys: rename it first.
+See [the operations guide](../bridge/OPERATIONS.md#decide-the-operators-open-decisions).
+
 ### Source update and independent runtime handoff
 
 The ordinary-card code adds no installer or restart interface of its own.

@@ -15,6 +15,8 @@ sees and does, not how the code is organised.
   its `SHA256SUMS`.
 - A release's pinned pure-Python dependencies have one place, `vendor/`,
   which the bridge puts first on its import path.
+- `/decide` lists the operator's open decisions and opens a supported one as
+  its native card; closed asks report their canonical outcome.
 
 ### Changed
 
@@ -47,6 +49,9 @@ sees and does, not how the code is organised.
   the source its `RELEASE` records, and a reinstall that reuses a release
   of the same commit checks the settings against the source that release
   records too, whichever checkout runs it.
+- With native keys, `/decide` and the `decide:` prefix belong to the bridge:
+  a `[[command]]` or `[[menu]]` named `decide` or an overlapping prefix
+  refuses to load.
 
 ### Fixed
 

@@ -178,6 +178,9 @@ table (and a `handler_write_paths` entry if it writes), then run
 `launchctl bootout gui/$(id -u)/<label> 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist`, and run
 `set-commands`. Remove one: delete the table, delete the handler program if nothing else uses it, drop its `handler_write_paths` entry if no other handler writes there, run `install.sh` again, restart the service the same way, then run `set-commands`. The menu loses the command only then.
 The handler protocol is in `bridge/OPERATIONS.md`, "Commands".
+With native `[yardr] home` and `operator` set, `/decide` and the `decide:`
+prefix are the bridge's own (open decisions as native cards, YARDR.md), so no
+add-on may use them.
 Three ready add-ons are
 [telegram-quota](https://github.com/codejunkienick/telegram-quota), which adds
 a `/quota` command that shows how much of each AI subscription's usage

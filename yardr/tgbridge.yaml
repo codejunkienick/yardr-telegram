@@ -117,6 +117,22 @@ calls:
       method: POST
       path: /v1/ask-card
       body: { bead: "{bead}", ask: "{ask}", topic: "{topic}", conversation: "{conversation}", silent: "{silent}", key: "{key}" }
+  siding_card:
+    kind: update
+    about: Show canonical waiting sidings and explicit store-guarded fold or release proposals
+    params:
+      depot:        { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" }
+      flow:         { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", optional: true }
+      stage:        { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", optional: true }
+      group:        { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", optional: true }
+      topic:        { type: string, max: 128, optional: true }
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$", optional: true }
+      silent:       { type: bool, optional: true }
+      key:          { type: string, pattern: "^[A-Za-z0-9._:@-]{1,200}$", optional: true }
+    request:
+      method: POST
+      path: /v1/siding-card
+      body: { depot: "{depot}", flow: "{flow}", stage: "{stage}", group: "{group}", topic: "{topic}", conversation: "{conversation}", silent: "{silent}", key: "{key}" }
   ask_close:
     kind: update
     about: Close an open button ask with the decision made some other way

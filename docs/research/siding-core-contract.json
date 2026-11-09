@@ -1,0 +1,59 @@
+{
+  "core": "0e33c5228e5a",
+  "isolated": true,
+  "telegram": "not contacted",
+  "positional_contracts": {
+    "SidingBeads": [
+      "ids"
+    ],
+    "FoldBeads": [
+      "ids",
+      "FoldOptions{To,Title}",
+      "actor"
+    ],
+    "Advance": [
+      "id",
+      "stage",
+      "Expect{session,stage,revision}",
+      "actor"
+    ]
+  },
+  "canonical_status": [
+    {
+      "bead": "sample-1",
+      "entered": "2026-11-08T17:44:23.520776Z",
+      "points": 1
+    },
+    {
+      "bead": "sample-2",
+      "entered": "2026-11-08T17:44:23.546528Z",
+      "points": 1
+    }
+  ],
+  "fold": {
+    "changed_revision": true,
+    "changed_title_in_carrier": true,
+    "reviewed_points": 2,
+    "committed_points": 5,
+    "carrier_stage": "launch",
+    "fold_events": 1,
+    "members_closed": true,
+    "replay_refused": true,
+    "limitation": "FoldBeads cannot pin displayed member revisions or configuration"
+  },
+  "release": {
+    "group_changed": true,
+    "bead_revision_unchanged": true,
+    "group_before": {
+      "fold_after": "24h"
+    },
+    "group_after": {
+      "fold_after": "12h"
+    },
+    "stage": "launch",
+    "advance_events": 1,
+    "replay_refused": true,
+    "stale_bead_refused": true,
+    "limitation": "Advance expectation cannot pin displayed flow/route/group configuration"
+  }
+}

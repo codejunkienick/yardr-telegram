@@ -110,6 +110,10 @@ _transcriber_spec = importlib.util.spec_from_file_location(
 _native_spec = importlib.util.spec_from_file_location('run_asks', Path(__file__).resolve().with_name('run_asks.py'))
 run_asks = importlib.util.module_from_spec(_native_spec)
 _native_spec.loader.exec_module(run_asks)
+sys.modules['run_asks'] = run_asks
+_siding_spec = importlib.util.spec_from_file_location('siding_cards', Path(__file__).resolve().with_name('siding_cards.py'))
+siding_cards = importlib.util.module_from_spec(_siding_spec)
+_siding_spec.loader.exec_module(siding_cards)
 voice_transcribe = importlib.util.module_from_spec(_transcriber_spec)
 _transcriber_spec.loader.exec_module(voice_transcribe)
 SETTINGS_ENV = 'TELEGRAM_BRIDGE_SETTINGS'
@@ -953,7 +957,7 @@ def _callback_handler(bridge):
     source's credential; every answer is one JSON object."""
     routes = {'/v1/send': 'api_send', '/v1/tell': 'api_tell', '/v1/posted': 'api_posted', '/v1/read': 'api_read',
               '/v1/react': 'api_react', '/v1/pin': 'api_pin', '/v1/ask-close': 'api_ask_close',
-              '/v1/run-ask': 'api_run_ask', '/v1/ask-card': 'api_ask_card'}
+              '/v1/run-ask': 'api_run_ask', '/v1/ask-card': 'api_ask_card', '/v1/siding-card': 'api_siding_card'}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         timeout = 5
@@ -1121,6 +1125,7 @@ class Bridge:
                                  conversation_id=str(config['chat_id']), kind='dm')
         self.publish_lock = threading.Lock()
         self.run_asks = run_asks.RunAsks(self)
+        self.siding_cards = siding_cards.SidingCards(self)
         self.stop = threading.Event()
         self.last_heartbeat = None
         # The bot as the start probe's getMe described it; None until then.
@@ -2071,7 +2076,7 @@ class Bridge:
         thread_id = self._topic_thread(message)
         if thread_id is not None and self.auto_topics:
             self._observe_auto_topic(thread_id, message)
-        if self.run_asks.reply(self._update_id(update), message):
+        if self.siding_cards.reply(self._update_id(update), message) or self.run_asks.reply(self._update_id(update), message):
             return
         found = self._match_command(text) if forward is None and attachment is None and isinstance(text, str) else None
         if found is not None and found[0] is self.DECIDE_COMMAND:
@@ -2390,7 +2395,7 @@ class Bridge:
     # (callback_data ask:<ask-id>:<choice>). No [[command]] callback_prefix
     # may equal or overlap it; no handler output may use it.
     ASK_CALLBACK_PREFIX = 'ask:'
-    RESERVED_CALLBACK_PREFIXES = ('ask:', 'runask:', 'askcard:')
+    RESERVED_CALLBACK_PREFIXES = ('ask:', 'runask:', 'askcard:', 'siding:')
     # Owned by the bridge only with native [yardr] home and operator; another bridge's /decide stays its own.
     DECIDE_CALLBACK_PREFIX = 'decide:'
     DECIDE_COMMAND = dict(name='decide', description='Open decisions waiting on you', menu=True)
@@ -2658,7 +2663,7 @@ class Bridge:
                     # never be relayed. Refuse rather than mislabel an answer.
                     return None, 'invalid_keyboard'
                 seen.add(data)
-                if data.startswith(('runask:', 'askcard:')) or (
+                if data.startswith(('runask:', 'askcard:', 'siding:')) or (
                         self.native_decide() and data.startswith(self.DECIDE_CALLBACK_PREFIX)):
                     return None, 'foreign_callback_data'
                 if data.startswith(self.ASK_CALLBACK_PREFIX):
@@ -2864,6 +2869,9 @@ class Bridge:
             reason = 'not_authorized'
         elif not isinstance(data, str) or not data:
             reason = 'no_registered_prefix'
+        elif data.startswith('siding:'):
+            self.siding_cards.callback(update_id, query)
+            return
         elif data.startswith(('runask:', 'askcard:')):
             self.run_asks.callback(update_id, query)
             return
@@ -3060,11 +3068,29 @@ class Bridge:
         if (message_id is None) == (ask_key is None):
             raise ValueError('close_ask takes exactly one of message_id and ask_key')
         if message_id is not None:
+            # Message ids belong to a chat; retained rows can belong to an earlier pairing.
+            candidates = []
+            try:
+                for cards in (self.run_asks, self.siding_cards):
+                    matches = cards.bound_messages(message_id)
+                    if matches and cards.client is not None and self.config.get('yardr_operator'):
+                        binding = cards.binding()
+                        candidates.extend(cards for row, _ in matches if row['binding'] == binding)
+            except run_asks.NativeError as error:
+                return self.receipt(reason=str(error))
+            if len(candidates) > 1:
+                reason = ('run_ask_message_binding_ambiguous' if all(cards is self.run_asks for cards in candidates)
+                          else 'ask_message_binding_ambiguous')
+                return self.receipt(reason=reason)
+            if candidates:
+                return candidates[0].close(message_id=message_id)
             ask = self.store.get_ask_by_message(message_id)
         else:
             ask = self.store.get_ask(self._ask_id_for_key(ask_key))
         if ask is None:
             native = self.run_asks.close(message_id=message_id, ask_key=ask_key)
+            if native is None:
+                native = self.siding_cards.close(message_id=message_id, ask_key=ask_key)
             return native if native is not None else self.receipt(reason='ask_not_found')
         if ask['message_id'] is None:
             # The ask's send never confirmed a message: nothing to edit.
@@ -3625,6 +3651,28 @@ class Bridge:
     def api_ask_card(self, request, key_header=None):
         """Publish an ordinary canonical decision for the paired operator."""
         return self._api_native_card(request, key_header, 'decision')
+
+    def api_siding_card(self, request, key_header=None):
+        if set(request) - {'depot', 'flow', 'stage', 'group', 'topic', 'conversation', 'silent', 'key'}:
+            raise ApiError('siding-card accepts only depot, flow, stage, group, routing, silent and key')
+        selection = {}
+        for name in ('depot', 'flow', 'stage', 'group'):
+            value = request.get(name)
+            if value in (None, '') and name != 'depot':
+                continue
+            if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}', value):
+                raise ApiError('siding-card requires a valid ' + name)
+            selection[name] = value
+        key = request.get('key') or key_header
+        if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9._:@-]{1,200}', key):
+            raise ApiError('siding-card requires an idempotency key')
+        conversation = self._api_conversation(request)
+        silent = self._api_bool(request.get('silent'), 'silent')
+        try:
+            receipt = self.siding_cards.create(selection, key, conversation['conversation_id'], silent)
+        except run_asks.NativeError as error:
+            receipt = self.receipt(reason=str(error))
+        return self._api_answer(receipt, conversation)
 
     def _api_native_card(self, request, key_header, kind):
         command = 'ask-card' if kind == 'decision' else 'run-ask'
@@ -4500,6 +4548,7 @@ class Bridge:
             raise TransportError('Telegram poll rejected')
         self.record_poll_ok()
         self.run_asks.refresh()
+        self.siding_cards.refresh()
         self.drain(data['result'])
 
     def run(self):
@@ -4566,7 +4615,7 @@ def _build_parser():
     parser.add_argument('--settings', type=Path,
                         help=f'the bridge\'s settings file (default: ${SETTINGS_ENV})')
     parser.add_argument('--port', type=int, help='overrides the settings\' port')
-    parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'ask-close', 'run-ask', 'ask-card', 'react', 'pin',
+    parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'ask-close', 'run-ask', 'ask-card', 'siding-card', 'react', 'pin',
                                             'topics', 'set-commands', 'render-unit', 'check-install'))
     parser.add_argument('--body-file', type=Path,
                         help='file holding the message text (send, reply-current)')
@@ -4579,7 +4628,7 @@ def _build_parser():
                         help="optional: the settings' bot.chat_id, or <chat id>:topic:<thread id> of a configured "
                              'topic, as the message notice names it (react: its last accepted message)')
     parser.add_argument('--topic', metavar='NAME',
-                        help='send, reply-current, run-ask, ask-card: send into the configured topic of this name, '
+                        help='send, reply-current, run-ask, ask-card, siding-card: send into the configured topic of this name, '
                              'instead of --conversation-id; react: react to its last accepted message')
     parser.add_argument('--attachment', type=Path, action='append',
                         help='absolute path of a file to send, the body as its caption; '
@@ -4602,6 +4651,8 @@ def _build_parser():
                              'react to (default: the last accepted message)')
     parser.add_argument('--ask-key',
                         help="ask-close: the ask send's --idempotency-key, instead of --message-id")
+    for name in ('depot', 'flow', 'stage', 'group'):
+        parser.add_argument('--' + name, help='siding-card: canonical siding selection')
     parser.add_argument('--bead', help='run-ask/ask-card: the native proposal bead')
     parser.add_argument('--ask', type=int, help='run-ask/ask-card: the native ask number')
     parser.add_argument('--decision',
@@ -4631,6 +4682,13 @@ def _build_parser():
 
 
 def _validate_attachment_flags(parser, args):
+    if args.command == 'siding-card':
+        if not args.depot or not args.idempotency_key:
+            parser.error('siding-card requires --depot and --idempotency-key')
+        if args.bead or args.ask or args.body_file or args.attachment or args.keyboard_file or args.text_options or args.format != 'plain':
+            parser.error('siding-card takes its entire proposal from the native yard')
+    elif any(getattr(args, name) is not None for name in ('depot', 'flow', 'stage', 'group')):
+        parser.error('--depot, --flow, --stage and --group are siding-card flags')
     if args.command in ('run-ask', 'ask-card'):
         if not args.bead or not args.ask or not args.idempotency_key:
             parser.error(args.command + ' requires --bead, --ask and --idempotency-key')
@@ -4650,8 +4708,8 @@ def _validate_attachment_flags(parser, args):
         parser.error('--message-id is a react and ask-close flag')
     if getattr(args, 'conflict_exit_status_given', False) and args.command != 'run':
         parser.error('--conflict-exit-status is a run flag')
-    if args.topic is not None and args.command not in ('send', 'reply-current', 'run-ask', 'ask-card', 'react'):
-        parser.error('--topic is a send, reply-current, run-ask, ask-card and react flag')
+    if args.topic is not None and args.command not in ('send', 'reply-current', 'run-ask', 'ask-card', 'siding-card', 'react'):
+        parser.error('--topic is a send, reply-current, run-ask, ask-card, siding-card and react flag')
     if args.topic is not None and args.conversation_id is not None:
         parser.error('--topic and --conversation-id are exclusive')
     if args.command == 'react' and args.message_id is not None and (args.conversation_id is not None
@@ -6110,6 +6168,12 @@ def main():
         conversation = _outbound_conversation(bridge, args)
         message_id = _dispatch_outbound(bridge, args, args.body_file.read_text(), conversation)
         print('Telegram delivery confirmed; message ID ' + str(message_id))
+    elif args.command == 'siding-card':
+        result = bridge.api_siding_card(dict(depot=args.depot, flow=args.flow, stage=args.stage, group=args.group,
+            key=args.idempotency_key, topic=args.topic, conversation=args.conversation_id, silent=args.silent))
+        print(json.dumps(result))
+        if not result['delivered']:
+            raise TransportError('native card not delivered: ' + result['reason'])
     elif args.command in ('run-ask', 'ask-card'):
         publish = bridge.api_run_ask if args.command == 'run-ask' else bridge.api_ask_card
         result = publish(dict(bead=args.bead, ask=args.ask, key=args.idempotency_key,

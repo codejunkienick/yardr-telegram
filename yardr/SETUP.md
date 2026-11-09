@@ -516,6 +516,49 @@ setup, grants, independent install and restart belong to that instance's
 operator after review. A bridge whose unit still runs a checkout moves first,
 by [Move an existing bridge to its own installation](#move-an-existing-bridge-to-its-own-installation).
 
+## 14. Optional native siding cards (store-backed first slice)
+
+Keep this instance's existing native home/operator/source identity and
+pairing. The verified minimum here is installed native core `24bcfd0955c9`,
+whose socket-only contract provides `SidingProposal`, `SidingOutcome`,
+`FoldSidingExpected` and `ReleaseSidingExpected`. The bridge checks the
+actual methods and complete version 1 guard schema before offering controls;
+a version string alone is insufficient. All bound inputs must have
+`guard=store` with no refusals. Repository-own-flow and repository-dependent
+until releases remain status only, with named unguarded inputs. This release
+does not complete repository-backed siding mutations or all administration.
+
+After independent review, the operator owns installation into this
+instance's release root, supported source-pack planning/application, and
+activation/restart. Check the existing native keys with step 13's helper;
+retain source base, credential file, limits, grants and other settings.
+Review the concrete pack plan before applying it. The sole additional
+per-call grant, if this crew member should publish siding cards, is:
+
+```sh
+yardr source grant tgbridge siding_card --crew yardmaster
+yardr call tgbridge siding_card depot=<depot> key=<stable-card-key>
+```
+
+These commands are checked against the installed CLI and exercised on an
+isolated source/loopback bridge. No blanket grant is needed. The caller can
+publish canonical status; only the paired human can approve the exact shown
+fold or release. See `bridge/OPERATIONS.md` for selection replies, expiry,
+withdrawal, ceiling limits, stale proposals and pruned-outcome uncertainty.
+No siding, flow, route or group is created by enabling the feature.
+
+A source commit is not an installation or activation. Before activation,
+review offline previews and the isolated integration gate. After an
+operator-owned install/restart, check the instance's configured native
+identity and a status-only request before reviewing any real action. To
+roll back, use the existing instance-root `install.sh --rollback` procedure,
+review its printed service step and restart only that instance. Keep its
+ledger, home, credentials, source bindings and grants. Withdraw open siding
+cards first; old code cannot process their callbacks or source call. Siding
+rows occupy a separate table in the same ledger so older ordinary/run card
+readers remain compatible. Builder validation performs no live install,
+source apply, grant, restart or Telegram action.
+
 ## Move an existing bridge to its own installation
 
 For a bridge whose unit still runs `bridge.py` from a checkout. Its settings,

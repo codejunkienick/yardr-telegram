@@ -265,3 +265,20 @@ the existing HTML validator/delivery path. Ordinary `yardr reply <seq> --format
 markdown <text>` requires the installed core format transport and reviewed
 `thread.formats: [markdown]` source declaration; no flag keeps legacy auto.
 See [formatting](docs/formatting.md) for policy, limits and packaging.
+
+Native siding cards use authenticated `POST /v1/siding-card`, source update
+`siding_card`, and CLI `siding-card --depot <depot> --idempotency-key <key>`.
+Optional flow/stage/group narrow discovery; topic/conversation and silent
+retain the usual routing contract. The caller supplies no actor, command,
+member set, target, digest or result. Canonical waiting/stuck status and exact
+fold proposals come from socket-only `SidingProposal`; a paired human reply
+`fold id id …` or `release id` creates a new review card before any effect.
+Only the new card's verified human button can call `FoldSidingExpected` or
+`ReleaseSidingExpected`. Version 1 guard=store with empty refusals is
+required; repository-own-flow or eligible until repository inputs are visibly
+status only. No legacy write fallback is allowed. The saved resolved
+ask/digest/op goes to `SidingOutcome` before recomputation, including after
+restart, withdrawal or an ambiguous write; null may mean pruned history and
+never permits a blind retry. `siding:` joins the reserved callback prefixes.
+See the operations and setup guides for the first-slice limit and the sole
+additional per-call grant. Existing ordinary/run/chat cards keep their paths.

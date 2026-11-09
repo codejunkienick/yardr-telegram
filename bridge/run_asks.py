@@ -18,7 +18,7 @@ CAP = 3500
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
-READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup')
+READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'SidingProposal', 'SidingOutcome', 'Groups', 'Routes')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 
 
@@ -35,7 +35,9 @@ class RPCAmbiguous(NativeError):
 
 
 class RPCRefused(NativeError):
-    pass
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class RPCUnsupported(RPCRefused):
@@ -135,7 +137,11 @@ class YardSocketClient:
                     if (method in ('AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected')
                             and error['code'] == 'error' and error['message'] == 'no such method ' + method):
                         raise RPCUnsupported('ask_card_requires_guarded_core' + FALLBACK)
-                    raise RPCRefused(f'native {method} refused ({error["code"] if error["code"] in {"not-found", "taken", "at-limit", "conflict", "ambiguous", "replacing", "error"} else "unknown"})')
+                    if (method in ('SidingProposal', 'SidingOutcome', 'FoldSidingExpected', 'ReleaseSidingExpected')
+                            and error['code'] == 'error' and error['message'] == 'no such method ' + method):
+                        raise RPCUnsupported('siding_card_requires_guarded_core' + FALLBACK)
+                    code = error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
+                    raise RPCRefused(f'native {method} refused ({code})', code)
                 return value.get('result')  # successful void calls serialize as {}
             except (OSError, ValueError, http.client.HTTPException, UnicodeError):
                 raise RPCAmbiguous(f'native {method} response uncertain') from None
@@ -972,6 +978,8 @@ def short(value, limit):
 
 
 class RunAsks:
+    table = 'run_asks'
+
     def __init__(self, bridge, client=None, now=time.time):
         self.bridge, self.store, self.config, self.now = bridge, bridge.store, bridge.config, now
         self.client = client
@@ -1003,17 +1011,21 @@ class RunAsks:
 
     def rows(self):
         with self.store.connect() as db:
-            rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM run_asks')]
-        return [self.recover_generation(row) for row in rows]
+            rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM ' + self.table)]
+        return [self.recover_generation(row) for row in rows if self.owns(row)]
+
+    def owns(self, row):
+        return row.get('kind') != 'siding'
 
     def get(self, ident):
         with self.store.connect() as db:
-            row = db.execute('SELECT data FROM run_asks WHERE id=?', (ident,)).fetchone()
-        return self.recover_generation(json.loads(row[0])) if row else None
+            row = db.execute('SELECT data FROM ' + self.table + ' WHERE id=?', (ident,)).fetchone()
+        value = json.loads(row[0]) if row else None
+        return self.recover_generation(value) if value and self.owns(value) else None
 
     def save(self, row):
         with self.store.connect() as db:
-            db.execute('INSERT OR REPLACE INTO run_asks VALUES (?,?)', (row['id'], canonical(row)))
+            db.execute('INSERT OR REPLACE INTO ' + self.table + ' VALUES (?,?)', (row['id'], canonical(row)))
 
     def recover_generation(self, row):
         if (row.get('kind') == 'decision' and isinstance(row.get('generations'), list)

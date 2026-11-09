@@ -198,6 +198,9 @@ class NativeSocket:
                             self.wfile.write(b'not a rollback')
                         return
                     result = dict(bead='sample-1', ask=7, result='stored operation applied') if method == 'ApproveAsk' else None
+                elif method in ('SidingProposal', 'SidingOutcome', 'FoldSidingExpected', 'ReleaseSidingExpected'):
+                    self.reply({'error': {'code': 'error', 'message': 'no such method ' + method}})
+                    return
                 else:
                     self.reply({'error': {'code': 'not-found', 'message': 'unknown method'}})
                     return
@@ -1908,6 +1911,10 @@ class NativeTests(NativeCase):
             status, _ = self.api_call(port, '/v1/run-ask', dict(bead='sample-1', ask=7, key='bad', **{field: 'forged'}))
             self.assertEqual(status, 400)
         self.assertEqual(self.writes(), [])
+        status, answer = self.api_call(port, '/v1/siding-card', dict(depot='sample', key='old-siding-core'))
+        self.assertEqual(status, 200)
+        self.assertFalse(answer['delivered'])
+        self.assertIn('siding_card_requires_guarded_core', answer['reason'])
         self.press(is_topic_message=True, message_thread_id=12)
         self.assertEqual(len(self.writes()), 1)
         self.reset_native(decision())

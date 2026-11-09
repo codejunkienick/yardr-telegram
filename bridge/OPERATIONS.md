@@ -2453,3 +2453,90 @@ counts toward Telegram's 100). The core needs `UserAsks` (public Calls
 contract) beside the ordinary-card baseline; no new grant, setting, table
 migration or service. The bridge adds one SQLite table, `decide_ids`, mapping
 a button id to its bead and ask.
+
+## Siding status and guarded store actions
+
+Authenticated `POST /v1/siding-card`, CLI `siding-card` and the source update
+`siding_card` accept `depot`, optional `flow`, `stage`, `group`, routing
+(`topic` or `conversation`), `silent`, and a stable `key`. The HTTP
+`Idempotency-Key` header can supply the key. They accept no actor, command,
+member list, destination, digest or purported result from the caller.
+
+```sh
+python3 bridge/bridge.py --settings <private-settings> siding-card \
+  --depot <depot> --idempotency-key <stable-key> \
+  --flow <flow> --stage <stage> --group <group>
+yardr call tgbridge siding_card depot=<depot> key=<stable-key>
+```
+
+Discovery follows the core's actual routes and manual groups with any
+`fold`, `fold_after` or `fold_max` key, then reads `SidingProposal`. Effective
+limits, readiness, due time, every waiting bead's title/id/points/eligibility,
+and the ordered selected proposal come from that canonical read. Defaults
+are four waiting beads, eight hours since the latest arrival and six points.
+An empty selection says no waiting siding matches. Ambiguous flows refuse:
+narrow the flow/stage/group. A complete card must fit 3500 UTF-16 units;
+otherwise publication refuses entirely with no approval controls. No subset
+is silently picked to fit either the message or the point ceiling.
+
+Only version 1 `sp1` proposals with `guard=store` and empty `refusals` offer
+an approval button. A repository-backed own flow or an eligible until
+blocker's repository flow is **status only**: the card names `source` and
+all unguarded inputs and offers no mutation control. This is the reviewed
+first slice; repository-backed mutations remain unfinished. Unknown schemas,
+source classes or missing methods refuse before controls; there is no
+version-string guess or fallback to `FoldBeads`/`Advance`. Capability checks
+send missing-argument requests to the guarded methods: the installed contract
+rejects them before any effect; an old build rejects the method itself.
+
+Each displayed card permanently binds its resolved ask, digest, ordered
+selected set, revisions, points, source configuration and target to this
+instance's yard, home directory identity, operator, source identity, Telegram
+human/bot/chat/topic and message token. Cards expire after 15 minutes.
+Replies `fold <id> <id> …` and `release <id>` produce a **new explicit review
+card**, retire the old card and execute nothing. The paired human must press
+the new button. Every reply to a known siding message, including media or
+forwarded content, is consumed as a proposal or refusal and never relayed as
+an agent's authority. `Leave waiting` withdraws the card without a native
+write. Callback prefix `siding:` is newly reserved; settings using it or an
+overlapping prefix must be migrated explicitly. Generic sends cannot mint
+native approval callbacks.
+
+A click verifies the current configured operator role and
+`identities[source].id`, pairing, source/home and canonical proposal again.
+Only `FoldSidingExpected` or `ReleaseSidingExpected` is sent, with the stored
+resolved ask/digest/stable op and verified operator actor. The core transaction
+enforces configuration, eligibility, revision, membership, creation, closure,
+transition and fold limits. Native stage asks and gate flips remain normal
+consequences; no approval or weight gate is bypassed. Fold closes exactly
+the shown parts into one carrier; single release moves only the shown bead.
+
+The bridge saves intent before the write and reconciles `SidingOutcome` with
+that **same** ask/digest/op before recomputing anything. Success text derives
+from the native event plus the carrier/bead's current state, including the
+remaining set at commit. External automatic folding or movement is reported
+from canonical bead state, with approval removed. A write's timeout, error
+JSON or HTTP status is never evidence of rollback. No effect is retried
+automatically. Null outcome can mean pruned history: the card honestly says
+uncertain, removes approval and never invents another op or fresh digest.
+A withdrawn card uses outcome reads only. A fresh source request with a new
+key can publish a new reviewed canonical proposal. `ask-close` ignores caller
+result text. It closes settled, stale, withdrawn or expired cards only after
+confirmed delivery of their control-free presentation, and status cards only
+from their saved publish receipt. Open cards await the human; attempted
+operations without a validated outcome remain uncertain and refuse closure.
+Every card in a request must confirm its own message under the saved pairing.
+
+Siding rows, update receipts, lock, send fingerprints, delivery recovery,
+reconciliation edits and idempotency keys share the native-card ledger with
+ordinary/run cards. A recovered message must have the exact original send
+fingerprint and confirmed delivery; an unrelated send cannot become an
+approval message. Each instance uses its own settings, home and immutable
+release copy; separate stores may pair the same Telegram human.
+
+`python3 -B scripts/preview_siding_cards.py` renders offline HTML by exercising
+the actual bridge against a disposable installed native core and fake
+Telegram. These previews prove the rendered states, not a Telegram runtime
+or live activation. The integration tests cover source calls, authenticated
+HTTP, installed-copy CLI/imports and production getUpdates → refresh → drain
+ordering without accessing live accounts or stores.

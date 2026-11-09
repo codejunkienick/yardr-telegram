@@ -214,7 +214,7 @@ class ValidHookUrlTests(unittest.TestCase):
 class YardApiTests(BridgeTestCase):
     """The yard API on the bridge's loopback port (YARDR.md, "Outbound")."""
 
-    POST_ROUTES = ('/v1/send', '/v1/tell', '/v1/posted', '/v1/read', '/v1/react', '/v1/pin', '/v1/ask-close', '/v1/run-ask')
+    POST_ROUTES = ('/v1/send', '/v1/tell', '/v1/posted', '/v1/read', '/v1/react', '/v1/pin', '/v1/ask-close', '/v1/run-ask', '/v1/ask-card', '/v1/siding-card')
 
     def setUp(self):
         super().setUp()

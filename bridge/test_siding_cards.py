@@ -10,11 +10,159 @@ import time
 from unittest.mock import patch
 
 from test_bridge import BridgeTestCase, write_settings
+from test_run_asks import NativeCase
 import bridge as b
 
 n = b.run_asks
 SIDING_METHODS = ('SidingProposal', 'SidingOutcome', 'FoldSidingExpected', 'ReleaseSidingExpected')
 FLOW = 'intake -> harbor | repair\nharbor -> launch | repair\nrepair -> harbor | launch\nlaunch -> complete\ncomplete terminal\n'
+
+
+class SidingRetryTests(NativeCase):
+    def setUp(self):
+        super().setUp()
+        self.values = []
+        owner = self
+        handler = self.native.server.RequestHandlerClass
+
+        class Handler(handler):
+            def do_POST(self):
+                method = self.path.removeprefix('/call/')
+                if method not in (*SIDING_METHODS, 'GetDepot', 'Groups', 'Routes'):
+                    return super().do_POST()
+                args = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                owner.native.calls.append((method, args, self.headers.get('X-Yardr-Connection')))
+                if method in SIDING_METHODS[1:] and not args:
+                    self.reply({'error': {'code': 'error', 'message': 'missing required arguments'}})
+                    return
+                if method == 'GetDepot':
+                    result = dict(name='sample')
+                elif method == 'Groups':
+                    result = [dict(name='keepers', runner='manual', config=dict(fold=4))]
+                elif method == 'Routes':
+                    result = [route for value in owner.values for route in value['routes']]
+                elif method == 'SidingProposal':
+                    result = next(value for value in owner.values if value['stage'] == args['ask']['stage'])
+                elif method == 'SidingOutcome':
+                    result = None
+                else:
+                    self.reply({'error': {'code': 'error', 'message': 'unexpected siding write'}})
+                    return
+                self.reply({'result': result})
+
+        self.native.server.RequestHandlerClass = Handler
+
+    def value(self, stage):
+        members = [dict(bead='sample-' + stage + '-' + str(i), revision='revision-' + str(i),
+                        points=1, stuck='', entered='2026-01-01T00:00:00Z', title='Synthetic part') for i in (1, 2)]
+        return dict(version=1, digest='sp1:' + ('a' if stage == 'harbor' else 'b') * 64,
+                    ask=dict(depot='sample', stage=stage, flow='rotation.f', group='keepers',
+                             action='fold', members=[row['bead'] for row in members], to='launch'),
+                    depot='sample', stage=stage, to='launch', guard='store', unguarded=[],
+                    flow=dict(name='rotation.f', source=dict(kind='store'), digest='c' * 64),
+                    group=dict(name='keepers', runner='manual', members=['pat'], fold=4, fold_after='1d', fold_max=6),
+                    routes=[dict(id='route-' + stage, depot='sample', stage=stage, group='keepers')],
+                    waiting=members, members=[dict(row, stage=stage, route='route-' + stage) for row in members],
+                    points=2, fold_max=6, ready=False, trigger='', due='', refusals=[])
+
+    def test_same_key_resumes_only_unsent_cards(self):
+        for kind in ('status', 'actionable', 'partial'):
+            for failure in ('not-sent', 'crash', 'ambiguous', 'rejected', 'revoked', 'remapped'):
+                with self.subTest(kind=kind, failure=failure):
+                    with self.store.connect() as db:
+                        for table in ('siding_cards', 'run_ask_keys', 'deliveries'):
+                            db.execute('DELETE FROM ' + table)
+                    self.calls.clear()
+                    self.values = [] if kind == 'status' else [self.value('harbor')]
+                    if kind == 'partial':
+                        self.values.append(self.value('repair'))
+                    attempts = []
+                    publishes = []
+                    send_card = self.bridge.siding_cards.send_card
+                    def publish(row):
+                        publishes.append(row['id'])
+                        if failure == 'crash' and (kind != 'partial' or len(publishes) > 1):
+                            raise RuntimeError('synthetic crash before send')
+                        return send_card(row)
+                    telegram = self.bridge.request
+                    def fail(url, body, *args, **kwargs):
+                        if url.endswith('/sendMessage'):
+                            attempts.append(copy.deepcopy(body))
+                            if kind != 'partial' or len(attempts) > 1:
+                                if failure == 'ambiguous':
+                                    raise b.RequestUnconfirmed('synthetic lost response', 56, 'after-send')
+                                if failure == 'rejected':
+                                    return 400, dict(ok=False, error_code=400, description='synthetic rejection')
+                                raise b.RequestNotSent('synthetic offline', 7, 'connect')
+                        return telegram(url, body, *args, **kwargs)
+                    request = dict(depot='sample', key='resume', silent=True)
+                    with patch.object(self.bridge, 'request', side_effect=fail), patch.object(b.time, 'sleep'), \
+                            patch.object(self.bridge.siding_cards, 'send_card', side_effect=publish):
+                        if failure == 'crash':
+                            with self.assertRaisesRegex(RuntimeError, 'synthetic crash before send'):
+                                self.bridge.api_siding_card(request)
+                        else:
+                            receipt = self.bridge.api_siding_card(request)
+                            self.assertFalse(receipt['delivered'], receipt)
+                            if failure in ('not-sent', 'revoked', 'remapped'):
+                                self.assertEqual((receipt['reason'], receipt['failure_kind']),
+                                                 ('transport_unavailable_not_sent', 'transient'))
+                    first = self.bridge.siding_cards.rows()[0]
+                    batch = [self.bridge.siding_cards.get(ident) for ident in first['batch']]
+                    self.assertEqual([row['message_id'] is not None for row in batch],
+                                     [True, False] if kind == 'partial' else [False])
+                    sent = [(row, self.store.saved_delivery(self.bridge.siding_cards.send_request(row)[0]))
+                            for row in batch if row['message_id'] is not None]
+                    self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+                    self.bridge.hook_secret = None
+                    before = len(self.calls)
+                    conflict = self.bridge.api_siding_card(dict(request, silent=False))
+                    self.assertEqual(conflict['reason'], 'idempotency_key_conflict')
+                    self.assertEqual(len(self.calls), before)
+                    if failure in ('revoked', 'remapped'):
+                        user = copy.deepcopy(self.native.user)
+                        if failure == 'revoked':
+                            self.native.user['role'] = 'member'
+                        else:
+                            self.native.user['identities']['tgbridge']['id'] = '456'
+                        deliveries = [self.store.saved_delivery(self.bridge.siding_cards.send_request(row)[0])
+                                      for row in batch]
+                        try:
+                            receipt = self.bridge.api_siding_card(request)
+                            self.assertFalse(receipt['delivered'], receipt)
+                            self.assertEqual(receipt['reason'], 'operator_not_authorized')
+                            self.assertEqual(len(self.calls), before)
+                            self.assertEqual([self.bridge.siding_cards.get(row['id']) for row in batch], batch)
+                            self.assertEqual([self.store.saved_delivery(self.bridge.siding_cards.send_request(row)[0])
+                                              for row in batch], deliveries)
+                        finally:
+                            self.native.user = user
+                    receipt = self.bridge.api_siding_card(request)
+                    can_retry = failure in ('not-sent', 'crash', 'revoked', 'remapped')
+                    self.assertEqual(receipt['delivered'], can_retry, receipt)
+                    sends = [body for url, body in self.calls[before:] if url.endswith('/sendMessage')]
+                    self.assertEqual(len(sends), int(can_retry))
+                    if can_retry:
+                        if failure != 'crash':
+                            self.assertEqual(sends[0], attempts[-1])
+                        self.assertEqual(sends[0]['text'], batch[-1]['html'])
+                        self.assertEqual(sends[0]['reply_markup']['inline_keyboard'], batch[-1]['publish_keyboard'])
+                        self.assertEqual(bool(sends[0]['reply_markup']['inline_keyboard']), kind != 'status')
+                        resumed = self.bridge.siding_cards.get(batch[-1]['id'])
+                        saved = self.store.saved_delivery(self.bridge.siding_cards.send_request(resumed)[0])
+                        self.assertTrue(saved[1]['delivered'])
+                        self.assertEqual(int(saved[1]['message_id']), resumed['message_id'])
+                    for row, saved in sent:
+                        self.assertEqual(self.bridge.siding_cards.get(row['id']), row)
+                        self.assertEqual(self.store.saved_delivery(self.bridge.siding_cards.send_request(row)[0]), saved)
+                    before = len(self.calls)
+                    repeat = self.bridge.api_siding_card(request)
+                    if can_retry:
+                        self.assertEqual(repeat['delivered'], kind == 'status', repeat)
+                        if kind != 'status':
+                            self.assertEqual(repeat['reason'], 'siding_still_awaiting_human')
+                    self.assertEqual(len(self.calls), before)
+                    self.assertFalse(any(method.endswith('Expected') and args for method, args, _ in self.native.calls))
 
 
 class SidingTests(BridgeTestCase):
@@ -1220,14 +1368,72 @@ class SidingTests(BridgeTestCase):
                 self.assertEqual(self.calls[start:], [])
 
     def test_authenticated_endpoint_cli_and_installed_module(self):
+        port = self.start_callback_server()
+        empty_request = dict(depot='sample', key='empty-http')
+        def unavailable(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage'):
+                raise b.RequestNotSent('synthetic offline', 7, 'connect')
+            return self.telegram(url, body, *args, **kwargs)
+        with patch.object(self.bridge, 'request', side_effect=unavailable), patch.object(b.time, 'sleep'):
+            status, result = self.api_call(port, '/v1/siding-card', empty_request)
+        self.assertEqual(status, 200)
+        self.assertEqual((result['delivered'], result['reason'], result['failure_kind']),
+                         (False, 'transport_unavailable_not_sent', 'transient'))
+        empty = self.bridge.siding_cards.rows()[0]
+        self.assertIsNone(empty['canonical'])
+        self.assertIsNone(empty['message_id'])
+        send_key, _ = self.bridge.siding_cards.send_request(empty)
+        delivery = self.store.saved_delivery(send_key)
+        self.cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '456')
+        self.restart()
+        port = self.start_callback_server()
+        before = len(self.calls)
+        status, result = self.api_call(port, '/v1/siding-card', empty_request)
+        self.assertEqual(status, 200)
+        self.assertFalse(result['delivered'], result)
+        self.assertEqual(result['reason'], 'operator_not_authorized')
+        self.assertEqual(self.calls[before:], [])
+        self.assertEqual(self.bridge.siding_cards.get(empty['id']), empty)
+        self.assertEqual(self.store.saved_delivery(send_key), delivery)
+        self.cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+        for _ in range(2):
+            status, result = self.api_call(port, '/v1/siding-card', empty_request)
+            self.assertEqual(status, 200)
+            self.assertTrue(result['delivered'], result)
+        sends = [body for url, body in self.calls[before:] if url.endswith('/sendMessage')]
+        self.assertEqual(len(sends), 1)
+        sent = self.bridge.siding_cards.get(empty['id'])
+        self.assertEqual(int(result['message_id']), sent['message_id'])
+        self.assertEqual(self.store.saved_delivery(send_key)[1],
+                         dict(result, conversation=dict(self.bridge.conversation, conversation_id=sent['conversation'])))
         self.part('1')
         self.part('2')
         self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
         self.store.record_topic('ops', 12, 'created')
         port = self.start_callback_server()
-        status, result = self.api_call(port, '/v1/siding-card', dict(depot='sample', key='http', topic='ops'))
+        request = dict(depot='sample', key='http', topic='ops')
+        attempts = []
+        def offline(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage'):
+                attempts.append(copy.deepcopy(body))
+                raise b.RequestNotSent('synthetic offline', 7, 'connect')
+            return self.telegram(url, body, *args, **kwargs)
+        with patch.object(self.bridge, 'request', side_effect=offline), patch.object(b.time, 'sleep'):
+            status, result = self.api_call(port, '/v1/siding-card', request)
+        self.assertEqual(status, 200)
+        self.assertEqual((result['delivered'], result['reason'], result['failure_kind']),
+                         (False, 'transport_unavailable_not_sent', 'transient'))
+        self.assertEqual(len(attempts), 3)
+        self.restart()
+        self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
+        port = self.start_callback_server()
+        before = len(self.calls)
+        status, result = self.api_call(port, '/v1/siding-card', request)
         self.assertEqual(status, 200)
         self.assertTrue(result['delivered'], result)
+        sends = [body for url, body in self.calls[before:] if url.endswith('/sendMessage')]
+        self.assertEqual(sends, [attempts[-1]])
+        self.assertTrue(sends[0]['reply_markup']['inline_keyboard'])
         for key in ('actor', 'command', 'folded', 'members', 'to', 'digest', 'op', 'action'):
             status, _ = self.api_call(port, '/v1/siding-card', dict(depot='sample', key='bad', **{key: 'forged'}))
             self.assertEqual(status, 400)

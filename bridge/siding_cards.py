@@ -367,7 +367,8 @@ class SidingCards(n.RunAsks):
                 if not first:
                     raise n.NativeError('idempotency_key_conflict')
                 batch = [self.get(ident) for ident in first['batch']]
-                return self.closure(batch)
+                if all(row['message_id'] is not None for row in batch):
+                    return self.closure(batch)
             else:
                 n.verify_operator(self.client, self.config)
                 self.capability()
@@ -381,10 +382,13 @@ class SidingCards(n.RunAsks):
                     db.execute('INSERT INTO run_ask_keys VALUES (?,?,?)', (key, batch[0]['id'], request))
             receipt = None
             for row in batch:
-                if row['message_id'] is None:
-                    if row['canonical']:
-                        self.ensure(row)
-                    receipt = self.send_card(row)
+                if row['message_id'] is not None:
+                    continue
+                if row['canonical']:
+                    self.ensure(row)
+                else:
+                    n.verify_operator(self.client, self.config)
+                receipt = self.send_card(row)
                 if not receipt.get('delivered'):
                     return receipt
             return receipt

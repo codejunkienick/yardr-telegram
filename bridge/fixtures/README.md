@@ -45,7 +45,11 @@ poll order, and records exactly one answer from the new message.
 from isolated real core `546e3fdd2127`: a new limits source with one command
 file, its replacement changing that file and removing an extra textual
 copy, and a commands-free HTTPS declaration. Only temp root (`/synthetic`),
-ask number and timestamp are stabilized. The existing real_native_store
+ask number and timestamp are stabilized. The replacement fixture was refreshed
+and all three rechecked against isolated core `1918cc80cc75`. The replacement's
+Does line `no grant of source synthetic stands.` reflects the standing-grant
+disclosure introduced in core `8e1debc3567b`: replacement cards name every
+standing grant or explicitly state that none stand. The existing real_native_store
 integration compares all three complete wire responses before driving them
 through real native approval/carry and checking byte-equal declarations and
 installed files. It also exercises standing-file drift, decline, cancel,

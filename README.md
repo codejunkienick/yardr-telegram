@@ -157,9 +157,25 @@ release's own Python dependencies, when it has any, are committed under
 `vendor/`. Why and how: `docs/design/independent-instances.md`; moving a
 bridge whose unit still runs a checkout: `yardr/SETUP.md`, "Move an existing
 bridge to its own installation". To move a bot from an existing bridge,
-stop that bridge's unit first (two pollers on one bot conflict), and point
-`state_dir` at a copy of its state directory, so the ledger, the offset,
-the pins and the topics carry over.
+disable and stop the old instance first, so it cannot return at login or
+reboot (two pollers on one bot conflict):
+
+- Linux and WSL 2: `systemctl --user disable --now <old unit>`.
+- macOS: `launchctl bootout gui/$(id -u)/<old label>`, then move
+  `~/Library/LaunchAgents/<old label>.plist` out of `~/Library/LaunchAgents`
+  and keep it with the retained old installation.
+
+Keep the old settings and installation for rollback. Point `state_dir` at
+a copy of its state directory, so the ledger, the offset, the pins and the
+topics carry over. A new settings path needs a fresh `unit` and root;
+install it, then run the printed `next:` line to enable and start only the
+new instance. To roll back, disable and stop the new instance the same way
+(on macOS, also retain its plist outside `~/Library/LaunchAgents`), then
+run `systemctl --user enable --now <old unit>`, or restore the old plist to
+`~/Library/LaunchAgents` and run
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<old label>.plist`.
+The [settings-move steps](yardr/SETUP.md#move-a-settings-file-shell) spell out
+both directions.
 
 ## Uninstall
 

@@ -705,13 +705,52 @@ collision diagnostic names the conflicting file and both settings paths.
 Reinstalling, upgrading and rolling back with the same settings path keeps
 working.
 
-To move a settings file deliberately, stop its old service and retain the old
-settings and installation for rollback. Give the new settings file a fresh
-`unit` and use a fresh root, then dry-run, install and verify it using this
-procedure. Start only the new service for that bot. If verification fails,
-stop the new service and return to the retained old settings and service;
-the release rollback steps below still apply within each root. There is no
-flag to take over an existing unit or root.
+### Move a settings file (shell)
+
+Before moving a settings file, disable and stop its old instance so it
+cannot return at login or reboot. Retain the old settings and installation
+for rollback:
+
+- Linux and WSL 2: `systemctl --user disable --now <old unit>`. Keep the old
+  unit file in place, disabled.
+- macOS (`<old label>` is the old `unit` without `.service`):
+
+  ```sh
+  launchctl bootout gui/$(id -u)/<old label>
+  mv ~/Library/LaunchAgents/<old label>.plist <old root>/<old label>.plist
+  ```
+
+Give the new settings file a fresh `unit` and use a fresh root, then dry-run
+and install it using this procedure. Run the installer's printed `next:`
+line for the new instance: it includes `systemctl --user enable <new unit>`
+and restart on Linux/WSL 2, or bootstrap of the new plist on macOS. Verify
+the new instance below. Keep the old unit disabled or its saved plist out
+of `~/Library/LaunchAgents`, so only the new instance starts after login or
+reboot.
+
+If verification fails or you later undo the settings move, stop and disable
+the new instance before returning to the retained old settings and service:
+
+- Linux and WSL 2:
+
+  ```sh
+  systemctl --user disable --now <new unit>
+  systemctl --user enable --now <old unit>
+  ```
+
+- macOS (retain the new plist too):
+
+  ```sh
+  launchctl bootout gui/$(id -u)/<new label>
+  mv ~/Library/LaunchAgents/<new label>.plist <new root>/<new label>.plist
+  mv <old root>/<old label>.plist ~/Library/LaunchAgents/<old label>.plist
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<old label>.plist
+  ```
+
+Only the old instance now starts, including after login or reboot. The
+release rollback steps below still apply within each root; they do not
+switch between these installations. There is no flag to take over an
+existing unit or root.
 
 ### Install (shell)
 

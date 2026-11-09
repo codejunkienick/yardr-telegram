@@ -2397,10 +2397,11 @@ is invented. Depot-kind/summary pack cards remain unsupported.
 presentation evidence using real-core fixtures and fake Telegram. Native
 integration additionally upgrades this repository's pack from `7c0ce69`,
 checks captured-byte installation after edits, stale state and replay.
-Core must be installed first, then this bridge; yardmaster owns installation
-and activation after source lands. Nick approves the live card. Roll back
-code through the existing release rollback; review an older pack snapshot
-or use the terminal apply fallback for a pack rollback.
+Core must be installed first, then this bridge. The yard's operator owns
+installation and activation after reviewed source lands; the paired human
+approves the live card. Roll back code through the existing release rollback;
+review an older pack snapshot or use the terminal apply fallback for a pack
+rollback.
 
 ### Native group add and set review
 

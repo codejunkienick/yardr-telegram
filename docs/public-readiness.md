@@ -115,7 +115,8 @@ support. Keep `thread.formats: [markdown]` in the pack; omitting native
 settings or disabling Markdown use does not make this declaration parse.
 
 The hashes in the table and SETUP are local capability baselines, not public
-release tags or install targets. The public fork's guarded-ask preview
+release tags or install targets. These baselines were absent from the
+fetched public history. The public fork's guarded-ask preview
 [`10bf0b06e978`](https://github.com/codejunkienick/yardr/commit/10bf0b06e978e2a611dcd3074f878a37da9ae121)
 does expose Answer/Defer/DeclineAskExpected, but still lacks the pack's
 thread-format declaration support. Public previews of individual contracts
@@ -143,6 +144,7 @@ status is for use with this shipped pack, as checked on 2026-11-09.
 | Apply the pack, required even for hook/chat | Source packs accepting `thread.formats: [markdown]` (`0035b8c13e27`) | None yet | None |
 | Ordinary send/react/pin/unpin/chat ask close | Source packs and matching loopback API | None yet; pack application blocked | Individually `send`, `react`, `pin`, `unpin`, `ask_close` as needed |
 | Routine run ask, weighted direct-reply confirmation | Canonical Bead/ApproveAsk and current operator mapping | None yet | `run_ask` |
+| Yard-local skill copies and crew/group assignment | `yardr skill add` and crew/group `skills=` (`a66722bb`) | None yet | None; operator CLI |
 | Captured skill file review | Captured single-file proposal contract (`a79f6f8162c8`) | None yet | Same `run_ask` |
 | Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | None yet | Same `run_ask` |
 | [Source-add declaration and command file review](../bridge/OPERATIONS.md#source-add-declaration-and-command-review) | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | None yet | Same `run_ask` |

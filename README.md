@@ -96,6 +96,9 @@ for the outstanding contracts and required passing check.
   additional capabilities listed in [the compatibility table](docs/public-readiness.md#capabilities-and-grants).
   Hook-only settings still require a core that accepts the whole pack.
   A version number alone does not establish those capabilities.
+- The [yard-local skill setup](yardr/SETUP.md#the-crews-skills-shell) needs
+  `yardr skill add` and crew/group `skills=` (local core baseline `a66722bb`,
+  not a public install target), under the same public-core release gate.
 - Optional native skill review needs the core captured single-file proposal
   capability (local baseline `a79f6f8162c8`, not a public install target)
   and the paired operator setup in

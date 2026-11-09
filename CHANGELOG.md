@@ -8,11 +8,21 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- Native source-kind `pack apply` review through the existing `run_ask`
+  grant. Directory proposals deliver complete review parts and a document
+  containing every captured file before weighted approval; embedded source
+  packs use complete text bundles. Depot packs and parameter inputs refuse.
+- Structured native decision and run cards with bold questions, spaced
+  context, numbered options and separated outcomes. Quoted evidence stays
+  literal, and existing delivery receipts and approval gates keep working.
+- Public capability and setup documentation for native `source add <file>`
+  review, including declarations, command files and replacement diffs.
 - A committed-tree public-readiness scan with location/count diagnostics and
   a local source archive plus exact commit/tree/file hash manifest. It does
   not publish, rewrite history or remove attachments.
-- Separate notices for the pinned Markdown runtime and the optional Whisper
-  and VAD downloads, with primary upstream provenance.
+- Separate notices for the pinned Markdown runtime, bundled PyYAML 6.0.3
+  reader and optional Whisper and VAD downloads, with upstream provenance
+  and retained MIT notices for the vendored code.
 
 - Native herdr `group add` and `group set` cards (core `fc7375cf5ad4`): the
   whole card and every role, quoted, arrive before the weighted card;
@@ -36,6 +46,19 @@ sees and does, not how the code is organised.
 
 ### Changed
 
+- **BREAKING CHANGE:** Install, dry-run and rollback refuse a unit or root
+  owned by another settings path, or whose ownership cannot be read. Moving
+  a settings file requires a fresh unit and root: stop the old service,
+  retain its settings and installation for rollback, then verify the new
+  instance before starting it. There is no takeover flag.
+- Public installation requires core changes that are not yet available in
+  a compatible public release, even for hook/chat alone: the shipped pack
+  requires `thread.formats`. Local capability hashes are not public install
+  targets; publish and accept the required core first.
+- Operator commands use this instance's launchers and explicit yard home.
+  Skills are copied into that yard with `yardr skill add` and assigned with
+  crew/group `skills=`; refresh the copies after installation or rollback
+  instead of linking shared harness folders to an instance's release.
 - Installation/examples use fictional yards/operators and home-relative paths.
   Existing source aliases and credential-host bindings remain supported;
   the readiness guide records custom-base and callback migration limits.
@@ -75,6 +98,16 @@ sees and does, not how the code is organised.
 
 ### Fixed
 
+- An unconfirmed ordinary decision card can be reconciled by the paired
+  operator's verified tap on the original message, without resending or
+  replacing its ambiguous send receipt. Stale cards retire using canonical
+  state; missing message proof gives manual recovery instructions.
+- Same-key siding retries resume definitely unsent cards while retaining
+  confirmed siblings and ambiguous delivery blocks. Status-card retries
+  recheck the operator's current role and source identity before sending.
+- The native-settings helper validates the complete candidate with the
+  bridge loader before creating a backup or applying changes. Reserved
+  command, callback and menu conflicts refuse without changing the file.
 - The operations guide now states the per-topic inbound rule where it
   states the settings-agent rule: a message in a topic is accepted
   only when the yard routes it on that topic's conversation to that topic's

@@ -227,12 +227,32 @@ old inventory, exact bytes/digests, replacement diff, complete canonical Does
 and strong code weight. It delivers the entire quoted review in numbered
 ledger-backed reply-chain parts before the bound approval card, with exact
 UTF16 envelope limits and no rewriting of file content. The same weighted
-human confirmation and canonical carry settlement apply. Additional files,
-deletions and other file-bearing proposals remain refused. See
+human confirmation and canonical carry settlement apply. Extra skill files
+and skill deletion remain refused. See
 [the exact scope and recovery limits](bridge/OPERATIONS.md#captured-single-file-skill-review)
 and [bootstrap requirements](yardr/SETUP.md#single-file-skill-snapshots).
 
-Native herdr group cards (`group add` and `group set`, core `fc7375cf5ad4`)
+Native `source add <file>` reviews the complete declaration, relative command
+files, replacement diffs and inventory before controls appear (local core
+baseline `546e3fdd2127`, not a public install target). It uses the same
+`run_ask` grant, pairing and canonical carry settlement; core's weight rules
+determine whether approval needs the direct ask-number reply. See
+[source review](bridge/OPERATIONS.md#source-add-declaration-and-command-review)
+and [setup](yardr/SETUP.md#source-declarations-and-command-files).
+
+Source-kind `pack apply` bundles without parameter inputs are also supported.
+A directory proposal (`pack apply <absolute-directory> --sha256 <digest>`,
+local core baseline `ced24b0e849c`, not a public install target) delivers
+complete review parts and a document containing every captured snapshot
+file before the weighted approval card. Embedded source-kind
+`pack apply <name>` uses the complete carried-source text bundle without
+inventing a directory document. Both use the existing `run_ask` grant and
+operator checks; depot-kind and summary pack cards remain refused. See
+[source pack bundles](bridge/OPERATIONS.md#source-pack-bundles) and
+[the source upgrade procedure](yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback).
+
+Native herdr group cards (`group add` and `group set`, local core baseline
+`fc7375cf5ad4`, not a public install target)
 are read sentence by sentence against their argv; every role is re-derived
 from the card and must hash to the digest it shows. The whole card, roles
 quoted line by line, goes out in the same review bundle before the weighted

@@ -112,13 +112,23 @@ for the outstanding contracts and required passing check.
   `run_ask` grant and paired operator setup, and reviews the declaration,
   command files and replacement diffs
   ([SETUP.md](yardr/SETUP.md#source-declarations-and-command-files)).
+- Optional native source-kind pack review uses the same `run_ask` grant
+  and paired operator setup. Directory
+  `pack apply <absolute-directory> --sha256 <digest>` needs the directory
+  source-pack proposal contract (local baseline `ced24b0e849c`, not a public
+  install target). Complete review parts and a snapshot document precede
+  controls; Approve then requires a direct card reply with the exact ask
+  number. Embedded `pack apply <name>` uses complete carried-source text
+  parts and core weight rules, without a snapshot document. No compatible
+  public core is available yet. See [pack upgrade setup](yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback)
+  and [source pack bundles](bridge/OPERATIONS.md#source-pack-bundles).
 - For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).
 
-Native run cards exclude `pack apply`, `crew add`, `depot push`, multi-file
-skills, secret/setup/identity operations and parameter input; use the full
-native client for those.
+Native run cards exclude depot-kind/summary pack plans, `crew add`,
+`depot push`, multi-file skills, secret/setup/identity operations and
+parameter input; use the full native client for those.
 
 ## Adopt in a yard
 

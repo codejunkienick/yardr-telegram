@@ -115,8 +115,7 @@ support. Keep `thread.formats: [markdown]` in the pack; omitting native
 settings or disabling Markdown use does not make this declaration parse.
 
 The hashes in the table and SETUP are local capability baselines, not public
-release tags or install targets. None of those six baseline commits was in
-the fetched public history. The public fork's guarded-ask preview
+release tags or install targets. The public fork's guarded-ask preview
 [`10bf0b06e978`](https://github.com/codejunkienick/yardr/commit/10bf0b06e978e2a611dcd3074f878a37da9ae121)
 does expose Answer/Defer/DeclineAskExpected, but still lacks the pack's
 thread-format declaration support. Public previews of individual contracts
@@ -146,7 +145,8 @@ status is for use with this shipped pack, as checked on 2026-11-09.
 | Routine run ask, weighted direct-reply confirmation | Canonical Bead/ApproveAsk and current operator mapping | None yet | `run_ask` |
 | Captured skill file review | Captured single-file proposal contract (`a79f6f8162c8`) | None yet | Same `run_ask` |
 | Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | None yet | Same `run_ask` |
-| Source-add declaration and command file review | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | None yet | Same `run_ask` |
+| [Source-add declaration and command file review](../bridge/OPERATIONS.md#source-add-declaration-and-command-review) | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | None yet | Same `run_ask` |
+| [Source-kind pack review (directory and embedded)](../bridge/OPERATIONS.md#source-pack-bundles) | Complete carried-source pack bundles; directory snapshot/digest proposal contract (`ced24b0e849c`) for directory applies | None yet | Same `run_ask` |
 | Ordinary option/words/manual-stage decisions and `/decide` | Bead ask turns, UserAsks and guarded Answer/Defer/DeclineAskExpected (`7fa0d4c75ff6`) | None yet; preview alone cannot apply pack | `ask_card` |
 | Siding status and paired fold/release | Socket-only SidingProposal/Outcome and guarded expected writes (`24bcfd0955c9`), version 1 guard schema | None yet | `siding_card` |
 | Explicit Markdown replies | Core explicit reply format transport (`0035b8c13e27`) plus `thread.formats: [markdown]` in installed source | None yet | No new grant for thread replies; `send`/`pin` for those calls |
@@ -165,10 +165,21 @@ Extra skill files and skill deletion require the full native client.
 [`source add <file>`](../bridge/OPERATIONS.md#source-add-declaration-and-command-review)
 reviews one declaration and its relative command files, including replacement
 diffs and inventory, in complete numbered parts before controls appear.
-Native run cards exclude `pack apply`, `crew add`, `depot push`, multi-file
-skills, secret/setup/identity operations and parameter input; use the full
-native client for those. Unknown/oversized cards refuse whole. Ordinary
-asks have no operation/weight/file payload. Siding mutations support only
+Source-kind packs with no parameter inputs also support native review.
+Directory `pack apply <absolute-directory> --sha256 <digest>` sends complete
+review parts and one snapshot document containing every named file,
+including `pack.yaml` and setup notes, before controls appear. Approve then
+requires a direct reply to the card with the exact ask number within five
+minutes. Embedded `pack apply <name>` uses complete carried-source text
+parts and core weight rules, without a directory snapshot document. See
+[pack upgrade setup](../yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback)
+and [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
+
+Native run cards exclude depot-kind/summary pack plans, `crew add`,
+`depot push`, multi-file skills, secret/setup/identity operations and
+parameter input; use the full native client for those. Unknown/oversized
+cards refuse whole. Ordinary asks have no operation/weight/file payload.
+Siding mutations support only
 `guard=store` with no refusals; repository flow or until inputs are visibly
 status-only. Stale proposals, ambiguous writes and pruned outcomes require
 canonical reconciliation; another key is not a retry workaround.

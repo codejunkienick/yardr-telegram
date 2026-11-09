@@ -46,6 +46,52 @@ def skill_cards():
     return cards
 
 
+def group_cards(name):
+    # The real bridge path over the real-core group fixture; core's result words for the outcome.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests, group_proposal
+    case = NativeTests()
+    case.setUp()
+    cards = []
+    def capture(label, body, group):
+        buttons = [item['text'] for row in body.get('reply_markup', {}).get('inline_keyboard', []) for item in row]
+        reply = body.get('reply_parameters', {}).get('message_id')
+        navigation = f'Reply to message {reply}' if reply else ''
+        controls = ''.join('<button>' + escape(button) + '</button>' for button in buttons)
+        cards.append(f'<section class="{group}"><h2>' + escape(label) + '</h2><article>'
+                     + '<div class="navigation">' + escape(navigation) + '</div><div class="body">' + body['text']
+                     + '</div><div class="buttons">' + controls + '</div></article></section>')
+    try:
+        case.reset_native(group_proposal(name))
+        case.config['yard'] = 'example'
+        case.native.bead = dict(id='sample-1', title='Synthetic group configuration')
+        if not case.create()['delivered']:
+            raise RuntimeError('synthetic group card refused')
+        sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
+        for index, body in enumerate(sends[:-1], 1):
+            capture(f'Complete review · part {index}/{len(sends)-1}', body, 'bundle')
+        capture('Final bound approval card', sends[-1], 'states')
+        case.press()
+        capture('Direct reply confirmation · first tap writes nothing', case.edits()[-1], 'states')
+        case.native.mode = 'refused'
+        case.reply(uid=51)
+        capture('Core refused (stale group, grant or role) · nothing written', case.edits()[-1], 'states')
+        case.native.mode = None
+        case.press(uid=41)
+        case.reply(uid=52)
+        result = ('group builders created (herdr, kind claude, limit 2); its prompt is roles/sha256/'
+                  'a1d5578cf96ebb1492df410277eafdbe822ae64c2e59b3c56488d551610987e1.md' if name == 'group_add' else
+                  'group drafters saved: model claude-opus-5-5, args "--effort" "xhigh"' if name == 'group_set_no_prompt' else
+                  'group planners saved: model claude-opus-5-5, args "--permission-mode" "auto" "--effort" "xhigh"')
+        case.native.ask['ran'].update(result=result)
+        case.bridge.run_asks.refresh()
+        capture('Settled canonical outcome', case.edits()[-1], 'states')
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
 def decision_cards():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
     from test_run_asks import NativeTests
@@ -196,6 +242,9 @@ def main():
         cards = decision_cards()
     if '--decide' in sys.argv:
         cards = decide_views()
+    for flag in ('--group-add', '--group-set', '--group-set-no-prompt'):
+        if flag in sys.argv:
+            cards = group_cards(flag[2:].replace('-', '_'))
     heading = ('/decide' if '--decide' in sys.argv else 'Native ordinary decisions' if '--decisions' in sys.argv
                else 'Native operator run cards')
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>

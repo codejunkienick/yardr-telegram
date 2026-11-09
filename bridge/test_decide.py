@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 from test_bridge import BridgeTestCase, write_settings  # noqa: E402
-from test_run_asks import NativeCase, NativeSocket, decision, proposal  # noqa: E402
+from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, proposal  # noqa: E402
 
 n = b.run_asks
 OPS = 7
@@ -184,6 +184,22 @@ class DecideTests(DecideCase):
                                                    'use Footplate or the yard cards.')
         self.assertEqual(self.sent_count, sent + 1)
         self.assertEqual(len(self.bridge.run_asks.rows()), 1)
+        self.assertEqual(self.writes(), [])
+        # A herdr group ask opens as its whole reply-chained review, then the card holding the controls.
+        self.native.beads = {'group-1': dict(id='group-1', title='Synthetic group', asks=[dict(group_add_proposal(), ask=13)])}
+        body, _ = self.listing(uid=20)
+        self.assertIn('1. Create the synthetic builders?\nrun · group-1#13 · Synthetic group', body['text'])
+        self.assertEqual([b['text'] for b in self.buttons(body)], ['1. group-1#13', '↻ Refresh'])
+        sent = len(self.sends())
+        self.command('/decide group-1#13', 21)
+        row = self.bridge.run_asks.get(self.bridge.run_asks.ident('group-1', 13))
+        parts, sends = row['bundle']['parts'], self.sends()[sent:]
+        self.assertEqual([body['text'] for body in sends[:-1]], [part['html'] for part in parts])
+        self.assertIn('Part 1/', sends[0]['text'])
+        self.assertIn('UNTRUSTED GROUP REVIEW', sends[0]['text'])
+        self.assertEqual(sends[-1]['reply_parameters']['message_id'], parts[-1]['message_id'])
+        self.assertIn('yardr group add builders', sends[-1]['text'])
+        self.assertEqual([b['text'] for b in self.buttons(sends[-1])], ['✓ Approve in test-city', '✕ Decline'])
         self.assertEqual(self.writes(), [])
 
     def test_stale_selection_reports_the_canonical_outcome_and_never_reopens(self):

@@ -2136,7 +2136,7 @@ mapping. No sandbox write exceptions are installed for native cards.
 
 Authenticated `POST /v1/run-ask` accepts exactly `bead`, positive `ask`,
 `topic`/`conversation`, `silent`, and `key` (or Idempotency-Key). It reads
-GetUser and Bead over the native RPC socket with X-Yardr-Connection naming
+GetUser and Bead (and GetGroup for a role-less group set card) over the native RPC socket with X-Yardr-Connection naming
 the configured source. RPC answers use `result` or structured
 `error: {code, message}`. Caller-supplied approval data is refused.
 
@@ -2147,8 +2147,8 @@ cannot use `runask:`. Move any existing overlapping callback_prefix to a
 different namespace before updating. The complete canonical card is HTML-escaped and limited
 to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
 following Footplate; canonical warning lines alone are bold. Self-contained
-cards keep that limit. A captured single-file `skill add` uses the complete
-review bundle below. Secret/setup/identity/depot_push, parameter inputs,
+cards keep that limit. A captured single-file `skill add` and a herdr `group
+add`/`group set` use the complete review bundle below. Secret/setup/identity/depot_push, parameter inputs,
 other carried files, pack plans and crew-add prompts still refuse before
 sending, with Footplate/cards as the fallback.
 
@@ -2250,6 +2250,66 @@ states. Polling/restart and ask_close reconcile the same native answer;
 caller-supplied decision text cannot declare success. Filesystem writes and
 recovery belong entirely to the core server, never the bridge.
 
+### Native group add and set review
+
+Core's herdr group rows (`yardr group add <name> runner=herdr kind=<kind>
+[model=] [limit=] [arg=<word> ...] prompt=<abs>` and `yardr group set <name>
+[model=] [arg=<word> ...]`) reach the bridge as ordinary run asks: argv,
+command, description, the yard's `does` sentences, back/back_by and one
+`code` weight. Role text has no field of its own on the wire; core writes it
+raw in `does` after a header that gives its SHA-256 and byte count. Minimum
+core is the group proposal contract of core revision `fc7375cf5ad4` (core
+`docs/api.md`, "Group proposal contract"), checked per call from the actual
+payload, not from a version string.
+
+`run_asks.parse_group` reads the card sentence by sentence in core's order.
+Fixed sentences match exactly; variable ones match their pattern and are tied
+to the argv: name, runner `herdr`, kind, model, limit, the quoted args, the
+effort, the prompt path, back and back_by, and the exact weight line. Each
+role (the proposed role of an add; a set's standing home role and every
+depot's own role) is consumed by its byte count, and its re-derived bytes
+must hash to the digest shown, so role lines can never pass as sentences or
+hide a sentence. A depot's "same text as depot X" line must name the depot
+that showed that digest. Refused whole before any send: any other argv key
+(env, credentials, login, skills, worktrees, cmd, prompt on set), a runner
+other than herdr, a relative or unclean prompt, an unknown or missing
+sentence, a role over 32768 bytes or holding a bidi or line-separator
+character, an unreadable or unshown role, carried files, or a different
+weight, back or description. A group set card with no prompt sentence and
+so no role is core's card for a group that names no prompt; the bridge
+accepts it only when core's GetGroup, read on every fetch while the ask is
+open or put aside, answers that group with no prompt, and its card says the
+sessions start with no role. An answered, declined or taken-back ask settles
+from core's answer alone, so a group changed or removed after the approval
+never holds the card uncertain. A paused group (limit 0) is reviewed like
+any other; the card keeps its limit.
+Core keeps the authority: it decides the weight,
+the allow-listed args and presets, the snapshot binding (group revision,
+grants, routes, roles) and refuses a stale approval atomically.
+
+The review bundle is the skill bundle's (`review_bundle`): same reply chain,
+per-part keys and receipts, rechecks before every part and the card, the same
+3500-unit envelope and digest binding of the home's device/inode. Its parts
+hold every sentence of the card as core wrote it, and each role as quoted
+JSON strings per line with its line ending, so tabs, trailing spaces, a
+trailing blank line and any invisible character show; a manifest line lists
+every role's label, path, SHA-256 and bytes. The card replying to the last
+part names the operation, kind and role digests and repeats the kind, model,
+args, effort, permission, login/env and running-session sentences; role lines
+never appear on the card even when they read like a sentence of the yard's.
+
+Approval is the weighted path above: the tap opens the ask-number prompt,
+the bound reply calls ApproveAsk with weighed=true once. Core writes the
+group (and an add's `roles/sha256/<sha256>.md`) in that write, with
+`approved` on its `group_set` event; the card settles from the canonical
+`ran`, "✓ approved, ran" with core's result line. A stale group, grant,
+route or role, a group made under the name, or a depot role changed since
+the card refuses in core: nothing is written, the ask stays open and the
+card says the yard refused; tap again after the yard changes back, or let
+the proposer ask afresh. Decline and Cancel write nothing. There is no
+pending carry for these rows and no automatic undo beyond the card's Back.
+
+
 ## Ordinary native ask cards
 
 Authenticated `POST /v1/ask-card`, CLI `ask-card` and source update `ask_card`
@@ -2350,7 +2410,9 @@ to 100 UTF-16 units, never inside a combining or joined character), then the
 kind, the ID, the bead's title and the asker. An ID is `<bead>#<ask>`: the
 bead is unique in this yard and the ask is that bead's note seq; each bridge
 serves one yard, so no ID is looked up anywhere else. Decisions, words
-questions, run and single-file skill proposals get a button. Secret, setup,
+questions, run, single-file skill and herdr group add/set proposals get a
+button (a group ask is listed as `run`; one with a field the card does not
+support is listed without a button, as below). Secret, setup,
 identity, depot-push, weighted, terminal-only run (file-carrying or
 input-wanting) and linked-yard (`bead@peer`) asks are listed with
 "Not complete in Telegram" and no button; selecting one says so and sends no

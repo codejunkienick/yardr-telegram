@@ -10,6 +10,17 @@ and code weight retain the core wire shape. No live yard data is used.
 The real native integration in `test_run_asks.py` checks this shape against
 the running core and exercises snapshot installation and native settlement.
 
+`group_add.json` and `group_set.json` are Bead asks captured from an isolated
+real core at `fc7375cf5ad4`: a herdr group add with a carried role (HTML,
+quotes, a tab, trailing spaces, a weight-mark lookalike, a line that reads
+like a card sentence and a trailing blank line) and a group set over a
+role-name prompt with the home's role, two dir depots' own role (one shown,
+one "same text"), a kept setting and a source grant. Only the temp root
+(`/synthetic`), ask number and timestamp are stabilized; the real integration
+compares the live response to them after the same rewrite, then approves
+both through the bridge. `group_set_no_prompt.json` is core's group set card
+for a group that names no prompt: no prompt or role sentences at all.
+
 `ordinary_option.json`, `ordinary_words.json` and `ordinary_stage.json` are
 actual Bead ask shapes checked by the isolated integration on core
 `7fa0d4c75ff6`, including its canonical `turn: 0`. Only ask number and timestamp

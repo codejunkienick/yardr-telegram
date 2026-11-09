@@ -231,6 +231,14 @@ deletions and other file-bearing proposals remain refused. See
 [the exact scope and recovery limits](bridge/OPERATIONS.md#captured-single-file-skill-review)
 and [bootstrap requirements](yardr/SETUP.md#single-file-skill-snapshots).
 
+Native herdr group cards (`group add` and `group set`, core `fc7375cf5ad4`)
+are read sentence by sentence against their argv; every role is re-derived
+from the card and must hash to the digest it shows. The whole card, roles
+quoted line by line, goes out in the same review bundle before the weighted
+card; unknown fields, runners, sentences or env/credential/login keys refuse
+before sending. See [operations](bridge/OPERATIONS.md#native-group-add-and-set-review)
+and [setup](yardr/SETUP.md#herdr-group-add-and-set).
+
 Native ordinary decisions use authenticated `POST /v1/ask-card`, source update
 `ask_card` and CLI `ask-card` with the same bead/ask/routing/key-only contract.
 The configured operator can pick stored options or reply directly with a

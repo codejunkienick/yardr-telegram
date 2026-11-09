@@ -28,6 +28,7 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 # Optional native cards: set BOTH after installing tgbridge and binding the operator.
 # Single-file skill snapshots also require the core captured-snapshot capability
 # (a79f6f8162c8 or compatible); complete review parts precede weighted confirmation.
+# Herdr group add/set cards need core fc7375cf5ad4 or compatible, and nothing more here.
 # See yardr/SETUP.md. No new settings, blanket grant or yard filesystem writes.
 # home = "~/.yardr"                 # private existing yard; socket is home/yard.sock
 # operator = "operator"             # current operator user mapped to bot.user_id

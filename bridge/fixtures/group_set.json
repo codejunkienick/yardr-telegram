@@ -1,0 +1,61 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Upgrade the synthetic planners?",
+  "context": [
+    "Synthetic isolated group update"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "planners",
+      "model=claude-opus-5-5",
+      "arg=--permission-mode",
+      "arg=auto",
+      "arg=--effort",
+      "arg=xhigh"
+    ],
+    "command": "yardr group set planners model=claude-opus-5-5 arg=--permission-mode arg=auto arg=--effort arg=xhigh",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the herdr group planners, which stands: kind claude (Claude Code), limit 1; its runner, kind, limit and every other setting are kept.",
+      "Kind claude (Claude Code), from its own kind setting.",
+      "Model: claude-opus-4 -> claude-opus-5-5, passed as the kind's model flag; a bead's metadata.model still stands before the group's, as today.",
+      "Args, literal, in order: \"--permission-mode\" \"auto\" \"--effort\" \"high\" -> \"--permission-mode\" \"auto\" \"--effort\" \"xhigh\".",
+      "Effort: high (--effort high) -> xhigh (--effort xhigh).",
+      "Permissions now: auto preset (\"--permission-mode\" \"auto\"); Claude judges each action; asks only about risky ones.",
+      "Permissions after the approval: auto preset (\"--permission-mode\" \"auto\"); Claude judges each action; asks only about risky ones.",
+      "Other settings, kept as they stand: nice=5.",
+      "Skills: none, and the card adds none.",
+      "Env and login: none set, and the card sets none.",
+      "Login: its sessions use the operator's login (pat; no login_for), kept.",
+      "Source grants group planners holds, kept and unchanged by the card; one given, taken back or changed before the approval refuses it:",
+      "- source tgbridge, plain (no user's credential): health (read).",
+      "Flags every agent of kind claude gets (its harness file's flags.always, its memory-off switch, the brief's own args) are outside this card and unchanged: yardr harness show claude.",
+      "Its prompt stays roles/planner.md: a depot that keeps .yardr/roles/planner.md gives its beads that file, read at the depot's base commit; any other bead the yard's /synthetic/yard/roles/planner.md.",
+      "Its sessions start with the role in /synthetic/yard/roles/planner.md, read now: sha256 38a8d10fdb1bae74166d20bc7f6aec01a0a6378c9cd9b6d1af61b1502014c01c, 34 bytes; a change of that file before the approval refuses it. Its role is:",
+      "# Synthetic planner",
+      "Plan the work.",
+      "Depot app's beads start with its own role, /synthetic/app/.yardr/roles/planner.md, read now: sha256 6999e46830dc6ae735c91b33338944dca0b77be5f7f25797c5fed30688a12824, 33 bytes; a change of it before the approval refuses it. Its role is:",
+      "# Depot planner",
+      "Plan this depot.",
+      "Depot docs's beads start with its own role, /synthetic/docs/.yardr/roles/planner.md, read now: sha256 6999e46830dc6ae735c91b33338944dca0b77be5f7f25797c5fed30688a12824, 33 bytes; a change of it before the approval refuses it. It is the same text as depot app's above.",
+      "Sessions the group runs now keep the model and args they started with; sessions it starts after the approval start with these.",
+      "Back restores the model and args it has now, by the operator alone; its revision moves on again, sessions started in between keep what they started with, and nothing is written to disk."
+    ],
+    "back": "yardr group set planners model=claude-opus-4 'args=[\"--permission-mode\",\"auto\",\"--effort\",\"high\"]'",
+    "back_by": "only the operator"
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the model and args group planners's agents run with"
+    }
+  ]
+}

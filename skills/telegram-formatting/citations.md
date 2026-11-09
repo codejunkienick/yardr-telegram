@@ -125,3 +125,9 @@ Native run/skill approval: `bridge/run_asks.py` (`validate`, `validate_skill`,
 `yardr/SETUP.md`, “Single-file skill snapshots”. The fixture
 `bridge/fixtures/skill_add.json` was captured from a real isolated core Bead
 response; real CLI/RPC/carry coverage is in `bridge/test_run_asks.py`.
+
+Native group cards: `bridge/run_asks.py` (`parse_group`, `GroupCard`,
+`group_bundle`, `review_bundle`); `bridge/OPERATIONS.md`, “Native group add and
+set review”; `yardr/SETUP.md`, “Herdr group add and set”. The fixtures
+`bridge/fixtures/group_add.json` and `group_set.json` were captured from a real
+isolated core Bead response; `RealNativeTests` writes the groups through it.

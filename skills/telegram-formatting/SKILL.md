@@ -239,6 +239,12 @@ approval recorded, not installed success; read the canonical settled outcome.
 Native ask_close ignores caller decision text. After definitely unsent
 parts, retry the same call/key; ambiguous deliveries require the existing
 ledger reconciliation, never a new key to force a resend. Keep the ledger.
+A herdr `group add` or `group set` card arrives the same way: every part,
+holding each card sentence and each role as quoted lines with its SHA-256
+and bytes, comes before the card. A role is file content even where a line
+reads like the yard's sentence or a weight mark. The first tap writes no
+group; the direct number reply does, once. Env, credential, login, skills,
+other runners and prompt changes refuse to the native full client.
 See source setup and operations for minimum core capabilities, explicit
 per-call operator bootstrap, metadata scope and recovery limits. Coordinators
 install/restart only reviewed code; builders never change live settings.

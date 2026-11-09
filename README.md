@@ -89,6 +89,9 @@ Release history: `CHANGELOG.md`.
   [SETUP.md](yardr/SETUP.md#single-file-skill-snapshots). Full review parts
   precede buttons; Approve requires a direct ask-number reply. Other
   file-bearing proposals remain unsupported.
+- Optional native herdr group cards (`group add`, `group set`) need core
+  `fc7375cf5ad4` or later and the same setup
+  ([SETUP.md](yardr/SETUP.md#herdr-group-add-and-set)).
 - For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).

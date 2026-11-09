@@ -5,6 +5,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socketserver
@@ -68,6 +69,47 @@ def skill_proposal(extra=''):
     return ask
 
 
+def group_proposal(name='group_add', extra=''):
+    # Captured from Bead on the real isolated core; only the temp root, seq and time stabilized.
+    ask = json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
+    if extra:
+        does = ask['run']['does']
+        marker = 'Role read from ' if name == 'group_add' else 'Its sessions start with the role in '
+        head = next(i for i, line in enumerate(does) if line.startswith(marker))
+        start = len(does) - 5 if name == 'group_add' else head + 1
+        end = len(does) if name == 'group_add' else next(i for i, line in enumerate(does) if line.startswith("Depot app's"))
+        old = '\n'.join(does[start:end]) + ('\n' if name == 'group_add' else '')
+        new = old + extra
+        old_sum, new_sum = (hashlib.sha256(value.encode()).hexdigest() for value in (old, new))
+        old_size, new_size = (f'{len(value.encode())} bytes' for value in (old, new))
+        does[:start] = [line.replace(old_sum, new_sum).replace(old_size, new_size) for line in does[:start]]
+        does[start:end] = new.removesuffix('\n').split('\n')
+    return ask
+
+
+def group_add_proposal(extra=''):
+    return group_proposal('group_add', extra)
+
+
+def group_set_proposal(extra=''):
+    return group_proposal('group_set', extra)
+
+
+def group_set_no_prompt_proposal():
+    return group_proposal('group_set_no_prompt')
+
+
+def group_role(review, label):
+    """The role bytes a delivered review shows, read back from its quoted lines."""
+    rows = review.split('\n')
+    at = rows.index(label + ' (quoted UTF-8 lines, including line endings):') + 1
+    text = ''
+    while at < len(rows) and rows[at].startswith('"'):
+        text += json.loads(rows[at])
+        at += 1
+    return text
+
+
 class NativeSocket:
     def __init__(self, root):
         self.ask = proposal()
@@ -79,6 +121,7 @@ class NativeSocket:
         # Several beads, as the core's Bead and UserAsks read them; None keeps the one ask above.
         self.beads = None
         self.raw_queue = None
+        self.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -94,6 +137,8 @@ class NativeSocket:
                     return
                 if method == 'GetUser':
                     result = owner.user
+                elif method == 'GetGroup':
+                    result = owner.group
                 elif method == 'Bead':
                     if owner.mode == 'unreadable':
                         self.send_error(503)
@@ -134,6 +179,10 @@ class NativeSocket:
                         if method == 'ApproveAsk':
                             target['ran'] = dict(argv=target['run']['argv'],
                                                    result=n.PENDING if owner.mode == 'carrying' else 'stored operation applied')
+                            if owner.mode == 'regroup-prompt':
+                                owner.group = dict(owner.group, config=dict(owner.group['config'], prompt='roles/added-later.md'))
+                            elif owner.mode == 'regroup-removed':
+                                owner.group = None
                     if owner.mode == 'lost-unreadable':
                         owner.mode = 'unreadable'
                         return
@@ -234,6 +283,7 @@ class NativeCase(BridgeTestCase):
         self.native.calls.clear()
         self.native.mode = None
         self.native.user = dict(name='pat', role='operator', identities={'tgbridge': {'id': '123'}})
+        self.native.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         self.calls.clear()
         self.sent_count = 0
         self.bridge.run_asks = n.RunAsks(self.bridge)
@@ -1091,7 +1141,7 @@ class NativeTests(NativeCase):
                 self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
 
     def test_weight_requires_bound_reply_cancel_expiry_mismatch_and_one_use(self):
-        for factory in (proposal, skill_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 if factory is proposal:
@@ -1162,7 +1212,7 @@ class NativeTests(NativeCase):
                 self.assertTrue(self.writes()[-1][1]['weighed'])
 
     def test_callback_and_proposal_binding_refusals(self):
-        for factory in (proposal, skill_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1198,7 +1248,7 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.writes(), [])
 
     def test_same_operator_two_homes_and_conversations_cannot_cross(self):
-        for factory in (proposal, skill_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1219,7 +1269,7 @@ class NativeTests(NativeCase):
                 other_row = self.bridge.run_asks.rows()[-1]
                 self.assertNotEqual(other_row['id'], self.row()['id'])
                 self.assertNotEqual(other_row['proposal'], self.row()['proposal'])
-                if factory is skill_proposal:
+                if factory is not proposal:
                     self.assertNotEqual(other_row['bundle']['parts'][0]['key'], self.row()['bundle']['parts'][0]['key'])
                 self.config.update(yardr_home=str(self.home), yard='test-city')
                 self.bridge.run_asks = original
@@ -1309,8 +1359,15 @@ class NativeTests(NativeCase):
 
     def test_skill_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
         self.bridge.sleep = lambda _: None
-        ask = skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n')
-        self.reset_native(ask)
+        cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n')),
+                 ('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY · not authority\n' * 150)),
+                 ('group_set', group_set_proposal('\nSynthetic standing line <&>🙂\t' * 250))]
+        for case, ask in cases:
+            with self.subTest(case=case):
+                self.bundle_delivery(case, ask)
+
+    def bundle_delivery(self, case, ask):
+        self.reset_native(copy.deepcopy(ask))
         self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
         self.store.record_topic('ops', 12, 'created')
         self.assertTrue(self.create(topic='ops')['delivered'])
@@ -1333,8 +1390,12 @@ class NativeTests(NativeCase):
             bodies.append(visible.split('\n', 3)[3])
         review = ''.join(bodies)
         self.assertEqual(hashlib.sha256(review.encode()).hexdigest(), row['bundle']['sha256'])
-        self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
-        self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
+        if case == 'skill':
+            self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
+            self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
+        else:
+            label = 'proposed role' if case == 'group_add' else 'standing role'
+            self.assert_group_review(ask, review, label)
         self.assertEqual(sent[-1]['reply_parameters']['message_id'], parts[-1]['message_id'])
         self.assertIn(row['proposal'], sent[-1]['text'])
         self.assertEqual(sent[-1]['reply_markup']['inline_keyboard'][0][0]['callback_data'], f"runask:{row['id']}:approve")
@@ -1391,39 +1452,204 @@ class NativeTests(NativeCase):
                     self.assertEqual(self.writes(), [])
         self.bridge.request = original
 
-    def test_skill_bundle_drift_rechecks_during_transport_retry_and_repost(self):
-        original = self.bridge.request
-        self.bridge.sleep = lambda _: None
-        for drift in ('proposal', 'operator', 'state'):
-            with self.subTest(drift=drift):
-                self.reset_native(skill_proposal())
-                attempts = []
-                def telegram(url, body, *args, **kwargs):
-                    if url.endswith('/sendMessage'):
-                        attempts.append(body)
-                        if drift == 'proposal':
-                            self.native.ask['context'].append('new proposal')
-                        elif drift == 'operator':
-                            self.native.user['role'] = 'member'
-                        else:
-                            self.native.ask.update(state='taken back', words='withdrawn', by='proposer')
-                        raise b.RequestNotSent('not sent before drift')
-                    return original(url, body, *args, **kwargs)
-                self.bridge.request = telegram
+    def assert_group_review(self, ask, review, label):
+        does = ask['run']['does']
+        rows = review.split('\n')
+        role = group_role(review, label)
+        header = next(line for line in does if ' bytes' in line and ('Role read from' in line or 'role in' in line))
+        digest, size = re.search(r'sha256 ([0-9a-f]{64}), ([0-9]+) bytes', header).groups()
+        self.assertEqual((hashlib.sha256(role.encode()).hexdigest(), len(role.encode())), (digest, int(size)))
+        self.assertIn(f'"sha256":"{digest}"', rows[2])
+        role_rows = {line for row in rows if row.startswith('"') for line in json.loads(row).split('\n')}
+        for line in does:
+            if line not in role_rows:
+                self.assertIn(line, rows)
+        # Role text is only ever a quoted line; no role line reaches the review as a sentence or a warning.
+        self.assertFalse([row for row in rows if row.startswith('WEIGHTY')])
+        for line in role_rows:
+            if line and not line.startswith('Sessions the group'):
+                self.assertNotIn(line, rows)
+
+    def test_group_bundle_reviews_whole_card_before_controls_and_refuses_unsupported(self):
+        for factory, label in ((group_add_proposal, 'proposed role'), (group_set_proposal, 'standing role')):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                self.assertTrue(self.create()['delivered'])
+                row = self.row()
+                sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                self.assertEqual(len(sent), len(row['bundle']['parts']) + 1)
+                self.assertTrue(all('reply_markup' not in body for body in sent[:-1]))
+                review = ''.join(b.html_visible_text(body['text'])[0].split('\n', 3)[3] for body in sent[:-1])
+                self.assert_group_review(self.native.ask, review, label)
+                if factory is group_add_proposal:
+                    self.assertIn('&lt;b&gt;role&lt;/b&gt;', sent[0]['text'])
+                    self.assertNotIn('<b>role', ''.join(body['text'] for body in sent))
+                    self.assertEqual(group_role(review, label).encode().count(b'\n\n'), 1)
+                else:
+                    self.assertEqual(group_role(review, 'depot app role'), '# Depot planner\nPlan this depot.\n')
+                    self.assertIn("It is the same text as depot app's above.", review)
+                card = b.html_visible_text(sent[-1]['text'])[0]
+                self.assertLessEqual(n.units(card), n.CAP)
+                for line in self.native.ask['run']['does']:
+                    if line.startswith(('Kind ', 'Model', 'Args', 'Effort', 'Permissions')):
+                        self.assertIn(line, card)
+                self.assertIn('WEIGHTY · code: brings a program the yard will run: ', card)
+                # The add role holds a line that reads like a card sentence; it stays in the quoted review only.
+                self.assertEqual(card.count('Sessions the group runs now keep'), 0 if factory is group_add_proposal else 1)
+                self.assertNotIn('forged authority', card)
+                self.assertIn(self.native.ask['run']['command'], card)
+                self.assertIn(f"Complete review bundle {row['proposal']} · {len(row['bundle']['parts'])} parts.", card)
+                self.assertEqual(sent[-1]['reply_parameters']['message_id'], row['bundle']['parts'][-1]['message_id'])
+                self.assertTrue(row['weighty'])
+
+        def changed(factory, path, value):
+            ask = factory()
+            target = ask
+            for key in path[:-1]:
+                target = target[key]
+            if value is DELETE:
+                del target[path[-1]]
+            elif value is INSERT:
+                target.insert(path[-1], 'An invented sentence the bridge has never seen.')
+            else:
+                target[path[-1]] = value(target[path[-1]]) if callable(value) else value
+            return ask
+
+        # A group naming no prompt has no role sentences in core's card: reviewed, and the card says it starts with none.
+        self.reset_native(group_set_no_prompt_proposal())
+        self.assertTrue(self.create()['delivered'])
+        sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
+        self.assertTrue(all('reply_markup' not in body for body in sent[:-1]))
+        self.assertIn('Manifest: group set drafters; roles []', b.html_visible_text(sent[0]['text'])[0])
+        self.assertIn('group set drafters (herdr, kind claude); it names no prompt: its sessions start with no role, and the card sets none',
+                      b.html_visible_text(sent[-1]['text'])[0])
+        self.assertIn(('GetGroup', ['drafters'], 'tgbridge'), self.native.calls)
+        # Core's group decides: one that names a prompt (or answers wrongly) refuses the role-less card before any send.
+        for group in (dict(self.native.group, config=dict(self.native.group['config'], prompt='roles/drafter.md')),
+                      dict(self.native.group, name='planners'), dict(self.native.group, config=None)):
+            with self.subTest(group=group):
+                self.reset_native(group_set_no_prompt_proposal())
+                self.native.group = group
                 self.assertFalse(self.create()['delivered'])
-                self.assertEqual(len(attempts), 1)
-                self.bridge.run_asks = n.RunAsks(self.bridge)
-                self.assertFalse(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='new-retry'))['delivered'])
-                self.assertEqual(len(attempts), 1)
-                self.assertIsNone(self.row()['message_id'])
+                self.assertEqual(self.sent_count, 0)
                 self.assertEqual(self.writes(), [])
-                key = self.row()['bundle']['parts'][0]['key']
-                self.assertTrue(b.resendable(self.store.saved_receipt(key)))
-                if drift == 'operator':
-                    self.native.user['role'] = 'operator'
-                    self.bridge.request = original
-                    self.assertTrue(self.create()['delivered'])
-        self.bridge.request = original
+
+        add, put, bare = group_add_proposal, group_set_proposal, group_set_no_prompt_proposal
+        DELETE, INSERT = object(), object()
+        prompt_lines = put()['run']['does'][14:16]
+        argv_add, argv_set = add()['run']['argv'], put()['run']['argv']
+        cases = [
+            # Fields, runners and keys a card never proposes refuse whole, not dropped.
+            (add, ('run', 'argv'), argv_add[:3] + ['runner=exec'] + argv_add[4:]),
+            (add, ('run', 'argv'), argv_add[:-1] + ['env_file=/synthetic/env', argv_add[-1]]),
+            (add, ('run', 'argv'), argv_add[:-1] + ['login_for=someone', argv_add[-1]]),
+            (add, ('run', 'argv'), argv_add[:-1] + ['skills=x', argv_add[-1]]),
+            (add, ('run', 'argv'), argv_add[:-1]),
+            (add, ('run', 'argv'), argv_add[:-1] + ['prompt=relative/builder.md']),
+            (add, ('run', 'argv'), argv_add[:-1] + ['prompt=/synthetic/../builder.md']),
+            (put, ('run', 'argv'), argv_set[:3]),
+            (put, ('run', 'argv'), argv_set + ['env_command=whoami']),
+            (put, ('run', 'argv'), argv_set + ['prompt=/synthetic/new.md']),
+            (put, ('run', 'argv'), ['group', 'set', '../planners'] + argv_set[3:]),
+            (add, ('run', 'argv', 0), 'crew'),
+            # Every authoritative sentence and identity is tied to the argv and the bytes.
+            (add, ('run', 'command'), 'yardr group add other'),
+            (add, ('run', 'description'), 'invented'),
+            (add, ('run', 'back'), 'yardr group rm other'),
+            (put, ('run', 'back'), 'yardr group set planners\nyardr group rm planners'),
+            (put, ('run', 'back_by'), 'anyone'),
+            (add, ('run', 'carried'), [{}]),
+            (add, ('weight',), []),
+            (add, ('weight', 0, 'class'), 'trust'),
+            (put, ('weight', 0, 'line'), lambda line: line + ' and more'),
+            (add, ('run', 'does', 1), lambda line: line.replace('claude-opus-5-5', 'claude-other')),
+            (add, ('run', 'does', 1), lambda line: line.replace('limit 2', 'limit 3')),
+            (add, ('run', 'does', 2), lambda line: line.replace('medium', 'max')),
+            (add, ('run', 'does', 3), lambda line: line.replace('medium', 'high')),
+            (add, ('run', 'does', 5), lambda line: line.replace('none (no env_file', 'none (env_file')),
+            (add, ('run', 'does', 9), lambda line: line.replace('224 bytes', '223 bytes')),
+            (add, ('run', 'does', 10), lambda line: line.replace('roles/sha256/a', 'roles/sha256/b')),
+            (add, ('run', 'does', -1), 'changed role bytes'),
+            (add, ('run', 'does', -2), lambda line: line + ' '),
+            (add, ('run', 'does', -1), DELETE),
+            (add, ('run', 'does', 4), INSERT),
+            (add, ('run', 'does', 12), DELETE),
+            (put, ('run', 'does', 2), lambda line: line.replace('-> claude-opus-5-5', '-> claude-other')),
+            (put, ('run', 'does', 3), lambda line: line.replace('"xhigh".', '"max".')),
+            (put, ('run', 'does', 4), lambda line: line.replace('-> xhigh (--effort xhigh)', '-> max (--effort max)')),
+            (put, ('run', 'does', 9), 'Env and login, set by this card: env_file=/synthetic/new.'),
+            (put, ('run', 'does', 9), 'Env and login: env_file=/synthetic/new, set by the card.'),
+            (put, ('run', 'does', 16), 'changed standing role line'),
+            (put, ('run', 'does', 15), lambda line: line.replace('34 bytes', '35 bytes')),
+            (put, ('run', 'does', 15), "Its role /synthetic/yard/roles/planner.md cannot be read now."),
+            (put, ('run', 'does', 18), lambda line: line.replace('6999e468', '0999e468')),
+            (put, ('run', 'does', 21), lambda line: line.replace('depot app', 'depot other')),
+            (put, ('run', 'does', 13), INSERT),
+            (put, ('run', 'does', -1), DELETE),
+            (put, ('run', 'does', 20), DELETE),
+            # A prompted group's role is never optional: dropping its role leaves an incomplete card, not a no-prompt one.
+            (put, ('run', 'does'), lambda does: does[:14] + does[22:]),
+            (put, ('run', 'does'), lambda does: does[:15] + does[18:]),
+            (put, ('run', 'does'), lambda does: does[:14] + does[15:]),
+            (bare, ('run', 'does'), lambda does: does[:13] + prompt_lines[1:] + does[13:]),
+            (bare, ('run', 'does'), lambda does: does[:13] + prompt_lines[:1] + does[13:]),
+            (put, ('run', 'does', 0), lambda line: line.replace(', limit 1;', ', limit -1;')),
+            (bare, ('run', 'does', 0), lambda line: line.replace(', limit 1;', ', limit 00;')),
+        ]
+        for factory, path, value in cases:
+            with self.subTest(payload=factory.__name__, path=path, value=value if not callable(value) else 'edit'):
+                self.reset_native(changed(factory, path, value))
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
+        # A paused group (limit 0) is core's own state: its set card is reviewed, and the card keeps the limit.
+        for factory in (put, bare):
+            with self.subTest(paused=factory.__name__):
+                self.reset_native(changed(factory, ('run', 'does', 0), lambda line: line.replace(', limit 1;', ', limit 0;')))
+                self.assertTrue(self.create()['delivered'])
+        # The core's own maximum role is reviewed whole; one byte more refuses before any send.
+        base = len('\n'.join(add()['run']['does'][-5:]).encode()) + 1
+        self.reset_native(add('x' * (32768 - base)))
+        self.assertTrue(self.create()['delivered'])
+        self.reset_native(add('x' * (32769 - base)))
+        self.assertFalse(self.create()['delivered'])
+        self.assertEqual(self.sent_count, 0)
+
+    def test_skill_bundle_drift_rechecks_during_transport_retry_and_repost(self):
+        for factory in (skill_proposal, group_add_proposal, group_set_proposal):
+            with self.subTest(payload=factory.__name__):
+                original = self.bridge.request
+                self.bridge.sleep = lambda _: None
+                for drift in ('proposal', 'operator', 'state'):
+                    with self.subTest(drift=drift):
+                        self.reset_native(factory())
+                        attempts = []
+                        def telegram(url, body, *args, **kwargs):
+                            if url.endswith('/sendMessage'):
+                                attempts.append(body)
+                                if drift == 'proposal':
+                                    self.native.ask['context'].append('new proposal')
+                                elif drift == 'operator':
+                                    self.native.user['role'] = 'member'
+                                else:
+                                    self.native.ask.update(state='taken back', words='withdrawn', by='proposer')
+                                raise b.RequestNotSent('not sent before drift')
+                            return original(url, body, *args, **kwargs)
+                        self.bridge.request = telegram
+                        self.assertFalse(self.create()['delivered'])
+                        self.assertEqual(len(attempts), 1)
+                        self.bridge.run_asks = n.RunAsks(self.bridge)
+                        self.assertFalse(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='new-retry'))['delivered'])
+                        self.assertEqual(len(attempts), 1)
+                        self.assertIsNone(self.row()['message_id'])
+                        self.assertEqual(self.writes(), [])
+                        key = self.row()['bundle']['parts'][0]['key']
+                        self.assertTrue(b.resendable(self.store.saved_receipt(key)))
+                        if drift == 'operator':
+                            self.native.user['role'] = 'operator'
+                            self.bridge.request = original
+                            self.assertTrue(self.create()['delivered'])
+                self.bridge.request = original
 
     def test_skill_bundle_maximum_file_and_oversized_envelope_refuse_whole(self):
         base_size = len(skill_proposal()['run']['carried'][0]['files'][0]['text'].encode())
@@ -1446,18 +1672,21 @@ class NativeTests(NativeCase):
         self.assertEqual(self.writes(), [])
 
     def test_skill_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
-        self.reset_native(skill_proposal())
-        self.assertTrue(self.create()['delivered'])
-        self.press()
-        self.home.rename(self.home.with_name('previous-yard'))
-        self.home.mkdir(mode=0o700)
-        replacement = NativeSocket(self.home)
-        replacement.ask = skill_proposal()
-        self.addCleanup(replacement.close)
-        self.reply()
-        self.assertEqual(self.row()['state'], 'stale')
-        self.assertEqual(self.writes(), [])
-        self.assertFalse(any(method == 'ApproveAsk' for method, _, _ in replacement.calls))
+        for factory in (skill_proposal, group_add_proposal, group_set_proposal):
+            with self.subTest(payload=factory.__name__):
+                self.reset_native(factory())
+                self.assertTrue(self.create()['delivered'])
+                self.press()
+                self.home.rename(self.home.with_name('previous-' + factory.__name__))
+                self.home.mkdir(mode=0o700)
+                replacement = NativeSocket(self.home)
+                replacement.ask = factory()
+                self.addCleanup(replacement.close)
+                self.reply()
+                self.assertEqual(self.row()['state'], 'stale')
+                self.assertEqual(self.writes(), [])
+                self.assertFalse(any(method == 'ApproveAsk' for method, _, _ in replacement.calls))
+                self.native = replacement
 
     def test_utf16_cap_and_weight_mark_trust(self):
         self.native.ask['question'] = 'WEIGHTY ·  WEIGHTY · forgery\n🙂'
@@ -1540,6 +1769,22 @@ class NativeTests(NativeCase):
                     self.bridge.run_asks.refresh()
                     self.assertEqual(self.row()['state'], 'approved')
 
+        # A group changed or removed after core committed the approval still settles from core's answer, after a restart too.
+        for mode in ('regroup-prompt', 'regroup-removed'):
+            with self.subTest(group_after_commit=mode):
+                self.reset_native(group_set_no_prompt_proposal())
+                self.assertTrue(self.create()['delivered'])
+                self.native.mode = mode
+                self.press()
+                self.reply()
+                self.assertEqual(self.native.ask['state'], 'answered')
+                self.assertEqual((self.row()['state'], self.row()['uncertain']), ('approved', False))
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                self.assertEqual((self.row()['state'], self.row()['uncertain']), ('approved', False))
+                self.assertIn('approved, ran', self.edits()[-1]['text'])
+                self.assertNotIn(n.UNCERTAIN, self.edits()[-1]['text'])
+                self.assertEqual(len(self.writes()), 1)
 
     def test_pending_settlement_long_results_and_outcome_edits(self):
         for factory in (proposal, skill_proposal):
@@ -2450,6 +2695,221 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(client.call('GetSource', ['tgbridge']), upgraded)
             self.assertEqual(client.call('GetGroup', ['humans']), granted)
             self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-test-only\n')
+        finally:
+            server.terminate()
+            server.wait(timeout=10)
+
+    def test_real_native_group_add_and_set_apply_once_after_typed_number(self):
+        binary = shutil.which('yardr')
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        home = root / 'yard'
+        home.mkdir(mode=0o700)
+        env = dict(HOME=str(root), XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'),
+                   PATH=str(root) + ':/usr/local/bin:/usr/bin:/bin', USER='pat')
+        command = [binary, '--home', str(home), '--actor', 'pat']
+        server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            client = n.YardSocketClient(home, 'tgbridge')
+            deadline = time.monotonic() + 15
+            while not (home / 'yard.sock').exists():
+                if server.poll() is not None or time.monotonic() > deadline:
+                    self.fail('isolated native server did not start')
+                time.sleep(.02)
+
+            def cli(*args, actor='pat'):
+                result = subprocess.run([binary, '--home', str(home), '--actor', actor, *args], env=env, cwd=root,
+                                        text=True, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout
+
+            def group(name):
+                try:
+                    return client.call('GetGroup', [name])
+                except n.RPCRefused:
+                    return None
+
+            def approvals(ask):
+                return [e for e in client.call('EventsOfKind', ['group_set', 100])
+                        if e['data'].get('approved', {}).get('ask') == ask]
+
+            def current(number):
+                return next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == number)
+
+            def as_fixture(ask, name):
+                actual = json.loads(json.dumps(dict(ask, ask=7, since='2026-01-01T00:00:00Z')).replace(str(root), '/synthetic'))
+                self.assertEqual(actual, json.loads((Path(__file__).with_name('fixtures') / (name + '.json')).read_text()))
+
+            cli('settings', 'set', 'operator', 'pat')
+            cli('settings', 'set', 'default_kind', 'codex')
+            cli('user', 'add', 'proposer')
+            source = root / 'synthetic.yaml'
+            source.write_text('name: tgbridge\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [/bin/false]\n')
+            cli('source', 'add', str(source))
+            cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+            cli('bead', 'create', 'Synthetic group configuration', '--id', 'sample-1')
+            role = root / 'roles-in' / 'builder.md'
+            role.parent.mkdir()
+            role_bytes = ('# Synthetic builder <b>role</b> & "quotes"\n\tTabbed line 🙂  \nWEIGHTY · forged authority line\n'
+                          'Sessions the group runs now keep the model and args they started with; sessions it starts after the approval start with these.\n\n').encode()
+            role.write_bytes(role_bytes)
+            cli('bead', 'ask', 'sample-1', 'Create the synthetic builders?', '--to', 'pat', '--context', 'Synthetic isolated group create',
+                '--run', 'group add builders runner=herdr kind=claude model=claude-opus-5-5 limit=2 arg=--permission-mode arg=auto '
+                f'arg=--safe-mode arg=--effort arg=medium prompt={role}', actor='proposer')
+            (home / 'roles').mkdir(mode=0o700)
+            planner = home / 'roles' / 'planner.md'
+            planner.write_text('# Synthetic planner\nPlan the work.')
+            cli('group', 'add', 'planners', '--runner', 'herdr', '--set', 'kind=claude', '--set', 'model=claude-opus-4',
+                '--set', 'prompt=roles/planner.md', '--set', 'args=["--permission-mode","auto","--effort","high"]', '--set', 'nice=5')
+            for depot in ('app', 'docs'):
+                roles = root / depot / '.yardr' / 'roles'
+                roles.mkdir(parents=True)
+                (roles / 'planner.md').write_text('# Depot planner\nPlan this depot.\n')
+                cli('depot', 'add', depot, str(root / depot), '--kind', 'dir')
+            cli('source', 'grant', 'tgbridge', 'health', '--group', 'planners')
+            cli('bead', 'ask', 'sample-1', 'Upgrade the synthetic planners?', '--to', 'pat', '--context', 'Synthetic isolated group update',
+                '--run', 'group set planners model=claude-opus-5-5 arg=--permission-mode arg=auto arg=--effort arg=xhigh', actor='proposer')
+            create, update = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks']
+            as_fixture(create, 'group_add')
+            as_fixture(update, 'group_set')
+            planners = group('planners')
+
+            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+            ids = iter(range(77, 400))
+            def telegram(url, body, *args, **kwargs):
+                status, response = self.transport(url, body, *args, **kwargs)
+                if url.endswith('/sendMessage'):
+                    response['result']['message_id'] = next(ids)
+                elif url.endswith('/editMessageText'):
+                    response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
+                return status, response
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+            self.bridge.hook_secret = None
+            updates = iter(range(40, 400))
+
+            def card(ask):
+                self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key=f"group-{ask['ask']}"))['delivered'])
+                row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+                self.assertTrue(all(part['message_id'] for part in row['bundle']['parts']))
+                return row
+
+            def press(row, action='approve'):
+                self.bridge.inbound(dict(update_id=next(updates), callback_query=dict(
+                    id=f'query-{action}', data=f"runask:{row['id']}:{action}", **{'from': dict(id=123, is_bot=False)},
+                    message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))))
+
+            def reply(row, value):
+                update = dict(update_id=next(updates), message=dict(message_id=2000 + len(self.calls), text=value,
+                    chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+                    reply_to_message=dict(message_id=row['message_id'], **{'from': dict(id=999, is_bot=True)})))
+                self.bridge.inbound(update)
+                return update
+
+            # Create: the tap only opens the number prompt; a wrong number does nothing; the typed number writes once.
+            row = card(create)
+            press(row)
+            reply(row, str(create['ask'] + 1))
+            self.assertIsNone(group('builders'))
+            press(row)
+            confirmation = reply(row, str(create['ask']))
+            made = group('builders')
+            self.assertEqual((made['runner'], made['limit']), ('herdr', 2))
+            self.assertEqual({k: made['config'][k] for k in ('kind', 'model', 'args')},
+                             dict(kind='claude', model='claude-opus-5-5', args=['--permission-mode', 'auto', '--safe-mode', '--effort', 'medium']))
+            digest = hashlib.sha256(role_bytes).hexdigest()
+            self.assertEqual(made['config']['prompt'], str(home / 'roles' / 'sha256' / (digest + '.md')))
+            self.assertEqual((home / 'roles' / 'sha256' / (digest + '.md')).read_bytes(), role_bytes)
+            self.assertEqual(len(approvals(create['ask'])), 1)
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'approved')
+            self.bridge.inbound(confirmation)
+            press(row)
+            self.assertEqual(len(approvals(create['ask'])), 1)
+            self.assertEqual(group('builders'), made)
+
+            # Update: a role changed after the card refuses in core, writes nothing and leaves the card open.
+            row = card(update)
+            planner.write_text('# Synthetic planner\nPlan the work, changed.')
+            press(row)
+            reply(row, str(update['ask']))
+            self.assertEqual(current(update['ask'])['state'], 'open')
+            self.assertEqual(group('planners'), planners)
+            self.assertEqual(approvals(update['ask']), [])
+            self.assertIn('The yard refused this action', b.html_visible_text(
+                [body for url, body in self.calls if url.endswith('/editMessageText')][-1]['text'])[0])
+            planner.write_text('# Synthetic planner\nPlan the work.')
+            press(row, 'cancel')
+            self.assertEqual(group('planners'), planners)
+            press(row)
+            reply(row, str(update['ask']))
+            changed = group('planners')
+            self.assertEqual(changed['config']['model'], 'claude-opus-5-5')
+            self.assertEqual(changed['config']['args'], ['--permission-mode', 'auto', '--effort', 'xhigh'])
+            self.assertEqual({k: v for k, v in changed['config'].items() if k not in ('model', 'args')},
+                             {k: v for k, v in planners['config'].items() if k not in ('model', 'args')})
+            self.assertEqual((changed['runner'], changed['limit']), (planners['runner'], planners['limit']))
+            self.assertEqual(len(approvals(update['ask'])), 1)
+
+            # A group naming no prompt: core shows no role, and the card says so instead of refusing.
+            cli('group', 'add', 'drafters', '--runner', 'herdr', '--set', 'kind=claude', '--set', 'model=claude-opus-4')
+            cli('bead', 'ask', 'sample-1', 'Upgrade the synthetic drafters?', '--to', 'pat', '--context', 'Synthetic no-prompt update',
+                '--run', 'group set drafters model=claude-opus-5-5 arg=--effort arg=xhigh', actor='proposer')
+            bare = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            as_fixture(bare, 'group_set_no_prompt')
+            drafters = group('drafters')
+            row = card(bare)
+            self.assertIn('it names no prompt: its sessions start with no role, and the card sets none',
+                          b.html_visible_text([body for url, body in self.calls if url.endswith('/sendMessage')][-1]['text'])[0])
+            press(row)
+            self.assertEqual(group('drafters'), drafters)
+            reply(row, str(bare['ask']))
+            changed = group('drafters')
+            self.assertEqual((changed['config']['model'], changed['config']['args']), ('claude-opus-5-5', ['--effort', 'xhigh']))
+            self.assertNotIn('prompt', changed['config'])
+            self.assertEqual(len(approvals(bare['ask'])), 1)
+
+            # A paused group (limit 0): its set card is reviewed and approved, and the limit stays 0.
+            cli('group', 'add', 'pausers', '--runner', 'herdr', '--set', 'kind=claude')
+            cli('group', 'set', 'pausers', '--limit', '0')
+            cli('bead', 'ask', 'sample-1', 'Upgrade the paused pausers?', '--to', 'pat', '--context', 'Synthetic paused update',
+                '--run', 'group set pausers model=claude-opus-5-5 arg=--effort arg=xhigh', actor='proposer')
+            paused = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            self.assertIn(', limit 0;', paused['run']['does'][0])
+            row = card(paused)
+            press(row)
+            reply(row, str(paused['ask']))
+            changed = group('pausers')
+            self.assertEqual((changed['limit'], changed['config']['model'], changed['config']['args']),
+                             (0, 'claude-opus-5-5', ['--effort', 'xhigh']))
+            self.assertEqual(len(approvals(paused['ask'])), 1)
+
+            # Core's answer settles the card though the group gains a prompt after it: a restart keeps it settled.
+            cli('group', 'set', 'pausers', 'prompt=roles/planner.md')
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+            self.bridge.hook_secret = None
+            self.bridge.run_asks.refresh()
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'approved')
+            self.assertFalse(self.bridge.run_asks.get(row['id'])['uncertain'])
+            self.assertEqual(len(approvals(paused['ask'])), 1)
+
+            # Decline and a stale existing group: neither writes a group.
+            cli('bead', 'ask', 'sample-1', 'Create the reviewers?', '--to', 'pat', '--context', 'Synthetic decline',
+                '--run', f'group add reviewers runner=herdr kind=claude prompt={role}', actor='proposer')
+            declined = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            row = card(declined)
+            press(row, 'decline')
+            self.assertEqual(current(declined['ask'])['state'], 'declined')
+            self.assertIsNone(group('reviewers'))
+            cli('bead', 'ask', 'sample-1', 'Create the testers?', '--to', 'pat', '--context', 'Synthetic stale target',
+                '--run', f'group add testers runner=herdr kind=claude prompt={role}', actor='proposer')
+            stale = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            row = card(stale)
+            cli('group', 'add', 'testers', '--runner', 'manual')
+            press(row)
+            reply(row, str(stale['ask']))
+            self.assertEqual(current(stale['ask'])['state'], 'open')
+            self.assertEqual(group('testers')['runner'], 'manual')
+            self.assertEqual(approvals(stale['ask']), [])
         finally:
             server.terminate()
             server.wait(timeout=10)

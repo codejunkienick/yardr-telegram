@@ -1,0 +1,50 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Upgrade the synthetic drafters?",
+  "context": [
+    "Synthetic no-prompt update"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "drafters",
+      "model=claude-opus-5-5",
+      "arg=--effort",
+      "arg=xhigh"
+    ],
+    "command": "yardr group set drafters model=claude-opus-5-5 arg=--effort arg=xhigh",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the herdr group drafters, which stands: kind claude (Claude Code), limit 1; its runner, kind, limit and every other setting are kept.",
+      "Kind claude (Claude Code), from its own kind setting.",
+      "Model: claude-opus-4 -> claude-opus-5-5, passed as the kind's model flag; a bead's metadata.model still stands before the group's, as today.",
+      "Args, literal, in order: (none) -> \"--effort\" \"xhigh\".",
+      "Effort: the agent's own default (no --effort) -> xhigh (--effort xhigh).",
+      "Permissions now: no preset — the agent asks as usual.",
+      "Permissions after the approval: no preset — the agent asks as usual.",
+      "Other settings, kept as they stand: none.",
+      "Skills: none, and the card adds none.",
+      "Env and login: none set, and the card sets none.",
+      "Login: its sessions use the operator's login (pat; no login_for), kept.",
+      "Source grants: group drafters holds none; one given before the approval refuses it.",
+      "Flags every agent of kind claude gets (its harness file's flags.always, its memory-off switch, the brief's own args) are outside this card and unchanged: yardr harness show claude.",
+      "Sessions the group runs now keep the model and args they started with; sessions it starts after the approval start with these.",
+      "Back restores the model and args it has now, by the operator alone; its revision moves on again, sessions started in between keep what they started with, and nothing is written to disk."
+    ],
+    "back": "yardr group set drafters model=claude-opus-4 --unset args",
+    "back_by": "only the operator"
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the model and args group drafters's agents run with"
+    }
+  ]
+}

@@ -261,7 +261,7 @@ Self-contained native run asks retain their original behavior. Secret,
 setup, identity,
 depot-push, parameter input, carried source/pack files and crew-add prompt
 payloads are refused before sending, except the verified single-file skill
-snapshot described below. Self-contained cards over 3500 visible UTF16 units
+snapshot and herdr group cards described below. Self-contained cards over 3500 visible UTF16 units
 are refused whole. Use Footplate or the yard cards for refused proposals;
 ordinary send/tell summaries cannot authorize an approval.
 
@@ -334,6 +334,47 @@ An ambiguous part/card is never blindly resent, even with another key or
 a restart; use existing delivery-ledger reconciliation with the operator.
 Keep SQLite state. Details and rendering limits are in
 [operations](../bridge/OPERATIONS.md#captured-single-file-skill-review).
+
+### Herdr group add and set
+
+A crew member proposes a herdr group, or a group's model and args, and the
+paired operator approves it from Telegram:
+
+```sh
+yardr bead ask <bead> "Create the builders?" --context "Review every part before approval." \
+  --run "group add builders runner=herdr kind=claude model=<model> limit=2 arg=--permission-mode arg=auto arg=--effort arg=medium prompt=/absolute/role.md"
+yardr bead ask <bead> "Raise the planners' effort?" \
+  --run "group set planners model=<model> arg=--permission-mode arg=auto arg=--effort arg=xhigh"
+yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=group-review-1
+```
+
+Minimum: core `fc7375cf5ad4` (group proposal contract) and this bridge. The
+bootstrap and grants are step 12's alone: `run_ask` granted to the crew that
+publishes cards, the operator user with the bridge identity, and the native
+`home`/`operator` keys. Verified against an isolated real core: the proposer
+needs nothing beyond `bead ask`; the bridge reads Bead (and GetGroup, a read
+like Bead, for a group that names no prompt) and calls
+ApproveAsk/DeclineAsk on the yard socket as the operator, as for any run
+card. No new grant, setting, socket, whole-yard write or sandbox exception is
+added; the role file is written by the core server, never by the bridge.
+
+All parts arrive before the card: every sentence of the card, each role
+whole as quoted lines with its SHA-256 and bytes. The tap only opens the
+prompt; a direct reply with the ask number within five minutes approves. A
+group or role that changed since the card is refused by core with nothing
+written. Env, credentials, logins, skills, worktrees, other runners and
+prompt changes are not proposable and refuse before sending. Details:
+[operations](../bridge/OPERATIONS.md#native-group-add-and-set-review).
+
+Rollout: the coordinator installs reviewed core first, then this bridge as
+its own release copy (`install.sh --settings <file>`, `check-install`, the
+printed `next:` line; see the source update below); an older core never
+produces these cards, and an older bridge renders a short one through the
+generic run card or refuses a long one. Rollback: `<root>/current/install.sh
+--settings <file> --rollback` and its `next:` line; open group cards then
+fall back to Footplate or the yard cards. Groups already approved
+stay as core wrote them; undo is each card's Back (`yardr group rm <name>`,
+or the `yardr group set` line it shows).
 
 ## 13. Ordinary native decisions (operator; optional)
 

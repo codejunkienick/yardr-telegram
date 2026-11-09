@@ -18,7 +18,7 @@ CAP = 3500
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
-READS = ('Bead', 'GetUser', 'UserAsks')
+READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 
 
@@ -411,6 +411,224 @@ def run_scope(run):
     return argv
 
 
+GROUP_ROWS = (['group', 'add'], ['group', 'set'])
+GROUP_KEYS = {'add': ('runner', 'kind', 'model', 'limit', 'arg', 'prompt'), 'set': ('model', 'arg')}
+GROUP_WORD = re.compile(r'[A-Za-z0-9._/=@:+-]{1,64}')
+GROUP_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*')
+# A store value as core writes it in a sentence: bare, or in Go's double quotes.
+VALUE = r'(?:"(?:[^"\\]|\\.)*"|[^\s",=\\]+)'
+GROUP_HARNESS = ("Flags every agent of kind {0} gets (its harness file's flags.always, its memory-off switch, "
+                 "the brief's own args) are outside this card and unchanged: yardr harness show {0}.")
+HIDDEN = set('\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u2028\u2029')
+
+
+def display(value):
+    """Core's displaySourceValue for run-line words, which are printable ASCII."""
+    if not re.fullmatch(r'[\x20-\x7e]*', value):
+        raise NativeError('unsupported native group value' + FALLBACK)
+    return json.dumps(value) if value == '' or re.search(r'[ ,=\\"]', value) else value
+
+
+def quoted_args(args):
+    return ' '.join(json.dumps(word) for word in args) if args else '(none)'
+
+
+def effort(args):
+    if '--effort' in args and args.index('--effort') + 1 < len(args):
+        value = display(args[args.index('--effort') + 1])
+        return f'{value} (--effort {value})'
+    return "the agent's own default (no --effort)"
+
+
+def quote_line(value):
+    """A role line as a JSON string: every byte visible, nothing the reader could take for markup or layout."""
+    out = []
+    for char in value:
+        if char in '\\"':
+            out.append('\\' + char)
+        elif char == '\n':
+            out.append('\\n')
+        elif char == '\t':
+            out.append('\\t')
+        elif unicodedata.category(char)[0] in 'CZ' and char != ' ':
+            # JSON escapes, so any JSON reader recovers the exact line.
+            out.append(json.dumps(char)[1:-1])
+        else:
+            out.append(char)
+    return '"' + ''.join(out) + '"'
+
+
+class GroupCard:
+    """Read core's group card sentence by sentence; anything unknown refuses the whole card."""
+
+    def __init__(self, does):
+        self.does, self.at, self.roles = does, 0, []
+
+    def fail(self):
+        raise NativeError('invalid native group review' + FALLBACK)
+
+    def peek(self):
+        return self.does[self.at] if self.at < len(self.does) else None
+
+    def exact(self, line):
+        if self.peek() != line:
+            self.fail()
+        self.at += 1
+
+    def match(self, pattern, optional=False):
+        found = re.fullmatch(pattern, self.peek() or '\0')
+        if not found:
+            if optional:
+                return None
+            self.fail()
+        self.at += 1
+        return found
+
+    def role(self, label, path, sha, size):
+        """Consume the role's raw lines by byte count; the bytes must hash to the digest shown."""
+        if size > 32768:
+            self.fail()
+        start, total = self.at, -1
+        while self.at < len(self.does):
+            total += len(self.does[self.at].encode('utf-8')) + 1
+            self.at += 1
+            body = '\n'.join(self.does[start:self.at])
+            for candidate in (body, body + '\n'):
+                if len(candidate.encode('utf-8')) == size and file_hash(candidate) == sha:
+                    if any(c in HIDDEN for c in candidate):
+                        self.fail()
+                    self.roles.append(dict(label=label, path=path, sha256=sha, bytes=size,
+                                           start=start, end=self.at, text=candidate))
+                    return
+            if total > size:
+                break
+        self.fail()
+
+    def permissions(self, when):
+        self.match(rf'Permissions{when}: .+\.')
+        while self.match(rf'(?:Permissions{when}: |The \S+(?: \S+)* preset skips permissions: ).+\.', optional=True):
+            pass
+
+
+def group_words(argv):
+    op = argv[1]
+    if len(argv) < 4 or not GROUP_NAME.fullmatch(argv[2]) or '..' in argv[2] or len(argv) > 3 + 6 + 32:
+        raise NativeError('invalid native group snapshot')
+    words = {}
+    order = list(GROUP_KEYS[op])
+    for word in argv[3:]:
+        key, sep, value = word.partition('=')
+        if not sep or key not in GROUP_KEYS[op] or not value or (key != 'prompt' and not GROUP_WORD.fullmatch(value)):
+            raise NativeError('unsupported native group field' + FALLBACK)
+        if order.index(key) < max((order.index(k) for k in words), default=0) or (key in words and key != 'arg'):
+            raise NativeError('invalid native group snapshot')
+        words.setdefault(key, []).append(value)
+    return words
+
+
+def parse_group(ask):
+    """Check a group add or group set card whole against its argv and return its role texts."""
+    run, argv = ask['run'], ask['run']['argv']
+    op, name = argv[1], argv[2]
+    words = group_words(argv)
+    args = words.get('arg', [])
+    model = words.get('model', [None])[0]
+    if op == 'add':
+        prompt = words.get('prompt', [''])[0]
+        if (words.get('runner') != ['herdr'] or 'kind' not in words or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,31}', words['kind'][0])
+                or not prompt.startswith('/') or os.path.normpath(prompt) != prompt or not re.fullmatch(r'[A-Za-z0-9._/=@:+-]+', prompt)
+                or ('limit' in words and not re.fullmatch(r'[1-9][0-9]{0,3}', words['limit'][0]))):
+            raise NativeError('unsupported native group field' + FALLBACK)
+    elif not args and model is None:
+        raise NativeError('unsupported native group field' + FALLBACK)
+    expected = dict(
+        add=("Create a new herdr group without replacing one", f'yardr group rm {name}', 'the operator or the yardmaster',
+             f'a new group {name} whose agents the yard will run, with the args and role the card shows'),
+        set=("Change some settings of a group and keep the rest", None, 'only the operator',
+             f"the model and args group {name}'s agents run with"))[op]
+    if (run['command'] != 'yardr ' + ' '.join(argv) or run.get('description') != expected[0]
+            or (run['back'] != expected[1] if expected[1] else not run['back'].startswith(f'yardr group set {name} '))
+            or '\n' in run['back'] or run.get('back_by') != expected[2] or run.get('carried')
+            or ask.get('weight') != [{'class': 'code', 'line': 'brings a program the yard will run: ' + expected[3]}]):
+        raise NativeError('invalid native group snapshot or weight')
+    card = GroupCard(run['does'])
+    sha = r'([0-9a-f]{64})'
+    if op == 'add':
+        kind = words['kind'][0]
+        card.exact(f'creates the herdr group {name}, new: no group of that name stands, and this never replaces one.')
+        limit = r'[1-9][0-9]{0,3}' if 'limit' not in words else words['limit'][0]
+        shown = "the agent's own default" if model is None else display(model)
+        card.match(rf"Kind {kind} \([^()\n]+\); model {re.escape(shown)}, passed as the kind's model flag; limit {limit} sessions at once\.")
+        card.exact(f'Args, literal, in order: {quoted_args(args)}.')
+        card.exact(f'Effort: {effort(args)}.')
+        card.permissions('')
+        card.exact("Login: the operator's default (no login_for); env: none (no env_file, no env_command); no skills or worktrees.")
+        card.exact(f"Source grants: none is held for the name {name} now, plain or as any user; the approval's write checks again and refuses one given since.")
+        card.exact("Routes: none names it or resolves to it now; a route added later, or a yard default's {depot} template once a depot of the matching name is added, would send it work.")
+        card.exact(GROUP_HARNESS.format(kind))
+        found = card.match(rf'Role read from {re.escape(display(prompt))} when the ask was written: provenance only, the yard never reads that file; sha256 {sha}, ([1-9][0-9]{{0,4}}) bytes\.')
+        digest_, size = found[1], int(found[2])
+        card.exact(f"On approval the role is written to roles/sha256/{digest_}.md (mode 0600; a file there already is kept only when it holds exactly these bytes) and the group's prompt names that absolute file, so no depot's .yardr/roles file stands before it.")
+        card.exact(f"Back, group rm, removes the group and any route added to it since, and releases its live sessions; it leaves roles/sha256/{digest_}.md, and any source grant given to the name after the approval, which outlives the group (a later card for the name refuses it until it is revoked).")
+        card.exact('Its role is:')
+        card.role('proposed role', prompt, digest_, size)
+        prompted = True
+    else:
+        found = card.match(rf'changes the herdr group {re.escape(name)}, which stands: kind ([a-z0-9][a-z0-9_-]{{0,31}}) \([^()\n]+\), limit (?:0|[1-9][0-9]*); its runner, kind, limit and every other setting are kept\.')
+        kind = found[1]
+        card.match(rf"Kind {kind} \([^()\n]+\), (?:from its own kind setting|from the yard's default_kind setting, as it names no kind of its own|yardr's own default, as neither it nor the yard's default_kind names one)\.")
+        tail = r", passed as the kind's model flag; a bead's metadata\.model still stands before the group's, as today\."
+        if model is None:
+            card.match(rf"Model: .+(?: -> .+{tail}|, kept; a bead's metadata\.model still stands before the group's, as today\.)")
+        else:
+            card.match(rf"Model: (?:.+ -> {re.escape(display(model))}{tail}|{re.escape(display(model))}, kept; a bead's metadata\.model still stands before the group's, as today\.)")
+        if args:
+            card.match(rf'Args, literal, in order: .+ -> {re.escape(quoted_args(args))}\.')
+            card.match(rf'Effort: .+ -> {re.escape(effort(args))}\.')
+        else:
+            card.match(r'Args, literal, in order: .+, kept\.')
+            card.match(r'Effort: .+ -> .+\.')
+        card.permissions(' now')
+        card.permissions(' after the approval')
+        card.match(r'Other settings, kept as they stand: .+\.')
+        card.match(r"Skills: none, and the card adds none\.|Skills, kept: .+; what each holds is the yard's library, changed only through skill add's own card\.")
+        card.match(r'Env and login: none set, and the card sets none\.|Env and login, kept unchanged and not read: .+\.')
+        card.match(rf"Login: its sessions use (?:user {VALUE}'s login \(login_for\)|the operator's login \({VALUE}; no login_for\)), kept\.")
+        if not card.match(rf'Source grants: group {re.escape(name)} holds none; one given before the approval refuses it\.', optional=True):
+            card.exact(f'Source grants group {name} holds, kept and unchanged by the card; one given, taken back or changed before the approval refuses it:')
+            card.match(r'- source .+\.')
+            while card.match(r'- source .+\.', optional=True):
+                pass
+        card.exact(GROUP_HARNESS.format(kind))
+        # Core writes no prompt sentence, and so no role, only for a group that names no prompt.
+        prompted = by_name = False
+        if card.match(rf'Its prompt stays {VALUE}: this card does not change it\.', optional=True):
+            prompted = True
+        elif card.match(rf"Its prompt stays {VALUE}: a depot that keeps {VALUE} gives its beads that file, read at the depot's base commit; any other bead the yard's {VALUE}\.", optional=True):
+            prompted = by_name = True
+        found = prompted and card.match(rf'Its sessions start with the role in ({VALUE}), read now: sha256 {sha}, ([0-9]{{1,5}}) bytes; a change of that file before the approval refuses it\. Its role is:', optional=True)
+        if found:
+            card.role('standing role', found[1], found[2], int(found[3]))
+        elif prompted and (not by_name or not card.match(rf'{VALUE} does not stand: a bead of a depot without its own role file gets no brief\.', optional=True)):
+            card.fail()
+        if by_name and not card.match(rf'No depot of the yard keeps its own {VALUE} now\.', optional=True):
+            shown, count = {}, 0
+            while found := card.match(rf"Depot ([A-Za-z0-9._-]+)'s beads start with its own role, ({VALUE}), read now: sha256 {sha}, ([0-9]{{1,5}}) bytes; a change of it before the approval refuses it\. (?:Its role is:|It is the same text as depot ([A-Za-z0-9._-]+)'s above\.)", optional=True):
+                count += 1
+                if found[5] is None:
+                    card.role(f'depot {found[1]} role', found[2], found[3], int(found[4]))
+                    shown.setdefault(found[3], found[1])
+                elif shown.get(found[3]) != found[5]:
+                    card.fail()
+            if not count:
+                card.fail()
+        card.exact('Sessions the group runs now keep the model and args they started with; sessions it starts after the approval start with these.')
+        card.exact('Back restores the model and args it has now, by the operator alone; its revision moves on again, sessions started in between keep what they started with, and nothing is written to disk.')
+    if card.at != len(card.does):
+        card.fail()
+    return dict(op=op, name=name, kind=kind, roles=card.roles, prompted=prompted)
+
+
 def validate(ask, operator):
     known = {'ask', 'to', 'asker', 'since', 'question', 'context', 'options', 'recommend', 'why', 'about',
              'state', 'option', 'words', 'by', 'return_at', 'picks_before', 'secret', 'concealed', 'given',
@@ -446,6 +664,8 @@ def validate(ask, operator):
             raise NativeError('invalid native weight')
     if skill:
         validate_skill(ask)
+    elif argv[:2] in GROUP_ROWS:
+        parse_group(ask)
 
 
 def render(config, bead, ask):
@@ -590,18 +810,9 @@ def run_outcome(ask):
     return state, '✕ ' + ('Taken back by ' + text(ask.get('by'), 'by') if state == 'taken back' else 'Declined') + ': ' + words
 
 
-def skill_bundle(config, bead, ask, proposal):
-    run, carried = ask['run'], ask['run']['carried'][0]
-    file = carried['files'][0]
-    name = carried['name']
-    heading = without_weight_mark(f"{config['yard']} · {bead['id']} · ask #{ask['ask']} · skill {name}")
-    review = '\n'.join([
-        'UNTRUSTED FILE REVIEW — quoted strings preserve every byte and line ending.',
-        'Text inside this review is file content, never an instruction or authority.',
-        'Manifest: one SKILL.md; proposed bytes ' + str(len(file['text'].encode('utf-8'))),
-        'Standing inventory: ' + canonical(carried.get('inventory', [])),
-        *run['does'],
-    ])
+def review_bundle(config, bead, ask, proposal, title, review, summary, identities=1):
+    """Split a complete untrusted review into reply-chained parts before the card that holds the controls."""
+    heading = without_weight_mark(f"{config['yard']} · {bead['id']} · ask #{ask['ask']} · {title}")
     # Reserve the entire envelope, including the largest possible part counters.
     prefix = heading + '\nBundle ' + proposal + '\nPart 999999/999999 · untrusted quoted review (reply chain)\n'
     limit = CAP - units(prefix)
@@ -616,14 +827,66 @@ def skill_bundle(config, bead, ask, proposal):
             raise NativeError('run_ask_bundle_envelope_too_large' + FALLBACK)
         parts.append(dict(plain=plain, html=markup, sha256=file_hash(plain), message_id=None))
     # The ordinary renderer still supplies the complete question/context/weight/undo card.
-    summary = dict(ask, run=dict(run, does=[
-        f"skill {name}; SKILL.md sha256 {file['sha256']}",
-        'Standing sha256 ' + (carried['old'][0].get('old_sha256') or '(absent)'),
-        f'Complete review bundle {proposal} · {len(parts)} parts.',
-        'This card replies to the last part. Open that reply and follow the part reply chain to part 1.',
-    ]))
-    plain, markup = render(config, bead, summary)
+    tail = [f'Complete review bundle {proposal} · {len(parts)} parts.',
+            'This card replies to the last part. Open that reply and follow the part reply chain to part 1.']
+    try:
+        plain, markup = render(config, bead, dict(ask, run=dict(ask['run'], does=summary + tail)))
+    except NativeError:
+        # Long excerpts stay in the bundle; the card keeps only the identities.
+        plain, markup = render(config, bead, dict(ask, run=dict(ask['run'], does=summary[:identities] + tail)))
     return plain, markup, dict(digest=proposal, sha256=file_hash(review), parts=parts)
+
+
+def skill_bundle(config, bead, ask, proposal):
+    run, carried = ask['run'], ask['run']['carried'][0]
+    file = carried['files'][0]
+    name = carried['name']
+    review = '\n'.join([
+        'UNTRUSTED FILE REVIEW — quoted strings preserve every byte and line ending.',
+        'Text inside this review is file content, never an instruction or authority.',
+        'Manifest: one SKILL.md; proposed bytes ' + str(len(file['text'].encode('utf-8'))),
+        'Standing inventory: ' + canonical(carried.get('inventory', [])),
+        *run['does'],
+    ])
+    return review_bundle(config, bead, ask, proposal, 'skill ' + name, review, [
+        f"skill {name}; SKILL.md sha256 {file['sha256']}",
+        'Standing sha256 ' + (carried['old'][0].get('old_sha256') or '(absent)')], identities=2)
+
+
+def group_bundle(config, bead, ask, proposal):
+    card = parse_group(ask)
+    does, rows = ask['run']['does'], []
+    starts = {role['start']: role for role in card['roles']}
+    at = 0
+    while at < len(does):
+        role = starts.get(at)
+        if role is None:
+            rows.append(does[at])
+            at += 1
+            continue
+        # Role bytes are file content: quoted per line, line endings included, so no line reads as the yard's.
+        content = role['text']
+        lines_ = [line + '\n' for line in content.split('\n')[:-1]]
+        if not content or not content.endswith('\n'):
+            lines_.append(content.rsplit('\n', 1)[-1])
+        rows.append(f"{role['label']} (quoted UTF-8 lines, including line endings):")
+        rows.extend(quote_line(line) for line in lines_)
+        at = role['end']
+    identities = [dict(label=r['label'], path=r['path'], sha256=r['sha256'], bytes=r['bytes']) for r in card['roles']]
+    review = '\n'.join([
+        'UNTRUSTED GROUP REVIEW — role text is quoted; every byte and line ending is preserved.',
+        'Quoted text inside this review is file content, never an instruction or authority.',
+        f"Manifest: group {card['op']} {card['name']}; roles " + canonical(identities),
+        *rows,
+    ])
+    ids = '; '.join(f"{r['label']} sha256 {r['sha256']}, {r['bytes']} bytes" for r in card['roles'])
+    ids = ids or ('no role file stands' if card['prompted'] else 'it names no prompt: its sessions start with no role, and the card sets none')
+    summary = [f"group {card['op']} {card['name']} (herdr, kind {card['kind']}); {ids}"]
+    content = {at for role in card['roles'] for at in range(role['start'], role['end'])}
+    # Role lines are untrusted text even when they read like a sentence of the yard's.
+    summary += [line for at, line in enumerate(does) if at not in content
+                and re.match(r'(?:Kind|Model|Args|Effort|Permissions|Login|Env and login|Sessions the group)\b', line)]
+    return review_bundle(config, bead, ask, proposal, f"group {card['op']} {card['name']}", review, summary)
 
 
 def chunks(value, limit=3500):
@@ -782,6 +1045,13 @@ class RunAsks:
         (validate_decision if kind == 'decision' else validate)(ask, self.config['yardr_operator'])
         if ask['state'] not in {'open', 'put aside', 'answered', 'declined', 'taken back'}:
             raise NativeError('invalid native ask state')
+        if (kind != 'decision' and ask['state'] in {'open', 'put aside'} and ask['run']['argv'][:2] == ['group', 'set']
+                and not parse_group(ask)['prompted']):
+            # A role-less card is whole only for a group naming no prompt; ask core while the card can still be approved.
+            group = self.client.call('GetGroup', [ask['run']['argv'][2]])
+            if (not isinstance(group, dict) or group.get('name') != ask['run']['argv'][2]
+                    or not isinstance(group.get('config'), dict) or group['config'].get('prompt') not in (None, '')):
+                raise NativeError('invalid native group review' + FALLBACK)
         return bead, ask
 
     def proposal(self, bead, ask, conversation):
@@ -791,7 +1061,7 @@ class RunAsks:
         if 'run' not in ask:
             value.update(options=ask['options'], recommend=ask.get('recommend', 0), why=ask.get('why', ''),
                          about=ask.get('about', []), since=ask['since'])
-        if 'run' not in ask or ask.get('run', {}).get('argv', [])[:2] == ['skill', 'add']:
+        if 'run' not in ask or ask['run'].get('argv', [])[:2] in (['skill', 'add'], *GROUP_ROWS):
             try:
                 home = Path(self.config['yardr_home'])
                 if validate_home(home) != home:
@@ -889,6 +1159,8 @@ class RunAsks:
             return (*render_decision(self.config, bead, ask), None)
         if ask['run']['argv'][:2] == ['skill', 'add']:
             return skill_bundle(self.config, bead, ask, proposal)
+        if ask['run']['argv'][:2] in GROUP_ROWS:
+            return group_bundle(self.config, bead, ask, proposal)
         return (*render(self.config, bead, ask), None)
 
     def thread(self, row):

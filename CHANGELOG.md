@@ -8,6 +8,11 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- Native herdr `group add` and `group set` cards (core `fc7375cf5ad4`): the
+  whole card and every role, quoted, arrive before the weighted card;
+  approval writes the group once. A set for a group that names no prompt
+  is reviewed too, once core's group confirms it has none, and so is a set
+  for a paused group (limit 0).
 - Native ordinary option/word and manual-stage cards via `ask_card`, with
   paired-human replies, Later/Decline and canonical close/reopen status.
 - Operator-only check/apply helper for missing native home/operator keys.

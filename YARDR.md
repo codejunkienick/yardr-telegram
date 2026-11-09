@@ -187,10 +187,11 @@ Optional `[yardr] home` and `operator` enable authenticated
 `POST /v1/run-ask`, the `run_ask` source update call and:
 
 ```sh
-python3 bridge/bridge.py --settings <file> run-ask \
+<root>/bin/telegram-bridge run-ask \
   --bead <bead> --ask <number> --idempotency-key <key>
 ```
 
+The instance launcher supplies its settings and Python interpreter.
 The CLI also accepts `--topic`, `--conversation-id`, and `--silent`.
 The HTTP body accepts exactly `bead`, `ask`, `key` (else Idempotency-Key),
 `topic`, `conversation`, and `silent`; its delivery receipt matches send.

@@ -152,9 +152,11 @@ the pins and the topics carry over.
    `rm ~/.config/systemd/user/<unit> && systemctl --user daemon-reload`,
    then `rm -rf <root>` (`~/.local/share/yardr-telegram/<unit stem>` by
    default): its releases, launchers, packs and `service.previous`.
-2. (shell) In the yard: `yardr hook rm tgbridge`, then
-   `yardr unsubscribe <crew> tgbridge` for each subscribed crew member, then
-   `yardr source rm tgbridge`.
+2. (shell) Select this instance's yard home explicitly:
+   `yardr --home <this-yard-home> hook rm tgbridge`, then
+   `yardr --home <this-yard-home> unsubscribe <crew> tgbridge` for each
+   subscribed crew member, then
+   `yardr --home <this-yard-home> source rm tgbridge`.
 3. (shell, optional) Delete the settings file, the token, both secrets and
    the state directory. That directory holds the ledger and the message log,
    so keep a private copy if the bridge may return.
@@ -167,8 +169,12 @@ the pins and the topics carry over.
 ## Skills
 
 The skills are the shared base set, written for any yard and any bot,
-naming no yard, person or product. A yard links each into its crew's
-skill folders.
+naming no yard, person or product. Each yard's operator copies them from
+its installed release with `yardr skill add` into that yard's home and gives
+them to its crew or groups. See [the crew's skills](yardr/SETUP.md#the-crews-skills-shell)
+for setup and refresh after an install or rollback. Harness skill folders
+such as `~/.claude/skills` are shared by all yards on the host; keep
+instance-specific links out of them.
 
 - **A yard adds its own skill** in its own pack, never by editing these: for example its menu commands' meaning,
   who reads the chat, or its message house style. Its skill may point at these

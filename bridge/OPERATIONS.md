@@ -132,6 +132,9 @@ with no tracked changes; its HEAD is the release. The root defaults to
   naming the settings' port, and the link to the active release's one, which
   the yard applies (`yardr/SETUP.md`, step 5).
 
+Use `<root>/bin/telegram-bridge` for the operator commands below; it supplies
+this instance's settings and Python interpreter.
+
 An installed instance runs, reads and writes nothing inside the source it
 was installed from: not its root, not the settings file, and not `python`, a
 secret, `state_dir`, `lock_dir`, `health_file`, `yardr.home`, a handler, a
@@ -463,7 +466,7 @@ The paired private chat shows the settings' `[[menu]]` entries, then the
 Register it once after a change, and again at any time with the same result:
 
 ```sh
-python3 <repo>/bridge/bridge.py --settings <settings> set-commands
+<root>/bin/telegram-bridge set-commands
 ```
 
 It calls `setMyCommands` with scope `{"type": "chat", "chat_id": <chat_id>}`,
@@ -787,7 +790,7 @@ it with the decision made:
 
 ```sh
 yardr call tgbridge ask_close message_id=<id> decision="<text>" --json
-python3 <repo>/bridge/bridge.py --settings <settings> ask-close --message-id <id> --decision "<text>"
+<root>/bin/telegram-bridge ask-close --message-id <id> --decision "<text>"
 ```
 
 `<id>` is the message ID the ask send gave (`message_id` in the yard's
@@ -867,7 +870,7 @@ host, outside the yard (the operator, an add-on), the bridge's command line
 does the same:
 
 ```sh
-python3 <repo>/bridge/bridge.py --settings <settings> send --body-file <path> --idempotency-key <stable-key>
+<root>/bin/telegram-bridge send --body-file <path> --idempotency-key <stable-key>
 ```
 
 `reply-current` is a compatibility alias for `send`.
@@ -1591,9 +1594,9 @@ the reaction; it is cosmetic and never retried.
 
 ```sh
 yardr call tgbridge react reaction=done topic=<name> --json
-python3 <repo>/bridge/bridge.py --settings <settings> react [--message-id <id>] --reaction seen|done|none|<emoji>
-python3 <repo>/bridge/bridge.py --settings <settings> react --conversation-id <id> --reaction done
-python3 <repo>/bridge/bridge.py --settings <settings> react --topic <name> --reaction done
+<root>/bin/telegram-bridge react [--message-id <id>] --reaction seen|done|none|<emoji>
+<root>/bin/telegram-bridge react --conversation-id <id> --reaction done
+<root>/bin/telegram-bridge react --topic <name> --reaction done
 ```
 
 `seen` and `done` resolve from the settings, `none` clears the reaction (an
@@ -1793,6 +1796,16 @@ falls back to the CPU. On macOS it never adds that flag, even with `nvcc`
 on PATH: whisper.cpp builds with Metal by default there, so for method
 `gpu` or `auto` the lines report Metal (`would build whisper-cli at <path> with Metal (whisper.cpp's default on macOS)`, then `ok    whisper-cli built with Metal at <path>`), and the configure is exactly `cmake -B build` (plus `-G Ninja` when only ninja exists); for method `cpu` the plain lines apply.
 
+An existing executable is reused without checking its build type or
+rebuilding it for a later yard's method. `ok    whisper-cli at <path>`
+confirms its presence, not CPU, CUDA or Metal support: a later yard with
+`method = "gpu"` or `"auto"` still reuses an existing CPU-only build.
+The operator manages backend changes as host maintenance for all yards
+sharing that path. Coordinate a rebuild across those yards and verify each
+affected GPU-enabled instance with its own
+`<root>/bin/telegram-bridge check-install --gpu-probe` before restarting it.
+Keep the shared build, models and queue when removing a single instance.
+
 Each model file (`<models_dir>/ggml-<name>.bin` for `model` and for
 `vad_model`) is normally named in `transcriber/models.sha256`; a present,
 non-empty local transcribe `model` file with no recorded entry is reused
@@ -1949,7 +1962,7 @@ overrun or timeout. The file is always kept. The transcript is
 whitespace-collapsed, control-character-stripped and capped at 4000
 characters. Oversize audio keeps the plain skip note.
 
-`voice-transcribe [--model NAME|PATH] [--force] [--quiet] <file|dir>...` is the
+`<root>/bin/voice-transcribe [--model NAME|PATH] [--force] [--quiet] <file|dir>...` is the
 same transcriber by hand: it writes `<name>.txt` next to each audio file and
 prints the text. Each instance has its own, `<root>/bin/voice-transcribe`,
 which runs its current release's transcriber with the settings' python;
@@ -1970,9 +1983,9 @@ On the host:
    (keep it mode 0600), removing any `gpu` there; or
    `method = "gpu"` for the GPU with no check at all. A bridge with its
    own GPU decision also sets `gpu_check` to its own command.
-2. `python3 <repo>/bridge/bridge.py --settings <file> probe` must load the
+2. `<root>/bin/telegram-bridge probe` must load the
    settings without an error.
-3. `python3 <repo>/bridge/bridge.py --settings <file> check-install --gpu-probe`
+3. `<root>/bin/telegram-bridge check-install --gpu-probe`
    proves the GPU where the bridge runs, before the restart (below). It
    skips with `method = "cpu"` and probes with `method = "auto"` or
    `"gpu"`.
@@ -2582,7 +2595,7 @@ Authenticated `POST /v1/siding-card`, CLI `siding-card` and the source update
 member list, destination, digest or purported result from the caller.
 
 ```sh
-python3 bridge/bridge.py --settings <private-settings> siding-card \
+<root>/bin/telegram-bridge siding-card \
   --depot <depot> --idempotency-key <stable-key> \
   --flow <flow> --stage <stage> --group <group>
 yardr call tgbridge siding_card depot=<depot> key=<stable-key>

@@ -643,9 +643,9 @@ source apply, grant, restart or Telegram action.
 For a bridge whose unit still runs `bridge.py` from a checkout. Its settings,
 token, secrets, state directory, port, bot, source credential, alias and
 grants all stay as they are; what moves is the code the unit runs, the
-launchers, the pack's origin and the skill links. Move one instance at a time:
-no other instance is changed or needs to be running. The design and what it
-does not promise: `docs/design/independent-instances.md`.
+launchers, the pack's origin and the yard-local skill copies. Move one
+instance at a time: no other instance is changed or needs to be running.
+The design and what it does not promise: `docs/design/independent-instances.md`.
 
 The placeholders: `<settings>` the bridge's settings file, `<unit>` its
 `unit` (`<yard>-telegram.service` by default), `<root>` its install root
@@ -766,18 +766,33 @@ tgbridge` reads it from there.
 
 ### The crew's skills (shell)
 
-Each crew skill folder that links a skill into the checkout links the
-instance's copy instead, through `current`, so it follows installs and
-rollbacks:
+The yard's operator copies this instance's skills into the yard's own home.
+Keep `YARDR_HOME` explicitly set to this yard as above:
 
 ```sh
-ls -l <crew skill folder>
-ln -sfn <root>/current/skills/<name> <crew skill folder>/<name>
+yardr skill add <root>/current/skills/telegram-formatting
+yardr skill add <root>/current/skills/telegram-attachments
+yardr skill add <root>/current/skills/telegram-voice-transcripts
+yardr skill list
 ```
 
-for each of `telegram-formatting`, `telegram-attachments` and
-`telegram-voice-transcripts` it links. A skill copied rather than linked is
-left as it is.
+These are copies under `$YARDR_HOME/skills/<name>`, independent of the
+checkout and the install root. Give the names to the intended crew or groups
+with `yardr crew set <crew> skills=...` or `yardr group set <group> skills=...`,
+keeping their other skill names in the list. A crew member reads the new
+skills at its next session (`yardr crew restart <crew>`); groups use them
+at their next session too.
+
+Repeat the three `skill add` commands after an install or rollback to
+refresh this yard's copies from its active release. They replace the copies
+only in the selected yard; copies in another yard stay as they are, and
+removing this instance's root does not break another yard's skills.
+
+Harness folders such as `~/.claude/skills` and `~/.codex/skills` are shared
+by every yard using that harness on the host. Never relink an entry there
+to one instance's `current`. If an old shared link points into the checkout
+or an install root, first migrate every yard that uses it to its own skill
+copies, then retire the shared link before removing its target.
 
 ### The voice-transcribe link (shell, your choice)
 
@@ -809,7 +824,8 @@ yardr pack check <root>/pack        # where it shows a change, apply as above
 
 It verifies `previous` against its `SHA256SUMS`, swaps `current` and
 `previous`, and returns `<root>/pack` to that release's own. A second
-`--rollback` goes forward again.
+`--rollback` goes forward again. Refresh this yard's skill copies with the
+three `skill add` commands above.
 
 Undoing this first move, when there is no previous release (`--rollback`
 says so and names `service.previous`):
@@ -824,7 +840,9 @@ systemctl --user start <unit>
 The unit runs the checkout again, so the checkout must still be there. The
 pack applied above still works with it (the same port or alias); apply
 `<checkout>/yardr` with the same flags only to move the recorded origin back.
-Point any relinked skills and the voice-transcribe link back the same way.
+To revert the skill version too, repeat `yardr skill add` from
+`<checkout>/skills/<name>` for this yard. The host-wide voice-transcribe
+link remains the operator's choice as above.
 
 ### Never
 

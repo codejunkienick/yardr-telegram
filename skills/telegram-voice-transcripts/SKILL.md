@@ -54,15 +54,20 @@ output`, `output too large`, `transcriber exited with an error`. A `missing`
 reason is an install problem for the operator (the bridge's
 `install.sh`); the others are per note.
 
-`voice-transcribe` below is the bridge instance's own launcher, `<install root>/bin/voice-transcribe` (the install root is `~/.local/share/yardr-telegram/<unit stem>` unless the operator chose another); it runs that instance's installed transcriber. If it is missing, ask the operator to run the bridge's `install.sh --settings <file>`.
+Use the bridge instance's own launcher, `<install root>/bin/voice-transcribe`
+(the install root is `~/.local/share/yardr-telegram/<unit stem>` unless the
+operator chose another). It runs that instance's installed transcriber;
+a bare `voice-transcribe` may resolve to another instance through the
+host-wide PATH link. If the launcher is missing, ask the operator to run
+the bridge's `install.sh --settings <file>`.
 
 Re-run one by hand (CPU; it waits its turn in the host-wide queue, then takes
 about a minute per minute of audio with the default model):
 
 ```sh
-voice-transcribe --quiet <path>          # writes <name>.txt next to the audio, prints the text
-voice-transcribe --model small.en <path> # about 4x cheaper, more slips in names
-VOICE_TRANSCRIBE_GPU=1 voice-transcribe --quiet <path>  # the GPU when the GPU check allows it: seconds
+"<install root>/bin/voice-transcribe" --quiet <path>          # writes <name>.txt next to the audio, prints the text
+"<install root>/bin/voice-transcribe" --model small.en <path> # about 4x cheaper, more slips in names
+VOICE_TRANSCRIBE_GPU=1 "<install root>/bin/voice-transcribe" --quiet <path>  # the GPU when the GPU check allows it: seconds
 ```
 
 stderr names the device per file (`device gpu`, `device gpu: <reason>`,

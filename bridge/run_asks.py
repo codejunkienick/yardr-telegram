@@ -2,8 +2,9 @@
 import contextlib
 import fcntl
 import hashlib
-from html import escape
+from html import escape, unescape
 import http.client
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,11 @@ import socket
 import stat
 import time
 import unicodedata
+
+
+_markdown_spec = importlib.util.spec_from_file_location('card_markdown', Path(__file__).resolve().with_name('markdown.py'))
+markdown = importlib.util.module_from_spec(_markdown_spec)
+_markdown_spec.loader.exec_module(markdown)
 
 
 CAP = 3500
@@ -685,6 +691,31 @@ def validate(ask, operator):
         parse_group(ask)
 
 
+def card_text(value, kind, *, headline=False):
+    # Narrative Markdown cannot mint links, mentions or the native warning marker.
+    try:
+        markup = markdown.render(without_weight_mark(value), CAP, links=False, headline=headline)
+    except markdown.MarkdownError as error:
+        if str(error) == 'markdown_source_too_long':
+            raise NativeError(kind + '_payload_too_large_for_card' + FALLBACK) from None
+        raise NativeError('invalid native card Markdown: ' + str(error) + FALLBACK) from None
+    visible = unescape(re.sub(r'<[^>]*>', '', markup))
+    safe = without_weight_mark(visible)
+    if safe != visible:
+        return '<b>' + escape(safe) + '</b>' if headline else escape(safe)
+    return markup
+
+
+def card_result(markup, kind):
+    # New cards store footer spacing; legacy edit reservations keep their exact bytes.
+    markup += '\n'
+    # Only renderer-owned tags exist here; escaped author text stays visible text.
+    plain = unescape(re.sub(r'<[^>]*>', '', markup))
+    if units(plain) > CAP:
+        raise NativeError(kind + '_payload_too_large_for_card' + FALLBACK)
+    return plain, markup
+
+
 def render(config, bead, ask):
     run = ask['run']
     parts = []
@@ -692,15 +723,16 @@ def render(config, bead, ask):
     def add(value, tag=None, trusted=False):
         value = value if trusted else without_weight_mark(value)
         escaped = escape(value)
-        parts.append((value, f'<{tag}>{escaped}</{tag}>' if tag else escaped))
+        parts.append(f'<{tag}>{escaped}</{tag}>' if tag else escaped)
 
     add(f"{config['yard']} · {bead['id']} · ask #{ask['ask']}", 'b')
     add(f"approving runs in {config['yard']} as {config['yardr_operator']}")
     for weight in ask.get('weight', []):
         add(f"WEIGHTY · {weight['class']}: {weight['line']}", 'b', trusted=True)
+    parts.append('')
     add(text(bead.get('title'), 'bead.title'), 'b')
     add('Proposed by ' + ask['asker'])
-    add(ask['question'])
+    parts.extend(['', card_text(ask['question'], 'run_ask', headline=True), ''])
     if run.get('description'):
         add(run['description'])
     # Canonical command text remains exact; preformatted text cannot be a warning line.
@@ -708,15 +740,13 @@ def render(config, bead, ask):
     add('Does:')
     for line in run['does']:
         add(line, 'pre')
+    parts.append('')
     add('Takes it back: ' + run['back'])
     if run.get('back_by'):
         add(run['back_by'] + ' can take it back')
     for line in ask['context']:
-        add(line)
-    plain = '\n'.join(p for p, _ in parts)
-    if units(plain) > CAP:
-        raise NativeError('run_ask_payload_too_large_for_card' + FALLBACK)
-    return plain, '\n'.join(h for _, h in parts)
+        parts.extend(['', card_text(line, 'run_ask')])
+    return card_result('\n'.join(parts), 'run_ask')
 
 
 def validate_decision(ask, operator):
@@ -762,24 +792,29 @@ def validate_decision(ask, operator):
 
 
 def render_decision(config, bead, ask):
-    parts = [f"{config['yard']} · {bead['id']} · ask #{ask['ask']}",
+    identity = [f"{config['yard']} · {bead['id']} · ask #{ask['ask']}",
              f"Answering in {config['yard']} as {config['yardr_operator']}",
-             text(bead.get('title'), 'bead.title'), 'Asked by ' + ask['asker'], ask['question'],
-             *ask['context']]
+             text(bead.get('title'), 'bead.title'), 'Asked by ' + ask['asker']]
+    def literal(value):
+        return escape(without_weight_mark(value))
+
+    parts = [literal('\n'.join(identity)), card_text(ask['question'], 'ask_card', headline=True)]
+    parts.extend(card_text(line, 'ask_card') for line in ask['context'])
     for index, option in enumerate(ask.get('options') or [], 1):
-        parts.extend([f"{index}. {option['label']}", option['consequence']])
+        parts.append(f"<b>{index}. {literal(option['label'])}</b>\n  "
+                     + literal(option['consequence']).replace('\n', '\n  '))
+    recommendation = []
     if ask.get('recommend'):
-        parts.append(f"Recommended: {ask['recommend']}. {ask['options'][ask['recommend'] - 1]['label']}")
+        recommendation.append(f"Recommended: {ask['recommend']}. {ask['options'][ask['recommend'] - 1]['label']}")
     if ask.get('why'):
-        parts.append('Why: ' + ask['why'])
+        recommendation.append('Why: ' + ask['why'])
+    if recommendation:
+        parts.append(literal('\n'.join(recommendation)))
     for about in ask.get('about', []):
-        parts.append(f"About: {about['id']} · {about['title']} · {about['stage']}")
+        parts.append(literal(f"About: {about['id']} · {about['title']} · {about['stage']}"))
     parts.append('Reply directly to this card with ' +
                  ('an option number and optional words.' if ask.get('options') else 'your answer.'))
-    plain = '\n'.join(without_weight_mark(part) for part in parts)
-    if units(plain) > CAP:
-        raise NativeError('ask_card_payload_too_large_for_card' + FALLBACK)
-    return plain, escape(plain)
+    return card_result('\n\n'.join(parts), 'ask_card')
 
 
 def outcome(ask, options):
@@ -827,6 +862,25 @@ def run_outcome(ask):
     return state, '✕ ' + ('Taken back by ' + text(ask.get('by'), 'by') if state == 'taken back' else 'Declined') + ': ' + words
 
 
+def review_html(body, continuation=''):
+    parts, quoted = [], []
+    for index, line in enumerate(body.split('\n')):
+        prefix = continuation if index == 0 else ''
+        if (prefix + line).startswith('"'):
+            quoted.append(line)
+            continue
+        if quoted:
+            parts.append('<pre>' + escape('\n'.join(quoted)) + '</pre>')
+            quoted = []
+        rendered = escape(line)
+        if not prefix and (line.startswith(('UNTRUSTED ', 'Manifest:', 'Standing inventory:')) or 'quoted UTF-8 lines' in line):
+            rendered = '<b>' + rendered + '</b>'
+        parts.append(rendered)
+    if quoted:
+        parts.append('<pre>' + escape('\n'.join(quoted)) + '</pre>')
+    return '\n'.join(parts)
+
+
 def review_bundle(config, bead, ask, proposal, title, review, summary, identities=1):
     """Split a complete untrusted review into reply-chained parts before the card that holds the controls."""
     heading = without_weight_mark(f"{config['yard']} · {bead['id']} · ask #{ask['ask']} · {title}")
@@ -836,10 +890,14 @@ def review_bundle(config, bead, ask, proposal, title, review, summary, identitie
     if limit < 2:
         raise NativeError('run_ask_bundle_envelope_too_large' + FALLBACK)
     bodies = list(chunks(review, limit))
-    parts = []
+    parts, offset = [], 0
     for index, body in enumerate(bodies, 1):
         header = heading + '\nBundle ' + proposal + f'\nPart {index}/{len(bodies)} · untrusted quoted review (reply chain)\n'
-        plain, markup = header + body, escape(header) + '<pre>' + escape(body) + '</pre>'
+        continuation = review[review.rfind('\n', 0, offset) + 1:offset]
+        markup = ('\n'.join('<b>' + escape(line) + '</b>' for line in header.rstrip('\n').split('\n'))
+                  + '\n' + review_html(body, continuation))
+        offset += len(body)
+        plain = header + body
         if units(plain) > CAP:
             raise NativeError('run_ask_bundle_envelope_too_large' + FALLBACK)
         parts.append(dict(plain=plain, html=markup, sha256=file_hash(plain), message_id=None))

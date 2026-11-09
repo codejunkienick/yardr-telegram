@@ -45,7 +45,7 @@ def _tree(tokens):
     return root
 
 
-def _inline(nodes, *, alt=False):
+def _inline(nodes, *, alt=False, links=True):
     parts = []
     for token, children in nodes:
         kind = token.type
@@ -58,34 +58,38 @@ def _inline(nodes, *, alt=False):
             parts.append(text if alt else '<code>' + text + '</code>')
         elif kind in ('strong_open', 'em_open', 's_open'):
             tag = {'strong_open': 'b', 'em_open': 'i', 's_open': 's'}[kind]
-            text = _inline(children, alt=alt)
+            text = _inline(children, alt=alt, links=links)
             parts.append(text if alt else f'<{tag}>{text}</{tag}>')
         elif kind == 'link_open':
             href = token.attrGet('href')
             if not isinstance(href, str) or not href:
                 raise MarkdownError('markdown_link_invalid')
-            text = _inline(children, alt=alt)
-            parts.append(text if alt else '<a href="' + escape(href, quote=True) + '">' + text + '</a>')
+            text = _inline(children, alt=alt, links=links)
+            if not links:
+                destination = escape(href, quote=False)
+                parts.append(text if text == destination else text + ' (' + destination + ')')
+            else:
+                parts.append(text if alt else '<a href="' + escape(href, quote=True) + '">' + text + '</a>')
         elif kind == 'image':
             src = token.attrGet('src')
             if not isinstance(src, str):
                 raise MarkdownError('markdown_image_invalid')
-            text = _inline(_tree(token.children), alt=True)
+            text = _inline(_tree(token.children), alt=True, links=links)
             parts.append(text + ' (' + escape(src, quote=False) + ')')
         else:
             raise MarkdownError('markdown_inline_token_unsupported')
     return ''.join(parts)
 
 
-def _blocks(nodes):
+def _blocks(nodes, *, links=True, headline=False):
     parts = []
     for token, children in nodes:
         kind = token.type
         if kind in ('paragraph_open', 'heading_open'):
             if len(children) != 1 or children[0][0].type != 'inline':
                 raise MarkdownError('markdown_block_invalid')
-            text = _inline(_tree(children[0][0].children))
-            parts.append('<b>' + text + '</b>' if kind == 'heading_open' else text)
+            text = _inline(_tree(children[0][0].children), links=links)
+            parts.append('<b>' + text + '</b>' if headline or kind == 'heading_open' else text)
         elif kind in ('fence', 'code_block'):
             language = token.info.split()[0] if token.info.split() else ''
             cls = f' class="language-{language}"' if _LANGUAGE.fullmatch(language) else ''
@@ -93,7 +97,7 @@ def _blocks(nodes):
         elif kind == 'hr':
             parts.append('---')
         elif kind == 'blockquote_open':
-            parts.append('\n'.join('&gt; ' + line for line in _blocks(children).split('\n')))
+            parts.append('\n'.join('&gt; ' + line for line in _blocks(children, links=links, headline=headline).split('\n')))
         elif kind in ('bullet_list_open', 'ordered_list_open'):
             start = token.attrs.get('start', 1)
             if type(start) is not int:
@@ -103,7 +107,7 @@ def _blocks(nodes):
                 if item.type != 'list_item_open':
                     raise MarkdownError('markdown_list_invalid')
                 marker = f'{start + index}. ' if kind == 'ordered_list_open' else '• '
-                lines = _blocks(blocks).split('\n')
+                lines = _blocks(blocks, links=links, headline=headline).split('\n')
                 items.append(marker + lines[0] + ''.join('\n  ' + line for line in lines[1:]))
             parts.append('\n'.join(items))
         else:
@@ -111,7 +115,7 @@ def _blocks(nodes):
     return '\n\n'.join(parts)
 
 
-def render(source, source_max_units):
+def render(source, source_max_units, *, links=True, headline=False):
     """Render bounded, scalar Unicode input; caller validates HTML and limits."""
     if not isinstance(source, str):
         raise MarkdownError('markdown_source_must_be_text')
@@ -124,6 +128,6 @@ def render(source, source_max_units):
     # Parse every destination; bridge.py applies the existing HTML link policy.
     parser.validateLink = lambda _url: True
     try:
-        return _blocks(_tree(parser.parse(source)))
+        return _blocks(_tree(parser.parse(source)), links=links, headline=headline)
     except RecursionError:
         raise MarkdownError('markdown_nesting_too_deep') from None

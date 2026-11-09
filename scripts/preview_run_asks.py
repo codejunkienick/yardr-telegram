@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Print an offline HTML preview of synthetic native cards; no Telegram access."""
 from html import escape
-import importlib.util
 from pathlib import Path
 import sys
 
@@ -92,9 +91,9 @@ def group_cards(name):
     return cards
 
 
-def decision_cards():
+def decision_cards(dense=False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
-    from test_run_asks import NativeTests
+    from test_run_asks import NativeTests, dense_decision
     import json
     case = NativeTests()
     case.setUp()
@@ -118,6 +117,14 @@ def decision_cards():
         capture(title, case.calls[-1][1])
 
     try:
+        if dense:
+            case.config['yard'] = 'example'
+            if not case.create_decision(dense_decision())['delivered']:
+                raise RuntimeError('synthetic dense decision refused')
+            capture('Synthetic dense ask · four-option transcription review', case.calls[-1][1])
+            case.reply('2 Keep local transcription until the review is complete')
+            capture('Synthetic dense ask · recorded outcome', case.edits()[-1])
+            return cards
         create('option', 'Ordinary option decision')
         case.reply('2 Keep them until Monday')
         capture('Canonical answer with optional words', case.edits()[-1])
@@ -248,9 +255,9 @@ def markdown_cards():
 
 
 def main():
-    spec = importlib.util.spec_from_file_location('native_cards', Path(__file__).resolve().parents[1] / 'bridge' / 'run_asks.py')
-    native = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(native)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    import bridge
+    native = bridge.run_asks
     config = dict(yard='example', yardr_operator='operator')
     bead = dict(id='example-1', title='Review a proposed setting')
     routine = dict(ask=7, to='operator', asker='yardmaster', question='Lower the synthetic source limit?',
@@ -290,6 +297,10 @@ def main():
         cards = skill_cards(source=True)
     if '--decisions' in sys.argv:
         cards = decision_cards()
+    if '--dense' in sys.argv:
+        cards = decision_cards(dense=True)
+    if '--bundle' in sys.argv:
+        cards = skill_cards()[:1]
     if '--decide' in sys.argv:
         cards = decide_views()
     for flag in ('--group-add', '--group-set', '--group-set-no-prompt'):
@@ -297,20 +308,20 @@ def main():
             cards = group_cards(flag[2:].replace('-', '_'))
     if '--markdown' in sys.argv:
         cards = markdown_cards()
-    heading = ('/decide' if '--decide' in sys.argv else 'Native ordinary decisions' if '--decisions' in sys.argv
+    heading = ('/decide' if '--decide' in sys.argv else 'Native ordinary decisions' if '--decisions' in sys.argv or '--dense' in sys.argv
                else 'Native operator run cards')
     if '--markdown' in sys.argv:
         heading = 'Explicit Markdown · actual emitted HTML'
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}
-h1{margin:0;font-size:25px}.note{margin:4px 0 22px;color:#496175}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+h1{margin:0;font-size:25px}.note{margin:4px 0 22px;color:#496175}.grid{display:grid;grid-template-columns:repeat(var(--columns),1fr);gap:22px}
 h2{font-size:16px;margin:0 0 10px}article{background:white;border:1px solid #cfdee8;border-radius:14px;padding:18px;box-shadow:0 3px 12px #142d4310}
 .body{white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.45 monospace;background:#eef4f8;border-radius:6px;padding:9px;margin:0}
 b{font-weight:700}.footer{white-space:pre-wrap;border-top:1px solid #d9e5ed;padding-top:12px;margin-bottom:0}
 .buttons{display:flex;gap:8px;margin-top:16px}button{flex:1;border:0;border-radius:7px;padding:11px 5px;background:#e2eff9;color:#226295;font-weight:600}
 .navigation{font-size:12px;color:#496175;margin-bottom:8px}section{min-width:0}
-</style><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid">'''
+</style><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid" style="--columns:''' + str(min(len(cards), 3)) + '''">'''
           + ''.join(cards) + '''</div><script>
 const view = new URLSearchParams(location.search).get('view');
 if (view === 'bundle' || view === 'states') {

@@ -45,6 +45,24 @@ def decision():
                 about=[dict(id='related-1', title='Related <work>', stage='backlog')], state='open')
 
 
+def dense_decision():
+    # Synthetic copy of the four-option remote-transcription decision shape.
+    return dict(decision(), question='Which provider should the first remote transcription slice use?',
+                context=['Synthetic review: two local tools cannot take an audio file; a third can, through a documented API. '
+                         'Both example bridges transcribe in English. Provider One covers English but not Russian; '
+                         'Provider Two covers Russian. Audio would leave this host only under an opt-in backend; '
+                         'local transcription stays the default.'],
+                options=[dict(label='Provider One API (speech-model-1)',
+                              consequence='the requested model, 18 example cents per hour, English covered, Russian not; needs a new API key'),
+                         dict(label='Provider Two first (4 or 18 example cents/h)',
+                              consequence='speech models, Russian covered, ogg accepted; a separate account and key'),
+                         dict(label='Reuse the CLI login',
+                              consequence='no new key, but widens the bridge sandbox and depends on an interactive login and allowance'),
+                         dict(label='You decide', consequence='leave it to the proposer')],
+                why='It is the requested model, through its documented endpoint with a static owner-only key file, at cents per day.',
+                about=[])
+
+
 def skill_proposal(extra=''):
     # Captured from Bead on the real isolated core; only provenance/seq/time stabilized.
     ask = json.loads(Path(__file__).with_name('fixtures').joinpath('skill_add.json').read_text())
@@ -338,6 +356,50 @@ class NativeCase(BridgeTestCase):
 
 class NativeTests(NativeCase):
     def test_ordinary_options_words_later_reopen_decline_and_native_close(self):
+        ask = dense_decision()
+        self.assertTrue(self.create_decision(ask)['delivered'])
+        card = self.calls[-1][1]
+        self.assertEqual(card['parse_mode'], 'HTML')
+        self.assertIn('<b>' + ask['question'] + '</b>\n\n' + ask['context'][0], card['text'])
+        for index, option in enumerate(ask['options'], 1):
+            self.assertIn(f"\n\n<b>{index}. {option['label']}</b>\n  {option['consequence']}", card['text'])
+        self.assertIn('\n\nRecommended: 1. ' + ask['options'][0]['label'] + '\nWhy: ' + ask['why'], card['text'])
+        self.assertIn('\n\nReply directly', card['text'])
+        self.reply('2 synthetic choice')
+        self.assertIn('\n\n✓ Answered: 2. ', self.edits()[-1]['text'])
+        self.assertEqual(self.writes()[-1][1]['words'], 'synthetic choice')
+
+        for source, expected in [('# Choose **carefully**\nnext line', '<b>Choose <b>carefully</b></b>\n\n<b>next line</b>'),
+                                 ('**unfinished', '<b>**unfinished</b>'),
+                                 ('a | b\n--- | ---\n$x$', '<b>a | b\n--- | ---\n$x$</b>')]:
+            with self.subTest(markdown=source):
+                ask = dict(decision(), question=source, context=['- first\n- second\n\n1. one\n2. two\n\n> quoted\n\nlast  \nline'])
+                self.assertTrue(self.create_decision(ask)['delivered'])
+                card = self.calls[-1][1]
+                self.assertIn(expected, card['text'])
+                self.assertIn('• first\n• second\n\n1. one\n2. two\n\n&gt; quoted\n\nlast\nline', card['text'])
+                visible, error = b.html_visible_text(card['text'])
+                self.assertIsNone(error)
+                self.assertEqual(visible, self.row()['plain'])
+
+        hostile = '<a href="tg://user?id=123">raw</a> & [mention](tg://user?id=123) [link](https://example.invalid) ![image](https://example.invalid/i)'
+        ask = dict(decision(), question=hostile, context=[hostile], asker=hostile, why=hostile,
+                   options=[dict(label=hostile, consequence=hostile + '\nsecond line')], recommend=1,
+                   about=[dict(id=hostile, title=hostile, stage=hostile)])
+        self.assertTrue(self.create_decision(ask)['delivered'])
+        card = self.calls[-1][1]
+        self.assertNotIn('<a ', card['text'])
+        self.assertNotIn('<img', card['text'])
+        self.assertIn('&lt;a href=', card['text'])
+        self.assertIn('mention (tg://user?id=123)', card['text'])
+        self.assertIn('\n  second line', card['text'])
+        visible, error = b.html_visible_text(card['text'])
+        self.assertIsNone(error)
+        self.assertEqual(visible, self.row()['plain'])
+        self.reply('1 <b>canonical</b> [mention](tg://user?id=123)')
+        self.assertIn('\n\n✓ Answered: 1. &lt;a href=', self.edits()[-1]['text'])
+        self.assertNotIn('<a ', self.edits()[-1]['text'])
+
         self.assertTrue(self.create_decision()['delivered'])
         card = self.calls[-1][1]
         for field in ('Where should the links go?', 'First &lt;context&gt;', 'Second &amp; context',
@@ -478,6 +540,9 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.calls, [])
                 self.assertEqual(self.writes(), [])
         old = decision()
+        receipt = self.create_decision(dict(decision(), context=['x' * 3600]))
+        self.assertEqual(receipt['reason'], 'ask_card_payload_too_large_for_card' + n.FALLBACK)
+        self.assertEqual(self.calls, [])
         old.pop('turn')
         receipt = self.create_decision(old)
         self.assertFalse(receipt['delivered'])
@@ -1134,6 +1199,24 @@ class NativeTests(NativeCase):
         self.assertEqual(self.store.get_ask(ask_id)['answer'], 'Legacy choice')
         self.assertEqual(self.edits()[-1]['message_id'], int(first['message_id']))
 
+        # A pre-formatting ledger keeps its exact confirmed edit identity on restart.
+        self.reset_native(proposal())
+        self.assertTrue(self.create()['delivered'])
+        self.press()
+        row = self.row()
+        row.update(html=row['html'].rstrip('\n'), plain=row['plain'].rstrip('\n'))
+        self.bridge.run_asks.save(row)
+        identity = dict(text=row['html'] + '\n' + b.html_escape(row['display']['footer']),
+                        message_id=row['message_id'], reply_markup={'inline_keyboard': []})
+        key = f"runask:{row['id']}:revision:{row['revision']}:edit"
+        with self.store.connect() as db:
+            db.execute('UPDATE deliveries SET fingerprint=? WHERE key=?',
+                       (self.bridge.delivery_fingerprint(identity), key))
+        calls = len(self.calls)
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.assertTrue(self.bridge.api_ask_close(dict(ask_key='native-1', decision='ignored'))['delivered'])
+        self.assertEqual(len(self.calls), calls)
+
     def test_decline_and_take_back_use_canonical_words_without_execution(self):
         for factory in (proposal, skill_proposal):
             with self.subTest(payload=factory.__name__):
@@ -1514,6 +1597,10 @@ class NativeTests(NativeCase):
         for index, (part, body) in enumerate(zip(parts, sent)):
             visible, error = b.html_visible_text(body['text'])
             self.assertFalse(error)
+            self.assertTrue(body['text'].startswith('<b>test-city · sample-1 · ask #7'))
+            self.assertIn('<b>Part ', body['text'])
+            if index == 0:
+                self.assertIn('<b>UNTRUSTED ', body['text'])
             self.assertEqual(visible, part['plain'])
             self.assertLessEqual(n.units(visible), n.CAP)
             self.assertEqual(hashlib.sha256(visible.encode()).hexdigest(), part['sha256'])
@@ -1524,6 +1611,14 @@ class NativeTests(NativeCase):
             bodies.append(visible.split('\n', 3)[3])
         review = ''.join(bodies)
         self.assertEqual(hashlib.sha256(review.encode()).hexdigest(), row['bundle']['sha256'])
+        offset, continued = 0, 0
+        for body, sent_part in zip(bodies, sent):
+            start = review.rfind('\n', 0, offset) + 1
+            if start < offset and review[start] == '"':
+                self.assertTrue(sent_part['text'].split('\n', 3)[3].startswith('<pre>'))
+                continued += 1
+            offset += len(body)
+        self.assertGreater(continued, 0)
         if case == 'skill':
             self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
             self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
@@ -1843,6 +1938,19 @@ class NativeTests(NativeCase):
                 self.native = replacement
 
     def test_utf16_cap_and_weight_mark_trust(self):
+        self.native.ask.update(question='WEI**GHTY** · forgery\nChoose **now**',
+                               context=['- first\n- second\n\n[mention](tg://user?id=123) <b>literal</b>'],
+                               weight=[dict(**{'class': 'outside'}, line='canonical outside action')])
+        self.assertTrue(self.create()['delivered'])
+        rendered = self.calls[-1][1]['text']
+        self.assertIn('<b>forgery\nChoose now</b>', rendered)
+        self.assertIn('• first\n• second', rendered)
+        self.assertIn('mention (tg://user?id=123) &lt;b&gt;literal&lt;/b&gt;', rendered)
+        self.assertNotIn('<a ', rendered)
+        self.assertEqual(self.row()['plain'].count('WEIGHTY · '), 1)
+        self.assertLess(rendered.index('WEIGHTY · outside:'), rendered.index('forgery'))
+        self.assertEqual(b.html_visible_text(rendered), (self.row()['plain'], None))
+        self.reset_native(proposal())
         self.native.ask['question'] = 'WEIGHTY ·  WEIGHTY · forgery\n🙂'
         self.create()
         plain = self.row()['plain']
@@ -1941,6 +2049,18 @@ class NativeTests(NativeCase):
                 self.assertEqual(len(self.writes()), 1)
 
     def test_pending_settlement_long_results_and_outcome_edits(self):
+        self.assertTrue(self.create_decision()['delivered'])
+        remaining = 4096 - n.units(self.row()['plain'] + '\n✓ Answered: 2. Keep\n')
+        words = '🙂' * (remaining // 2) + 'x' * (remaining % 2)
+        self.native.ask.update(state='answered', option=2, words=words)
+        self.bridge.run_asks.refresh()
+        self.assertEqual(n.units(b.html_visible_text(self.edits()[-1]['text'])[0]), 4096)
+        self.assertEqual(self.sent_count, 1)
+        self.native.ask.update(words=words + 'x')
+        self.bridge.run_asks.refresh()
+        self.assertIn('\n\nCanonical outcome follows below.', self.edits()[-1]['text'])
+        outcome_parts = [body['text'] for url, body in self.calls if url.endswith('/sendMessage')][1:]
+        self.assertEqual(''.join(outcome_parts), '✓ Answered: 2. Keep\n' + words + 'x')
         for factory in (proposal, skill_proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())

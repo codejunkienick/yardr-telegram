@@ -2367,6 +2367,38 @@ pending carry for these rows and no automatic undo beyond the card's Back.
 
 ## Ordinary native ask cards
 
+Native decision and run cards render questions as bold headlines, with blank
+lines between context paragraphs and Markdown lists and line breaks rendered
+through the send renderer. Decision options are numbered bold blocks with
+their consequences indented below; recommendation/why, reply instructions
+and recorded outcomes have separate spacing. Labels, consequences, provenance,
+recommendations and outcomes remain escaped literal text. Narrative Markdown
+links and mentions display their label and destination as text, never HTML
+links; raw HTML stays literal and unsupported Markdown uses the send subset.
+Only canonical weight lines may retain the native warning marker. Commands
+and quoted file/review bytes remain literal.
+
+Bundle headings and section labels use bold HTML, narrative lists keep their
+original lines, and quoted lines stay preformatted. Presentation does not
+change review text, UTF-16 counts, chunk boundaries, hashes, part counts or
+the final approval/reply-chain binding. Cards are bounded by their complete
+rendered visible text, including spacing; overflow refuses the complete card
+through the existing fallback, without truncation or live controls. Existing
+ledger rows retain their saved HTML and delivery receipts; this change does
+not resend them. New cards store their footer spacing with the rendered
+HTML, so existing edit reservations keep their exact payloads. No core,
+setting, ledger migration or grant changes.
+
+`python3 -B scripts/preview_run_asks.py --dense` shows a synthetic copy of the
+four-option transcription-provider decision and its recorded outcome through
+the actual offline send/edit path. `--bundle` shows its separate synthetic
+skill-review example's first part. These previews use disposable native
+socket/ledger fixtures and fake Telegram, with no live account or store.
+They prove source rendering only. Installation/activation belongs to the
+operator through the normal release process; rollback selects the previous
+release. Preview review checks the headline, paragraph spacing, option blocks,
+literal quoted bytes, separated outcome and reply navigation.
+
 Authenticated `POST /v1/ask-card`, CLI `ask-card` and source update `ask_card`
 accept only bead/positive ask, routing, silent and a stable key (body key or
 Idempotency-Key). They use the existing run_asks module and SQLite tables,

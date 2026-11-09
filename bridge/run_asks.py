@@ -24,6 +24,7 @@ CAP = 3500
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
+RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'SidingProposal', 'SidingOutcome', 'Groups', 'Routes')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 
@@ -1489,7 +1490,8 @@ class RunAsks:
                     raise NativeError('run_ask_stale_proposal')
                 if row['proposal'] != proposal:
                     raise NativeError('run_ask_stale_proposal')
-                if row['message_id'] is None and ask['state'] != 'open':
+                if (row['message_id'] is None and ask['state'] != 'open'
+                        and (kind != 'decision' or not self.unconfirmed_receipt(row))):
                     raise NativeError('run_ask_not_open')
                 if row['silent'] != silent:
                     raise NativeError('idempotency_key_conflict')
@@ -1515,7 +1517,12 @@ class RunAsks:
                 db.execute('INSERT OR IGNORE INTO run_ask_keys VALUES (?,?,?)', (key, ident, request))
             self.save(row)
             if kind == 'decision':
-                return self.present_decision(row, ask) if ask['state'] == 'open' else self.settle(row, ask)
+                receipt = self.present_decision(row, ask) if ask['state'] == 'open' else self.settle(row, ask)
+                # Callback proof binds the card without rewriting its original send receipt.
+                saved = self.unconfirmed_receipt(row)
+                if saved:
+                    return dict(saved, conversation=dict(self.bridge.conversation, conversation_id=row['conversation']))
+                return receipt
             receipt = self.send_card(row)
             if row['message_id'] is not None and ask['state'] != 'open':
                 self.settle(row, ask)
@@ -1555,6 +1562,15 @@ class RunAsks:
         if reply is not None:
             identity['reply'] = reply
         return self.send_key(row), identity
+
+    def unconfirmed_receipt(self, row):
+        key, identity = self.send_request(row)
+        saved = self.store.saved_delivery(key)
+        if (saved and saved[0] == self.bridge.delivery_fingerprint(identity)
+                and saved[1].get('delivered') is False
+                and saved[1].get('metadata', {}).get('reason') == 'ambiguous_delivery_requires_manual_reconciliation'):
+            return saved[1]
+        return None
 
     def send_card(self, row):
         b = self.bridge
@@ -1717,7 +1733,7 @@ class RunAsks:
             return db.execute('INSERT OR IGNORE INTO run_ask_updates VALUES (?,?)',
                               (digest(self.binding()), update_id)).rowcount == 1
 
-    def authorized_message(self, row, message, reply=False):
+    def authorized_origin(self, row, message, reply=False):
         if not isinstance(message, dict) or any(key in message for key in self.bridge.FORWARD_KEYS):
             return False
         chat, sender = message.get('chat', {}), message.get('from', {})
@@ -1731,8 +1747,31 @@ class RunAsks:
         thread = self.bridge._topic_thread(message)
         if thread != self.thread(row) or (message.get('message_thread_id') is not None and thread is None):
             return False
+        return True
+
+    def authorized_message(self, row, message, reply=False):
+        if not self.authorized_origin(row, message, reply):
+            return False
         return reply or (type(message.get('message_id')) is int
                          and any(mid == message['message_id'] for mid, _ in self.message_bindings(row)))
+
+    def reconcile_callback(self, row, message, turn):
+        self.require_generations(row)
+        message_id = message.get('message_id')
+        if (turn is None or not row['initial_turn'] <= turn <= row['turn']
+                or type(message_id) is not int or message_id <= 0 or self.generation(row, turn)):
+            return False
+        candidate = dict(row, turn=turn)
+        if (message.get('text') != row['plain']
+                or message.get('reply_markup') != {'inline_keyboard': self.keyboard(candidate)}
+                or not self.unconfirmed_receipt(candidate) or self.bound_messages(message_id)):
+            return False
+        self.ensure(row)
+        row['generations'].append(dict(turn=turn, message_id=message_id, revision=0, reconciled=True))
+        if turn == row['turn']:
+            row['message_id'] = message_id
+        self.save(row)
+        return True
 
     def callback(self, update_id, query):
         match = re.fullmatch(r'(runask|askcard):([0-9a-f]{24}):(approve|decline|cancel|later|pick[1-9][0-9]{0,3})(?::(0|[1-9][0-9]{0,18}))?', query.get('data', ''))
@@ -1741,10 +1780,14 @@ class RunAsks:
             with self.lock():
                 row = self.get(match[2]) if match else None
                 sender = query.get('from', {})
-                if (not row or sender.get('id') != self.config['user_id'] or sender.get('is_bot') is not False
-                        or not self.authorized_message(row, query.get('message'))):
+                if not row or sender.get('id') != self.config['user_id'] or sender.get('is_bot') is not False:
                     return
                 decision = row.get('kind') == 'decision'
+                if not self.authorized_origin(row, query.get('message')):
+                    candidate = dict(row, turn=int(match[4])) if decision and match[4] is not None else row
+                    if decision and self.unconfirmed_receipt(candidate):
+                        notice = RECONCILE
+                    return
                 action = match[3]
                 if match[1] != ('askcard' if decision else 'runask'):
                     return
@@ -1753,6 +1796,12 @@ class RunAsks:
                         return
                 elif match[4] is not None or action not in ('approve', 'decline', 'cancel'):
                     return
+                if not self.authorized_message(row, query['message']):
+                    if not decision:
+                        return
+                    notice = RECONCILE
+                    if not self.reconcile_callback(row, query['message'], int(match[4]) if match[4] is not None else None):
+                        return
                 input_turn = None
                 if decision:
                     bindings = self.bound_messages(query['message']['message_id'])
@@ -1931,6 +1980,10 @@ class RunAsks:
                 return None
             try:
                 ask = self.ensure(row)
+                if (row.get('kind') == 'decision' and not self.generation(row, row['turn'])
+                        and self.unconfirmed_receipt(row)):
+                    return self.bridge.receipt(reason='ask_card_delivery_unconfirmed; tap the original card to reconcile, '
+                        'then retry ask_close; or decide in the yard and delete the card manually')
                 return self.settle(row, ask) or self.bridge.receipt(reason='run_ask_still_open_in_yard')
             except NativeError as error:
                 return self.bridge.receipt(reason=str(error))

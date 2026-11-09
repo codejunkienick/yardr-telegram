@@ -2434,7 +2434,8 @@ without falling back to legacy writes. A concurrent mutation conflicts
 atomically; every write result still reconciles through Bead, including errors
 after a committed write. The turn is kept separately from immutable proposal
 content. Each Telegram message presents exactly one open generation (bead,
-ask, turn) for its whole life, bound only from a confirmed send receipt.
+ask, turn) for its whole life, bound from a confirmed send receipt or the
+verified callback reconciliation below.
 Callbacks must carry that message's turn; direct replies take the turn from
 the replied-to message's binding. Both must still match canonical state; the
 core guard closes the final read/write race.
@@ -2447,7 +2448,7 @@ unknown message ids keep ordinary chat behavior. Native ask_close accepts any
 generation's message id. Each generation has a stable delivery key: the first
 keeps `runask:<id>:send`, later turns use `runask:<id>:send:<turn>`. Confirmed
 sends never repeat; definitely unsent sends retry on later refreshes; ambiguous
-sends stay unbound and require reconciliation, never an automatic resend.
+sends stay unbound until verified callback reconciliation, never an automatic resend.
 Restart preserves these receipts and bindings. Recovery binds only a confirmed
 receipt with a positive integer message id whose stored fingerprint matches
 the card's exact send request (complete HTML, turn-bound keyboard, silent
@@ -2459,6 +2460,44 @@ and direct the operator to the yard, without claiming a newer card exists.
 Ordinary rows lacking generation bindings refuse as unconfirmed; these
 unreleased rows have no upgrade path.
 Run/skill rows retain their existing ledger upgrade and edit behavior.
+
+An ordinary decision delivered by Telegram can lose its send response. Its
+saved receipt remains `ambiguous_delivery_requires_manual_reconciliation`;
+repeating `ask_card`, including after recovery, keeps that receipt for the
+same turn. Neither a new caller key nor a restart resends the card. Recovery
+binds the existing message without changing the send ledger or claiming the
+send response was confirmed:
+
+1. Check the paired chat for the original card. If it is there, the paired
+   operator can tap the action they intend to take. That tap both reconciles
+   the message and performs the selected action if the canonical ask is still
+   open at that turn. A reply alone cannot recover an unknown message id.
+2. Recovery requires this bot's non-forwarded message in the exact paired
+   chat/topic, a positive message id, the complete original text and keyboard
+   naming this row and turn, and the matching saved ambiguous-send fingerprint.
+   Core's current operator identity, home, proposal and turn checks still apply.
+   Missing proof, a message already bound elsewhere, another row's callback,
+   or a definitely refused send cannot acquire a binding. A second message
+   cannot bind the same turn. Replays cannot answer twice. A recovered older
+   turn or an ask already decided in the yard is retired without another
+   decision; its controls are removed using canonical state.
+3. Before recovery, `ask_close ask_key=<original-key> decision=refresh`
+   returns `ask_card_delivery_unconfirmed` with an instruction to tap the
+   original card or decide in the yard and delete the card manually. It
+   cannot edit a message whose id Telegram never returned. After recovery,
+   `ask_close` can reach that message by the original key or recovered message
+   id and shows canonical state; caller decision text remains ignored.
+4. If the genuine tap lacks enough proof, it says: “Card delivery unconfirmed;
+   decide in Footplate or the yard and delete this Telegram card manually”.
+   Make the decision there, then remove the original Telegram card manually.
+   If no card is visible, use the yard directly. Do not delete ledger rows or
+   publish under another key to work around ambiguity.
+
+This recovery needs no settings, grants or ledger migration. The operator
+installs and activates the reviewed release through the existing setup steps;
+source landing alone does not change a running bridge. Retain the ledger on
+release rollback: recovered messages use the existing generation bindings,
+and the original ambiguous receipt remains saved.
 
 Manual stage cards use exactly the same path and stored options. AnswerAskExpected
 checks actual stage membership/current stay and records the words and movement

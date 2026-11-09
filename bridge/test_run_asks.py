@@ -400,6 +400,22 @@ class NativeTests(NativeCase):
         self.assertIn('\n\n✓ Answered: 1. &lt;a href=', self.edits()[-1]['text'])
         self.assertNotIn('<a ', self.edits()[-1]['text'])
 
+        transport = self.bridge.request
+        def lost_response(url, body, *args, **kwargs):
+            response = transport(url, body, *args, **kwargs)
+            if url.endswith('/sendMessage'):
+                raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
+            return response
+        with patch.object(self.bridge, 'request', side_effect=lost_response):
+            self.assertFalse(self.create_decision()['delivered'])
+        close = self.bridge.api_ask_close(dict(ask_key='decision-1', decision='ignored'))
+        self.assertFalse(close['delivered'])
+        self.assertIn('ask_card_delivery_unconfirmed', close['reason'])
+        self.assertIn('tap the original card to reconcile', close['reason'])
+        self.assertIn('delete the card manually', close['reason'])
+        self.assertIsNone(self.row()['message_id'])
+        self.assertEqual(self.sent_count, 1)
+
         self.assertTrue(self.create_decision()['delivered'])
         card = self.calls[-1][1]
         for field in ('Where should the links go?', 'First &lt;context&gt;', 'Second &amp; context',
@@ -600,6 +616,21 @@ class NativeTests(NativeCase):
                     self.assertEqual(len(self.writes()), 1)
 
     def test_ordinary_bindings_staleness_and_replay_reject_without_writes(self):
+        transport = self.bridge.request
+        def lost_response(url, body, *args, **kwargs):
+            response = transport(url, body, *args, **kwargs)
+            if url.endswith('/sendMessage'):
+                raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
+            return response
+        with patch.object(self.bridge, 'request', side_effect=lost_response):
+            self.assertFalse(self.create_decision()['delivered'])
+        self.press('pick1', message_id=77)
+        self.assertIn('Card delivery unconfirmed', self.calls[-1][1]['text'])
+        self.assertIn('decide in Footplate or the yard', self.calls[-1][1]['text'])
+        self.assertIn('delete this Telegram card manually', self.calls[-1][1]['text'])
+        self.assertEqual(self.row()['generations'], [])
+        self.assertEqual(self.writes(), [])
+
         for change in (dict(chat=dict(id=456, type='private')), dict(chat=dict(id=123, type='group')),
                        {'from': dict(id=456, is_bot=False)}, {'from': dict(id=123, is_bot=True)},
                        dict(reply_to_message=dict(message_id=999)), dict(message_thread_id=99),
@@ -2201,6 +2232,37 @@ class NativeTests(NativeCase):
         self.press('pick2', uid=41, is_topic_message=True, message_thread_id=12)
         self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat', option=2, words='', weighed=False))])
 
+        self.reset_native(decision())
+        transport = self.bridge.request
+        delivered = []
+        def lost_response(url, body, *args, **kwargs):
+            status, response = transport(url, body, *args, **kwargs)
+            if url.endswith('/sendMessage'):
+                delivered.append(dict(response['result'], chat=dict(id=123, type='private'),
+                    **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0],
+                    is_topic_message=True, message_thread_id=body['message_thread_id'],
+                    reply_markup=copy.deepcopy(body['reply_markup'])))
+                raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
+            return status, response
+        request = dict(bead='sample-1', ask=7, topic='ops', key='api-uncertain-decision')
+        with patch.object(self.bridge, 'request', side_effect=lost_response):
+            status, receipt = self.api_call(port, '/v1/ask-card', request)
+        self.assertEqual(status, 200)
+        self.assertFalse(receipt['delivered'])
+        query = dict(id='topic-unconfirmed', data=delivered[0]['reply_markup']['inline_keyboard'][1][0]['callback_data'],
+                     message=delivered[0], **{'from': dict(id=123, is_bot=False)})
+        wrong = copy.deepcopy(query)
+        wrong['message']['message_thread_id'] = 13
+        self.bridge.inbound(dict(update_id=42, callback_query=wrong))
+        self.assertEqual(self.row()['generations'], [])
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.inbound(dict(update_id=43, callback_query=query))
+        self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat', option=2, words='', weighed=False))])
+        self.assertEqual(self.api_call(port, '/v1/ask-card', request), (200, receipt))
+        status, closed = self.api_call(port, '/v1/ask-close', dict(ask_key='api-uncertain-decision', decision='ignored'))
+        self.assertEqual((status, closed['delivered']), (200, True))
+        self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
+
     def test_write_refusals_unreadable_state_and_relay_failures_do_not_forge_success(self):
         for committed_mode in ('wire-error-commit', 'invalid-commit'):
             self.native.ask = proposal()
@@ -2257,7 +2319,8 @@ class NativeTests(NativeCase):
         self.assertFalse(receipt['delivered'])
         self.assertEqual(len(self.calls), count)
         self.reset_native(decision())
-        self.assertFalse(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision'))['delivered'])
+        receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision'))
+        self.assertFalse(receipt['delivered'])
         count = len(self.calls)
         self.bridge.run_asks = n.RunAsks(self.bridge)
         for key in ('uncertain-decision', 'different-decision-key'):
@@ -2285,6 +2348,223 @@ class NativeTests(NativeCase):
         self.assertEqual(self.native.ask, canonical)
         self.assertEqual(self.row()['generations'], [])
         self.assertEqual(len(self.calls), count)
+
+        sent = next(body for url, body in self.calls if url.endswith('/sendMessage'))
+        row = self.row()
+        update = dict(update_id=471, callback_query=dict(id='delivered-without-response',
+            data=sent['reply_markup']['inline_keyboard'][0][0]['callback_data'],
+            **{'from': dict(id=123, is_bot=False)}, message=dict(message_id=77,
+            chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)},
+            text=b.html_visible_text(sent['text'])[0], reply_markup=copy.deepcopy(sent['reply_markup']))))
+        with patch.object(self.bridge, 'telegram', side_effect=fetched):
+            self.bridge.poll_once()
+        self.assertEqual(self.bridge.run_asks.get(row['id'])['message_id'], 77)
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(self.native.ask['state'], 'answered')
+        self.assertEqual(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision')), receipt)
+        self.assertTrue(self.bridge.api_ask_close(dict(ask_key='uncertain-decision', decision='ignored'))['delivered'])
+        self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
+
+        def unconfirmed():
+            self.reset_native(decision())
+            delivered = []
+            def lost_response(url, body, *args, **kwargs):
+                status, response = original(url, body, *args, **kwargs)
+                if url.endswith('/sendMessage'):
+                    delivered.append(dict(response['result'], chat=dict(id=123, type='private'),
+                        **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0],
+                        reply_markup=copy.deepcopy(body['reply_markup'])))
+                    raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
+                return status, response
+            with patch.object(self.bridge, 'request', side_effect=lost_response):
+                receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision'))
+            self.assertFalse(receipt['delivered'])
+            self.assertEqual(len(delivered), 1)
+            self.assertIsNone(self.row()['message_id'])
+            query = dict(id='unconfirmed', data=delivered[0]['reply_markup']['inline_keyboard'][0][0]['callback_data'],
+                         message=delivered[0], **{'from': dict(id=123, is_bot=False)})
+            return self.row(), query, receipt
+
+        for case in ('operator', 'bot', 'chat', 'topic', 'forward', 'legacy-forward', 'text', 'keyboard', 'inaccessible', 'invalid-id',
+                     'missing-turn', 'wrong-turn', 'other-row', 'message-collision', 'fingerprint',
+                     'missing-receipt', 'refused', 'not-sent', 'unknown-receipt', 'proposal', 'role'):
+            with self.subTest(unconfirmed_refusal=case):
+                row, query, _ = unconfirmed()
+                key = f"runask:{row['id']}:send"
+                if case == 'operator':
+                    query['from']['id'] = 124
+                elif case == 'bot':
+                    query['message']['from']['id'] = 998
+                elif case == 'chat':
+                    query['message']['chat']['id'] = 456
+                elif case == 'topic':
+                    query['message']['message_thread_id'] = 99
+                elif case in ('forward', 'legacy-forward'):
+                    query['message']['forward_origin' if case == 'forward' else 'forward_date'] = dict(type='user') if case == 'forward' else 123
+                elif case == 'text':
+                    query['message']['text'] += '\nChanged'
+                elif case == 'keyboard':
+                    query['message'].pop('reply_markup')
+                elif case == 'inaccessible':
+                    query['message'] = dict(message_id=77, chat=dict(id=123, type='private'), date=0)
+                elif case == 'invalid-id':
+                    query['message']['message_id'] = 0
+                elif case == 'missing-turn':
+                    query['data'] = query['data'].rsplit(':', 1)[0]
+                elif case == 'wrong-turn':
+                    query['data'] = query['data'].rsplit(':', 1)[0] + ':1'
+                elif case == 'other-row':
+                    other = copy.deepcopy(row)
+                    other['id'] = 'f' * 24
+                    other['ask'] = 8
+                    other['plain'] = row['plain'].replace('ask #7', 'ask #8')
+                    other['html'] = row['html'].replace('ask #7', 'ask #8')
+                    self.bridge.run_asks.save(other)
+                    key, identity = self.bridge.run_asks.send_request(other)
+                    self.store.reserve(key, self.bridge.delivery_fingerprint(identity), self.bridge.receipt(
+                        reason='ambiguous_delivery_requires_manual_reconciliation'))
+                    query['data'] = query['data'].replace(row['id'], other['id'])
+                elif case == 'message-collision':
+                    other = copy.deepcopy(row)
+                    other['id'] = 'f' * 24
+                    other['message_id'] = query['message']['message_id']
+                    other['generations'] = [dict(turn=0, message_id=other['message_id'], revision=0)]
+                    self.bridge.run_asks.save(other)
+                elif case == 'fingerprint':
+                    with self.store.connect() as db:
+                        db.execute('UPDATE deliveries SET fingerprint=? WHERE key=?', ('unrelated-send', key))
+                elif case == 'missing-receipt':
+                    with self.store.connect() as db:
+                        db.execute('DELETE FROM deliveries WHERE key=?', (key,))
+                elif case in ('refused', 'not-sent', 'unknown-receipt'):
+                    replacement = self.bridge.not_sent() if case == 'not-sent' else self.bridge.receipt(
+                        reason='telegram_rejected_not_sent_400' if case == 'refused' else 'unknown')
+                    self.store.finish(key, replacement)
+                elif case == 'proposal':
+                    self.native.ask['question'] += ' Changed'
+                elif case == 'role':
+                    self.native.user['role'] = 'member'
+                saved = self.store.saved_delivery(key)
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.inbound(dict(update_id=472, callback_query=query))
+                self.assertEqual(self.bridge.run_asks.get(row['id'])['generations'], [])
+                if case == 'other-row':
+                    self.assertEqual(self.bridge.run_asks.get(other['id'])['generations'], [])
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(self.store.saved_delivery(key), saved)
+                if case in ('keyboard', 'inaccessible'):
+                    self.assertIn('decide in Footplate or the yard', self.calls[-1][1]['text'])
+                    self.assertIn('delete this Telegram card manually', self.calls[-1][1]['text'])
+
+        for crash in ('before-binding', 'after-binding', None):
+            with self.subTest(unconfirmed_crash=crash):
+                row, query, receipt = unconfirmed()
+                key = f"runask:{row['id']}:send"
+                saved = self.store.saved_delivery(key)
+                close = self.bridge.api_ask_close(dict(ask_key='uncertain-decision', decision='ignored'))
+                self.assertFalse(close['delivered'])
+                self.assertIn('tap the original card to reconcile', close['reason'])
+                self.assertIn('delete the card manually', close['reason'])
+                if crash:
+                    save = self.bridge.run_asks.save
+                    def crashing_save(value):
+                        if value['generations']:
+                            if crash == 'after-binding':
+                                save(value)
+                            raise RuntimeError('simulated crash at generation save')
+                        return save(value)
+                    with patch.object(self.bridge.run_asks, 'save', side_effect=crashing_save):
+                        with self.assertRaisesRegex(RuntimeError, 'simulated crash'):
+                            self.bridge.inbound(dict(update_id=473, callback_query=query))
+                    self.assertEqual(self.writes(), [])
+                self.store = b.Store(self.path, 10)
+                self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=original)
+                self.bridge.hook_secret = None
+                telegram = self.bridge.telegram
+                def tapped(method, body, timeout=15):
+                    if method == 'getUpdates':
+                        return 200, dict(ok=True, result=[dict(update_id=474, callback_query=query)])
+                    return telegram(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=tapped):
+                    self.bridge.poll_once()
+                    self.bridge.poll_once()
+                self.bridge.inbound(dict(update_id=475, callback_query=query))
+                self.assertEqual(len(self.writes()), 1)
+                self.assertEqual(self.native.ask['state'], 'answered')
+                self.assertEqual(self.bridge.run_asks.get(row['id'])['message_id'], query['message']['message_id'])
+                self.assertEqual(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision')), receipt)
+                self.assertEqual(self.store.saved_delivery(key), saved)
+                self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
+                duplicate = copy.deepcopy(query)
+                duplicate['message']['message_id'] += 1
+                self.bridge.inbound(dict(update_id=477, callback_query=duplicate))
+                self.assertEqual(len(self.writes()), 1)
+                self.assertEqual(self.bridge.run_asks.get(row['id'])['message_id'], query['message']['message_id'])
+
+        for restart in (False, True):
+            with self.subTest(unconfirmed_older_inaccessible_restart=restart):
+                row, query, _ = unconfirmed()
+                old_key = self.bridge.run_asks.send_key(row)
+                old_receipt = self.store.saved_delivery(old_key)
+                self.native.ask['turn'] += 1
+                self.bridge.run_asks.refresh()
+                current = self.row()
+                self.assertEqual(current['turn'], 1)
+                self.assertEqual(current['generations'], [dict(turn=1, message_id=78, revision=0)])
+                new_key = self.bridge.run_asks.send_key(current)
+                new_receipt = self.store.saved_delivery(new_key)
+                self.assertTrue(new_receipt[1]['delivered'])
+                query['message'] = dict(message_id=query['message']['message_id'],
+                                        chat=dict(id=123, type='private'), date=0)
+                if restart:
+                    self.store = b.Store(self.path, 10)
+                    self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=original)
+                    self.bridge.hook_secret = None
+                telegram = self.bridge.telegram
+                def inaccessible(method, body, timeout=15):
+                    if method == 'getUpdates':
+                        return 200, dict(ok=True, result=[dict(update_id=478, callback_query=query)])
+                    return telegram(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=inaccessible):
+                    self.bridge.poll_once()
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(self.native.ask['state'], 'open')
+                self.assertEqual(self.row(), current)
+                self.assertEqual(self.store.saved_delivery(old_key), old_receipt)
+                self.assertEqual(self.store.saved_delivery(new_key), new_receipt)
+                self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 2)
+                self.assertIn('decide in Footplate or the yard', self.calls[-1][1]['text'])
+                self.assertIn('delete this Telegram card manually', self.calls[-1][1]['text'])
+
+        for state in ('answered', 'new-turn'):
+            with self.subTest(unconfirmed_canonical_change=state):
+                row, query, receipt = unconfirmed()
+                if state == 'answered':
+                    self.native.ask.update(state='answered', option=2, words='Decided in the yard', turn=1)
+                    self.assertEqual(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='uncertain-decision')), receipt)
+                    close = self.bridge.api_ask_close(dict(ask_key='uncertain-decision', decision='ignored'))
+                    self.assertFalse(close['delivered'])
+                    self.assertIn('tap the original card', close['reason'])
+                else:
+                    self.native.ask['turn'] += 1
+                telegram = self.bridge.telegram
+                def changed(method, body, timeout=15):
+                    if method == 'getUpdates':
+                        return 200, dict(ok=True, result=[dict(update_id=476, callback_query=query)])
+                    return telegram(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=changed):
+                    self.bridge.poll_once()
+                current = self.bridge.run_asks.get(row['id'])
+                self.assertEqual(self.writes(), [])
+                old = next(g for g in current['generations'] if g['turn'] == 0)
+                self.assertEqual(old['message_id'], query['message']['message_id'])
+                self.assertEqual(old['display']['keyboard'], [])
+                if state == 'answered':
+                    self.assertIn('Decided in the yard', old['display']['footer'])
+                    self.assertTrue(self.bridge.api_ask_close(dict(ask_key='uncertain-decision', decision='ignored'))['delivered'])
+                else:
+                    self.assertNotEqual(current['message_id'], old['message_id'])
+                    self.assertIn('newer card', old['display']['footer'])
 
     def test_fresh_role_proposal_and_state_checks_on_confirmation(self):
         for factory in (proposal, skill_proposal):
@@ -2658,6 +2938,60 @@ class RealNativeTests(BridgeTestCase):
             before_reply = client.call('Bead', dict(bead='sample-1', viewer='pat'))
             self.bridge.inbound(bound_reply(row, '1 stale', 301))
             self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat')), before_reply)
+
+            cli('bead', 'create', 'Synthetic unconfirmed delivery', '--id', 'unconfirmed-1')
+            cli('bead', 'ask', 'unconfirmed-1', 'Which option?', '--to', 'pat', '--context', 'Isolated lost response',
+                '--option', 'First: Choose first.', '--option', 'Second: Choose second.')
+            lost = client.call('Bead', dict(bead='unconfirmed-1', viewer='pat'))['asks'][0]
+            request = dict(bead='unconfirmed-1', ask=lost['ask'], key='unconfirmed-real')
+            delivered = []
+
+            def lost_response(url, body, *args, **kwargs):
+                status, response = telegram(url, body, *args, **kwargs)
+                if url.endswith('/sendMessage'):
+                    delivered.append(dict(response['result'], chat=dict(id=123, type='private'),
+                        **{'from': dict(id=999, is_bot=True)}, text=b.html_visible_text(body['text'])[0],
+                        reply_markup=copy.deepcopy(body['reply_markup'])))
+                    raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
+                return status, response
+
+            self.bridge.request = lost_response
+            receipt = self.bridge.api_ask_card(request)
+            self.assertFalse(receipt['delivered'])
+            self.assertEqual(len(delivered), 1)
+            row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'unconfirmed-1')
+            self.assertIsNone(row['message_id'])
+            with self.store.connect() as db:
+                saved = db.execute('SELECT fingerprint,receipt FROM deliveries WHERE key=?',
+                                   (f"runask:{row['id']}:send",)).fetchone()
+            self.store = b.Store(self.path, 10)
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+            self.bridge.hook_secret = None
+            query = dict(id='real-unconfirmed', data=delivered[0]['reply_markup']['inline_keyboard'][0][0]['callback_data'],
+                         message=delivered[0], **{'from': dict(id=123, is_bot=False)})
+            telegram_call = self.bridge.telegram
+
+            def fetched(method, body, timeout=15):
+                if method == 'getUpdates':
+                    return 200, dict(ok=True, result=[dict(update_id=480, callback_query=query)])
+                return telegram_call(method, body, timeout)
+
+            with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                self.bridge.poll_once()
+                self.bridge.poll_once()
+            settled = client.call('Bead', dict(bead='unconfirmed-1', viewer='pat'))['asks'][0]
+            self.assertEqual((settled['state'], settled.get('option'), settled['turn']), ('answered', 1, lost['turn'] + 1))
+            answers = [note for note in client.call('Notes', ['unconfirmed-1']) if note['kind'] == 'answer']
+            self.assertEqual(len(answers), 1)
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['message_id'], delivered[0]['message_id'])
+            self.assertEqual(self.bridge.api_ask_card(request), receipt)
+            self.assertTrue(self.bridge.api_ask_close(dict(ask_key='unconfirmed-real', decision='ignored'))['delivered'])
+            cards = [body for url, body in self.calls if url.endswith('/sendMessage')
+                     and f"askcard:{row['id']}:" in json.dumps(body.get('reply_markup', {}))]
+            self.assertEqual(len(cards), 1)
+            with self.store.connect() as db:
+                self.assertEqual(db.execute('SELECT fingerprint,receipt FROM deliveries WHERE key=?',
+                                            (f"runask:{row['id']}:send",)).fetchone(), saved)
 
             for index, (action, method) in enumerate((('pick1', 'AnswerAskExpected'), ('reply', 'AnswerAskExpected'),
                                                        ('later', 'DeferAskExpected'), ('decline', 'DeclineAskExpected'))):

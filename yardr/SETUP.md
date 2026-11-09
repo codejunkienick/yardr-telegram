@@ -509,17 +509,36 @@ later outcome edits. Generated stage choices use AnswerAskExpected: core checks 
 authority and moves the bead, retaining optional words on the answer note.
 There is no client-side inference of stage authority from markdown or asker.
 
-Every ordinary mutation names the input message's confirmed generation turn.
+Every ordinary mutation names the input message's verified generation turn.
 Each message presents one open turn forever. A changed open turn sends a new
 card under a stable per-turn delivery key and retires the previous card without
 controls. Stale replies/buttons refuse even if the retirement edit fails, and
 known old-card replies stay native rather than reaching chat. A conflicting
 external answer, defer, decline or take-back writes nothing; the bridge rereads
 and presents canonical state. Confirmed sends never repeat; definitely unsent
-sends retry on refresh; ambiguous sends remain unbound without automatic resend.
+sends retry on refresh; ambiguous sends remain unbound until verified callback
+reconciliation, without automatic resend.
 Restart preserves generation bindings. Ordinary rows without generation
 bindings refuse as unconfirmed; ordinary cards were not previously released.
 Run/skill/chat rows retain their existing contracts and upgrades.
+
+If Telegram delivered an ordinary card but its response timed out, the paired
+operator can tap the intended action on that original card after the reviewed
+bridge release is installed and activated. The tap recovers the message id
+only when its bot, paired chat/topic, non-forwarded full text and turn keyboard
+match the row and its saved ambiguous-send fingerprint. It then takes the
+selected action only if the canonical ask is still open at that turn. Restart
+does not change this check. Replies alone cannot recover a missing id.
+
+The send receipt stays ambiguous, including identical `ask_card` calls after
+recovery; no card is resent. Before a verified tap, `ask_close` by the original
+ask key explains that the message id is unknown and asks for that tap, or a
+decision in the yard followed by manually deleting the Telegram card. After
+recovery it can edit the original message using canonical state. A tap missing
+proof explicitly directs the operator to decide in Footplate or the yard and
+delete the card manually. Use that route if the card is absent or recovery is
+refused. Never clear the ledger or switch keys to bypass ambiguity. No new
+settings, grants or migration are required; retain the ledger on rollback.
 
 `askcard:` is newly reserved for the bridge. Before upgrading, migrate any
 custom `callback_prefix` overlapping it (also shorter prefixes such as

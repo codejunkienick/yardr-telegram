@@ -283,12 +283,15 @@ confirmation; Decline records a native decline without execution. Telegram
 never asks for a device or account password.
 
 Self-contained native run asks retain their original behavior. Secret,
-setup, identity,
-depot-push, parameter input, carried source/pack files and crew-add prompt
-payloads are refused before sending, except the verified single-file skill
-snapshot and herdr group cards described below. Self-contained cards over 3500 visible UTF16 units
-are refused whole. Use Footplate or the yard cards for refused proposals;
-ordinary send/tell summaries cannot authorize an approval.
+setup, identity, depot-push, parameter input, carried source/pack files and
+crew-add prompt payloads are refused before sending, except the verified
+single-file skill snapshots, herdr group cards, validated `source add`
+declaration and relative command file bundles, and source-kind `pack apply`
+bundles described below. Approval controls appear only after complete review
+delivery; core checks authority and stale state before applying.
+Self-contained cards over 3500 visible UTF16 units are refused whole. Use
+Footplate or the yard cards for refused proposals; ordinary send/tell
+summaries cannot authorize an approval.
 
 Native `ask_close` keeps its existing selector contract:
 

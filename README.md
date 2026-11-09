@@ -76,27 +76,42 @@ Release history: `CHANGELOG.md`.
 
 ## Prerequisites
 
+**Public-core release gate (2026-11-09): no compatible public yardr core is
+available yet for this pack.** Public upstream
+[`019090bef099`](https://github.com/yardr-dev/yardr/commit/019090bef09973fb51ca8081b0f764a26a65e60a)
+rejects `thread.formats` in `yardr pack check yardr/`, so even hook/chat
+setup cannot apply the shipped pack. The required core changes must be
+published and accepted before this bridge is published. See the
+[public-core gate and capability table](docs/public-readiness.md#public-core-release-gate)
+for the outstanding contracts and required passing check.
+
 - Linux with a systemd user session (`systemctl --user status`). macOS
   has a launchd renderer (`bridge/OPERATIONS.md`,
   "Install and launch"), untested with yardr.
 - Python 3.11 or later (`python3 --version`), and curl.
-- yardr with source packs, hook verification, thread commands and the yard
+- yardr with source packs, hook verification, thread commands, explicit
+  `thread.formats` declarations and the yard
   running (`yardr --version`); configure a loopback hook listener
   (`yardr settings get hook_addr`). Native cards and Markdown need the
   additional capabilities listed in [the compatibility table](docs/public-readiness.md#capabilities-and-grants).
+  Hook-only settings still require a core that accepts the whole pack.
   A version number alone does not establish those capabilities.
 - Optional native skill review needs the core captured single-file proposal
-  capability (introduced at `a79f6f8162c8`) and the paired operator setup in
+  capability (local baseline `a79f6f8162c8`, not a public install target)
+  and the paired operator setup in
   [SETUP.md](yardr/SETUP.md#single-file-skill-snapshots). Full review parts
   precede buttons; Approve requires a direct ask-number reply. Only one
   regular `SKILL.md` with supported metadata can use skill review.
 - Optional native herdr group cards (`group add`, `group set`) need core
-  `fc7375cf5ad4` or later and the same setup
+  support for the local `fc7375cf5ad4` contract, also not a public install
+  target, and the same setup
   ([SETUP.md](yardr/SETUP.md#herdr-group-add-and-set)).
 - Optional native source-add review (`source add <file>`) needs the carried
-  source-add contract at core `546e3fdd2127` and the same `run_ask` grant and
-  paired operator setup. It reviews the declaration, command files and
-  replacement diffs ([SETUP.md](yardr/SETUP.md#source-declarations-and-command-files)).
+  source-add contract (local baseline `546e3fdd2127`, not a public install
+  target). No compatible public core is available yet. It uses the same
+  `run_ask` grant and paired operator setup, and reviews the declaration,
+  command files and replacement diffs
+  ([SETUP.md](yardr/SETUP.md#source-declarations-and-command-files)).
 - For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).

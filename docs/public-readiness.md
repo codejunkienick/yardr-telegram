@@ -98,6 +98,37 @@ tokens only in that file. Python garbage-collector calls in
 and crew labels in tests exercise arbitrary stored names and queue isolation.
 No persisted or wire identifier is renamed by this preparation.
 
+## Public-core release gate
+
+Release order: publish and accept the required yardr core changes first,
+then publish this bridge naming the compatible public core. Core publication
+belongs to the owner. Until that happens, there is no compatible public core
+for the shipped pack, including hook/chat configurations without native keys.
+
+Checked on 2026-11-09: public upstream
+[`019090bef09973fb51ca8081b0f764a26a65e60a`](https://github.com/yardr-dev/yardr/commit/019090bef09973fb51ca8081b0f764a26a65e60a)
+was built from source. In an isolated home, `yardr pack check yardr/` on
+the unchanged shipped pack exited 1 with
+`tgbridge.yaml:205: thread.formats: unknown key`. All 61 fetched heads and
+tags across upstream and its public fork lacked `thread.formats` declaration
+support. Keep `thread.formats: [markdown]` in the pack; omitting native
+settings or disabling Markdown use does not make this declaration parse.
+
+The hashes in the table and SETUP are local capability baselines, not public
+release tags or install targets. None of those six baseline commits was in
+the fetched public history. The public fork's guarded-ask preview
+[`10bf0b06e978`](https://github.com/codejunkienick/yardr/commit/10bf0b06e978e2a611dcd3074f878a37da9ae121)
+does expose Answer/Defer/DeclineAskExpected, but still lacks the pack's
+thread-format declaration support. Public previews of individual contracts
+do not establish a compatible core for this pack.
+
+Before bridge publication, replace each unavailable public-core entry below
+with a publicly reachable tag or commit containing that contract. Build the
+selected core and record a passing `yardr pack check yardr/` against the exact
+candidate bridge commit, then check the instance's rendered `<root>/pack`
+before applying it. The recorded failure above leaves this release gate open;
+local-core tests cannot supply the required public-core success evidence.
+
 ## Capabilities and grants
 
 Only grant calls a crew actually uses. `yardr source grant tgbridge <call>
@@ -105,21 +136,26 @@ Only grant calls a crew actually uses. `yardr source grant tgbridge <call>
 the private home/operator, current source identity, bot/user/chat and native
 proposal. A crew grant never authorizes the crew to approve its own card.
 
-| Feature | Required core capability | Source update grant |
-| --- | --- | --- |
-| Ordinary send/react/pin/unpin/chat ask close | Source packs and matching loopback API | Individually `send`, `react`, `pin`, `unpin`, `ask_close` as needed |
-| Routine run ask, weighted direct-reply confirmation | Canonical Bead/ApproveAsk and current operator mapping | `run_ask` |
-| Captured skill file review | Captured single-file proposal contract (`a79f6f8162c8` baseline) | Same `run_ask` |
-| Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | Same `run_ask` |
-| Source-add declaration and command file review | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | Same `run_ask` |
-| Ordinary option/words/manual-stage decisions and `/decide` | Bead ask turns, UserAsks and guarded Answer/Defer/DeclineAskExpected (`7fa0d4c75ff6`) | `ask_card` |
-| Siding status and paired fold/release | Socket-only SidingProposal/Outcome and guarded expected writes (`24bcfd0955c9`), version 1 guard schema | `siding_card` |
-| Explicit Markdown replies | Core explicit reply format transport (`0035b8c13e27`) plus `thread.formats: [markdown]` in installed source | No new grant for thread replies; `send`/`pin` for those calls |
+Every feature below requires the pack-application row first. Public-core
+status is for use with this shipped pack, as checked on 2026-11-09.
 
-These are verified capability baselines, not a single minimum version promise.
-Unsupported/missing/unknown methods or payloads refuse; a version string alone
-is insufficient. Existing settings without native home/operator still load
-and retain hook/chat behavior.
+| Feature | Required core capability (local baselines) | Compatible public core | Source update grant |
+| --- | --- | --- | --- |
+| Apply the pack, required even for hook/chat | Source packs accepting `thread.formats: [markdown]` (`0035b8c13e27`) | None yet | None |
+| Ordinary send/react/pin/unpin/chat ask close | Source packs and matching loopback API | None yet; pack application blocked | Individually `send`, `react`, `pin`, `unpin`, `ask_close` as needed |
+| Routine run ask, weighted direct-reply confirmation | Canonical Bead/ApproveAsk and current operator mapping | None yet | `run_ask` |
+| Captured skill file review | Captured single-file proposal contract (`a79f6f8162c8`) | None yet | Same `run_ask` |
+| Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | None yet | Same `run_ask` |
+| Source-add declaration and command file review | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | None yet | Same `run_ask` |
+| Ordinary option/words/manual-stage decisions and `/decide` | Bead ask turns, UserAsks and guarded Answer/Defer/DeclineAskExpected (`7fa0d4c75ff6`) | None yet; preview alone cannot apply pack | `ask_card` |
+| Siding status and paired fold/release | Socket-only SidingProposal/Outcome and guarded expected writes (`24bcfd0955c9`), version 1 guard schema | None yet | `siding_card` |
+| Explicit Markdown replies | Core explicit reply format transport (`0035b8c13e27`) plus `thread.formats: [markdown]` in installed source | None yet | No new grant for thread replies; `send`/`pin` for those calls |
+
+These are locally verified capability baselines, not a public minimum version
+promise. Unsupported/missing/unknown methods or payloads refuse; a version
+string alone is insufficient. Existing settings without native home/operator still load
+and retain hook/chat behavior on a compatible core; they cannot bypass the
+pack's thread-format declaration requirement.
 
 Only one regular text SKILL.md, at most 32 KiB on either side and supported
 name/description metadata, can use native captured skill review. Complete
@@ -186,16 +222,20 @@ is not an installable checkout.
 
 1. Complete normal/expert review and local landing. Run the committed-head
    gate again on the actual landing tree with `YARDR_LANDING=1`.
-2. Regenerate scan/export from that clean landed commit before freezing the
+2. Close the [public-core release gate](#public-core-release-gate): the owner
+   publishes the required core changes first; name the compatible public
+   tag/commit for every capability and attach a passing pack check with that
+   core on the exact candidate pack. This bridge stays unpublished until then.
+3. Regenerate scan/export from that clean landed commit before freezing the
    candidate tree and running the final audit; landing may squash and change
    its commit ID. The final compatibility/publication auditor must
    compare that exact tree/manifest/archive and review the remaining contextual
    identifiers, attribution, attachments, license sources and old history
    separately. This work does not certify historical exposure or rewrite it.
-3. Resolve the destination/history strategy and exact public payload with the
+4. Resolve the destination/history strategy and exact public payload with the
    owner. Preserve this development repository. A future explicitly authorized
    publication step may use the reviewed clean export; none runs here.
-4. Each instance's operator owns installation, source apply, minimum grants,
+5. Each instance's operator owns installation, source apply, minimum grants,
    activation and acceptance: probe, check-install, correct ExecStart/current,
    source health, ordinary chat/topic/file and any enabled native card. Verify
    another instance's release/config/state/binding did not change. Source-only

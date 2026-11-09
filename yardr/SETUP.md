@@ -1,5 +1,12 @@
 # Setting up tgbridge in a yard
 
+Check the [public-core release gate](../docs/public-readiness.md#public-core-release-gate)
+before starting: as of 2026-11-09 no compatible public core is available for
+this pack, even for hook/chat alone. The core hashes below are local
+capability baselines, not public install targets. The required core changes
+must be published and accepted before this bridge is published; applying
+the pack also requires `thread.formats` support when native keys are omitted.
+
 One bridge serves one yard with one bot. The examples use a fictional yard
 `example`, operator `operator`, timezone `UTC`, bridge port 8941 and hook
 port 8795. Choose your own names, home, ports and timezone; every instance

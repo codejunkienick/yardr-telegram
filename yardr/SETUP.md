@@ -353,6 +353,48 @@ a restart; use existing delivery-ledger reconciliation with the operator.
 Keep SQLite state. Details and rendering limits are in
 [operations](../bridge/OPERATIONS.md#captured-single-file-skill-review).
 
+### Source declarations and command files
+
+After reviewed source is installed into this instance's release, a proposer
+can publish a native source-add ask with the existing per-call grant:
+
+```sh
+yardr bead ask <bead> "Add or replace this source?" \
+  --context "Read every declaration, command and replacement diff part." \
+  --run "source add /absolute/path/to/source.yaml"
+yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=source-review-1
+```
+
+Verified minimum contract: core `546e3fdd2127` with carried source-add
+snapshots, inventory/diffs and canonical carry outcomes, plus this bridge.
+The bridge validates actual envelopes on every read. Keep the existing
+native home/operator/source and paired identity; there is no new grant,
+setting, package install or filesystem permission. The release includes its
+pinned pure-Python YAML reader. Absolute command programs, aliases/tags,
+unknown fields and over-limit snapshots refuse before sending; see
+[operations](../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
+
+Review every numbered part before approving. The complete declaration and
+command files, every replacement diff and inventory/removed records are
+quoted under exact hashes. The card names their bundle digest/count and
+replies to its last part. Core supplies the weight: replacements and new or
+changed code require a direct reply with the ask number after the first
+tap; a routine commands-free add applies on Approve. Source provenance can
+change or disappear after capture; the server installs the captured bytes.
+A changed standing copy is stale and writes nothing. Canonical pending,
+success and failed carry remain distinct; ambiguous delivery never resends.
+
+Installation and activation belong to this instance's operator after review:
+use its existing independent release installer, `check-install` and printed
+`next:` service step. Source landed, release installed and service live are
+separate states. Before activation, inspect `preview_run_asks.py --source`
+and the isolated native gate; after activation check this instance's native
+identity and review a source proposal before any approval. No source-pack
+change or added grant is needed for this renderer. Roll back with the
+existing instance-root installer/printed restart step, retaining its ledger,
+identity and source bindings. Withdraw open source cards first; older bridge
+code refuses these bundles. Builders neither install nor activate them.
+
 ### Herdr group add and set
 
 A crew member proposes a herdr group, or a group's model and args, and the

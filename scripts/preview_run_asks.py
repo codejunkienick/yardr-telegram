@@ -6,10 +6,10 @@ from pathlib import Path
 import sys
 
 
-def skill_cards():
+def skill_cards(source=False):
     # Drive the real bridge state machine with the existing offline transports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
-    from test_run_asks import NativeTests, skill_proposal
+    from test_run_asks import NativeTests, skill_proposal, source_proposal
     case = NativeTests()
     case.setUp()
     cards = []
@@ -22,7 +22,7 @@ def skill_cards():
                      + '<div class="navigation">' + escape(navigation) + '</div><div class="body">' + body['text']
                      + '</div><div class="buttons">' + controls + '</div></article></section>')
     try:
-        case.native.ask = skill_proposal('Generic long line <&> 🙂; file content only. ' * 35 + '\n')
+        case.native.ask = source_proposal() if source else skill_proposal('Generic long line <&> 🙂; file content only. ' * 35 + '\n')
         case.config['yard'] = 'example'
         case.create()
         sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
@@ -34,7 +34,7 @@ def skill_cards():
         case.native.mode = 'carrying'
         case.reply()
         capture('Approval recorded · pending carry', case.edits()[-1], 'states')
-        case.native.ask['ran'].update(result='skill snapshot: installed the captured SKILL.md bytes', pending_reason='')
+        case.native.ask['ran'].update(result=('source synthetic saved: installed the captured declaration and bin/report bytes' if source else 'skill snapshot: installed the captured SKILL.md bytes'), pending_reason='')
         case.bridge.run_asks.refresh()
         capture('Settled canonical installation', case.edits()[-1], 'states')
         case.native.ask['ran'].update(result='Synthetic failure: target changed; nothing installed', failed=True)
@@ -286,6 +286,8 @@ def main():
          '✕ approved, failed: yardr source set example calls_per_hour=60\nThe synthetic external operation failed')
     if '--skill' in sys.argv:
         cards = skill_cards()
+    if '--source' in sys.argv:
+        cards = skill_cards(source=True)
     if '--decisions' in sys.argv:
         cards = decision_cards()
     if '--decide' in sys.argv:

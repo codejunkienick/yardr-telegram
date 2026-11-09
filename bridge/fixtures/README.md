@@ -40,3 +40,14 @@ operator to the yard instead of claiming a newer Telegram card exists.
 The real integration also defers through RPC, reopens through the asker's next
 note, refuses a queued reply to the original message through the production
 poll order, and records exactly one answer from the new message.
+
+`source_new.json`, `source_replace.json` and `source_free.json` were captured
+from isolated real core `546e3fdd2127`: a new limits source with one command
+file, its replacement changing that file and removing an extra textual
+copy, and a commands-free HTTPS declaration. Only temp root (`/synthetic`),
+ask number and timestamp are stabilized. The existing real_native_store
+integration compares all three complete wire responses before driving them
+through real native approval/carry and checking byte-equal declarations and
+installed files. It also exercises standing-file drift, decline, cancel,
+wrong bindings and replay. The offline `--source` preview uses the real
+replacement fixture with fake Telegram and labels its presentation synthetic.

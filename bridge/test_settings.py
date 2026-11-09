@@ -1771,7 +1771,7 @@ class InstanceTests(unittest.TestCase):
         files = {p.relative_to(reproduced).as_posix(): p.read_bytes() for p in reproduced.rglob('*') if p.is_file()}
         original = {p.relative_to(self.source / 'vendor').as_posix(): p.read_bytes()
                     for p in (self.source / 'vendor').rglob('*') if p.is_file()
-                    and p.name != 'README.md' and p.suffix != '.whl'}
+                    and p.name != 'README.md' and 'wheels' not in p.relative_to(self.source / 'vendor').parts}
         self.assertEqual(files, original)
         bad_wheels = self.root / 'bad-wheels'
         shutil.copytree(self.source / 'vendor/wheels', bad_wheels)
@@ -1784,18 +1784,20 @@ class InstanceTests(unittest.TestCase):
         self.assertFalse(refused.exists())
 
         def markdown_runtime(root):
-            probe = ('import json, runpy, sys; runpy.run_path(sys.argv[1]); import markdown_it, mdurl; '
+            probe = ('import json, runpy, sys; runpy.run_path(sys.argv[1]); import markdown_it, mdurl, yaml; '
                      'from importlib.metadata import version; '
                      'print(json.dumps([sys.executable, markdown_it.__file__, mdurl.__file__, '
-                     'version("markdown-it-py"), version("mdurl")]))')
+                     'version("markdown-it-py"), version("mdurl"), yaml.__file__, yaml.__version__]))')
             result = subprocess.run([sys.executable, '-B', '-c', probe, str(root / 'current/bridge/bridge.py')],
                                     env=self.env, cwd=self.root, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
-            python, parser, url, parser_version, url_version = json.loads(result.stdout)
+            python, parser, url, parser_version, url_version, yaml_path, yaml_version = json.loads(result.stdout)
             self.assertEqual(python, sys.executable)
             self.assertEqual(Path(parser), (root / 'current/vendor/markdown_it/__init__.py').resolve())
             self.assertEqual(Path(url), (root / 'current/vendor/mdurl/__init__.py').resolve())
             self.assertEqual((parser_version, url_version), ('4.2.0', '0.1.2'))
+            self.assertEqual(Path(yaml_path), (root / 'current/vendor/yaml/__init__.py').resolve())
+            self.assertEqual(yaml_version, '6.0.3')
 
         markdown_runtime(a_root)
         markdown_runtime(b_root)

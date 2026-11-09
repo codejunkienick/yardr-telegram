@@ -20,6 +20,7 @@ PATTERNS = {
 RUNTIME_NAMES = {'telegram-bot-token', 'callback-secret', 'hook-secret', '.env'}
 # Reviewed offline wheelhouse, not a general exemption for binary attachments.
 WHEELS = {
+    'vendor/wheels/pyyaml-6.0.3.tar.gz': 'd76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f',
     'vendor/wheels/markdown_it_py-4.2.0-py3-none-any.whl': '9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a',
     'vendor/wheels/mdurl-0.1.2-py3-none-any.whl': '84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8',
 }

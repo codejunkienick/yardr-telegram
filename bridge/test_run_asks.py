@@ -71,6 +71,12 @@ def skill_proposal(extra=''):
     return ask
 
 
+def source_proposal(kind='replace', extra=''):
+    ask = json.loads(Path(__file__).with_name('fixtures').joinpath('source_' + kind + '.json').read_text())
+    ask['run']['carried'][0]['text'] += extra
+    return ask
+
+
 def group_proposal(name='group_add', extra=''):
     # Captured from Bead on the real isolated core; only the temp root, seq and time stabilized.
     ask = json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
@@ -1146,7 +1152,7 @@ class NativeTests(NativeCase):
                 self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
 
     def test_weight_requires_bound_reply_cancel_expiry_mismatch_and_one_use(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 if factory is proposal:
@@ -1217,7 +1223,7 @@ class NativeTests(NativeCase):
                 self.assertTrue(self.writes()[-1][1]['weighed'])
 
     def test_callback_and_proposal_binding_refusals(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1253,7 +1259,7 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.writes(), [])
 
     def test_same_operator_two_homes_and_conversations_cannot_cross(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1362,11 +1368,134 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.sent_count, 0)
                 self.assertEqual(self.writes(), [])
 
+        mutations = [
+            (('run', 'future'), True), (('run', 'carried'), []), (('run', 'carried'), [None]),
+            (('run', 'carried', 0, 'future'), True), (('run', 'carried', 0, 'name'), '../escape'),
+            (('run', 'carried', 0, 'text'), 'name: other\n'),
+            (('run', 'carried', 0, 'text'), 'name: synthetic\nlimits: {command: [/bin/true]}\n'),
+            (('run', 'carried', 0, 'text'), 'name: synthetic\nlimits: {command: ["\\u002fbin/true"]}\n'),
+            (('run', 'carried', 0, 'text'), 'name: synthetic\nlimits: {command: [bin/report]}\nfuture: true\n'),
+            (('run', 'carried', 0, 'text'), 'name: synthetic\nlimits: {command: [bin/report], future: true}\n'),
+            (('run', 'carried', 0, 'text'), 'name: synthetic\nname: synthetic\n'),
+            (('run', 'carried', 0, 'text'), 'name: synthetic\nlimits: &alias {command: [bin/report]}\n'),
+            (('run', 'carried', 0, 'text'), 'name: synthetic\nlimits: {command: [bin/report]}\n---\nname: other\n'),
+            (('run', 'carried', 0, 'files'), None), (('run', 'carried', 0, 'files'), []),
+            (('run', 'carried', 0, 'files', 0, 'future'), True),
+            (('run', 'carried', 0, 'files', 0, 'text'), True),
+            (('run', 'carried', 0, 'files', 0, 'sha256'), '0'*64),
+            (('run', 'carried', 0, 'files', 0, 'program'), '/bin/report'),
+            (('run', 'carried', 0, 'old', 0, 'future'), True),
+            (('run', 'carried', 0, 'old', 0, 'diff'), '--- was\n+++ is\n@@ -1,1 +1,1 @@\n-hidden\n+partial\n'),
+            (('run', 'carried', 0, 'old', 0, 'old_sha256'), '0'*64),
+            (('run', 'carried', 0, 'old', 0, 'new_sha256'), '0'*64),
+            (('run', 'carried', 0, 'inventory', 0, 'future'), True),
+            (('run', 'carried', 0, 'inventory', 0, 'size'), True),
+            (('run', 'carried', 0, 'inventory', 0, 'size'), 1),
+            (('run', 'carried', 0, 'inventory', 0, 'mode'), 'invalid'),
+            (('run', 'carried', 0, 'inventory', 0, 'sha256'), '0'*64),
+            (('run', 'carried', 0, 'removed', 0, 'future'), True),
+            (('run', 'carried', 0, 'removed', 0, 'text'), 'wrong'),
+            (('run', 'carried', 0, 'removed'), []), (('run', 'carried', 0, 'old'), []),
+            (('weight',), []), (('weight', 0, 'class'), 'credential'),
+            (('run', 'does'), ['unknown']*41), (('run', 'back'), 'automatic undo'),
+        ]
+        for path, value in mutations:
+            with self.subTest(source_path=path):
+                self.reset_native(source_proposal())
+                target = self.native.ask
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                result = self.create()
+                self.assertFalse(result['delivered'], result)
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
+        for section in (
+                'credential: {env: TOKEN, future: true}',
+                'credential: {env: TOKEN, mint: [{name: ACCOUNT, future: true}]}',
+                'thread: {future: true}', 'notify: {future: true}',
+                'notify: {address: {param: recipient, env: RECIPIENT, future: true}}',
+                'hear: {future: true}', 'hear: {address: {env: RECIPIENT, future: true}}',
+                'link: {future: true}', 'link: {pull: {issue: issue, future: true}}',
+                'identity: {fold: lower, future: true}', 'events: {future: true}', 'git: {future: true}',
+                'hook: {future: true}', 'hook: {verify: {scheme: secret, future: true}}',
+                'hook: {verify: {signature: {header: X-Signature, future: true}}}',
+                'hook: {verify: {key: {encoding: hex, future: true}}}',
+                'hook: {verify: {delivery: {header: X-Delivery, future: true}}}',
+                'hook: {verify: {timestamp: {header: X-Time, future: true}}}',
+                'hook: {challenge: {body: type, value: challenge, answer: answer, future: true}}',
+                'hook: {register: {call: register, url: url, future: true}}',
+                'hook: {register: {existing: {call: list, in: results, field: url, future: true}}}',
+                'calls: {health: {kind: read, request: {method: GET, path: /}, future: true}}',
+                'calls: {health: {params: {filter: {type: string, future: true}}}}',
+                'calls: {health: {request: {method: GET, path: /, future: true}}}',
+                'calls: {health: {answer: {select: [status], future: true}}}',
+                'about: {future: true}', 'thread: {states: [{future: true}]}',
+        ):
+            with self.subTest(unknown_source_field=section):
+                self.reset_native(source_proposal('new', extra=section + '\n'))
+                result = self.create()
+                self.assertFalse(result['delivered'], result)
+                self.assertEqual(result['reason'], 'invalid native source declaration')
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
+        for field in ('files', 'old', 'inventory', 'removed'):
+            self.reset_native(source_proposal())
+            self.native.ask['run']['carried'][0][field] *= 2
+            self.assertFalse(self.create()['delivered'])
+            self.assertEqual(self.sent_count, 0)
+        for kind in ('new', 'replace', 'free'):
+            self.reset_native(source_proposal(kind))
+            self.assertTrue(self.create()['delivered'])
+            row = self.row()
+            review = ''.join(p['plain'].split('\n', 3)[3] for p in row['bundle']['parts'])
+            self.assert_source_review(self.native.ask, review)
+        self.reset_native(source_proposal('new', extra='# ' + '<&>🙂\t\r\n'
+            'base: https://example.invalid\n'
+            'credential:\n  env: TOKEN\n  mint: [TENANT, {name: ACCOUNT, secret: false}]\n'
+            '  mint_command: [bin/report]\n  header: "Authorization: Bearer {credential}"\n'
+            'calls: {health: {kind: read, request: {method: GET, path: /health}}}\n'))
+        self.assertTrue(self.create()['delivered'])
+        self.assert_source_review(self.native.ask, ''.join(p['plain'].split('\n', 3)[3] for p in self.row()['bundle']['parts']))
+        # Data names and nested request bodies remain unrestricted by the declaration's field names.
+        self.reset_native(source_proposal('free'))
+        carried = self.native.ask['run']['carried'][0]
+        carried['text'] = carried['text'].replace('    request: {method: GET, path: /health}\n',
+            '    params: {future: {type: enum, values: [later, now], default: later}}\n'
+            '    request: {method: POST, path: /health, query: {future: "{future}"}, '
+            'body: {future: {nested: [now, {other: later}]}}}\n'
+            '    answer: {select: [future], max: 65536}\n')
+        self.assertTrue(self.create()['delivered'])
+        self.assert_source_review(self.native.ask, ''.join(p['plain'].split('\n', 3)[3] for p in self.row()['bundle']['parts']))
+        for field in ('declaration', 'file', 'total'):
+            for overflow in (False, True):
+                with self.subTest(source_cap=field, overflow=overflow):
+                    self.reset_native(source_proposal('new'))
+                    carried = self.native.ask['run']['carried'][0]
+                    if field == 'declaration':
+                        carried['text'] += '#' + 'x'*(8192-len(carried['text'].encode())-1 + overflow)
+                    elif field == 'file':
+                        file = carried['files'][0]
+                        file['text'] = '🙂'*2048 + ('x' if overflow else '')
+                        file['sha256'] = n.file_hash(file['text'])
+                    else:
+                        carried['text'] = 'name: synthetic\nlimits: {command: [bin/report]}\nthread:\n  reply: [two]\n  read: [three]\n  file: [four]\n'
+                        carried['files'] = [dict(program=p, text='x'*8192, sha256=n.file_hash('x'*8192)) for p in ('bin/report', 'two', 'three', 'four')]
+                        # Three max files plus the declaration fit; four exceed the combined text cap.
+                        if not overflow:
+                            carried['text'] = carried['text'].replace('  file: [four]\n', '')
+                            carried['files'].pop()
+                    self.assertEqual(self.create()['delivered'], not overflow)
+                    if overflow:
+                        self.assertEqual(self.sent_count, 0)
+
+
     def test_skill_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
         self.bridge.sleep = lambda _: None
         cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n')),
                  ('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY · not authority\n' * 150)),
-                 ('group_set', group_set_proposal('\nSynthetic standing line <&>🙂\t' * 250))]
+                 ('group_set', group_set_proposal('\nSynthetic standing line <&>🙂\t' * 250)),
+                 ('source', source_proposal(extra='# ' + 'Synthetic <&>🙂\t' * 400 + '\n'))]
         for case, ask in cases:
             with self.subTest(case=case):
                 self.bundle_delivery(case, ask)
@@ -1398,6 +1527,8 @@ class NativeTests(NativeCase):
         if case == 'skill':
             self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
             self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
+        elif case == 'source':
+            self.assert_source_review(ask, review)
         else:
             label = 'proposed role' if case == 'group_add' else 'standing role'
             self.assert_group_review(ask, review, label)
@@ -1456,6 +1587,24 @@ class NativeTests(NativeCase):
                     self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), complete)
                     self.assertEqual(self.writes(), [])
         self.bridge.request = original
+
+    def assert_source_review(self, ask, review):
+        carried = ask['run']['carried'][0]
+        expected = [('Declaration', carried['text'])]
+        expected += [('Command file ' + n.canonical(f['program']), f['text']) for f in carried.get('files', [])]
+        expected += [('Replacement diff ' + n.canonical(c['program']), c.get('diff', '')) for c in carried.get('old', [])]
+        expected += [('Standing inventory', n.canonical(carried.get('inventory', []))),
+                     ('Removed entries', n.canonical(carried.get('removed', []))),
+                     ('Native Does', n.canonical(ask['run']['does']))]
+        rows = review.split('\n')
+        for label, value in expected:
+            header = f'{label}; sha256 {n.file_hash(value)}; {len(value.encode())} bytes (quoted UTF-8 lines, including line endings):'
+            at = rows.index(header) + 1
+            shown = ''
+            while at < len(rows) and rows[at].startswith('"'):
+                shown += json.loads(rows[at])
+                at += 1
+            self.assertEqual(shown.encode(), value.encode())
 
     def assert_group_review(self, ask, review, label):
         does = ask['run']['does']
@@ -1621,7 +1770,7 @@ class NativeTests(NativeCase):
         self.assertEqual(self.sent_count, 0)
 
     def test_skill_bundle_drift_rechecks_during_transport_retry_and_repost(self):
-        for factory in (skill_proposal, group_add_proposal, group_set_proposal):
+        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 original = self.bridge.request
                 self.bridge.sleep = lambda _: None
@@ -1677,7 +1826,7 @@ class NativeTests(NativeCase):
         self.assertEqual(self.writes(), [])
 
     def test_skill_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
-        for factory in (skill_proposal, group_add_proposal, group_set_proposal):
+        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.assertTrue(self.create()['delivered'])
@@ -1792,14 +1941,14 @@ class NativeTests(NativeCase):
                 self.assertEqual(len(self.writes()), 1)
 
     def test_pending_settlement_long_results_and_outcome_edits(self):
-        for factory in (proposal, skill_proposal):
+        for factory in (proposal, skill_proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
                 initial_sends = self.sent_count
                 self.native.mode = 'carrying'
                 self.press()
-                if factory is skill_proposal:
+                if factory is not proposal:
                     self.reply()
                 self.assertEqual(self.row()['state'], 'carrying')
                 self.assertIn('approved, to be carried out', self.edits()[-1]['text'])
@@ -2811,9 +2960,131 @@ class RealNativeTests(BridgeTestCase):
             cli('reply', str(delivery), '--crew', 'writer', '--format', 'markdown', '**Photo**', '--file', str(file))
             self.assertEqual(captured, [({'chat_id': '123', 'caption': '<b>Photo</b>', 'parse_mode': 'HTML'}, evidence)])
             self.assertEqual(hashlib.sha256(file.read_bytes()).digest(), hashlib.sha256(evidence).digest())
+            self.exercise_source_adds(root, home, cli, client)
         finally:
             server.terminate()
             server.wait(timeout=10)
+
+    def exercise_source_adds(self, root, home, cli, client):
+        cli('bead', 'create', 'Synthetic source review', '--id', 'source-1')
+        updates = iter(range(10000, 11000))
+        def current(number):
+            return next(a for a in client.call('Bead', dict(bead='source-1', viewer='pat'))['asks'] if a['ask'] == number)
+        def press(row, action='approve', **changes):
+            message = dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                           **{'from': dict(id=999, is_bot=True)})
+            message.update(changes)
+            self.bridge.inbound(dict(update_id=next(updates), callback_query=dict(id='source-callback',
+                data=f"runask:{row['id']}:{action}", message=message, **{'from': dict(id=123, is_bot=False)})))
+        def reply(row, **changes):
+            message = dict(message_id=next(updates), text=str(row['ask']), chat=dict(id=123, type='private'),
+                reply_to_message=dict(message_id=row['message_id']), **{'from': dict(id=123, is_bot=False)})
+            message.update(changes)
+            with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                self.bridge.inbound(dict(update_id=next(updates), message=message))
+        def source(name):
+            try:
+                return client.call('GetSource', [name])
+            except n.RPCRefused:
+                return None
+        for scenario in ('new', 'replace', 'free', 'stale', 'decline', 'cancel'):
+            with self.subTest(real_source=scenario):
+                kind = scenario if scenario in ('new', 'replace', 'free') else 'replace'
+                fixture = source_proposal(kind)
+                carried = fixture['run']['carried'][0]
+                if scenario == 'replace':
+                    (home / 'sources/synthetic/extra.txt').write_bytes(b'Synthetic removed text\r\n')
+                file = root / ('source-' + kind + '.yaml')
+                file.write_bytes(carried['text'].encode())
+                for f in carried.get('files', []):
+                    target = root / f['program']
+                    target.parent.mkdir(exist_ok=True)
+                    value = f['text'] if scenario in ('new', 'replace', 'free') else f['text'] + '# next\n'
+                    target.write_bytes(value.encode())
+                cli('--actor', 'proposer', 'bead', 'ask', 'source-1', 'Review the synthetic source?', '--to', 'pat',
+                    '--context', 'Synthetic isolated source review', '--run', 'source add ' + str(file))
+                ask = client.call('Bead', dict(bead='source-1', viewer='pat'))['asks'][-1]
+                if scenario in ('new', 'replace', 'free'):
+                    actual = json.loads(json.dumps(dict(ask, ask=7, since='2026-01-01T00:00:00Z')).replace(str(root), '/synthetic'))
+                    self.assertEqual(actual, fixture)
+                receipt = self.bridge.api_run_ask(dict(bead='source-1', ask=ask['ask'], key='source-' + scenario))
+                self.assertTrue(receipt['delivered'], receipt)
+                row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'source-1' and r['ask'] == ask['ask'])
+                review = ''.join(p['plain'].split('\n', 3)[3] for p in row['bundle']['parts'])
+                NativeTests.assert_source_review(self, ask, review)
+                self.assertTrue(all(p['message_id'] for p in row['bundle']['parts']))
+                # Neither bridge nor carry may reopen provenance after capture.
+                file.unlink()
+                for f in carried.get('files', []):
+                    (root / f['program']).unlink()
+                before = source(carried['name'])
+                target = home / 'sources' / carried['name'] / 'bin/report'
+                before_bytes = target.read_bytes() if target.exists() else None
+                if scenario == 'stale':
+                    target.write_bytes(b'Synthetic standing file changed after capture\n')
+                if scenario == 'decline':
+                    press(row, 'decline')
+                    self.assertEqual(current(ask['ask'])['state'], 'declined')
+                    self.assertEqual(source(carried['name']), before)
+                    self.assertEqual(target.read_bytes(), before_bytes)
+                    continue
+                press(row, message_id=row['message_id'] + 1000)
+                self.assertEqual(current(ask['ask'])['state'], 'open')
+                press(row)
+                if ask.get('weight'):
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    self.assertEqual(source(carried['name']), before)
+                    reply(row, reply_to_message=dict(message_id=row['message_id'] + 1000))
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    if scenario == 'cancel':
+                        press(row, 'cancel')
+                        reply(row)
+                        self.assertEqual(current(ask['ask'])['state'], 'open')
+                        self.assertEqual(source(carried['name']), before)
+                        self.assertEqual(target.read_bytes(), before_bytes)
+                        continue
+                    reply(row)
+                if scenario == 'stale':
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    self.assertEqual(source(carried['name']), before)
+                    self.assertEqual(target.read_bytes(), b'Synthetic standing file changed after capture\n')
+                    saved = self.bridge.run_asks.get(row['id'])
+                    self.assertEqual(saved['state'], 'stale')
+                    self.assertIn('Stale source proposal', next(body['text'] for url, body in reversed(self.calls) if url.endswith('/editMessageText')))
+                    target.write_bytes(before_bytes)
+                    continue
+                deadline = time.monotonic() + 10
+                while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
+                    self.assertLess(time.monotonic(), deadline, 'source carry did not settle')
+                    time.sleep(.02)
+                settled = current(ask['ask'])
+                self.assertEqual(settled['state'], 'answered')
+                self.assertFalse(settled['ran'].get('failed'), settled['ran'])
+                self.assertEqual(source(carried['name'])['declaration'].encode(), carried['text'].encode())
+                for f in carried.get('files', []):
+                    installed = home / 'sources' / carried['name'] / f['program']
+                    self.assertEqual(installed.read_bytes(), f['text'].encode())
+                    self.assertEqual(installed.stat().st_mode & 0o777, 0o700)
+                if scenario == 'replace':
+                    self.assertFalse((home / 'sources/synthetic/extra.txt').exists())
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'approved')
+                snapshot = source(carried['name'])
+                identity = (target.stat().st_ino, target.stat().st_mtime_ns) if target.exists() else None
+                sends = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+                press(row)
+                reply(row)
+                self.assertTrue(self.bridge.api_run_ask(dict(bead='source-1', ask=ask['ask'], key='replay-' + scenario))['delivered'])
+                self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends)
+                self.assertEqual(current(ask['ask']), settled)
+                self.assertEqual(source(carried['name']), snapshot)
+                if identity:
+                    self.assertEqual((target.stat().st_ino, target.stat().st_mtime_ns), identity)
+                events = [e for e in client.call('EventsOfKind', ['source_added', 100])
+                          if e['data'].get('approved', {}).get('ask') == ask['ask']
+                          and e['data'].get('approved', {}).get('bead') == 'source-1']
+                self.assertEqual(len(events), 1)
 
     def test_real_native_group_add_and_set_apply_once_after_typed_number(self):
         binary = shutil.which('yardr')

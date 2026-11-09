@@ -2155,7 +2155,7 @@ different namespace before updating. The complete canonical card is HTML-escaped
 to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
 following Footplate; canonical warning lines alone are bold. Self-contained
 cards keep that limit. A captured single-file `skill add` and a herdr `group
-add`/`group set` use the complete review bundle below. Secret/setup/identity/depot_push, parameter inputs,
+add`/`group set` and native `source add` use the complete review bundle below. Secret/setup/identity/depot_push, parameter inputs,
 other carried files, pack plans and crew-add prompts still refuse before
 sending, with Footplate/cards as the fallback.
 
@@ -2207,7 +2207,7 @@ contains no grants; builder/secretary/blanket grants are not required.
 A native `skill add <absolute-source> [--name <name>]` can add or refresh one
 regular `SKILL.md`. Both source and standing destination must contain only
 that file, each at most 32768 UTF-8 bytes. Extra files, directories, symlinks,
-deletions and multi-file source/pack/crew proposals remain unsupported.
+deletions and multi-file skill/pack/crew proposals remain unsupported.
 The source is provenance: the server installs the captured bytes even after
 that source changes or disappears. No assignment, grant or account changes.
 
@@ -2256,6 +2256,54 @@ installation, failure and uncertain transport remain distinct canonical
 states. Polling/restart and ask_close reconcile the same native answer;
 caller-supplied decision text cannot declare success. Filesystem writes and
 recovery belong entirely to the core server, never the bridge.
+
+### Source-add declaration and command review
+
+`source add <file>` uses the same native `run_ask` call, pairing, receipt
+ledger, reply chain and approval gate as skill/group bundles. This adds no
+RPC, grant or setting. Verified against isolated core `546e3fdd2127`; the
+actual carried contract is checked on every read rather than inferred from
+its version. The bridge never reads the declaration's provenance path or
+writes source files itself.
+
+Before any send, the bridge checks exactly one carried source; known
+source/file/diff/inventory/removed envelope fields; unique relative program
+paths matching the declaration; UTF-8 byte counts and SHA-256 identities;
+replacement diffs against their proposed bytes and standing digest; and
+inventory/removal consistency. Absolute programs, unknown envelope or
+top-level declaration fields, duplicate YAML keys, aliases/tags, inputs,
+pack plans, malformed hashes or oversized texts refuse whole. Declaration
+paths containing whitespace require the native full client. The pinned
+pure-Python YAML reader ships in the release; no pip step is required.
+Core owns declaration semantics, native weights, authority and stale-state
+checks under its apply/carry locks.
+
+Limits match core: declaration 8192 bytes, each command file 8192 bytes,
+32768 bytes for those texts together, 65536 bytes for command texts, diffs
+and removed texts, and at most 40 native Does lines. Complete declaration,
+each command file, each replacement diff, inventory, removed records/text
+and every native Does line arrive as quoted untrusted review parts. Each
+section names its exact UTF-8 hash and size; diff sections also retain the
+old/new file identities. No whitespace or line ending is normalized.
+The final card names the immutable bundle digest/count and replies to its
+last part; every part must have a confirmed receipt before controls appear.
+Canonical weight lines precede the card's question and contents.
+
+New/changed code and every replacement use core's weight gate: the first
+tap asks for the exact ask number in a direct bound reply within five
+minutes. Commands-free new sources can be routine and apply on the first
+verified Approve tap, as core specifies. Cancellation and decline write no
+source. A changed standing file is refused by core and shown as a stale
+source proposal with no controls; decline it in the yard and ask again.
+Approval pending carry, settled success and failed carry use the existing
+canonical result/restart reconciliation. A confirmed or ambiguous part/card
+is never resent under another key. Preserve the ledger.
+
+Offline evidence: `python3 -B scripts/preview_run_asks.py --source` drives
+the bridge over a real-core replacement fixture with fake Telegram. It is
+synthetic presentation evidence, not a live Telegram capture. Isolated
+native tests prove new, replacing and commands-free installation, exact
+stored declaration/files, stale refusal, cancellation, decline and replay.
 
 ### Native group add and set review
 
@@ -2417,7 +2465,7 @@ to 100 UTF-16 units, never inside a combining or joined character), then the
 kind, the ID, the bead's title and the asker. An ID is `<bead>#<ask>`: the
 bead is unique in this yard and the ask is that bead's note seq; each bridge
 serves one yard, so no ID is looked up anywhere else. Decisions, words
-questions, run, single-file skill and herdr group add/set proposals get a
+questions, run, source-add bundles, single-file skill and herdr group add/set proposals get a
 button (a group ask is listed as `run`; one with a field the card does not
 support is listed without a button, as below). Secret, setup,
 identity, depot-push, weighted, terminal-only run (file-carrying or

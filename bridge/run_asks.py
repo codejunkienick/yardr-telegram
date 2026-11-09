@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import socket
 import stat
+import tempfile
 import time
 import unicodedata
 
@@ -21,6 +22,8 @@ _markdown_spec.loader.exec_module(markdown)
 
 
 CAP = 3500
+PACK_PARTS = 128
+PACK_DOCUMENT_BYTES = 320 * 1024
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
@@ -153,9 +156,11 @@ class YardSocketClient:
                         raise RPCUnsupported('siding_card_requires_guarded_core' + FALLBACK)
                     code = error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
                     if (method == 'ApproveAsk' and code == 'error'
-                            and error['message'].startswith(f"ask {arguments.get('ask')} was written when the source ")
+                            and error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (
+                                ' was written when the source ', ' was written from another declaration of the source ',
+                                ' was carded under ', ' says ', ': the standing import record of pack ')))
                             and error['message'].endswith('Nothing ran. Decline it; it is asked again if it is still wanted.')):
-                        raise RPCStale('native source proposal is stale; nothing ran', code)
+                        raise RPCStale('native proposal is stale; nothing ran', code)
                     raise RPCRefused(f'native {method} refused ({code})', code)
                 return value.get('result')  # successful void calls serialize as {}
             except (OSError, ValueError, http.client.HTTPException, UnicodeError):
@@ -426,9 +431,9 @@ def run_scope(run):
     argv = lines(run.get('argv'), 'run.argv')
     if not argv or not all(argv):
         raise NativeError('invalid native run.argv')
-    if ((run.get('carried') and argv[:2] not in (['skill', 'add'], ['source', 'add'])) or run.get('pack') is not None
+    if ((run.get('carried') and argv[:2] not in (['skill', 'add'], ['source', 'add'], ['pack', 'apply'])) or (run.get('pack') is not None and argv[:2] != ['pack', 'apply'])
             or (argv[:2] == ['source', 'add'] and not run.get('carried'))
-            or argv[:2] in (['pack', 'apply'], ['crew', 'add'])):
+            or argv[:2] == ['crew', 'add']):
         raise NativeError('run_ask_carries_files_use_terminal' + FALLBACK)
     return argv
 
@@ -688,6 +693,11 @@ def validate(ask, operator):
         validate_skill(ask)
     elif argv[:2] == ['source', 'add']:
         validate_source(ask)
+    elif argv[:2] == ['pack', 'apply']:
+        try:
+            validate_pack(ask)
+        except NativeError:
+            raise NativeError('run_ask_invalid_source_pack_use_terminal; use yardr pack apply <dir> in a terminal') from None
     elif argv[:2] in GROUP_ROWS:
         parse_group(ask)
 
@@ -882,7 +892,7 @@ def review_html(body, continuation=''):
     return '\n'.join(parts)
 
 
-def review_bundle(config, bead, ask, proposal, title, review, summary, identities=1):
+def review_bundle(config, bead, ask, proposal, title, review, summary, identities=1, document=None):
     """Split a complete untrusted review into reply-chained parts before the card that holds the controls."""
     heading = without_weight_mark(f"{config['yard']} · {bead['id']} · ask #{ask['ask']} · {title}")
     # Reserve the entire envelope, including the largest possible part counters.
@@ -903,14 +913,19 @@ def review_bundle(config, bead, ask, proposal, title, review, summary, identitie
             raise NativeError('run_ask_bundle_envelope_too_large' + FALLBACK)
         parts.append(dict(plain=plain, html=markup, sha256=file_hash(plain), message_id=None))
     # The ordinary renderer still supplies the complete question/context/weight/undo card.
-    tail = [f'Complete review bundle {proposal} · {len(parts)} parts.',
-            'This card replies to the last part. Open that reply and follow the part reply chain to part 1.']
+    count = f'{len(parts)} text parts and 1 snapshot document' if document else f'{len(parts)} parts'
+    tail = [f'Complete review bundle {proposal} · {count}.',
+            ('This card replies to the document. Follow its reply chain to text part 1.' if document else
+             'This card replies to the last part. Open that reply and follow the part reply chain to part 1.')]
     try:
         plain, markup = render(config, bead, dict(ask, run=dict(ask['run'], does=summary + tail)))
     except NativeError:
         # Long excerpts stay in the bundle; the card keeps only the identities.
         plain, markup = render(config, bead, dict(ask, run=dict(ask['run'], does=summary[:identities] + tail)))
-    return plain, markup, dict(digest=proposal, sha256=file_hash(review), parts=parts)
+    bundle = dict(digest=proposal, sha256=file_hash(review), parts=parts)
+    if document:
+        bundle['document'] = document
+    return plain, markup, bundle
 
 
 def skill_bundle(config, bead, ask, proposal):
@@ -937,6 +952,7 @@ def source_text(value, field, limit):
 
 
 def source_path(value):
+    text(value, 'source path')
     if (not isinstance(value, str) or not value or value.startswith('/')
             or any(part in ('', '.', '..') for part in value.split('/'))
             or any(ord(c) < 32 or c in HIDDEN for c in value)):
@@ -944,8 +960,8 @@ def source_path(value):
     return value
 
 
-def source_declaration(value):
-    # Core owns declaration semantics; read YAML structurally to bind every program to its captured file.
+def source_yaml(value):
+    # Refuse aliases, tags and duplicate keys before reading either declaration or manifest.
     import yaml
     try:
         events = list(yaml.parse(value, Loader=yaml.BaseLoader))
@@ -967,7 +983,14 @@ def source_declaration(value):
                     raise ValueError()
                 result[k.value] = read(v, depth+1)
             return result
-        decl = read(node)
+        return read(node)
+    except (yaml.YAMLError, ValueError, RecursionError):
+        raise NativeError('invalid native source YAML') from None
+
+
+def source_declaration(value):
+    try:
+        decl = source_yaml(value)
         # Match the core source reader's field names; None keys are names supplied by a declaration.
         schema = {
             'name': str, 'about': str, 'base': str, 'bases': {None: str}, 'check': str, 'idempotency': str,
@@ -1042,7 +1065,7 @@ def source_declaration(value):
             if program not in programs:
                 programs.append(program)
         return decl.get('name'), programs
-    except (yaml.YAMLError, ValueError, RecursionError):
+    except (ValueError, RecursionError):
         raise NativeError('invalid native source declaration') from None
 
 
@@ -1093,20 +1116,12 @@ def source_diff(change, new):
     return old
 
 
-def validate_source(ask):
-    run, argv = ask['run'], ask['run']['argv']
+def validate_carried(carried, pack=False):
     fail = 'invalid native source bundle'
-    if (len(argv) != 3 or run['command'] != 'yardr ' + ' '.join(argv)
-            or any(c.isspace() or c in HIDDEN for c in argv[2])
-            or run.get('description') != 'Add the source a file declares, or replace the one of its name'
-            or set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried'}
-            or not isinstance(run.get('carried'), list) or len(run['carried']) != 1):
-        raise NativeError(fail)
-    carried = run['carried'][0]
     if (not isinstance(carried, dict) or set(carried) - {'name', 'text', 'files', 'old', 'inventory', 'removed'}
             or not isinstance(carried.get('name'), str) or not re.fullmatch('[a-z0-9][a-z0-9_-]*', carried['name'])):
         raise NativeError(fail)
-    declaration = source_text(carried.get('text'), 'source declaration', 8192)
+    declaration = source_text(carried.get('text'), 'source declaration', 262144 if pack else 32768)
     name, programs = source_declaration(declaration)
     if name != carried['name']:
         raise NativeError(fail)
@@ -1119,12 +1134,12 @@ def validate_source(ask):
         if not isinstance(file, dict) or set(file) != {'program', 'text', 'sha256'}:
             raise NativeError(fail)
         program = source_path(file['program'])
-        value = source_text(file['text'], 'source command file', 8192)
+        value = source_text(file['text'], 'source command file', 65536 if pack else 8192)
         if program in files or file['sha256'] != file_hash(value):
             raise NativeError(fail)
         files[program] = file
         total += len(value.encode('utf-8'))
-    if list(files) != programs or total > 32768:
+    if list(files) != programs or total > (327680 if pack else 32768):
         raise NativeError(fail)
     for entry in carried.get('inventory', []):
         if (not isinstance(entry, dict) or set(entry) - {'path', 'sha256', 'mode', 'size', 'symlink'}
@@ -1170,6 +1185,20 @@ def validate_source(ask):
         removed[path] = entry
     if payload > 65536 or set(inventory) - files.keys() - changes.keys() - removed.keys():
         raise NativeError(fail)
+    return name, files, inventory, changes
+
+
+def validate_source(ask):
+    run, argv = ask['run'], ask['run']['argv']
+    fail = 'invalid native source bundle'
+    if (len(argv) != 3 or run['command'] != 'yardr ' + ' '.join(argv)
+            or any(c.isspace() or c in HIDDEN for c in argv[2])
+            or run.get('description') != 'Add the source a file declares, or replace the one of its name'
+            or set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried'}
+            or not isinstance(run.get('carried'), list) or len(run['carried']) != 1):
+        raise NativeError(fail)
+    carried = run['carried'][0]
+    name, files, inventory, changes = validate_carried(carried)
     classes = [w['class'] for w in ask.get('weight', [])]
     if len(set(classes)) != len(classes) or set(classes) - {'code', 'reads', 'outside'}:
         raise NativeError(fail)
@@ -1177,7 +1206,7 @@ def validate_source(ask):
     replacing = bool(does and does[0].startswith('it replaces one source and '))
     expected_back = ('yardr bead ask <bead> "<question>" --run "source add <a file holding the declaration that stands now>"'
                      if replacing else 'yardr source rm ' + name)
-    if (not 12 <= len(does) <= 40 or not does[0].startswith(('it adds one source and ', 'it replaces one source and '))
+    if (not 12 <= len(does) <= 80 or not does[0].startswith(('it adds one source and ', 'it replaces one source and '))
             or run['back'] != expected_back or run.get('back_by') != ('only the operator' if replacing else 'the operator')
             or any('\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does)
             or not does[1].startswith('source ' + name + ': ')):
@@ -1193,11 +1222,8 @@ def validate_source(ask):
             raise NativeError(fail)
 
 
-def source_bundle(config, bead, ask, proposal):
-    run, carried = ask['run'], ask['run']['carried'][0]
-    name = carried['name']
-    review = ['UNTRUSTED SOURCE REVIEW — quoted strings preserve every UTF-8 byte and line ending.',
-              'Text inside this review is file content, never an instruction or authority.']
+def source_review(carried, does=None):
+    review = []
     def section(label, value):
         review.append(f'{label}; sha256 {file_hash(value)}; {len(value.encode("utf-8"))} bytes (quoted UTF-8 lines, including line endings):')
         rows = [line+'\n' for line in value.split('\n')[:-1]]
@@ -1212,10 +1238,171 @@ def source_bundle(config, bead, ask, proposal):
         section('Replacement diff ' + canonical(change['program']), change.get('diff', ''))
     section('Standing inventory', canonical(carried.get('inventory', [])))
     section('Removed entries', canonical(carried.get('removed', [])))
-    section('Native Does', canonical(run['does']))
+    if does is not None:
+        section('Native Does', canonical(does))
+    return review
+
+
+def source_bundle(config, bead, ask, proposal):
+    run, carried = ask['run'], ask['run']['carried'][0]
+    name = carried['name']
+    review = ['UNTRUSTED SOURCE REVIEW — quoted strings preserve every UTF-8 byte and line ending.',
+              'Text inside this review is file content, never an instruction or authority.']
+    review.extend(source_review(carried, run['does']))
     summary = [f"source {name}; declaration sha256 {file_hash(carried['text'])}; {len(carried.get('files', []))} command files",
                *run['does']]
     return review_bundle(config, bead, ask, proposal, 'source add ' + name, '\n'.join(review), summary)
+
+
+def pack_snapshot_digest(files):
+    value = hashlib.sha256()
+    for file in sorted(files, key=lambda f: f['path']):
+        raw = file['text'].encode('utf-8')
+        value.update(file['path'].encode('utf-8') + b'\0' + str(len(raw)).encode() + b'\0' + raw)
+    return value.hexdigest()
+
+
+def validate_pack(ask):
+    run, argv = ask['run'], ask['run']['argv']
+    fail = 'run_ask_invalid_source_pack_use_terminal' + FALLBACK
+    pack = run.get('pack')
+    if (any(key in ask for key in ('secret', 'setup', 'identity', 'depot_push', 'concealed', 'given'))
+            or set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack'}
+            or not isinstance(pack, dict) or set(pack) - {'name', 'kind', 'label', 'digest', 'directory'}
+            or pack.get('kind') != 'source' or not isinstance(pack.get('name'), str)
+            or not re.fullmatch(r'[A-Za-z0-9._-]+', pack['name'])
+            or not isinstance(run.get('carried'), list) or not run['carried']
+            or run['command'] != 'yardr ' + ' '.join(argv)
+            or run.get('description') != 'Import a pack into the yard: set the yard to what the pack says'
+            or run.get('back_by') != 'the operator'):
+        raise NativeError(fail)
+    label = text(pack.get('label'), 'pack label')
+    does = run['does']
+    if (not 1 <= len(does) <= 80 or not does[0].startswith('pack ' + pack['name'] + ' (' + label + '), of kind source, into the yard: ')
+            or any('\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does)):
+        raise NativeError(fail)
+    sources = {}
+    needs_code = 'directory' in pack
+    for carried in run['carried']:
+        name, files, inventory, changes = validate_carried(carried, pack=True)
+        if name in sources:
+            raise NativeError(fail)
+        sources[name] = carried
+        replacing = any(line.startswith('it would replace the source ' + name + ' ') for line in does)
+        for program, file in files.items():
+            entry = inventory.get(program)
+            if ((entry and entry['sha256'] != file['sha256']) or (replacing and not entry)) and program not in changes:
+                raise NativeError(fail)
+        needs_code |= bool(inventory or changes or files or any(line.startswith('it would replace the source ' + name + ' ') for line in does))
+    declarations = sum(len(c['text'].encode('utf-8')) for c in sources.values())
+    payload = sum(len(f['text'].encode('utf-8')) for c in sources.values() for f in c.get('files', []))
+    payload += sum(len(f.get('diff', '').encode('utf-8')) for c in sources.values() for f in c.get('old', []))
+    payload += sum(len(f.get('text', '').encode('utf-8')) for c in sources.values() for f in c.get('removed', []))
+    if declarations > 262144 or payload > 65536:
+        raise NativeError(fail)
+    if run['back'] != 'yardr source rm ' + run['carried'][0]['name']:
+        raise NativeError(fail)
+    classes = [w['class'] for w in ask.get('weight', [])]
+    weight_lines = {'code': 'brings a program the yard will run', 'reads': 'widens what a standing grant of read reaches',
+                    'outside': 'lets the yard change something outside it'}
+    if (len(set(classes)) != len(classes) or set(classes) - {'code', 'reads', 'outside'}
+            or (needs_code and 'code' not in classes)
+            or any(not w['line'].startswith(weight_lines[w['class']] + ': ') or '\r' in w['line']
+                   or any(c in HIDDEN for c in w['line']) for w in ask.get('weight', []))):
+        raise NativeError(fail)
+    if 'directory' not in pack:
+        if len(argv) != 3 or argv[2] != pack['name'] or 'digest' in pack:
+            raise NativeError(fail)
+        return
+    directory = pack['directory']
+    if (not isinstance(directory, dict) or set(directory) != {'path', 'files'}
+            or not isinstance(directory['path'], str) or not directory['path'].startswith('/')
+            or os.path.normpath(directory['path']) != directory['path'] or '://' in directory['path']
+            or any(c.isspace() or c in HIDDEN or ord(c) < 32 for c in directory['path'])
+            or not isinstance(pack.get('digest'), str) or not re.fullmatch('[0-9a-f]{64}', pack['digest'])
+            or argv != ['pack', 'apply', directory['path'], '--sha256', pack['digest']]
+            or label != directory['path'] + ' at sha256:' + pack['digest']
+            or not isinstance(directory['files'], list) or not 1 <= len(directory['files']) <= 64):
+        raise NativeError(fail)
+    snapshot, total = {}, 0
+    for file in directory['files']:
+        if not isinstance(file, dict) or set(file) != {'path', 'text', 'sha256'}:
+            raise NativeError(fail)
+        path = source_path(file['path'])
+        value = source_text(file['text'], 'pack snapshot file', 262144)
+        total += len(value.encode('utf-8'))
+        if '\\' in path or path in snapshot or file['sha256'] != file_hash(value) or total > 262144:
+            raise NativeError(fail)
+        snapshot[path] = value
+    if 'pack.yaml' not in snapshot or pack_snapshot_digest(directory['files']) != pack['digest']:
+        raise NativeError(fail)
+    manifest = source_yaml(snapshot['pack.yaml'])
+    if (not isinstance(manifest, dict) or set(manifest) - {'name', 'kind', 'api', 'setup', 'sources', 'presets'}
+            or manifest.get('name') != pack['name'] or manifest.get('kind') != 'source'
+            or ('api' in manifest and manifest['api'] != '1')
+            or not isinstance(manifest.get('sources'), dict) or set(manifest['sources']) != set(sources)):
+        raise NativeError(fail)
+    named = {'pack.yaml'}
+    if 'setup' in manifest:
+        named.add(source_path(manifest['setup']))
+    for name, entry in manifest['sources'].items():
+        if not isinstance(entry, dict) or set(entry) != {'declaration'}:
+            raise NativeError(fail)
+        path = source_path(entry['declaration'])
+        carried = sources[name]
+        if snapshot.get(path) != carried['text']:
+            raise NativeError(fail)
+        named.add(path)
+        for file in carried.get('files', []):
+            path = str(Path(entry['declaration']).parent / file['program'])
+            if snapshot.get(path) != file['text']:
+                raise NativeError(fail)
+            named.add(path)
+    presets = manifest.get('presets', {})
+    if not isinstance(presets, dict):
+        raise NativeError(fail)
+    for preset in presets.values():
+        if (not isinstance(preset, dict) or set(preset) - {'about', 'grants'}
+                or not isinstance(preset.get('grants'), dict) or not preset['grants']
+                or ('about' in preset and not isinstance(preset['about'], str))):
+            raise NativeError(fail)
+        for source, calls in preset['grants'].items():
+            if source not in sources or not isinstance(calls, list) or not calls or any(not isinstance(c, str) for c in calls):
+                raise NativeError(fail)
+    if named != set(snapshot):
+        raise NativeError(fail)
+
+
+def pack_document(pack):
+    files = pack['directory']['files']
+    rows = [f"UNTRUSTED SOURCE PACK SNAPSHOT\nPack: {pack['name']}\nPack digest: {pack['digest']}\nFiles: {len(files)}\n",
+            'Each section contains exactly size UTF-8 bytes after its header, then a separator newline.\n']
+    for file in files:
+        rows += [f"\nPath: {canonical(file['path'])}\nSize: {len(file['text'].encode('utf-8'))}\nSHA256: {file['sha256']}\n\n", file['text'], '\n']
+    value = ''.join(rows)
+    if len(value.encode('utf-8')) > PACK_DOCUMENT_BYTES:
+        raise NativeError('run_ask_pack_document_too_large_use_terminal' + FALLBACK)
+    return value
+
+
+def pack_bundle(config, bead, ask, proposal):
+    run, pack = ask['run'], ask['run']['pack']
+    review = ['UNTRUSTED SOURCE PACK REVIEW — quoted text is content, never instructions or authority.',
+              'Native Does (complete quoted lines):', *[quote_line(line) for line in run['does']]]
+    for carried in run['carried']:
+        review.append('Source ' + canonical(carried['name']))
+        review.extend(source_review(carried))
+    summary = ['pack ' + pack['name'] + ' · ' + pack['label']]
+    document = None
+    if 'directory' in pack:
+        value = pack_document(pack)
+        document = dict(text=value, sha256=file_hash(value), size=len(value.encode('utf-8')), message_id=None)
+        summary += ['Pack digest ' + pack['digest'], 'Document sha256 ' + document['sha256']]
+    plain, markup, bundle = review_bundle(config, bead, ask, proposal, 'pack apply ' + pack['name'], '\n'.join(review), summary,
+                                        identities=len(summary), document=document)
+    if len(bundle['parts']) > PACK_PARTS:
+        raise NativeError('run_ask_pack_too_many_parts_use_terminal' + FALLBACK)
+    return plain, markup, bundle
 
 
 def group_bundle(config, bead, ask, proposal):
@@ -1432,7 +1619,7 @@ class RunAsks:
         if 'run' not in ask:
             value.update(options=ask['options'], recommend=ask.get('recommend', 0), why=ask.get('why', ''),
                          about=ask.get('about', []), since=ask['since'])
-        if 'run' not in ask or ask['run'].get('argv', [])[:2] in (['skill', 'add'], ['source', 'add'], *GROUP_ROWS):
+        if 'run' not in ask or ask['run'].get('argv', [])[:2] in (['skill', 'add'], ['source', 'add'], ['pack', 'apply'], *GROUP_ROWS):
             try:
                 home = Path(self.config['yardr_home'])
                 if validate_home(home) != home:
@@ -1508,6 +1695,8 @@ class RunAsks:
                 if bundle:
                     for index, part in enumerate(bundle['parts']):
                         part['key'] = f"runask:{ident}:bundle:{proposal}:{index}"
+                    if bundle.get('document'):
+                        bundle['document']['key'] = f"runask:{ident}:bundle:{proposal}:document"
                     row['bundle'] = bundle
             with self.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
@@ -1538,6 +1727,8 @@ class RunAsks:
             return skill_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] == ['source', 'add']:
             return source_bundle(self.config, bead, ask, proposal)
+        if ask['run']['argv'][:2] == ['pack', 'apply']:
+            return pack_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] in GROUP_ROWS:
             return group_bundle(self.config, bead, ask, proposal)
         return (*render(self.config, bead, ask), None)
@@ -1572,6 +1763,36 @@ class RunAsks:
             return saved[1]
         return None
 
+    def document_file(self, document):
+        directory = (self.bridge.state_dir or Path(self.store.path).parent) / 'run-ask-documents'
+        try:
+            directory.mkdir(mode=0o700, exist_ok=True)
+            info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise NativeError('native_pack_document_directory_unsafe')
+            path = directory / (document['sha256'] + '.txt')
+            if not path.exists():
+                with tempfile.NamedTemporaryFile(dir=directory, prefix='.snapshot-', mode='wb') as output:
+                    output.write(document['text'].encode('utf-8'))
+                    output.flush()
+                    os.fsync(output.fileno())
+                    try:
+                        os.link(output.name, path)
+                    except FileExistsError:
+                        pass
+                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            info = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size != document['size'] or hashlib.sha256(path.read_bytes()).hexdigest() != document['sha256']):
+                raise NativeError('native_pack_document_changed')
+            return str(path)
+        except OSError:
+            raise NativeError('native_pack_document_unavailable') from None
+
     def send_card(self, row):
         b = self.bridge
         blocked = []
@@ -1588,6 +1809,9 @@ class RunAsks:
                 return b.not_sent()
         previous = None
         if row.get('bundle'):
+            document = row['bundle'].get('document')
+            if document:
+                self.document_file(document)
             for part in row['bundle']['parts']:
                 # A retry may follow source/target changes or a competing native decision.
                 check_open()
@@ -1606,6 +1830,34 @@ class RunAsks:
                     part['message_id'] = int(receipt['message_id'])
                     self.save(row)
                 previous = part['message_id']
+            if document:
+                check_open()
+                if document['message_id'] is None:
+                    extra = dict(disable_notification=row['silent'])
+                    if self.thread(row) is not None:
+                        extra['message_thread_id'] = self.thread(row)
+                    identity = dict(document_sha256=document['sha256'], size=document['size'], reply=previous, **extra)
+                    def send_document(pending):
+                        def check_document():
+                            check_open()
+                            self.document_file(document)
+                        try:
+                            return b._deliver_attachment(dict(kind='document', path=self.document_file(document)),
+                                '', previous, pending, extra=extra, text_fallback=False,
+                                confirmed_size=document['size'], before_attempt=check_document)
+                        except NativeError as error:
+                            blocked.append(error)
+                            return b.not_sent()
+                    receipt = b._reserve_and_deliver(document['key'], identity, send_document)
+                    if blocked:
+                        raise blocked[0]
+                    if not receipt.get('delivered'):
+                        return dict(receipt, conversation=dict(b.conversation, conversation_id=row['conversation']))
+                    if type(receipt.get('document_size')) is not int or receipt['document_size'] != document['size']:
+                        return b.receipt(reason='native_pack_document_size_unconfirmed_requires_manual_reconciliation')
+                    document['message_id'] = int(receipt['message_id'])
+                    self.save(row)
+                previous = document['message_id']
             check_open()
         key, identity = self.send_request(row, previous)
         extra = {name: value for name, value in identity.items() if name not in ('text', 'reply')}
@@ -1956,10 +2208,11 @@ class RunAsks:
             if row['state'] == 'stale':
                 return 'run_ask_stale_proposal'
         refused = known_open and isinstance(refusal, RPCRefused)
-        if refused and isinstance(refusal, RPCStale) and ask['run']['argv'][:2] == ['source', 'add']:
+        if refused and isinstance(refusal, RPCStale) and ask['run']['argv'][:2] in (['source', 'add'], ['pack', 'apply']):
             row.update(state='stale', pending=None, uncertain=False)
             self.save(row)
-            self.display(row, 'Stale source proposal; nothing ran. Decline it in the yard and ask again.', [])
+            kind = 'source pack' if ask['run']['argv'][:2] == ['pack', 'apply'] else 'source'
+            self.display(row, 'Stale ' + kind + ' proposal; nothing ran. Decline it in the yard and ask again.', [])
             return str(refusal)
         footer = str(refusal) if refused and isinstance(refusal, RPCUnsupported) else 'The yard refused this action; read the card again'
         self.display(row, footer if refused else UNCERTAIN)

@@ -5,10 +5,10 @@ from pathlib import Path
 import sys
 
 
-def skill_cards(source=False):
+def skill_cards(source=False, pack=False):
     # Drive the real bridge state machine with the existing offline transports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
-    from test_run_asks import NativeTests, skill_proposal, source_proposal
+    from test_run_asks import NativeTests, skill_proposal, source_proposal, pack_proposal
     case = NativeTests()
     case.setUp()
     cards = []
@@ -21,24 +21,41 @@ def skill_cards(source=False):
                      + '<div class="navigation">' + escape(navigation) + '</div><div class="body">' + body['text']
                      + '</div><div class="buttons">' + controls + '</div></article></section>')
     try:
-        case.native.ask = source_proposal() if source else skill_proposal('Generic long line <&> 🙂; file content only. ' * 35 + '\n')
+        case.native.ask = (pack_proposal('directory_replace') if pack else source_proposal() if source else
+                           skill_proposal('Generic long line <&> 🙂; file content only. ' * 35 + '\n'))
         case.config['yard'] = 'example'
         case.create()
         sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
         for index, body in enumerate(sends[:-1], 1):
             capture(f'Complete review · part {index}/{len(sends)-1}', body, 'bundle')
+        if pack:
+            import json
+            fields, path, raw = case.documents[-1]
+            header = raw.decode('utf-8').split('\n\n', 1)[0]
+            capture('Synthetic snapshot document · header · mode 0600',
+                    dict(text='<pre>' + escape(header) + '</pre>',
+                         reply_parameters=json.loads(fields['reply_parameters'])), 'bundle')
         capture('Final bound approval card', sends[-1], 'states')
         case.press()
         capture('Direct reply confirmation · first tap installs nothing', case.edits()[-1], 'states')
         case.native.mode = 'carrying'
         case.reply()
         capture('Approval recorded · pending carry', case.edits()[-1], 'states')
-        case.native.ask['ran'].update(result=('source synthetic saved: installed the captured declaration and bin/report bytes' if source else 'skill snapshot: installed the captured SKILL.md bytes'), pending_reason='')
+        case.native.ask['ran'].update(result=('applied pack synthetic to the yard: 1 created, 0 changed, 0 unchanged' if pack else
+            'source synthetic saved: installed the captured declaration and bin/report bytes' if source else
+            'skill snapshot: installed the captured SKILL.md bytes'), pending_reason='')
         case.bridge.run_asks.refresh()
         capture('Settled canonical installation', case.edits()[-1], 'states')
         case.native.ask['ran'].update(result='Synthetic failure: target changed; nothing installed', failed=True)
         case.bridge.run_asks.refresh()
         capture('Alternative canonical failure', case.edits()[-1], 'states')
+        if pack:
+            case.reset_native(pack_proposal())
+            case.native.ask['run']['does'] += ['Synthetic complete plan line ' + 'x'*10000] * 65
+            refused = case.create()
+            if refused['delivered'] or case.sent_count:
+                raise RuntimeError('over-bound pack sent a partial preview')
+            capture('Synthetic over-bound refusal · zero parts sent', dict(text=escape(refused['reason'])), 'states')
     finally:
         case.doCleanups()
         case.tearDown()
@@ -295,6 +312,10 @@ def main():
         cards = skill_cards()
     if '--source' in sys.argv:
         cards = skill_cards(source=True)
+    if '--pack' in sys.argv:
+        cards = skill_cards(pack=True)
+    if len(sys.argv) == 1:
+        cards += skill_cards(pack=True)
     if '--decisions' in sys.argv:
         cards = decision_cards()
     if '--dense' in sys.argv:

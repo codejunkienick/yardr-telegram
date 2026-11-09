@@ -95,6 +95,22 @@ def source_proposal(kind='replace', extra=''):
     return ask
 
 
+def pack_proposal(kind='directory'):
+    return json.loads(Path(__file__).with_name('fixtures').joinpath('pack_' + kind + '.json').read_text())
+
+
+def repack(ask):
+    pack = ask['run']['pack']
+    label = pack['label']
+    for file in pack['directory']['files']:
+        file['sha256'] = n.file_hash(file['text'])
+    pack['digest'] = n.pack_snapshot_digest(pack['directory']['files'])
+    pack['label'] = pack['directory']['path'] + ' at sha256:' + pack['digest']
+    ask['run']['argv'][-1] = pack['digest']
+    ask['run']['command'] = 'yardr ' + ' '.join(ask['run']['argv'])
+    ask['run']['does'][0] = ask['run']['does'][0].replace(label, pack['label'])
+
+
 def group_proposal(name='group_add', extra=''):
     # Captured from Bead on the real isolated core; only the temp root, seq and time stabilized.
     ask = json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
@@ -302,6 +318,16 @@ class NativeCase(BridgeTestCase):
                 return 200, dict(ok=True, result=True)
             return base(url, body, *args, **kwargs)
         self.bridge.request = telegram
+        self.documents = []
+        self.bridge.request_multipart = self.pack_transport
+
+    def pack_transport(self, url, fields, field, path, timeout=20):
+        self.sent_count += 1
+        self.calls.append((url, dict(fields)))
+        raw = Path(path).read_bytes()
+        self.documents.append((dict(fields), Path(path), raw))
+        return 200, dict(ok=True, result=dict(message_id=76 + self.sent_count, chat=dict(id=123),
+                                            document=dict(file_id='synthetic-document', file_size=len(raw))))
 
     def reset_native(self, ask):
         with self.store.connect() as db:
@@ -315,6 +341,7 @@ class NativeCase(BridgeTestCase):
         self.native.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         self.calls.clear()
         self.sent_count = 0
+        self.documents.clear()
         self.bridge.run_asks = n.RunAsks(self.bridge)
 
     def create(self, **kwargs):
@@ -1266,7 +1293,7 @@ class NativeTests(NativeCase):
                 self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
 
     def test_weight_requires_bound_reply_cancel_expiry_mismatch_and_one_use(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 if factory is proposal:
@@ -1277,6 +1304,13 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.writes(), [])
                 self.assertIn("type the ask's number, 7", b.html_visible_text(self.edits()[-1]['text'])[0])
                 pending = self.row()['pending']
+                if factory is pack_proposal:
+                    targets = [p['message_id'] for p in self.row()['bundle']['parts']] + [self.row()['bundle']['document']['message_id']]
+                    for index, target in enumerate(targets):
+                        with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                            self.reply(uid=100+index, reply_to_message=dict(message_id=target))
+                        self.assertEqual(self.writes(), [])
+                        self.assertEqual(self.row()['pending'], pending)
                 for payload in (dict(text=None, photo=[dict(file_id='photo', width=1, height=1)], caption='7'),
                                 dict(text='7', document=dict(file_id='document')), dict(text=None, sticker=dict(file_id='sticker'))):
                     with self.subTest(nontext_confirmation=payload), \
@@ -1335,9 +1369,34 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.row()['state'], 'approved')
                 self.assertEqual(len(self.writes()), 2)
                 self.assertTrue(self.writes()[-1][1]['weighed'])
+        for reply_first in (False, True):
+            with self.subTest(pack_poll_reply_first=reply_first):
+                self.reset_native(pack_proposal())
+                self.assertTrue(self.create()['delivered'])
+                row = self.row()
+                tap = dict(callback_query=dict(id='batch-tap', data=f"runask:{row['id']}:approve",
+                    message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                                 **{'from': dict(id=999, is_bot=True)}), **{'from': dict(id=123, is_bot=False)}))
+                reply = dict(message=dict(message_id=502, text='7', chat=dict(id=123, type='private'),
+                    reply_to_message=dict(message_id=row['message_id']), **{'from': dict(id=123, is_bot=False)}))
+                batch = [reply, tap] if reply_first else [tap, reply]
+                batch = [dict(update, update_id=500+i) for i, update in enumerate(batch)]
+                telegram = self.bridge.telegram
+                def fetched(method, body, timeout=15):
+                    if method == 'getUpdates':
+                        return 200, dict(ok=True, result=batch)
+                    return telegram(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=fetched), \
+                     patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                    self.bridge.poll_once()
+                self.assertEqual(len(self.writes()), 0 if reply_first else 1)
+                if reply_first:
+                    self.reply(uid=503)
+                self.assertEqual(len(self.writes()), 1)
+                self.assertTrue(self.writes()[0][1]['weighed'])
 
     def test_callback_and_proposal_binding_refusals(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1373,7 +1432,7 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.writes(), [])
 
     def test_same_operator_two_homes_and_conversations_cannot_cross(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
+        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1396,6 +1455,8 @@ class NativeTests(NativeCase):
                 self.assertNotEqual(other_row['proposal'], self.row()['proposal'])
                 if factory is not proposal:
                     self.assertNotEqual(other_row['bundle']['parts'][0]['key'], self.row()['bundle']['parts'][0]['key'])
+                    if factory is pack_proposal:
+                        self.assertNotEqual(other_row['bundle']['document']['key'], self.row()['bundle']['document']['key'])
                 self.config.update(yardr_home=str(self.home), yard='test-city')
                 self.bridge.run_asks = original
                 self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
@@ -1584,10 +1645,10 @@ class NativeTests(NativeCase):
         for field in ('declaration', 'file', 'total'):
             for overflow in (False, True):
                 with self.subTest(source_cap=field, overflow=overflow):
-                    self.reset_native(source_proposal('new'))
+                    self.reset_native(source_proposal('free' if field == 'declaration' else 'new'))
                     carried = self.native.ask['run']['carried'][0]
                     if field == 'declaration':
-                        carried['text'] += '#' + 'x'*(8192-len(carried['text'].encode())-1 + overflow)
+                        carried['text'] += '#' + 'x'*(32768-len(carried['text'].encode())-1 + overflow)
                     elif field == 'file':
                         file = carried['files'][0]
                         file['text'] = '🙂'*2048 + ('x' if overflow else '')
@@ -1602,6 +1663,93 @@ class NativeTests(NativeCase):
                     self.assertEqual(self.create()['delivered'], not overflow)
                     if overflow:
                         self.assertEqual(self.sent_count, 0)
+        self.pack_refusals()
+
+    def pack_refusals(self):
+        mutations = [
+            (('run', 'pack'), None), (('run', 'pack', 'kind'), 'git'),
+            (('run', 'pack', 'future'), True), (('run', 'pack', 'plan'), {}),
+            (('run', 'pack', 'digest'), '0' * 64), (('run', 'pack', 'directory'), None),
+            (('run', 'pack', 'directory', 'future'), True),
+            (('run', 'pack', 'directory', 'path'), '../pack'),
+            (('run', 'pack', 'directory', 'files'), []),
+            (('run', 'pack', 'directory', 'files', 0, 'path'), '../setup'),
+            (('run', 'pack', 'directory', 'files', 0, 'path'), '\ud800'),
+            (('run', 'pack', 'directory', 'files', 0, 'text'), '\ud800'),
+            (('run', 'pack', 'directory', 'files', 0, 'sha256'), '0' * 64),
+            (('run', 'pack', 'directory', 'files', 0, 'future'), True),
+            (('run', 'carried', 0, 'future'), True), (('run', 'carried', 0, 'files'), []),
+            (('run', 'carried', 0, 'files', 0, 'sha256'), '0' * 64),
+            (('run', 'carried', 0, 'text'), 'name: other\n'),
+            (('run', 'ask'), []), (('run', 'value'), 'input'), (('secret',), {}),
+            (('setup',), {}), (('identity',), {}), (('given',), 'input'),
+            (('weight',), []), (('weight', 0, 'class'), 'trust'),
+            (('weight', 0, 'line'), 'invented warning'),
+            (('run', 'argv'), ['pack', 'apply', '/synthetic/pack']),
+        ]
+        for path, value in mutations:
+            with self.subTest(pack_path=path):
+                ask = pack_proposal()
+                target = ask
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                self.reset_native(ask)
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
+        for change in ('unknown', 'kind', 'ask', 'missing', 'extra', 'duplicate', 'file-count'):
+            with self.subTest(manifest=change):
+                ask = pack_proposal()
+                files = ask['run']['pack']['directory']['files']
+                manifest = next(f for f in files if f['path'] == 'pack.yaml')
+                if change in ('unknown', 'ask'):
+                    manifest['text'] += ('future: true\n' if change == 'unknown' else 'ask: [region]\n')
+                elif change == 'kind':
+                    manifest['text'] = manifest['text'].replace('kind: source', 'kind: git')
+                elif change == 'missing':
+                    files.pop(0)
+                elif change == 'extra':
+                    files.append(dict(path='extra.txt', text='extra'))
+                elif change == 'duplicate':
+                    files.append(dict(files[0]))
+                else:
+                    files.extend(dict(path=f'extra-{i}', text='') for i in range(65))
+                repack(ask)
+                self.reset_native(ask)
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(self.sent_count, 0)
+        for overflow in (False, True):
+            with self.subTest(snapshot_bytes_overflow=overflow):
+                ask = pack_proposal()
+                files = ask['run']['pack']['directory']['files']
+                setup = next(f for f in files if f['path'] == 'SETUP.md')
+                setup['text'] = 'x' * (262144 - sum(len(f['text'].encode()) for f in files if f is not setup) + overflow)
+                repack(ask)
+                self.reset_native(ask)
+                self.assertEqual(self.create()['delivered'], not overflow)
+                if overflow:
+                    self.assertEqual(self.sent_count, 0)
+                else:
+                    self.assert_pack_document(ask, self.documents[-1][2])
+        self.reset_native(pack_proposal())
+        self.native.ask['run']['does'] += ['Synthetic complete plan line ' + 'x' * 10000] * 65
+        result = self.create()
+        self.assertIn('too_many_parts', result['reason'])
+        self.assertEqual(self.sent_count, 0)
+        ask = pack_proposal()
+        files = ask['run']['pack']['directory']['files']
+        setup = next(f for f in files if f['path'] == 'SETUP.md')
+        manifest = next(f for f in files if f['path'] == 'pack.yaml')
+        long_path = 's' * 90000
+        manifest['text'] = manifest['text'].replace('SETUP.md', long_path)
+        setup['path'] = long_path
+        setup['text'] = 'x' * (262144 - sum(len(f['text'].encode()) for f in files if f is not setup))
+        repack(ask)
+        self.reset_native(ask)
+        result = self.create()
+        self.assertIn('document_too_large', result['reason'])
+        self.assertEqual(self.sent_count, 0)
 
 
     def test_skill_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
@@ -1609,10 +1757,12 @@ class NativeTests(NativeCase):
         cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n')),
                  ('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY · not authority\n' * 150)),
                  ('group_set', group_set_proposal('\nSynthetic standing line <&>🙂\t' * 250)),
-                 ('source', source_proposal(extra='# ' + 'Synthetic <&>🙂\t' * 400 + '\n'))]
+                 ('source', source_proposal(extra='# ' + 'Synthetic <&>🙂\t' * 400 + '\n')),
+                 ('pack', pack_proposal()), ('pack_replace', pack_proposal('directory_replace')), ('pack_embedded', pack_proposal('embedded'))]
         for case, ask in cases:
             with self.subTest(case=case):
                 self.bundle_delivery(case, ask)
+        self.bundle_document_delivery()
 
     def bundle_delivery(self, case, ask):
         self.reset_native(copy.deepcopy(ask))
@@ -1622,7 +1772,7 @@ class NativeTests(NativeCase):
         row = self.row()
         parts = row['bundle']['parts']
         sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
-        self.assertGreater(len(parts), 3)
+        self.assertGreater(len(parts), 0 if case.startswith('pack') else 3)
         self.assertEqual(len(sent), len(parts) + 1)
         bodies = []
         for index, (part, body) in enumerate(zip(parts, sent)):
@@ -1649,16 +1799,36 @@ class NativeTests(NativeCase):
                 self.assertTrue(sent_part['text'].split('\n', 3)[3].startswith('<pre>'))
                 continued += 1
             offset += len(body)
-        self.assertGreater(continued, 0)
+        if len(parts) > 1:
+            self.assertGreater(continued, 0)
+        else:
+            self.assertEqual(continued, 0)
         if case == 'skill':
             self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
             self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
         elif case == 'source':
             self.assert_source_review(ask, review)
+        elif case.startswith('pack'):
+            for line in ask['run']['does']:
+                self.assertIn(n.quote_line(line), review)
+            for carried in ask['run']['carried']:
+                for line in n.source_review(carried):
+                    self.assertIn(line, review)
         else:
             label = 'proposed role' if case == 'group_add' else 'standing role'
             self.assert_group_review(ask, review, label)
-        self.assertEqual(sent[-1]['reply_parameters']['message_id'], parts[-1]['message_id'])
+        document = row['bundle'].get('document')
+        if document:
+            fields, path, raw = self.documents[-1]
+            self.assert_pack_document(ask, raw)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), document['sha256'])
+            self.assertEqual(json.loads(fields['reply_parameters'])['message_id'], parts[-1]['message_id'])
+            self.assertEqual(fields['message_thread_id'], '12')
+            self.assertNotIn('reply_markup', fields)
+            self.assertIn(document['sha256'], sent[-1]['text'])
+            self.assertIn(ask['run']['pack']['digest'], sent[-1]['text'])
+        self.assertEqual(sent[-1]['reply_parameters']['message_id'], document['message_id'] if document else parts[-1]['message_id'])
         self.assertIn(row['proposal'], sent[-1]['text'])
         self.assertEqual(sent[-1]['reply_markup']['inline_keyboard'][0][0]['callback_data'], f"runask:{row['id']}:approve")
         expected = [body['text'] for body in sent]
@@ -1713,6 +1883,106 @@ class NativeTests(NativeCase):
                     self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), complete)
                     self.assertEqual(self.writes(), [])
         self.bridge.request = original
+
+    def bundle_document_delivery(self):
+        original = self.bridge.request_multipart
+        for failure in ('transient', 'ambiguous', 'size', 'missing-size', 'boolean-size', 'rejected', 'crash-after-receipt'):
+            with self.subTest(document_failure=failure):
+                self.reset_native(pack_proposal())
+                blocked = [True]
+                def multipart(*args, **kwargs):
+                    if blocked[0]:
+                        if failure in ('transient', 'ambiguous'):
+                            error = b.RequestNotSent if failure == 'transient' else b.RequestUnconfirmed
+                            raise error('synthetic document interruption')
+                        if failure == 'rejected':
+                            return 400, dict(ok=False, error_code=400)
+                    status, response = original(*args, **kwargs)
+                    if blocked[0]:
+                        if failure == 'size':
+                            response['result']['document']['file_size'] += 1
+                        elif failure == 'missing-size':
+                            del response['result']['document']
+                        elif failure == 'boolean-size':
+                            response['result']['document']['file_size'] = True
+                    return status, response
+                self.bridge.request_multipart = multipart
+                if failure == 'crash-after-receipt':
+                    save = self.bridge.run_asks.save
+                    def crash(row):
+                        if row['bundle']['document']['message_id'] is not None:
+                            raise RuntimeError('synthetic crash after document ledger receipt')
+                        save(row)
+                    with patch.object(self.bridge.run_asks, 'save', side_effect=crash):
+                        with self.assertRaises(RuntimeError):
+                            self.create()
+                else:
+                    self.assertFalse(self.create()['delivered'])
+                row = self.row()
+                document = row['bundle']['document']
+                self.assertIsNone(row['message_id'])
+                self.assertIsNone(document['message_id'])
+                self.assertTrue(all(p['message_id'] for p in row['bundle']['parts']))
+                self.assertFalse(any(body.get('reply_markup') for url, body in self.calls if url.endswith('/sendMessage')))
+                before = len(self.documents)
+                blocked[0] = False
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                result = self.create()
+                if failure in ('ambiguous', 'size', 'missing-size', 'boolean-size', 'rejected'):
+                    self.assertFalse(result['delivered'])
+                    self.assertEqual(len(self.documents), before)
+                    self.store.finish(document['key'], self.bridge.receipt(True, message_id='700'))
+                    self.assertFalse(self.create()['delivered'])
+                    self.assertIsNone(self.row()['message_id'])
+                    self.assertEqual(len(self.documents), before)
+                    self.store.finish(document['key'], self.bridge.receipt(True, message_id='700', document_size=document['size']))
+                    self.assertTrue(self.create()['delivered'])
+                else:
+                    self.assertTrue(result['delivered'])
+                count = len(self.calls)
+                self.assertTrue(self.create()['delivered'])
+                self.assertEqual(len(self.calls), count)
+                self.assertEqual(self.writes(), [])
+        self.bridge.request_multipart = original
+        ask = pack_proposal()
+        ask['run']['pack']['directory']['files'][0]['text'] += 'Synthetic atomic publication\n'
+        repack(ask)
+        self.reset_native(ask)
+        with patch.object(n.os, 'link', side_effect=RuntimeError('synthetic crash before document publication')):
+            with self.assertRaises(RuntimeError):
+                self.create()
+        self.assertEqual(self.sent_count, 0)
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.assertTrue(self.create()['delivered'])
+        self.assertEqual(len(self.documents), 1)
+
+    def assert_pack_document(self, ask, raw):
+        pack = ask['run']['pack']
+        header, rest = raw.split(b'\n\n', 1)
+        self.assertIn(('Pack: ' + pack['name']).encode(), header)
+        self.assertIn(('Pack digest: ' + pack['digest']).encode(), header)
+        self.assertIn(('Files: ' + str(len(pack['directory']['files']))).encode(), header)
+        found = []
+        for expected in pack['directory']['files']:
+            metadata, rest = rest.split(b'\n\n', 1)
+            path, size, sha = metadata.split(b'\n')
+            self.assertTrue(path.startswith(b'Path: '))
+            self.assertTrue(size.startswith(b'Size: '))
+            self.assertTrue(sha.startswith(b'SHA256: '))
+            path = json.loads(path[6:])
+            count = int(size[6:])
+            body, rest = rest[:count], rest[count:]
+            self.assertEqual(body, expected['text'].encode())
+            self.assertEqual(sha[8:].decode(), hashlib.sha256(body).hexdigest())
+            self.assertEqual(path, expected['path'])
+            self.assertTrue(rest.startswith(b'\n'))
+            rest = rest[1:]
+            if rest:
+                self.assertTrue(rest.startswith(b'\n'))
+                rest = rest[1:]
+            found.append(path)
+        self.assertEqual(rest, b'')
+        self.assertEqual(len(found), len(set(found)))
 
     def assert_source_review(self, ask, review):
         carried = ask['run']['carried'][0]
@@ -1896,11 +2166,11 @@ class NativeTests(NativeCase):
         self.assertEqual(self.sent_count, 0)
 
     def test_skill_bundle_drift_rechecks_during_transport_retry_and_repost(self):
-        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
+        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 original = self.bridge.request
                 self.bridge.sleep = lambda _: None
-                for drift in ('proposal', 'operator', 'state'):
+                for drift in ('proposal', 'operator', 'state', *(['pack-digest'] if factory is pack_proposal else [])):
                     with self.subTest(drift=drift):
                         self.reset_native(factory())
                         attempts = []
@@ -1909,6 +2179,9 @@ class NativeTests(NativeCase):
                                 attempts.append(body)
                                 if drift == 'proposal':
                                     self.native.ask['context'].append('new proposal')
+                                elif drift == 'pack-digest':
+                                    self.native.ask['run']['pack']['directory']['files'][0]['text'] += 'new proposal'
+                                    repack(self.native.ask)
                                 elif drift == 'operator':
                                     self.native.user['role'] = 'member'
                                 else:
@@ -1952,7 +2225,7 @@ class NativeTests(NativeCase):
         self.assertEqual(self.writes(), [])
 
     def test_skill_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
-        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal):
+        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.assertTrue(self.create()['delivered'])
@@ -3495,10 +3768,143 @@ class RealNativeTests(BridgeTestCase):
             cli('reply', str(delivery), '--crew', 'writer', '--format', 'markdown', '**Photo**', '--file', str(file))
             self.assertEqual(captured, [({'chat_id': '123', 'caption': '<b>Photo</b>', 'parse_mode': 'HTML'}, evidence)])
             self.assertEqual(hashlib.sha256(file.read_bytes()).digest(), hashlib.sha256(evidence).digest())
+            self.exercise_source_packs(root, home, cli, client)
             self.exercise_source_adds(root, home, cli, client)
         finally:
             server.terminate()
             server.wait(timeout=10)
+
+    def exercise_source_packs(self, root, home, cli, client):
+        cli('bead', 'create', 'Synthetic source pack review', '--id', 'pack-1')
+        repository = Path(__file__).resolve().parents[1]
+        old = root / 'old-tgbridge'
+        old.mkdir()
+        for name in ('pack.yaml', 'tgbridge.yaml', 'SETUP.md', 'tgbridge/normalize', 'tgbridge/thread'):
+            target = old / name
+            target.parent.mkdir(exist_ok=True)
+            result = subprocess.run(['git', 'show', '7c0ce69:yardr/' + name], cwd=repository, capture_output=True, check=True)
+            target.write_bytes(result.stdout)
+        cli('pack', 'apply', str(old), '--yes')
+        snapshot_dir = root / 'tgbridge-pack'
+        shutil.copytree(repository / 'yardr', snapshot_dir)
+        self.sent_count = 10000
+        self.documents = []
+        self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
+        updates = iter(range(20000, 21000))
+        def current(number):
+            return next(a for a in client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'] if a['ask'] == number)
+        def press(row, action='approve'):
+            self.bridge.inbound(dict(update_id=next(updates), callback_query=dict(id='pack-callback',
+                data=f"runask:{row['id']}:{action}", message=dict(message_id=row['message_id'],
+                    chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}),
+                **{'from': dict(id=123, is_bot=False)})))
+        def reply(row, value=None):
+            with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                self.bridge.inbound(dict(update_id=next(updates), message=dict(message_id=next(updates),
+                    text=str(row['ask']) if value is None else value, chat=dict(id=123, type='private'),
+                    reply_to_message=dict(message_id=row['message_id']), **{'from': dict(id=123, is_bot=False)})))
+        for scenario in ('upgrade', 'source-stale', 'copy-stale', 'grant-stale', 'decline', 'cancel'):
+            with self.subTest(real_pack=scenario):
+                # Each fresh proposal has a changed command and immutable captured input.
+                command = snapshot_dir / 'tgbridge/normalize'
+                command.write_bytes(command.read_bytes() + b'\n# Synthetic captured revision\n')
+                cli('--actor', 'proposer', 'bead', 'ask', 'pack-1', 'Review the source pack?', '--to', 'pat',
+                    '--context', 'Synthetic repository pack upgrade', '--run', 'pack apply ' + str(snapshot_dir))
+                ask = client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'][-1]
+                before = client.call('GetSource', ['tgbridge'])
+                target = home / 'sources/tgbridge/tgbridge/normalize'
+                before_bytes = target.read_bytes()
+                receipt = self.bridge.api_run_ask(dict(bead='pack-1', ask=ask['ask'], key='pack-' + scenario))
+                self.assertTrue(receipt['delivered'], receipt)
+                row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
+                self.assertTrue(row['bundle']['document']['message_id'])
+                self.assertLess(len(row['bundle']['parts']), n.PACK_PARTS // 2)
+                self.assertLess(row['bundle']['document']['size'], n.PACK_DOCUMENT_BYTES // 2)
+                if scenario == 'upgrade':
+                    print(f"Synthetic tgbridge upgrade: {len(row['bundle']['parts'])}/{n.PACK_PARTS} text parts; {row['bundle']['document']['size']}/{n.PACK_DOCUMENT_BYTES} document bytes")
+                NativeTests.assert_pack_document(self, ask, self.documents[-1][2])
+                command.write_bytes(b'Synthetic edited after capture; never executed.\n')
+                if scenario == 'source-stale':
+                    changed = root / 'changed-source.yaml'
+                    changed.write_bytes(before['declaration'].encode() + b'\n# changed after capture\n')
+                    # Source text changes preserve every named command by copying its input beside the file.
+                    for file in ask['run']['carried'][0].get('files', []):
+                        path = root / file['program']
+                        path.parent.mkdir(exist_ok=True)
+                        path.write_bytes(file['text'].encode())
+                    cli('source', 'add', str(changed))
+                elif scenario == 'copy-stale':
+                    target.write_bytes(b'Synthetic standing copy drift\n')
+                elif scenario == 'grant-stale':
+                    cli('source', 'grant', 'tgbridge', 'health', '--crew', 'writer')
+                standing = client.call('GetSource', ['tgbridge'])
+                standing_bytes = target.read_bytes()
+                if scenario == 'decline':
+                    press(row, 'decline')
+                    self.assertEqual(current(ask['ask'])['state'], 'declined')
+                else:
+                    press(row)
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    self.assertEqual(client.call('GetSource', ['tgbridge']), standing)
+                    self.assertEqual(target.read_bytes(), standing_bytes)
+                    reply(row, '999999')
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    if scenario == 'cancel':
+                        press(row, 'cancel')
+                        reply(row)
+                        self.assertEqual(current(ask['ask'])['state'], 'open')
+                    else:
+                        press(row)
+                        reply(row)
+                if scenario != 'upgrade':
+                    self.assertEqual(client.call('GetSource', ['tgbridge']), standing)
+                    self.assertEqual(target.read_bytes(), standing_bytes)
+                    if scenario.endswith('-stale'):
+                        self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
+                    # Restore standing copies for the next proposal.
+                    if scenario == 'copy-stale':
+                        target.write_bytes(before_bytes)
+                    continue
+                deadline = time.monotonic() + 15
+                while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
+                    self.assertLess(time.monotonic(), deadline, 'pack carry did not settle')
+                    time.sleep(.02)
+                settled = current(ask['ask'])
+                self.assertFalse(settled['ran'].get('failed'), settled['ran'])
+                for carried in ask['run']['carried']:
+                    self.assertEqual(client.call('GetSource', [carried['name']])['declaration'].encode(), carried['text'].encode())
+                    for file in carried.get('files', []):
+                        self.assertEqual((home / 'sources' / carried['name'] / file['program']).read_bytes(), file['text'].encode())
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                press(row); reply(row)
+                self.assertEqual(current(ask['ask']), settled)
+                events = [e for e in client.call('EventsOfKind', ['pack_applied', 100])
+                          if e['data'].get('approved', {}).get('ask') == ask['ask']
+                          and e['data'].get('approved', {}).get('bead') == 'pack-1']
+                self.assertEqual(len(events), 1)
+
+        cli('--actor', 'proposer', 'bead', 'ask', 'pack-1', 'Review the embedded source pack?', '--to', 'pat',
+            '--context', 'Synthetic embedded source pack review', '--run', 'pack apply telegram')
+        ask = client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'][-1]
+        self.assertEqual(ask['run']['carried'], pack_proposal('embedded')['run']['carried'])
+        receipt = self.bridge.api_run_ask(dict(bead='pack-1', ask=ask['ask'], key='pack-embedded'))
+        self.assertTrue(receipt['delivered'], receipt)
+        row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
+        self.assertNotIn('document', row['bundle'])
+        press(row)
+        self.assertEqual(current(ask['ask'])['state'], 'open')
+        reply(row)
+        deadline = time.monotonic() + 15
+        while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
+            self.assertLess(time.monotonic(), deadline, 'embedded pack carry did not settle')
+            time.sleep(.02)
+        settled = current(ask['ask'])
+        self.assertFalse(settled['ran'].get('failed'), settled['ran'])
+        for carried in ask['run']['carried']:
+            self.assertEqual(client.call('GetSource', [carried['name']])['declaration'].encode(), carried['text'].encode())
+            for file in carried.get('files', []):
+                self.assertEqual((home / 'sources' / carried['name'] / file['program']).read_bytes(), file['text'].encode())
 
     def exercise_source_adds(self, root, home, cli, client):
         cli('bead', 'create', 'Synthetic source review', '--id', 'source-1')

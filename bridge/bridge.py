@@ -3277,7 +3277,8 @@ class Bridge:
         except TransportError:
             return pending
 
-    def _deliver_attachment(self, attachment, text, reply, pending, plain=None, extra=None, text_fallback=True):
+    def _deliver_attachment(self, attachment, text, reply, pending, plain=None, extra=None, text_fallback=True,
+                            confirmed_size=None, before_attempt=None):
         """Send one attachment; `extra` carries the keyboard reply_markup for a
         photo ask, a silent send's disable_notification and a topic's
         message_thread_id, which both fallbacks keep. The HTML parse-rejection
@@ -3302,15 +3303,25 @@ class Bridge:
         if extra and 'message_thread_id' in extra:
             fields['message_thread_id'] = str(extra['message_thread_id'])
         try:
-            status, data = self._send(method, lambda timeout: self.telegram_multipart(
-                method, fields, field, attachment['path'], timeout))
+            def attempt(timeout):
+                if before_attempt is not None:
+                    before_attempt()
+                return self.telegram_multipart(method, fields, field, attachment['path'], timeout)
+            status, data = self._send(method, attempt)
             if self._confirmed(status, data):
+                if confirmed_size is not None:
+                    document = data['result'].get('document')
+                    if (not isinstance(document, dict) or type(document.get('file_size')) is not int
+                            or document['file_size'] != confirmed_size):
+                        return pending
+                    return self.receipt(True, message_id=str(data['result']['message_id']), document_size=confirmed_size)
                 return self.receipt(True, message_id=str(data['result']['message_id']))
             if plain is not None and self._html_rejected(data):
                 # Same file, same caption text without markup, once, keeping
                 # the keyboard for a photo ask.
                 receipt = self._deliver_attachment(attachment, plain, reply, pending, extra=extra,
-                                                   text_fallback=text_fallback)
+                                                   text_fallback=text_fallback, confirmed_size=confirmed_size,
+                                                   before_attempt=before_attempt)
                 if receipt is not pending:
                     receipt['format_fallback_reason'] = 'telegram_html_parse_rejected_400'
                 return receipt

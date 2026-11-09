@@ -22,6 +22,7 @@
       "it replaces one source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file: the source keeps its env_file, mint_command, region base, call limits and ignored senders, and every grant of it stands, now for this declaration.",
       "source synthetic: it has no base and calls nothing. It names no credential.",
       "it would replace the source synthetic the yard has under that name.",
+      "no grant of source synthetic stands.",
       "the copy would remove extra.txt, which neither declaration names: sha256 670ac0987d6acba567e81e9faa48aca43d2c7d8d26241fc7b3fa6604453b3a51 (mode 0644, 24 bytes).",
       "The source names no check call and no idempotency header.",
       "it can tell no user.",

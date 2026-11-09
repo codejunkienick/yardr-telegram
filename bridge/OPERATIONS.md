@@ -2168,8 +2168,8 @@ different namespace before updating. The complete canonical card is HTML-escaped
 to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
 following Footplate; canonical warning lines alone are bold. Self-contained
 cards keep that limit. A captured single-file `skill add` and a herdr `group
-add`/`group set` and native `source add` use the complete review bundle below. Secret/setup/identity/depot_push, parameter inputs,
-other carried files, pack plans and crew-add prompts still refuse before
+add`/`group set`, native `source add` and source-kind `pack apply` use the complete review bundles below. Secret/setup/identity/depot_push, parameter inputs,
+other carried files, depot-kind pack plans and crew-add prompts still refuse before
 sending, with Footplate/cards as the fallback.
 
 Routine Approve calls ApproveAsk with weighed=false after fresh checks.
@@ -2220,7 +2220,7 @@ contains no grants; builder/secretary/blanket grants are not required.
 A native `skill add <absolute-source> [--name <name>]` can add or refresh one
 regular `SKILL.md`. Both source and standing destination must contain only
 that file, each at most 32768 UTF-8 bytes. Extra files, directories, symlinks,
-deletions and multi-file skill/pack/crew proposals remain unsupported.
+deletions and multi-file skill/crew proposals remain unsupported.
 The source is provenance: the server installs the captured bytes even after
 that source changes or disappears. No assignment, grant or account changes.
 
@@ -2291,9 +2291,9 @@ pure-Python YAML reader ships in the release; no pip step is required.
 Core owns declaration semantics, native weights, authority and stale-state
 checks under its apply/carry locks.
 
-Limits match core: declaration 8192 bytes, each command file 8192 bytes,
+Limits match landed core: declaration 32768 bytes, each command file 8192 bytes,
 32768 bytes for those texts together, 65536 bytes for command texts, diffs
-and removed texts, and at most 40 native Does lines. Complete declaration,
+and removed texts, and at most 80 native Does lines. Complete declaration,
 each command file, each replacement diff, inventory, removed records/text
 and every native Does line arrive as quoted untrusted review parts. Each
 section names its exact UTF-8 hash and size; diff sections also retain the
@@ -2317,6 +2317,78 @@ the bridge over a real-core replacement fixture with fake Telegram. It is
 synthetic presentation evidence, not a live Telegram capture. Isolated
 native tests prove new, replacing and commands-free installation, exact
 stored declaration/files, stale refusal, cancellation, decline and replay.
+
+### Source pack bundles
+
+`pack apply <absolute-directory> --sha256 <digest>` uses the same native
+`run_ask`, operator pairing, row, ledger and approval gate. It requires the
+core's **Directory source-pack proposal contract** in `docs/api.md`, landed
+at `ced24b0e849c`. The bridge checks the actual typed envelope on every
+read; an older or unknown directory shape refuses before any send with
+`use yardr pack apply <dir> in a terminal`. It adds no grant or setting.
+
+Only source-kind packs with no parameter inputs are supported. Before any
+send the bridge checks the manifest's known fields, exact named-file set,
+relative paths, all complete UTF-8 file hashes and the pack digest (sorted
+paths, NUL, decimal byte size, NUL, original bytes). Each declaration and
+command must agree with the carried source review. The existing strict
+source validator also verifies diffs, inventory and removals. Unknown
+payloads, secret/setup/identity/value fields, input flags and depot plans
+refuse whole. The provenance directory is never opened by the bridge.
+
+Numbered, escaped, untrusted text parts contain every native Does line,
+each declaration and command file, full replacement diffs, old/new hashes,
+inventory and removed entries. Thus the plan includes all declaration-key
+changes, grants kept and work still owed. Text is never shortened. Limits
+are **128 text parts**, each within the existing 3500 UTF-16-unit envelope,
+and **327680 document bytes (320 KiB)** including framing. Core also bounds
+the directory snapshot to 64 files and 262144 text bytes, declarations to
+262144 bytes together, command texts/diffs/removed text to 65536 bytes and
+Does to 80 lines. An over-bound bundle sends nothing, including no buttons.
+The repository's actual tgbridge upgrade from `7c0ce69` fits with headroom.
+
+The directory bundle includes one UTF-8 `.txt` document, replied to the
+last text part, without a keyboard or text fallback. Its header names the
+pack, pack digest and file count. Each section has a JSON-quoted `Path:`,
+decimal `Size:` and `SHA256:`, then a blank line, exactly Size original
+UTF-8 bytes, and one separator newline. Read by lengths, not delimiters in
+the untrusted file contents. Every snapshot file, including `pack.yaml`
+and setup notes, appears whole. The bridge atomically writes it under
+`<state_dir>/run-ask-documents/<document-sha256>.txt`, mode 0600, and retains
+its bytes, hash, size, send key and confirmed message ID in the native row.
+Only a confirmed Telegram message with an integer document size equal to
+the written bytes counts as delivered. A missing/wrong size is ambiguous.
+
+The card follows only after all text parts and the document are confirmed.
+It replies to the document and names the bundle digest, text-part count,
+document SHA-256 and pack digest, with canonical weight lines first.
+Directory applies always require Approve, then a direct reply **to the
+card**, with the exact ask number within five minutes. Replies to parts or
+the document cannot approve. A wrong number clears the gate: tap again.
+Only core records approval, carrying, ran or failed. Core refuses standing
+source/copy/grant drift; the bridge shows a stale card without controls.
+
+Definitely unsent deliveries retry under the original key. Ambiguous ones
+stay blocked under the ledger's existing manual reconciliation, across
+restarts and caller keys. Confirmed parts/documents are retained; a crash
+after a ledger receipt resumes without another send or a second card.
+Keep the state directory, including its ledger and review documents.
+Decline, cancel, mismatched bindings, forwarded numbers and replay do not
+apply the pack. Changes to the proposal invalidate its generation.
+
+Embedded source-kind `pack apply <name>` uses the complete carried-source
+text bundle and core's weight rules. Its core envelope has no directory
+snapshot, pack digest, `pack.yaml` or setup notes, so no snapshot document
+is invented. Depot-kind/summary pack cards remain unsupported.
+
+`python3 -B scripts/preview_run_asks.py --pack` produces labelled synthetic
+presentation evidence using real-core fixtures and fake Telegram. Native
+integration additionally upgrades this repository's pack from `7c0ce69`,
+checks captured-byte installation after edits, stale state and replay.
+Core must be installed first, then this bridge; yardmaster owns installation
+and activation after source lands. Nick approves the live card. Roll back
+code through the existing release rollback; review an older pack snapshot
+or use the terminal apply fallback for a pack rollback.
 
 ### Native group add and set review
 

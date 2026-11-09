@@ -51,3 +51,21 @@ through real native approval/carry and checking byte-equal declarations and
 installed files. It also exercises standing-file drift, decline, cancel,
 wrong bindings and replay. The offline `--source` preview uses the real
 replacement fixture with fake Telegram and labels its presentation synthetic.
+
+`source_replace.json` includes the no-standing-grants line verified against
+landed core `ced24b0e849c`; its captured files and diffs are unchanged.
+
+`pack_directory.json`, `pack_directory_replace.json` and `pack_embedded.json`
+were captured from an isolated build of that landed core. They show a new
+directory source pack, an upgrade changing a declaration key and command,
+keeping a crew grant and removing an obsolete copy, and the embedded
+`telegram` source pack. Only ask number, timestamp and temporary root
+(`/synthetic`) are stabilized. The directory snapshots include CRLF setup
+notes and exact file hashes. The embedded contract carries source files
+without a directory snapshot. No live yard or Telegram data is used.
+The native integration also upgrades this repository's complete `yardr/`
+pack from `7c0ce69`, checks every installed byte after input edits, and
+exercises source/copy/grant drift, decline/cancel/replay and embedded carry.
+`scripts/preview_run_asks.py --pack` drives the replacement fixture through
+the bridge, including its document header, weight, gate and canonical result,
+plus an oversized refusal before any send; all captures are synthetic.

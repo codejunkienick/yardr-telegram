@@ -737,7 +737,45 @@ systemctl --user is-active <unit>           # active
 yardr source check tgbridge                 # health answers 200
 ```
 
-### The source pack (shell)
+### The source pack (crew, then you in Telegram; shell fallback)
+
+With core `ced24b0e849c`'s directory source-pack proposal contract and this
+bridge installed, propose the pack published by the installer as a native
+card. Install core first, then the bridge; yardmaster owns installation and
+the restart above. Landing source alone does not activate either release.
+Use `pack check` to read the digest and complete plan, then:
+
+```sh
+yardr pack check <root>/pack
+yardr bead ask <bead> "Apply this tgbridge source pack upgrade?" \
+  --context "Read the complete plan, diffs, grants kept and snapshot document." \
+  --run "pack apply <root>/pack --sha256 <digest>"
+yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=pack-upgrade-1
+```
+
+Review every numbered text part and the attached snapshot document. The
+document contains every file whole, including the declaration, command
+files and setup notes. The final card names both digests, document hash and
+part count; its weight lines come first. No controls arrive until the whole
+bundle is confirmed. Tap Approve, then reply directly to that **card** with
+the exact ask number within five minutes. The tap alone writes nothing;
+a wrong number requires another tap. Replying to a part or document cannot
+approve. Core applies the captured bytes even if `<root>/pack` later changes.
+Check the canonical ran/failed state after carrying; stale state writes
+nothing and needs a new ask. Existing credentials, selected base, limits
+and grants stay under the core's usual replacement rules, with grants kept
+shown in the review. The proposal takes no binding or answering flags.
+
+Limits are 128 text parts and one document of at most 320 KiB, within
+core's 64-file/256-KiB snapshot bounds. Oversized or unknown shapes refuse
+before sending. A definitely unsent part resumes under its original key;
+an ambiguous part or document needs existing ledger reconciliation and is
+never blindly resent. Preserve the state directory. See
+[source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
+
+For an older core/bridge, a refusal, or an explicit terminal rollback, keep
+the terminal path below. A code rollback uses `install.sh --rollback`; a
+pack rollback applies a reviewed earlier snapshot or the terminal command.
 
 Read the bindings the source has, without printing the credential:
 

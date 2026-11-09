@@ -28,7 +28,7 @@
 #    plist on macOS; the replaced one kept in service.previous) and the
 #    launchers, each only when it changed, restoring them all if one fails;
 #    pack moves last, to the release's own rendered pack; one activation
-#    of a root runs at a time, and a signal waits until it is done.
+#    of a root or service directory runs at a time, and a signal waits until it is done.
 # --rollback swaps current and previous after the same checks of the
 # previous release, and needs no git; pack returns to that release's.
 # Removing an instance is disabling its service, removing its service file
@@ -83,6 +83,10 @@ try:
     problems = m["source_dependencies"](pack, s if mode == "install" else None, root)
     if problems:
         sys.exit("\n".join("install.sh: " + line for line in problems))
+    try:
+        m["check_instance_owner"](s, root)
+    except m["SettingsError"] as error:
+        sys.exit(f"install.sh: {error}")
     print("root=" + shlex.quote(str(root)))
     print("python=" + shlex.quote(str(s.python)))
     print("port=" + str(s.port))
@@ -288,6 +292,15 @@ if not dry_run:
     # One activation of a root at a time: a failed one cannot take back a release another adopted.
     lock = os.open(root, os.O_RDONLY)
     fcntl.flock(lock, fcntl.LOCK_EX)
+    # Lock the service directory too: different roots can claim the same unit.
+    service.parent.mkdir(parents=True, exist_ok=True)
+    service_lock = os.open(service.parent, os.O_RDONLY)
+    if not os.path.samestat(os.fstat(lock), os.fstat(service_lock)):
+        fcntl.flock(service_lock, fcntl.LOCK_EX)
+try:
+    r['check_instance_owner'](s, root)
+except r['SettingsError'] as error:
+    sys.exit(f'install.sh: {error}')
 current = os.readlink(root / 'current') if (root / 'current').is_symlink() else None
 if current is None and (root / 'current').exists():
     sys.exit(f'install.sh: {root / "current"} is not a link; not activated')
@@ -303,7 +316,8 @@ old_service = read(service)
 if old_service is not None and old_service != files[service][0]:
     changes.insert(0, (root / 'service.previous', old_service, 0o600))
     print(f'{"would replace" if dry_run else "replacing"} {service}: bridge {bridge_of(old_service)} -> '
-          f'{current_bridge}; the old file is kept in {root / "service.previous"}')
+          f'{current_bridge}; settings {r["installed_settings"](service)} -> {settings}; '
+          f'the old file is kept in {root / "service.previous"}')
 for path, (text, mode) in files.items():
     if written(path, text, mode):
         print(f'{"unit" if path == service else "launcher"} {path} is current')

@@ -679,7 +679,7 @@ It writes nothing and does not contact Telegram. Where the settings name a
 so that yard must be running. Look for:
 
 - `would stage <commit> as <root>/releases/<commit>`;
-- `would replace <service file>: bridge <checkout>/bridge/bridge.py -> <root>/current/bridge/bridge.py; the old file is kept in <root>/service.previous`;
+- `would replace <service file>: bridge <checkout>/bridge/bridge.py -> <root>/current/bridge/bridge.py; settings <settings> -> <settings>; the old file is kept in <root>/service.previous`;
 - an `ok` (or `WARN`) on every check line, and no `FAIL`;
 - `would write pack <root>/pack (base http://127.0.0.1:<port>)`.
 
@@ -697,6 +697,21 @@ so do not paste it anywhere. Stop and fix the settings, then dry-run again, on:
 
 `would create <queue directory> (mode 700)` is expected where transcription is
 on and the host's shared queue does not exist yet.
+
+The existing service file and `<root>/bin/telegram-bridge` must name this
+same settings path. Install, dry-run and rollback refuse before writing when
+either names another path, or its settings ownership cannot be read. A
+collision diagnostic names the conflicting file and both settings paths.
+Reinstalling, upgrading and rolling back with the same settings path keeps
+working.
+
+To move a settings file deliberately, stop its old service and retain the old
+settings and installation for rollback. Give the new settings file a fresh
+`unit` and use a fresh root, then dry-run, install and verify it using this
+procedure. Start only the new service for that bot. If verification fails,
+stop the new service and return to the retained old settings and service;
+the release rollback steps below still apply within each root. There is no
+flag to take over an existing unit or root.
 
 ### Install (shell)
 

@@ -5477,6 +5477,54 @@ def render_service(settings, platform=None, home=None, bridge_path=None):
     return plistlib.dumps(agent, fmt=plistlib.FMT_XML).decode('utf-8')
 
 
+def installed_settings(path):
+    """The settings path in an existing service or launcher; refuse unknown ownership."""
+    path = Path(path)
+    problem = f'cannot read settings ownership from {path}; expected one absolute --settings path'
+    try:
+        text = path.read_bytes()
+    except FileNotFoundError:
+        if path.is_symlink():
+            raise SettingsError(problem) from None
+        return None
+    except OSError:
+        raise SettingsError(problem) from None
+    try:
+        if path.suffix == '.plist':
+            args = plistlib.loads(text)['ProgramArguments']
+            if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                raise ValueError
+        else:
+            lines = text.decode('utf-8').splitlines()
+            if path.name == 'telegram-bridge':
+                if len(lines) != 2 or lines[0] != '#!/bin/sh' or not lines[1].startswith('exec '):
+                    raise ValueError
+                args = shlex.split(lines[1])[1:]
+            else:
+                commands = [line.removeprefix('ExecStart=') for line in lines if line.startswith('ExecStart=')]
+                if len(commands) != 1:
+                    raise ValueError
+                args = shlex.split(commands[0])
+        values = [args[i + 1] if arg == '--settings' else arg.removeprefix('--settings=')
+                  for i, arg in enumerate(args) if arg == '--settings' or arg.startswith('--settings=')]
+        if len(values) != 1 or not values[0].startswith('/'):
+            raise ValueError
+        return _path_setting(values[0], 'installed settings path')
+    except Exception:
+        raise SettingsError(problem) from None
+
+
+def check_instance_owner(settings, root):
+    """An existing unit and root belong to the settings path they already run."""
+    for path in (service_file(settings), Path(root) / 'bin/telegram-bridge'):
+        owner = installed_settings(path)
+        if owner is not None and owner != settings.path:
+            raise SettingsError(f'{path} uses settings {owner}; refusing settings {settings.path}. '
+                                'To move a settings file deliberately, use a fresh unit and root; '
+                                'see yardr/SETUP.md, "Move an existing bridge to its own installation" '
+                                'for rollback')
+
+
 def _sha256(path):
     digest = hashlib.sha256()
     with open(path, 'rb') as stream:

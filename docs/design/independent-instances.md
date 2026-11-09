@@ -85,7 +85,7 @@ flowchart TD
   chk["settings check: nothing they name<br/>depends on the checkout"]
   stage["root/releases/.stage-*<br/>git archive C + RELEASE + SHA256SUMS"]
   ci{"check-install<br/>of the staged copy"}
-  act["under a flock on root:<br/>previous = old current, current = C,<br/>service file, launchers, then pack"]
+  act["under flocks on root and service directory:<br/>previous = old current, current = C,<br/>service file, launchers, then pack"]
   run["next start of the unit runs<br/>root/current/bridge/bridge.py"]
   gone["stage removed;<br/>instance unchanged"]
   rb["root/current/install.sh --rollback:<br/>verify previous, check-install, swap"]
@@ -110,7 +110,11 @@ run from a checkout:
    `health_file`, `yardr.home`, each handler and handler write path, and the
    transcriber's `gpu_check`, `whisper_cli` and `models_dir`. Links are
    followed at every component, and each refusal names its remedy. It then
-   requires a git work tree with no tracked changes;
+   requires a git work tree with no tracked changes. Before any write, the
+   existing service and root's bridge launcher must name the same settings
+   path; a different path or unreadable ownership refuses. Moving a settings
+   file deliberately uses a fresh unit and root, retaining the old instance
+   for rollback (`yardr/SETUP.md`);
 2. stages HEAD under `releases/.stage-*`, or reuses `releases/<commit>` when
    its files match the stage's sums and the settings depend on nothing in
    the source its `RELEASE` records;
@@ -119,9 +123,12 @@ run from a checkout:
    outside the root before step 4 and are kept whatever happens next;
 4. runs the staged or reused release's `check-install` under the settings'
    `python`. A failure removes the stage and changes nothing else;
-5. activates, holding an exclusive `flock` on the root so one activation runs
-   at a time, with SIGINT, SIGTERM and SIGHUP held until the renames or their
-   undo are done: `previous` becomes the old `current`, `current` the
+5. activates, holding exclusive `flock`s on the root and service directory,
+   in that order; one lock covers both when they name the same directory,
+   including through a symlink. It rechecks the service and launcher ownership
+   under these locks so different roots cannot concurrently claim the same service,
+   with SIGINT, SIGTERM and SIGHUP held until the renames or their undo are
+   done: `previous` becomes the old `current`, `current` the
    release, then the service file (the replaced one kept in
    `service.previous`) and the launchers are written, each only when its
    bytes or mode changed, and `pack` moves last to the release's rendered
@@ -139,7 +146,7 @@ what the unit runs at its next start, whoever starts it, including a
 **Rollback.** `<root>/current/install.sh --settings <settings> --rollback`
 runs from any release and needs no git. It verifies `previous` against its
 `SHA256SUMS`, runs its `check-install`, and swaps `current` and `previous`
-under the same lock; `pack` returns to that release's generation. A second
+under the same locks; `pack` returns to that release's generation. A second
 `--rollback` goes forward again. After the first install from a checkout unit
 there is no previous release: restoring `service.previous` over the service
 file is that rollback.
@@ -185,8 +192,8 @@ pruned automatically.
   following `yardr/SETUP.md`.
 - A daemon, container, virtual environment, pip or manifest service; network
   access at install or message time.
-- Automatic pruning of releases, detection of other instances, and managing
-  any global link.
+- Automatic pruning of releases, detection of other instances' state
+  directories or ports, and managing any global link.
 - Any change to the transcription queue, the whisper.cpp build, the models or
   the GPU policy. A queue per instance would be a separate decision.
 - A per-instance transcriber environment in the `voice-transcribe` launcher:

@@ -8,7 +8,9 @@ import plistlib
 from unittest.mock import patch
 from pathlib import Path
 import re
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1728,7 +1730,8 @@ class InstanceTests(unittest.TestCase):
                         '    stream.write(json.dumps(sys.stdin.read()) + "\\n")\n'
                         'print(json.dumps({"ok":True,"result":{"message_id":90,"chat":{"id":123}}}))\n'
                         'print("200 0.01 0.02 0", end="")\n')
-        self.env = {k: v for k, v in git_env(self.home).items() if not k.startswith('GC_') and k != b.SETTINGS_ENV}
+        self.env = {k: v for k, v in git_env(self.home).items()
+                    if not k.startswith(('GC_', 'YARDR_')) and k != b.SETTINGS_ENV}
         self.env.update(XDG_CONFIG_HOME=str(self.home / '.config'), TELEGRAM_PACK_PLATFORM='linux',
                         PATH=f'{self.bin}:/usr/local/bin:/usr/bin:/bin')
 
@@ -1993,9 +1996,16 @@ class InstanceTests(unittest.TestCase):
         link = self.home / '.local/bin/voice-transcribe'
         link.parent.mkdir(parents=True)
         link.symlink_to(self.source / 'transcriber/voice_transcribe.py')
+        before = tree_digest(self.home, self.root / 'cedar')
+        dry = self.ok(self.run_install(settings, '--dry-run'))
+        self.assertIn(f'would replace {unit_file}: bridge {self.source}/bridge/bridge.py -> '
+                      f'{root}/current/bridge/bridge.py; settings {settings} -> {settings}; '
+                      f'the old file is kept in {root}/service.previous', dry)
+        self.assertEqual(tree_digest(self.home, self.root / 'cedar'), before)
         out = self.ok(self.run_install(settings))
         self.assertIn(f'replacing {unit_file}: bridge {self.source}/bridge/bridge.py -> '
-                      f'{root}/current/bridge/bridge.py; the old file is kept in {root}/service.previous', out)
+                      f'{root}/current/bridge/bridge.py; settings {settings} -> {settings}; '
+                      f'the old file is kept in {root}/service.previous', out)
         self.assertEqual((root / 'service.previous').read_text(), legacy)
         self.assertEqual((root / 'service.previous').stat().st_mode & 0o777, 0o600)
         self.assertEqual(sorted(p.name for p in unit_file.parent.iterdir()), ['cedar-telegram.service'])
@@ -2117,6 +2127,54 @@ class InstanceTests(unittest.TestCase):
                             f'base: http://127.0.0.1:<port>; {has}', *args)
         declaration.write_text(text)
         commit_source(self.source, self.home, 'the base line again')
+
+        other, _, _ = self.instance('birch', 997, 18951)
+        candidate, _, _ = self.instance('cedar', 996, 18961)
+        candidate_text = candidate.read_text()
+        fresh_root = self.root / 'fresh-install'
+        tops = (self.home, self.root / 'dogwood', self.root / 'birch', self.root / 'cedar', fresh_root)
+        for platform in ('linux', 'darwin'):
+            self.env['TELEGRAM_PACK_PLATFORM'] = platform
+            self.ok(self.run_install(settings))
+            self.ok(self.run_install(other))
+            service = unit_file if platform == 'linux' else self.home / 'Library/LaunchAgents/dogwood-telegram.plist'
+            launcher = root / 'bin/telegram-bridge'
+            for collision, text, args, owner in (
+                    ('explicit unit', f'unit = "dogwood-telegram.service"\n' + candidate_text, (), service),
+                    ('default unit', candidate_text.replace('yard = "cedar"', 'yard = "dogwood"'), (), service),
+                    ('unit only', f'unit = "dogwood-telegram.service"\n' + candidate_text,
+                     ('--root', str(fresh_root)), service),
+                    ('root only', candidate_text, ('--root', str(root)), launcher)):
+                candidate.write_text(text)
+                for mode in ((), ('--dry-run',), ('--rollback',)):
+                    with self.subTest(platform=platform, collision=collision, mode=mode):
+                        refused(f'install.sh: {owner} uses settings {settings}; refusing settings {candidate}. '
+                                'To move a settings file deliberately, use a fresh unit and root; '
+                                'see yardr/SETUP.md, "Move an existing bridge to its own installation" '
+                                'for rollback', *args, *mode, settings=candidate)
+            candidate.write_text(candidate_text)
+
+            for owner in (service, launcher):
+                saved = owner.read_bytes()
+                if platform == 'darwin' and owner == service:
+                    missing = plistlib.loads(saved)
+                    missing['ProgramArguments'] = [str(sys.executable), 'bridge.py', 'run']
+                    broken = (b'PRIVATE_SENTINEL', plistlib.dumps(missing))
+                else:
+                    broken = (b'PRIVATE_SENTINEL', saved.replace(b'--settings ', b'--unknown '),
+                              saved.replace(b'--settings ', b'--settings /other --settings '),
+                              saved.replace(str(settings).encode(), b'relative.toml'),
+                              saved.replace(str(settings).encode(), b'"PRIVATE_SENTINEL'), b'\xff')
+                try:
+                    for content in broken:
+                        owner.write_bytes(content)
+                        for mode in ((), ('--dry-run',), ('--rollback',)):
+                            with self.subTest(platform=platform, owner=owner, content=content, mode=mode):
+                                refused(f'install.sh: cannot read settings ownership from {owner}; '
+                                        'expected one absolute --settings path', *mode)
+                finally:
+                    owner.write_bytes(saved)
+        self.env['TELEGRAM_PACK_PLATFORM'] = 'linux'
 
     def venv(self, path):
         """A venv at path whose python links to this interpreter; skipped when one cannot be made."""
@@ -2383,16 +2441,43 @@ class InstanceTests(unittest.TestCase):
             '            raise OSError(5, "Input/output error", str(dst))\n'
             '        return _rename(src, dst, *a, **k)\n'
             '    os.rename = rename\n'
-            'elif _fault == "wait":\n'
+            'elif _fault in ("wait", "owner"):\n'
             '    import fcntl\n'
             '    _flock = fcntl.flock\n'
             '    def flock(fd, op):\n'
+            '        if _fault == "owner":\n'
+            '            result = _flock(fd, op)\n'
+            '            path = os.environ["OWNER_LAUNCHER"]\n'
+            '            with open(path) as stream:\n'
+            '                text = stream.read()\n'
+            '            with open(path, "w") as stream:\n'
+            '                stream.write(text.replace(os.environ["OWNER_SETTINGS"], os.environ["OTHER_SETTINGS"]))\n'
+            '            return result\n'
             '        try:\n'
             '            return _flock(fd, op | fcntl.LOCK_NB)\n'
             '        except BlockingIOError:\n'
             '            open(os.path.join(_dir, "blocked"), "w").close()\n'
             '            return _flock(fd, op)\n'
-            '    fcntl.flock = flock\n')
+            '    fcntl.flock = flock\n'
+            'elif _fault in ("service-first", "service-second"):\n'
+            '    import fcntl, select\n'
+            '    _flock, _replace = fcntl.flock, os.replace\n'
+            '    def flock(fd, op):\n'
+            '        try:\n'
+            '            return _flock(fd, op | fcntl.LOCK_NB)\n'
+            '        except BlockingIOError:\n'
+            '            os.write(int(os.environ["READY_FD"]), b"b")\n'
+            '            return _flock(fd, op)\n'
+            '    def replace(src, dst, *a, **k):\n'
+            '        if str(dst) == os.environ["SHARED_SERVICE"]:\n'
+            '            os.write(int(os.environ["READY_FD"]), b"p")\n'
+            '            fd = int(os.environ["GO_FD"])\n'
+            '            if not select.select([fd], [], [], 30)[0] or os.read(fd, 1) != b"g":\n'
+            '                raise OSError(5, "publication barrier closed", str(dst))\n'
+            '        return _replace(src, dst, *a, **k)\n'
+            '    if _fault == "service-second":\n'
+            '        fcntl.flock = flock\n'
+            '    os.replace = replace\n')
 
         def faulted(fault):
             return {**self.env, 'PYTHONPATH': str(faults), 'FAULT_DIR': str(faults), 'FAULT': fault}
@@ -2439,6 +2524,159 @@ class InstanceTests(unittest.TestCase):
         self.assertTrue((root / 'current').is_dir(), b_out)
         self.assertEqual(os.readlink(root / 'previous'), f'releases/{second}')
         self.assert_pack(root, 18991)
+
+        # Ownership changed after preflight is refused again under the activation lock.
+        launcher = root / 'bin/telegram-bridge'
+        saved = launcher.read_bytes()
+        before = tree_digest(self.home, self.root / 'fir')
+        other = settings.with_name('other.toml')
+        try:
+            refused = subprocess.run(command(), env={**faulted('owner'), 'OWNER_LAUNCHER': str(launcher),
+                                                     'OWNER_SETTINGS': str(settings), 'OTHER_SETTINGS': str(other)},
+                                     capture_output=True, text=True, timeout=120)
+            self.assertEqual(refused.returncode, 1, refused.stdout)
+            self.assertIn(f'{launcher} uses settings {other}; refusing settings {settings}', refused.stderr)
+            self.assertNotIn('linked ', refused.stdout)
+            self.assertNotIn('wrote ', refused.stdout)
+        finally:
+            launcher.write_bytes(saved)
+        self.assertEqual(tree_digest(self.home, self.root / 'fir'), before)
+
+        # Different roots claiming an absent service must share the activation lock.
+        for platform in ('linux', 'darwin'):
+            with self.subTest(platform=platform):
+                self.env['TELEGRAM_PACK_PLATFORM'] = platform
+                a_settings, a_root, service = self.instance(f'alder{platform}', 998, 18941)
+                b_settings, _, _ = self.instance(f'birch{platform}', 997, 18951)
+                b_root = self.root / f'{platform}-install'
+                b_settings.write_text(f'unit = "alder{platform}-telegram.service"\n' + b_settings.read_text())
+                if platform == 'darwin':
+                    service = self.home / f'Library/LaunchAgents/alder{platform}-telegram.plist'
+                self.assertFalse(service.exists())
+                pipes, processes, releases = [], [], []
+
+                def start(settings, root, fault):
+                    ready_read, ready_write = os.pipe()
+                    go_read, go_write = os.pipe()
+                    pipes.extend((ready_read, ready_write, go_read, go_write))
+                    releases.append(go_write)
+                    env = {**faulted(fault), 'SHARED_SERVICE': str(service),
+                           'READY_FD': str(ready_write), 'GO_FD': str(go_read)}
+                    process = subprocess.Popen(['sh', str(self.source / 'install.sh'), '--settings', str(settings),
+                                                '--root', str(root)], env=env, pass_fds=(ready_write, go_read),
+                                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    processes.append(process)
+                    return process, ready_read, go_write
+
+                def event(fd):
+                    self.assertTrue(select.select([fd], [], [], 30)[0], 'installer did not reach the barrier')
+                    return os.read(fd, 1)
+
+                try:
+                    a, a_ready, a_go = start(a_settings, a_root, 'service-first')
+                    self.assertEqual(event(a_ready), b'p')
+                    self.assertFalse(service.exists())
+                    b_proc, b_ready, b_go = start(b_settings, b_root, 'service-second')
+                    waiting = event(b_ready)
+                    os.write(a_go, b'g')
+                    a_out, a_err = a.communicate(timeout=30)
+                    self.assertEqual(a.returncode, 0, a_out + a_err)
+                    tops = (a_root, service, a_settings.parent)
+                    before = tree_digest(*tops)
+                    os.write(b_go, b'g')
+                    b_out, b_err = b_proc.communicate(timeout=30)
+                    self.assertEqual(tree_digest(*tops), before)
+                    self.assertEqual(b_proc.returncode, 1, b_out + b_err)
+                    self.assertIn(f'{service} uses settings {a_settings}; refusing settings {b_settings}', b_err)
+                    self.assertEqual(waiting, b'b')
+                    self.assertNotIn('linked ', b_out)
+                    self.assertNotIn('wrote ', b_out)
+                    self.assertFalse((b_root / 'current').exists())
+                    self.assertFalse((b_root / 'bin/telegram-bridge').exists())
+                    self.assertFalse((b_root / 'pack').exists())
+                    self.assertEqual(b.installed_settings(service), a_settings)
+                    self.assertEqual(self.launch(a_root, '--help').returncode, 0)
+                    self.assert_pack(a_root, 18941)
+                finally:
+                    for fd in releases:
+                        os.write(fd, b'g')
+                    for process in processes:
+                        process.communicate(timeout=30)
+                    for fd in pipes:
+                        os.close(fd)
+
+        # A custom root may be the service directory itself, including through a link.
+        for platform in ('linux', 'darwin'):
+            for layout in ('direct', 'alias'):
+                with self.subTest(platform=platform, root=layout):
+                    yard = f'willow{platform}{layout}'
+                    settings, _, _ = self.instance(yard, 992, 19001)
+                    home = self.home / yard
+                    env = {**self.env, 'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config'),
+                           'TELEGRAM_PACK_PLATFORM': platform}
+                    directory = home / ('Library/LaunchAgents' if platform == 'darwin' else '.config/systemd/user')
+                    service = directory / f'{yard}-telegram.{"plist" if platform == "darwin" else "service"}'
+                    custom_root = directory
+                    if layout == 'alias':
+                        directory.mkdir(parents=True)
+                        custom_root = self.root / f'{yard}-root'
+                        custom_root.symlink_to(directory, target_is_directory=True)
+
+                    def install(*args, source=None, using=settings):
+                        argv = ['sh', str((source or self.source) / 'install.sh'), '--settings', str(using),
+                                '--root', str(custom_root), *args]
+                        with subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                              text=True, start_new_session=True) as process:
+                            try:
+                                out, err = process.communicate(timeout=15)
+                            except subprocess.TimeoutExpired:
+                                os.killpg(process.pid, signal.SIGTERM)
+                                try:
+                                    out, err = process.communicate(timeout=10)
+                                except subprocess.TimeoutExpired:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                    out, err = process.communicate(timeout=10)
+                                self.fail(f'custom-root activation did not finish:\n{out}\n{err}')
+                        return subprocess.CompletedProcess(argv, process.returncode, out, err)
+
+                    self.ok(install())
+                    first_release = os.readlink(custom_root / 'current')
+                    first_pack = os.readlink(custom_root / 'pack')
+                    unit = service.read_bytes()
+                    self.assertEqual(b.installed_settings(service), settings)
+                    self.assertEqual(b.installed_settings(custom_root / 'bin/telegram-bridge'), settings)
+                    self.assert_pack(custom_root, 19001)
+                    before = tree_digest(home, settings.parent)
+                    self.assertIn('is current', self.ok(install()))
+                    self.assertEqual(tree_digest(home, settings.parent), before)
+
+                    with (self.source / 'yardr/SETUP.md').open('a') as stream:
+                        stream.write(f'\nA new release for {yard}.\n')
+                    upgraded = commit_source(self.source, self.home, 'a custom-root upgrade')
+                    self.ok(install())
+                    self.assertEqual(os.readlink(custom_root / 'current'), f'releases/{upgraded}')
+                    self.assertEqual(os.readlink(custom_root / 'previous'), first_release)
+                    self.assertNotEqual(os.readlink(custom_root / 'pack'), first_pack)
+                    self.assert_pack(custom_root, 19001)
+
+                    self.ok(install('--rollback', source=custom_root / 'current'))
+                    self.assertEqual(os.readlink(custom_root / 'current'), first_release)
+                    self.assertEqual(os.readlink(custom_root / 'previous'), f'releases/{upgraded}')
+                    self.assertEqual(os.readlink(custom_root / 'pack'), first_pack)
+                    self.assertEqual(service.read_bytes(), unit)
+                    self.assert_pack(custom_root, 19001)
+                    rendered = subprocess.run([str(custom_root / 'bin/telegram-bridge'), 'render-unit'], env=env,
+                                              capture_output=True, text=True, timeout=30)
+                    self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                    self.assertEqual(rendered.stdout.encode(), unit)
+
+                    other, _, _ = self.instance(f'{yard}other', 991, 19011)
+                    other.write_text(f'unit = "{yard}-telegram.service"\n' + other.read_text())
+                    before = tree_digest(home, settings.parent, other.parent)
+                    refused = install(using=other)
+                    self.assertEqual(refused.returncode, 1, refused.stdout)
+                    self.assertIn(f'{service} uses settings {settings}; refusing settings {other}', refused.stderr)
+                    self.assertEqual(tree_digest(home, settings.parent, other.parent), before)
 
 
 if __name__ == '__main__':

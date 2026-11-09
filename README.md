@@ -88,14 +88,22 @@ Release history: `CHANGELOG.md`.
 - Optional native skill review needs the core captured single-file proposal
   capability (introduced at `a79f6f8162c8`) and the paired operator setup in
   [SETUP.md](yardr/SETUP.md#single-file-skill-snapshots). Full review parts
-  precede buttons; Approve requires a direct ask-number reply. Other
-  file-bearing proposals remain unsupported.
+  precede buttons; Approve requires a direct ask-number reply. Only one
+  regular `SKILL.md` with supported metadata can use skill review.
 - Optional native herdr group cards (`group add`, `group set`) need core
   `fc7375cf5ad4` or later and the same setup
   ([SETUP.md](yardr/SETUP.md#herdr-group-add-and-set)).
+- Optional native source-add review (`source add <file>`) needs the carried
+  source-add contract at core `546e3fdd2127` and the same `run_ask` grant and
+  paired operator setup. It reviews the declaration, command files and
+  replacement diffs ([SETUP.md](yardr/SETUP.md#source-declarations-and-command-files)).
 - For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).
+
+Native run cards exclude `pack apply`, `crew add`, `depot push`, multi-file
+skills, secret/setup/identity operations and parameter input; use the full
+native client for those.
 
 ## Adopt in a yard
 

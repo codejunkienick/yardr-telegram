@@ -111,6 +111,7 @@ proposal. A crew grant never authorizes the crew to approve its own card.
 | Routine run ask, weighted direct-reply confirmation | Canonical Bead/ApproveAsk and current operator mapping | `run_ask` |
 | Captured skill file review | Captured single-file proposal contract (`a79f6f8162c8` baseline) | Same `run_ask` |
 | Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | Same `run_ask` |
+| Source-add declaration and command file review | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | Same `run_ask` |
 | Ordinary option/words/manual-stage decisions and `/decide` | Bead ask turns, UserAsks and guarded Answer/Defer/DeclineAskExpected (`7fa0d4c75ff6`) | `ask_card` |
 | Siding status and paired fold/release | Socket-only SidingProposal/Outcome and guarded expected writes (`24bcfd0955c9`), version 1 guard schema | `siding_card` |
 | Explicit Markdown replies | Core explicit reply format transport (`0035b8c13e27`) plus `thread.formats: [markdown]` in installed source | No new grant for thread replies; `send`/`pin` for those calls |
@@ -121,11 +122,16 @@ is insufficient. Existing settings without native home/operator still load
 and retain hook/chat behavior.
 
 Only one regular text SKILL.md, at most 32 KiB on either side and supported
-name/description metadata, can use native captured file review. Complete
+name/description metadata, can use native captured skill review. Complete
 numbered review parts and replacement diff precede weighted confirmation.
-Extra files, deletion, arbitrary source/pack files, secrets, identity/setup,
-depot push, parameter input and crew-add prompt payloads are unsupported;
-use the full native client. Unknown/oversized cards refuse whole. Ordinary
+Extra skill files and skill deletion require the full native client.
+
+[`source add <file>`](../bridge/OPERATIONS.md#source-add-declaration-and-command-review)
+reviews one declaration and its relative command files, including replacement
+diffs and inventory, in complete numbered parts before controls appear.
+Native run cards exclude `pack apply`, `crew add`, `depot push`, multi-file
+skills, secret/setup/identity operations and parameter input; use the full
+native client for those. Unknown/oversized cards refuse whole. Ordinary
 asks have no operation/weight/file payload. Siding mutations support only
 `guard=store` with no refusals; repository flow or until inputs are visibly
 status-only. Stale proposals, ambiguous writes and pruned outcomes require

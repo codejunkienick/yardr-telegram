@@ -6,7 +6,7 @@ models, external tools or add-ons. Retain each upstream notice with any
 redistributed copy. This repository does not include transcriber binaries
 or model weights.
 
-## Included Markdown runtime
+## Included Markdown runtime and YAML reader
 
 `vendor/` includes markdown-it-py 4.2.0 and mdurl 0.1.2 from verified wheels,
 with their upstream MIT licenses, copyright notices and metadata intact.
@@ -14,6 +14,13 @@ See [the pins and offline reproduction](vendor/README.md),
 [markdown-it-py's notices](vendor/markdown_it_py-4.2.0.dist-info/licenses/LICENSE),
 [its markdown-it notice](vendor/markdown_it_py-4.2.0.dist-info/licenses/LICENSE.markdown-it)
 and [mdurl's notice](vendor/mdurl-0.1.2.dist-info/LICENSE).
+
+Source-add review includes the unmodified pure-Python YAML reader from
+PyYAML 6.0.3, extracted from the pinned source archive. Its upstream MIT
+copyright and license notice is retained in
+[vendor/pyyaml-LICENSE](vendor/pyyaml-LICENSE); see
+[the pin and offline reproduction](vendor/README.md). No native extension
+is shipped.
 
 ## Optional transcription downloads
 

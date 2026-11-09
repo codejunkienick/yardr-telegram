@@ -2671,39 +2671,57 @@ class RealNativeTests(BridgeTestCase):
             self.assertNotIn('base', client.call('GetSource', ['tgbridge']))
             cli('pack', 'apply', rendered('fresh-pack', 28941), '--yes')
             self.assertEqual(cli('source', 'show', 'tgbridge').splitlines()[0], 'tgbridge  http://127.0.0.1:28941')
-            legacy = root / 'legacy-pack'
-            shutil.copytree(release, legacy)
-            declaration = legacy / 'tgbridge.yaml'
-            legacy_text = declaration.read_text()
-            declaration.write_text(legacy_text[:legacy_text.index('  run_ask:\n')] + legacy_text[legacy_text.index('  ask_close:\n'):])
-            credential = root / 'synthetic.env'
-            credential.write_text('TGBRIDGE_SECRET=synthetic-test-only\n')
-            credential.chmod(0o600)
-            cli('pack', 'apply', str(legacy), '--yes')
-            for setting in ('base=imd', 'calls_per_hour=600', 'updates_per_hour=300', 'env_file=' + str(credential)):
-                cli('source', 'set', 'tgbridge', setting)
-            cli('source', 'grant', 'tgbridge', 'send', '--group', 'humans')
-            before_source = client.call('GetSource', ['tgbridge'])
-            before_group = client.call('GetGroup', ['humans'])
-            instance = rendered('instance-pack', 18942)
-            cli('pack', 'check', instance)
-            cli('pack', 'apply', instance, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
-            upgraded = client.call('GetSource', ['tgbridge'])
-            self.assertIn('  ask_card:', upgraded['declaration'])
-            self.assertIn('  run_ask:', upgraded['declaration'])
-            self.assertIn('\nbase: http://127.0.0.1:18942\nbases:\n  odyssey: http://127.0.0.1:8941\n'
-                          '  imd: http://127.0.0.1:8942\n', upgraded['declaration'])
-            self.assertEqual(cli('source', 'show', 'tgbridge').splitlines()[0], 'tgbridge  http://127.0.0.1:8942 (base imd)')
-            self.assertEqual((upgraded['base'], upgraded['keyed_host']), ('imd', 'http://127.0.0.1:8942'))
-            self.assertEqual({k: v for k, v in upgraded.items() if k not in ('declaration', 'added_at')},
-                             {k: v for k, v in before_source.items() if k not in ('declaration', 'added_at')})
-            self.assertEqual(client.call('GetGroup', ['humans']), before_group)
-            cli('source', 'grant', 'tgbridge', 'ask_card', '--group', 'humans')
-            granted = client.call('GetGroup', ['humans'])
-            cli('pack', 'apply', instance, '--yes', '--source-base', 'tgbridge=imd', '--source-env', 'tgbridge=' + str(credential))
-            self.assertEqual(client.call('GetSource', ['tgbridge']), upgraded)
-            self.assertEqual(client.call('GetGroup', ['humans']), granted)
-            self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-test-only\n')
+            # Operator-reviewed custom declarations retain custom aliases; stock ones never invent them.
+            for index, (alias, host) in enumerate((('odyssey', 'http://127.0.0.1:8941'),
+                                                   ('imd', 'http://127.0.0.1:8942'),
+                                                   ('custom-harbor', 'http://127.0.0.1:23017'))):
+                with self.subTest(source_upgrade=alias):
+                    legacy = root / ('legacy-pack-' + alias)
+                    shutil.copytree(release, legacy)
+                    declaration = legacy / 'tgbridge.yaml'
+                    legacy_text = declaration.read_text()
+                    if alias == 'custom-harbor':
+                        legacy_text = legacy_text.replace('bases:\n', 'bases:\n  ' + alias + ': ' + host + '\n', 1)
+                    declaration.write_text(legacy_text[:legacy_text.index('  run_ask:\n')] + legacy_text[legacy_text.index('  ask_close:\n'):])
+                    credential = root / (alias + '.env')
+                    credential.write_text('TGBRIDGE_SECRET=synthetic-' + alias + '\n')
+                    credential.chmod(0o600)
+                    # Clear only the synthetic fixture's prior binding before choosing the next case.
+                    cli('source', 'rm', 'tgbridge')
+                    cli('pack', 'apply', str(legacy), '--yes', '--source-base', 'tgbridge=' + alias,
+                        '--source-env', 'tgbridge=' + str(credential))
+                    for setting in ('calls_per_hour=600', 'updates_per_hour=300'):
+                        cli('source', 'set', 'tgbridge', setting)
+                    cli('source', 'grant', 'tgbridge', 'send', '--group', 'humans')
+                    before_source = client.call('GetSource', ['tgbridge'])
+                    before_group = client.call('GetGroup', ['humans'])
+                    instance = rendered('instance-pack-' + alias, 19000 + index)
+                    if alias == 'custom-harbor':
+                        refused = subprocess.run(command + ['pack', 'apply', instance, '--yes',
+                            '--source-base', 'tgbridge=' + alias, '--source-env', 'tgbridge=' + str(credential)],
+                            env=env, cwd=root, capture_output=True, text=True, timeout=20)
+                        self.assertNotEqual(refused.returncode, 0)
+                        self.assertIn(alias, refused.stderr)
+                        self.assertEqual(client.call('GetSource', ['tgbridge']), before_source)
+                        self.assertEqual(client.call('GetGroup', ['humans']), before_group)
+                        self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-' + alias + '\n')
+                        path = Path(instance) / 'tgbridge.yaml'
+                        path.write_text(path.read_text().replace('bases:\n', 'bases:\n  ' + alias + ': ' + host + '\n', 1))
+                    cli('pack', 'check', instance)
+                    for repeat in range(2):
+                        cli('pack', 'apply', instance, '--yes', '--source-base', 'tgbridge=' + alias,
+                            '--source-env', 'tgbridge=' + str(credential))
+                        upgraded = client.call('GetSource', ['tgbridge'])
+                        self.assertIn('  ask_card:', upgraded['declaration'])
+                        self.assertIn('  run_ask:', upgraded['declaration'])
+                        self.assertEqual(cli('source', 'show', 'tgbridge').splitlines()[0], 'tgbridge  ' + host + ' (base ' + alias + ')')
+                        self.assertEqual((upgraded['base'], upgraded['keyed_host']), (alias, host))
+                        self.assertEqual({k: v for k, v in upgraded.items() if k not in ('declaration', 'added_at')},
+                                         {k: v for k, v in before_source.items() if k not in ('declaration', 'added_at')})
+                        self.assertEqual(client.call('GetGroup', ['humans']), before_group)
+                        self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-' + alias + '\n')
+                    # The private env binding is never pointed at the rendered default's unrelated host.
+                    self.assertNotEqual(upgraded['keyed_host'], 'http://127.0.0.1:' + str(19000 + index))
             # Real CLI -> RPC reservation -> declared thread -> API -> Telegram fake.
             port = self.start_callback_server()
             markdown_pack = Path(rendered('markdown-pack', port))

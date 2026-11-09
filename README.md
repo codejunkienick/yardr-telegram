@@ -78,12 +78,14 @@ Release history: `CHANGELOG.md`.
 ## Prerequisites
 
 - Linux with a systemd user session (`systemctl --user status`). macOS
-  with launchd works as it did for the gc pack (`bridge/OPERATIONS.md`,
+  has a launchd renderer inherited from the original pack (`bridge/OPERATIONS.md`,
   "Install and launch"), untested with yardr.
 - Python 3.11 or later (`python3 --version`), and curl.
-- yardr 0.16 or later with the yard running (`yardr version`), and the
-  yard's hook listener on a loopback address (`yardr settings get
-  hook_addr`).
+- yardr with source packs, hook verification, thread commands and the yard
+  running (`yardr --version`); configure a loopback hook listener
+  (`yardr settings get hook_addr`). Native cards and Markdown need the
+  additional capabilities listed in [the compatibility table](docs/public-readiness.md#capabilities-and-grants).
+  A version number alone does not establish those capabilities.
 - Optional native skill review needs the core captured single-file proposal
   capability (introduced at `a79f6f8162c8`) and the paired operator setup in
   [SETUP.md](yardr/SETUP.md#single-file-skill-snapshots). Full review parts
@@ -203,12 +205,12 @@ paired user.
 A partial file, with only the keys that differ from settings.example.toml:
 
 ```toml
-yard = "odyssey"
-state_dir = "/home/<user>/.local/state/odyssey-telegram"
+yard = "example"
+state_dir = "~/.local/state/example-telegram"
 port = 8941
 [yardr]
 hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
-hook_secret_file = "~/.config/odyssey-telegram/hook-secret"
+hook_secret_file = "~/.config/example-telegram/hook-secret"
 [transcribe]
 enabled = true
 method = "auto"
@@ -217,7 +219,7 @@ name = "homelab"
 [[command]]
 name = "deploy"
 description = "Deploy a branch"
-handler = "/home/<user>/bin/telegram-deploy"
+handler = "/absolute/path/to/telegram-deploy"
 ```
 
 ### Explicit Markdown
@@ -227,3 +229,11 @@ source/API sends and pins take `format=markdown`, and the bridge CLI takes
 `--format markdown`. Existing auto/plain/HTML defaults stay unchanged.
 The pinned parser ships offline in each release through the existing
 installer. See [formatting policy and operator handoff](docs/formatting.md).
+
+## Local public-readiness review
+
+[Public-readiness checks and release handoff](docs/public-readiness.md) covers
+portable setup, compatibility limits, a location-only committed-tree scan and
+a local export/manifest for review. It does not publish or rewrite history.
+Optional transcription downloads have separate [third-party notices](THIRD_PARTY_NOTICES.md);
+the project's MIT [LICENSE](LICENSE) is unchanged.

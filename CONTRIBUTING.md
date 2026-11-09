@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve this pack. Every city that adopts it runs its own
+Thanks for helping improve this pack. Every yard that adopts it runs its own
 installed copy of the same code, each configured only by its own settings
 file, so changes must stay true for every adopter. Instances on one host may
 run different releases, and an operator may roll one back
@@ -22,7 +22,7 @@ example `sh scripts/test.sh -v`. CI runs the same suite on Ubuntu and macOS with
 
 ## Settings compatibility
 
-Every settings key a live city's file already holds keeps loading with
+Every settings key an existing yard's file already holds keeps loading with
 the same meaning. A new behaviour is a new key with a default that
 preserves the old behaviour; never repurpose or silently drop a key.
 A settings problem refuses to load with one line naming it.
@@ -41,11 +41,12 @@ A settings problem refuses to load with one line naming it.
 
 ## What belongs here
 
-- The pack names no city, person or company outside the marked example
-  in the README, and holds no credential: tokens and secrets live in
-  each city's own owner-only files, never in this repository.
-- The pack ships no `[[command]]` handler. A command or button a city
-  wants is that city's own handler program, registered in its own
+- New setup/examples use fictional operators and yards, with configurable
+  paths/ports/timezones. Keep protocol names, legacy source aliases, compatibility
+  fixtures and author/legal attribution. Credentials stay in each yard's
+  owner-only files, never in this repository. See `docs/public-readiness.md`.
+- The pack ships no `[[command]]` handler. A command or button a yard
+  wants is that yard's own handler program, registered in its own
   settings; see "Commands" in `bridge/OPERATIONS.md`.
 - Every send goes through the delivery ledger; there is no direct
   send path around it.

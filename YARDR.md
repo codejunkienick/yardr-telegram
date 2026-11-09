@@ -1,15 +1,15 @@
 # yardr-telegram: the Telegram bridge for a yardr yard
 
 This repository is a fork of the Gas City telegram pack
-(`~/work/gc-packs/telegram-pack`, remote `gc-pack`, forked at 19973ca).
+(forked at 19973ca; the original project attribution is retained).
 The bridge, its ledger, topics, asks, pins, reactions, typing,
 transcription and the `[[command]]` add-on protocol are unchanged. What
 changes is the conversation layer behind them: gc's `extmsg` API is gone,
 and a yardr yard takes its place.
 
 One bridge serves one yard with one bot. A second yard gets its own bot,
-settings file, state directory, port and unit (decided 2026-11-06: the
-personal yard `odyssey` and the company yard `imd` never share a bot).
+settings file, native home/operator/socket, state directory, port, unit
+and independently versioned install root. No instance routes through another.
 
 ## Why the bridge stays a process of its own
 
@@ -106,7 +106,7 @@ with `html`.
 `--settings` falls back to `$TELEGRAM_BRIDGE_SETTINGS`. Every send is
 delivered in the calling process through the shared ledger; nothing goes
 through the yard. The `GC_RECEIPT {...}` line on stderr keeps its name,
-because the sysmon watch and pricewatch parse it.
+because existing delivery consumers parse it.
 
 `topics` prints, for each topic, the subscription that routes it:
 
@@ -122,7 +122,7 @@ subscribe: yardr subscribe yardmaster tgbridge --scope all --where type=message 
 - `yard` replaces `city`: the yard's name, in the default unit name
   (`<yard>-telegram.service`) and in conversation refs.
 - `crew` replaces `agent`: the crew member a topic's subscription line
-  names (default `yardmaster`), and whose quota the notice watches.
+  names (default `yardmaster`), and whose quota the notice watches (the internal method keeps its legacy name).
   `[[topic]] crew` replaces `[[topic]] agent`.
 - `[yardr]` is new: `hook_url` (`http://127.0.0.1:<port>/hooks/<name>`,
   loopback only), `hook_secret_file` (owner-only), `source` (default
@@ -168,11 +168,11 @@ except where noted:
 
 | add-on | change |
 |---|---|
-| telegram-quota | `/quota`, `/resets` unchanged. `/mayor_model` gains a yardr target: `yardr crew set <crew> kind=… model=…` and `yardr crew restart <crew>`, instead of a commit to the City's `agents/mayor/agent.toml` |
-| telegram-waiting | the handler is unchanged; the snapshot producer moves off the City order and `gc bd` |
+| telegram-quota | `/quota`, `/resets` and the legacy command name `/mayor_model` belong to the external handler. A yardr-aware handler uses `yardr crew set <crew> kind=… model=…` and `yardr crew restart <crew>`; the bridge does not edit agent configuration |
+| telegram-waiting | the external snapshot producer must target the configured yard; the bridge does not supply or migrate it |
 | telegram-sysmon | settings only: `bridge_py` and `settings_file` point at this bridge |
 | telegram-pricewatch | settings only, as sysmon |
-| telegram-secret-drop | `send_command` points at this bridge's `send`; the `gc secret` commands become a command line of its own |
+| telegram-secret-drop | `send_command` targets this instance's launcher; secret storage and its CLI are owned by the external handler |
 
 ## What is left out, on purpose
 

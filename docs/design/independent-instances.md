@@ -21,22 +21,22 @@ together:
 
 `bridge.py` itself was already self-contained: it finds `run_asks.py`, the
 transcriber, `models.sha256` and the unit template beside itself, and imports
-only the standard library. A copy of the tree is a complete program. What was
-missing was a supported copy, a way to activate and roll it back, and the
+the standard library plus its own pinned vendor packages. A copy of the tree
+is a complete program. What was missing was a supported copy, a way to activate and roll it back, and the
 per-instance pieces around it.
 
 ## Decisions
 
-- **2026-11-08, City 4111.** Keep it simple. The same yard-agnostic product
+- **2026-11-08, independent instances.** Keep it simple. The same generic product
   runs in every yard, the instances are fully independent, and duplicating
   small code or files is preferred to a shared mutable dependency. Each
   installation is upgraded, rolled back or removed without touching another.
   Existing installations move over through a validated, operator-owned
   hand-off, never through removal followed by manual repair.
-- **2026-11-08, City 4139.** Every company dependency on the personal yard is
-  handed over. For this repository that is the bridge's runtime, the
+- **2026-11-08, remove runtime coupling.** Every instance dependency on
+  another instance is removed. Here that is the bridge's runtime, the
   telegram skills' paths and the voice-transcribe link.
-- **2026-11-08, City 4240, message 7094.** Explicit Markdown formatting is
+- **2026-11-08, explicit Markdown.** Explicit Markdown formatting is
   approved, with a pinned pure-Python parser. Each instance owns its runtime
   copy of it: no shared virtual environment and no install when a message is
   sent. Such dependencies go under the release's `vendor/`.

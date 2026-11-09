@@ -1,11 +1,18 @@
 # Setting up tgbridge in a yard
 
-One bridge serves one yard with one bot. These steps set up the personal
-yard `odyssey` (home `~/.yardr`, bridge port 8941, hook listener
-127.0.0.1:8795); the company yard `imd` differs where marked
-(home `~/.yardr-imd`, bridge port 8942, hook listener 127.0.0.1:8796,
-which it already has for its peer link). Run every `yardr` command with
-the yard's `YARDR_HOME`.
+One bridge serves one yard with one bot. The examples use a fictional yard
+`example`, operator `operator`, timezone `UTC`, bridge port 8941 and hook
+port 8795. Choose your own names, home, ports and timezone; every instance
+has its own settings, bot credentials, state, socket, unit and install root.
+Run every `yardr` command with that yard's `YARDR_HOME` explicitly set:
+
+```sh
+export YARDR_HOME="/absolute/path/to/your/yard"
+```
+
+This selects an existing yard, not another bridge's settings or credentials.
+For upgrades, use [the migration procedure](#move-an-existing-bridge-to-its-own-installation)
+first; the initial key/hook steps below are for a new installation.
 
 Each step says who does it: (you) in Telegram, (shell) in your terminal,
 (agent or shell) for what an agent may also run.
@@ -15,7 +22,7 @@ taken over only after that bridge's unit is stopped.
 
 ## 1. The bot (you)
 
-In @BotFather send `/newbot` (imd: a company bot of its own). Open a
+In @BotFather send `/newbot`. Open a
 private chat with it and send `/start`. For topics, turn topic mode on in
 the bot's settings, and leave "users may create topics" on if
 `[auto_topics]` will be enabled.
@@ -23,31 +30,31 @@ the bot's settings, and leave "users may create topics" on if
 Save the token owner-only, typed or pasted into no command line:
 
 ```sh
-install -d -m 700 ~/.config/odyssey-telegram
-install -m 600 /dev/stdin ~/.config/odyssey-telegram/telegram-bot-token
+install -d -m 700 ~/.config/example-telegram
+install -m 600 /dev/stdin ~/.config/example-telegram/telegram-bot-token
 ```
 
 Paste, Enter, Ctrl-D.
 
 ## 2. The settings (agent or shell)
 
-Read the ids with the script in README.md ("Adopt in a yard", step 3), then
-write `~/.config/odyssey-telegram/telegram-bridge.toml` (mode 600) from
+Read the ids with the script in README.md ("Adopt in a yard"), then
+write `~/.config/example-telegram/telegram-bridge.toml` (mode 600) from
 `settings.example.toml`:
 
 ```toml
-yard = "odyssey"
-state_dir = "/home/nick/.local/state/odyssey-telegram"
-port = 8941                                   # imd: 8942
-token_file = "~/.config/odyssey-telegram/telegram-bot-token"
-callback_secret_file = "~/.config/odyssey-telegram/callback-secret"
-user_display_name = "Nick"
-timezone = "Asia/Yekaterinburg"
+yard = "example"
+state_dir = "~/.local/state/example-telegram"
+port = 8941
+token_file = "~/.config/example-telegram/telegram-bot-token"
+callback_secret_file = "~/.config/example-telegram/callback-secret"
+user_display_name = "Operator"
+timezone = "UTC"
 # crew = "yardmaster"
 
 [yardr]
-hook_url = "http://127.0.0.1:8795/hooks/tgbridge"   # imd: 8796
-hook_secret_file = "~/.config/odyssey-telegram/hook-secret"
+hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
+hook_secret_file = "~/.config/example-telegram/hook-secret"
 
 [bot]
 bot_id = <getMe id>
@@ -64,21 +71,30 @@ rename each `[[topic]] agent` to `crew`.
 
 ## 3. Install (shell)
 
+Create this instance's private state directory first (use your `state_dir`
+if it differs). Preflight needs it or its parent to exist, including on a
+fresh home with no `~/.local/state` yet.
+
 ```sh
-~/work/yardr-telegram/install.sh --settings ~/.config/odyssey-telegram/telegram-bridge.toml
+install -d -m 700 ~/.local/state/example-telegram
+<checkout>/install.sh --settings ~/.config/example-telegram/telegram-bridge.toml
 ```
 
 Run it from a checkout with no tracked changes: it installs that HEAD as
-this yard's own copy under `~/.local/share/yardr-telegram/odyssey-telegram`
+this yard's own copy under `~/.local/share/yardr-telegram/example-telegram`
 (`--root` names another root). It mints the callback secret and the hook
 secret (owner-only, never printed), checks the host from the copy, points
-the root's `current` at it, and renders `odyssey-telegram.service`, the
+the root's `current` at it, and renders `example-telegram.service`, the
 launcher `bin/telegram-bridge` and the yard's pack `pack` there (step 5).
 Start nothing yet. The checkout is no longer what runs: install again
 after a pull to update this yard, and `install.sh --settings <file>
 --rollback` returns it to the release before.
 
-## 4. The yard's hook listener (shell; odyssey only)
+## 4. The yard's hook listener (shell)
+
+First check `yardr settings get hook_addr`. Keep an existing loopback listener
+and use its actual port in `hook_url`; set a new unused port only if needed.
+The commands below restart that yard, so schedule them with its operator.
 
 ```sh
 yardr settings set hook_addr 127.0.0.1:8795
@@ -91,8 +107,8 @@ The address is loopback: nothing outside this machine reaches it.
 ## 5. The pack and its credential (shell)
 
 ```sh
-yardr pack apply ~/.local/share/yardr-telegram/odyssey-telegram/pack
-sed 's/^/TGBRIDGE_SECRET=/' ~/.config/odyssey-telegram/callback-secret | yardr source key tgbridge
+yardr pack apply ~/.local/share/yardr-telegram/example-telegram/pack
+sed 's/^/TGBRIDGE_SECRET=/' ~/.config/example-telegram/callback-secret | yardr source key tgbridge
 yardr source set tgbridge calls_per_hour=600
 yardr source set tgbridge updates_per_hour=300
 yardr source check tgbridge               # after step 9; health answers 200
@@ -100,22 +116,24 @@ yardr source check tgbridge               # after step 9; health answers 200
 
 `<root>/pack` is the active release's `yardr/` with its `base` line
 naming this settings file's port, so the source's calls go to this yard's
-own bridge with no `base=`; the legacy `bases:` (odyssey, imd) are kept as
-they are. install.sh renders it on every install and `--rollback`, and
+own bridge with no `base=`. The `odyssey` and `imd` keys are deprecated
+compatibility aliases, retained with their original hosts. New installs use
+the rendered default; no alias is needed. install.sh renders it on every
+install and `--rollback`, and
 `yardr pack apply tgbridge` reads it again from there.
 
 An installation that already has an alias selected (`yardr source show
-tgbridge` says `(base imd)`) keeps it, and names the env file it already
+tgbridge` says `(base <alias>)`) keeps it, and names the env file it already
 has (`source.env_file` in `yardr source show tgbridge --json`):
 
 ```sh
-yardr pack apply ~/.local/share/yardr-telegram/imd-telegram/pack \
-  --source-base tgbridge=imd --source-env tgbridge=<its env_file>
+yardr pack apply <root>/pack \
+  --source-base tgbridge=<existing-alias> --source-env tgbridge=<existing-env-file>
 ```
 
 The first apply from `<root>/pack` moves the yard's recorded import origin
 (`yardr pack list`) off the checkout: later re-applies read the installed
-pack, not `~/work/yardr-telegram/yardr`.
+pack, rather than `<checkout>/yardr`.
 
 A caller gets 60 calls of a source an hour, 10 of them updates, unless the
 source says otherwise; a chat needs more. `yardr reply` is not a call and
@@ -125,7 +143,7 @@ is not counted.
 
 ```sh
 yardr hook add tgbridge --source tgbridge \
-  --secret-file ~/.config/odyssey-telegram/hook-secret --unknown ignore
+  --secret-file ~/.config/example-telegram/hook-secret --unknown ignore
 ```
 
 `--unknown ignore` drops what a sender the yard does not know writes.
@@ -135,10 +153,10 @@ while step 7 is missing.
 ## 7. Who writes (shell)
 
 ```sh
-yardr user identity nick --source tgbridge --id <bot.user_id>
+yardr user identity <operator> --source tgbridge --id <bot.user_id>
 ```
 
-Each delivery then carries `speaker=nick`, and the yardmaster takes it as
+Each delivery then carries `speaker=<operator>`, and the yardmaster takes it as
 your word, as your mail.
 
 ## 8. Who answers (shell)
@@ -151,7 +169,7 @@ restart it:
 
 ```sh
 umask 077
-sed 's/^/TGBRIDGE_SECRET=/' ~/.config/odyssey-telegram/callback-secret >> <the yardmaster's env file>
+sed 's/^/TGBRIDGE_SECRET=/' ~/.config/example-telegram/callback-secret >> <the yardmaster's env file>
 yardr crew restart yardmaster
 ```
 
@@ -176,10 +194,10 @@ so renaming it keeps its route.
 ## 9. Start (shell)
 
 ```sh
-B=~/.local/share/yardr-telegram/odyssey-telegram/bin/telegram-bridge   # carries --settings
+B=~/.local/share/yardr-telegram/example-telegram/bin/telegram-bridge   # carries --settings
 $B probe
-systemctl --user daemon-reload && systemctl --user enable odyssey-telegram.service
-systemctl --user restart odyssey-telegram.service   # starts it, or restarts it after an install
+systemctl --user daemon-reload && systemctl --user enable example-telegram.service
+systemctl --user restart example-telegram.service   # starts it, or restarts it after an install
 $B set-commands
 $B topics          # creates the [[topic]]s once; run each subscribe: line
 ```
@@ -189,8 +207,8 @@ $B topics          # creates the [[topic]]s once; run each subscribe: line
 What lands in your inbox reaches the chat, in General or a topic:
 
 ```sh
-printf 'TGBRIDGE_CONVERSATION=%s\n' <chat id, or <chat id>:topic:<thread id>> | yardr user key nick tgbridge
-yardr user set nick notify=tgbridge
+printf 'TGBRIDGE_CONVERSATION=%s\n' <chat id, or <chat id>:topic:<thread id>> | yardr user key <operator> tgbridge
+yardr user set <operator> notify=tgbridge
 ```
 
 ## 11. Try it (you, then the yardmaster)
@@ -198,7 +216,7 @@ yardr user set nick notify=tgbridge
 Write to the bot. The yardmaster's inbox shows
 
 ```
-hook (all) tgbridge message create by Nick on "Telegram": …
+hook (all) tgbridge message create by Operator on "Telegram": …
 ```
 
 and `yardr reply <seq> "<b>Got it.</b>"` answers in the same chat or

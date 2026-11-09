@@ -7,7 +7,7 @@
 # secret stay in their own owner-only files.
 
 yard = "example"                            # the yard's name: the default unit's, and the conversations' scope
-state_dir = "/home/alex/.local/state/example-telegram"   # ledger, offset, message log, inbound files, heartbeat
+state_dir = "~/.local/state/example-telegram"   # ledger, offset, message log, inbound files, heartbeat
 port = 8941                                 # the yard API's loopback port, unique per bridge on the host; the source's base
 token_file = "~/.config/example-telegram/telegram-bot-token"
 callback_secret_file = "~/.config/example-telegram/callback-secret"   # the yard API's secret: the source's TGBRIDGE_SECRET; install.sh mints it
@@ -16,10 +16,10 @@ callback_secret_file = "~/.config/example-telegram/callback-secret"   # the yard
 # python = "/usr/bin/python3"               # must be Python 3.11 or later; on macOS e.g. "/opt/homebrew/bin/python3"
 user_display_name = "Alex"                  # how inbound messages name the paired user
 timezone = "Europe/Berlin"                  # times in notices; default UTC
-# health_file = "/home/alex/example/health.json"  # quota-exhausted notice: {"sessions": [{"template", "status": "quota_wait", "episode", "until"}]}
+# health_file = "~/example/health.json"  # quota-exhausted notice: {"sessions": [{"template", "status": "quota_wait", "episode", "until"}]}
 # pairing_update_id = 0                     # the update_id of the /start update (README step 3): the bridge starts after it; read only for a new ledger
 # crew = "yardmaster"                       # the crew member the topics' subscribe lines name, and the quota notice watches; default yardmaster
-# handler_write_paths = ["/home/alex/example/var/deploy"]  # dirs [[command]] handlers may write
+# handler_write_paths = ["~/example/var/deploy"]  # dirs [[command]] handlers may write
 
 # The yard this bridge relays to (YARDR.md): its hook listener on loopback
 # (the yard's hook_addr) and the hook's name, and the secret the hook was
@@ -53,7 +53,7 @@ description = "Show the agent's status"
 # [[command]]
 # name = "deploy"
 # description = "Deploy a branch"
-# handler = "/home/alex/example/bin/telegram-deploy"   # or url = "http://127.0.0.1:8095/deploy"
+# handler = "~/example/bin/telegram-deploy"   # or url = "http://127.0.0.1:8095/deploy"
 # menu = true                               # in the "/" menu; default true
 # callback_prefix = "deploy:"               # default "<name>:"
 # timeout = 10                              # seconds, 1-3600
@@ -97,7 +97,7 @@ enabled = true                              # voice and audio notes get a transc
 # timeout = 120                             # base seconds, 1-3600
 # timeout_per_minute = 120                  # added per minute of audio; killed when the total runs out
 # method = "cpu"                            # auto, cpu or gpu (default cpu); set method instead of gpu below
-# gpu_check = "/home/alex/example/bin/gpu-check"  # method auto only; default the pack's transcriber/gpu_check.py
+# gpu_check = "~/example/bin/gpu-check"  # method auto only; default the pack's transcriber/gpu_check.py
 # gpu = false                               # legacy form without method: true behaves as method = "auto", false as method = "cpu"
 # gpu_min_free_mb = 2048                    # free video memory a GPU run needs, MiB
 # Every bridge on the host waits in one transcription queue,

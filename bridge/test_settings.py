@@ -383,13 +383,13 @@ class ExampleSettingsTests(unittest.TestCase):
             path.chmod(mode)
         text = (PACK / 'settings.example.toml').read_text()
         for old, new in sorted({
-                '/home/alex/.local/state/example-telegram': str(self.root / 'state'),
+                '~/.local/state/example-telegram': str(self.root / 'state'),
                 '~/.config/example-telegram': str(private),
                 '~/.yardr': str(self.root / 'yard'),
-                '/home/alex/example/health.json': str(self.root / 'health.json'),
-                '/home/alex/example/var/deploy': str(self.root / 'deploy'),
-                '/home/alex/example/bin/telegram-deploy': str(private / 'telegram-deploy'),
-                '/home/alex/example/bin/gpu-check': str(private / 'gpu-check'),
+                '~/example/health.json': str(self.root / 'health.json'),
+                '~/example/var/deploy': str(self.root / 'deploy'),
+                '~/example/bin/telegram-deploy': str(private / 'telegram-deploy'),
+                '~/example/bin/gpu-check': str(private / 'gpu-check'),
                 '~/work/whisper.cpp/build/bin/whisper-cli': str(self.root / 'whisper-cli'),
                 '~/work/whisper.cpp/models': str(self.root / 'models')}.items(), key=lambda item: -len(item[0])):
             text = text.replace(old, new)
@@ -450,6 +450,33 @@ class ExampleSettingsTests(unittest.TestCase):
                 self.assertEqual(settings.config['topics'],
                                  (dict(name='ops', agent='secretary'), dict(name='web', agent='yardmaster')))
         self.assertEqual(loaded, dict(self.EXPECTED, command=self.EXPECTED['command'] | {'url'}))
+        # Load the public template under unrelated service homes, then reopen its ledger.
+        for yard, operator, timezone, port in (('alder', 'sam', 'Pacific/Auckland', 21903),
+                                                ('birch', 'lee', 'America/St_Johns', 30617)):
+            with self.subTest(yard=yard), patch.dict(os.environ, HOME=str(self.root / operator)):
+                home = self.root / operator
+                home.mkdir(mode=0o700)
+                text = (PACK / 'settings.example.toml').read_text().replace('example', yard)
+                text = text.replace('user_display_name = "Alex"', 'user_display_name = "' + operator + '"')
+                text = text.replace('"Europe/Berlin"', '"' + timezone + '"').replace('port = 8941', 'port = ' + str(port))
+                path = home / 'settings.toml'
+                path.write_text(text)
+                path.chmod(0o600)
+                original = path.read_bytes()
+                for existing in (False, True):
+                    settings = b.load_settings(path)
+                    self.assertEqual((settings.yard, settings.port, settings.config['timezone']), (yard, port, timezone))
+                    self.assertEqual(settings.state_dir, home / '.local/state' / (yard + '-telegram'))
+                    self.assertEqual(settings.token_file, home / '.config' / (yard + '-telegram') / 'telegram-bot-token')
+                    self.assertNotIn('yardr_home', settings.config)  # Native cards remain optional.
+                    settings.state_dir.mkdir(parents=True, exist_ok=True)
+                    store = b.Store(settings.state_dir / 'ledger.db', 7)
+                    if existing:
+                        self.assertEqual(store.read_messages('1000000002', 50)[0]['text'], 'Existing synthetic message')
+                    else:
+                        self.assertEqual(store.read_messages('1000000002', 50), [])
+                        store.log_message('1000000002', 'in', '11', operator, 'Existing synthetic message', '2026-01-01')
+                    self.assertEqual(path.read_bytes(), original)
         path = self._write_example()
         path.write_text('unknown_example_key = 1\n' + path.read_text())
         with self.assertRaisesRegex(b.SettingsError, 'unknown key unknown_example_key'):
@@ -1512,6 +1539,38 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn(f'release releases/{self.commit} is current', again.stdout)
         self.assertNotIn('wrote', again.stdout)
         self.assertEqual(self.secret.read_text(), secret)
+
+        # Install the public template as an unrelated adopter, then preserve existing private state.
+        adopter = self.home / '.config/harbor-telegram'
+        adopter.mkdir(mode=0o700, parents=True)
+        token = adopter / 'telegram-bot-token'
+        token.write_text('SYNTHETIC-TOKEN\n')
+        token.chmod(0o600)
+        public = adopter / 'bridge.toml'
+        text = (PACK / 'settings.example.toml').read_text().replace('example', 'harbor')
+        text = text.replace('# python = "/usr/bin/python3"', 'python = "' + sys.executable + '"')
+        text = text.replace('enabled = true', 'enabled = false').replace('port = 8941', 'port = 21519')
+        public.write_text(text)
+        public.chmod(0o600)
+        original = public.read_bytes()
+        root = self.home / '.local/share/yardr-telegram/harbor-telegram'
+        state = self.home / '.local/state/harbor-telegram'
+        state.mkdir(parents=True, mode=0o700)  # SETUP creates the operator-owned state before preflight.
+        for existing in (False, True):
+            result = self.install(settings=public)
+            self.assertEqual(result.returncode, 0, result.stderr + '\n'.join(
+                line for line in result.stdout.splitlines() if line.startswith('FAIL')))
+            self.assertEqual(public.read_bytes(), original)
+            self.assertEqual(token.read_text(), 'SYNTHETIC-TOKEN\n')
+            unit = (self.home / '.config/systemd/user/harbor-telegram.service').read_text()
+            self.assertIn(str(root / 'current/bridge/bridge.py'), unit)
+            store = b.Store(state / 'ledger.db', 9)
+            if existing:
+                self.assertEqual(store.read_messages('1000000002', 50)[0]['text'], 'Retained history')
+            else:
+                store.log_message('1000000002', 'in', '19', 'sam', 'Retained history', '2026-01-01')
+            rendered = (root / 'pack/tgbridge.yaml').read_text()
+            self.assertIn('base: http://127.0.0.1:21519\n', rendered)
 
     def test_install_mints_a_missing_hook_secret_beside_the_callback_secret(self):
         if not shutil.which('curl'):

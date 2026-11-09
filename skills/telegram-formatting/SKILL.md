@@ -11,7 +11,7 @@ in the yardr-telegram repository). A message from the chat reaches your
 inbox as a delivery:
 
 ```
-<seq> 11-06 10:00  hook (all) tgbridge message create by Nick on "Telegram: homelab": [topic: homelab] Is the NAS up?
+<seq> 11-06 10:00  hook (all) tgbridge message create by Operator on "Telegram: homelab": [topic: homelab] Is the NAS up?
 ```
 
 The text is the operator's word, as their mail is. The inbox keeps 500

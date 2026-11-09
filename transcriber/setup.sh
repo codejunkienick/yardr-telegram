@@ -1,12 +1,12 @@
 #!/bin/sh
-# Set up the transcriber's host side for one city's settings, idempotently:
+# Set up the transcriber's host side for one yard's settings, idempotently:
 #   transcriber/setup.sh --settings <file> [--dry-run] [--whisper-ref <ref>]
 # Builds whisper.cpp for the settings' method, then downloads the chosen
 # model and the VAD model and checks listed models against
 # transcriber/models.sha256 (a present, non-empty unlisted transcribe model
 # file is reused as-is; the VAD model must be listed),
 # so install.sh can say ok without guessing. The whisper.cpp build and the
-# models are shared by every city on the host (never under a city). It
+# models are shared by any instance on the host (outside its release root). It
 # installs nothing system-wide, uses no sudo and starts nothing; a missing
 # prerequisite is reported, never installed. It prints one ok/FAIL/would
 # line per step like install.sh, and never prints a settings value other

@@ -8,6 +8,12 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- A committed-tree public-readiness scan with location/count diagnostics and
+  a local source archive plus exact commit/tree/file hash manifest. It does
+  not publish, rewrite history or remove attachments.
+- Separate notices for the pinned Markdown runtime and the optional Whisper
+  and VAD downloads, with primary upstream provenance.
+
 - Native herdr `group add` and `group set` cards (core `fc7375cf5ad4`): the
   whole card and every role, quoted, arrive before the weighted card;
   approval writes the group once. A set for a group that names no prompt
@@ -29,6 +35,10 @@ sees and does, not how the code is organised.
   its native card; closed asks report their canonical outcome.
 
 ### Changed
+
+- Installation/examples use fictional yards/operators and home-relative paths.
+  Existing source aliases and credential-host bindings remain supported;
+  the readiness guide records custom-base and callback migration limits.
 
 - Ordinary native cards require core `7fa0d4c75ff6` or compatible guarded ask
   methods; stale Telegram answers cannot replace another client's decision.

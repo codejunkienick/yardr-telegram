@@ -177,7 +177,7 @@ pruned automatically.
 | --- | --- | --- |
 | The checkout as the running code | tie | Removed: each instance runs `<root>/current`. |
 | `~/.local/bin/voice-transcribe`, repointed by every install | tie | Removed: install never creates, changes or removes it; each instance has `<root>/bin/voice-transcribe`. The existing link is the operator's. |
-| Crew skill links and skill text naming the checkout | tie | Removed: skills are linked from `<root>/current/skills/<name>`, and their text names the instance's launchers. |
+| Crew skill links and skill text naming the checkout | tie | Removed: `yardr skill add <root>/current/skills/<name>` makes copies in `$YARDR_HOME/skills/<name>`, and their text names the instance's launchers. |
 | The pack's recorded import origin, the checkout's `yardr/` | tie | Removed once the yard applies `<root>/pack`. |
 | The transcription queue `~/.local/state/voice-transcribe` | intentional tie | Kept: one FIFO per host user, so the GPU runs one transcription at a time. Created by any install when missing, removed by none. Its on-disk protocol is a contract across releases (CONTRIBUTING.md). |
 | whisper.cpp build, models (about 600 MB), the GPU | host dependency | Shared and read-only at runtime. `transcriber/setup.sh` builds only what is missing and never overwrites a model. Not duplicated. |
@@ -185,11 +185,16 @@ pruned automatically.
 | The service-file directory and loopback ports | host dependency | A host namespace: unit names and ports are unique per settings file. |
 | Settings, token, secrets, `state_dir` (ledger, offset, message log), `lock_dir`, the yard home and its socket, the bot | per instance | Never shared. Install writes none of them, except to mint a missing secret. |
 
+After an install or rollback, the operator repeats `yardr skill add` with
+`YARDR_HOME` set to the intended yard, refreshing only that yard's copies.
+Copies in other yards stay as they are. Never relink a shared harness skill
+folder to an instance's `current` (`yardr/SETUP.md`, "The crew's skills").
+
 ## Left out
 
 - Every live action: installs, restarts, settings edits, source apply,
-  grants and skill relinks on a real host. Those are each yard's operator's,
-  following `yardr/SETUP.md`.
+  grants and skill copy refreshes in each yard on a real host. Those are
+  each yard's operator's, following `yardr/SETUP.md`.
 - A daemon, container, virtual environment, pip or manifest service; network
   access at install or message time.
 - Automatic pruning of releases, detection of other instances' state

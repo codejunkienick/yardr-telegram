@@ -34,9 +34,9 @@ Release history: `CHANGELOG.md`.
   edited in place (`yardr call tgbridge pin`), such as a list of what
   waits on the user.
 - A yard gives the paired chat topics, one per subject beside General,
-  each its own conversation: `bridge.py topics` creates the topics its
-  settings list (`[[topic]]`) once and prints the `yardr subscribe` line
-  that routes each to a crew member.
+  each its own conversation: `<root>/bin/telegram-bridge topics` creates
+  the topics its settings list (`[[topic]]`) once and prints the
+  `yardr subscribe` line that routes each to a crew member.
 - The paired user gets a slash command menu, and a yard adds commands
   through its own handler programs that answer with text and inline
   buttons and need no enable flag.
@@ -70,7 +70,7 @@ Release history: `CHANGELOG.md`.
 | `install.sh` | installs one yard's bridge as its own release copy of a clean commit under its root, checks its settings and host, mints the two secrets, renders its service and launchers; `--rollback` returns to the previous release |
 | `yardr/` | the yardr pack: the declared source `tgbridge` (`tgbridge.yaml`), its `normalize` and `thread` commands, and `SETUP.md`, the steps for a yard |
 | `YARDR.md` | the contract between the bridge and a yard: the inbound body, the yard API, the settings |
-| `systemd/telegram-bridge.service.in` | the Linux unit template; on macOS the agent is rendered by `bridge.py render-unit` |
+| `systemd/telegram-bridge.service.in` | the Linux unit template; on macOS the agent is rendered by `<root>/bin/telegram-bridge render-unit` |
 | `transcriber/` | `voice_transcribe.py` (whisper.cpp, configured language), `adapter.py` (the bridge's contract), `models.sha256` |
 | `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts` |
 

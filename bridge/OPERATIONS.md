@@ -152,7 +152,13 @@ against the `source` its `RELEASE` records.
 In order, it:
 
 1. checks python and the settings, and refuses anything that depends on
-   `<repo>`, one line per entry, before it writes anything;
+   `<repo>`, one line per entry, before it writes anything. The existing
+   service file and `<root>/bin/telegram-bridge` must name this same
+   settings path; another path or unreadable settings ownership refuses
+   before any write, in install, dry-run and rollback alike. A collision
+   names the conflicting file and both settings paths. Moving a settings
+   file deliberately needs a fresh unit and root, retaining the old instance
+   for rollback (`yardr/SETUP.md`, "Move an existing bridge to its own installation");
 2. stages HEAD under `releases/.stage-*`, or reuses `releases/<commit>`
    when its files match the staged sums, and refuses it when they do not;
 3. creates the callback secret, the hook secret and the transcription queue
@@ -162,17 +168,21 @@ In order, it:
 4. runs the staged copy's `check-install` (python, curl, owner-only
    credentials, and with transcription on: ffmpeg, whisper-cli, the models
    and their SHA-256). A failure removes the stage and changes nothing else;
-5. activates: `previous` becomes the old `current`, and `current` the
-   release. It then writes the service file and the launchers, each only
-   when it changed, and moves `pack` last. Every one is written beside its
-   place first, and a failure puts back what was already replaced. One
-   activation of a root runs at a time (a `flock` on it), and a signal waits
-   until the renames or their undo are done. On Linux and WSL 2 the
-   service file is the systemd unit `~/.config/systemd/user/<unit>`; on
+5. activates under exclusive `flock`s on the root, then the service
+   directory; one lock covers both when they name the same directory,
+   including through a symlink. It rechecks the service and launcher
+   settings ownership under these locks, so different roots cannot claim
+   the same service concurrently. Then `previous` becomes the old `current`,
+   and `current` the release. It writes the service file and the launchers,
+   each only when it changed, and moves `pack` last. Every one is written
+   beside its place first, and a failure puts back what was already
+   replaced. A signal waits until the renames or their undo are done.
+   On Linux and WSL 2 the service file is the systemd unit
+   `~/.config/systemd/user/<unit>`; on
    macOS it is the LaunchAgent plist `~/Library/LaunchAgents/<label>.plist`,
    where `<label>` is the `unit` name without its `.service` suffix. A
-   replaced service file is kept in `service.previous`, and the old and
-   new bridge paths are printed.
+   replaced service file is kept in `service.previous`, and the replacement
+   diagnostic prints its old and new settings paths as well as bridge paths.
 
 `install.sh --settings <settings> --rollback` runs from any release (for
 example `<root>/current/install.sh`) and needs no git. It verifies
@@ -220,7 +230,7 @@ launchctl print gui/$(id -u)/<label>
 Once the service runs, `yardr source check tgbridge` checks the yard's side
 (`GET /v1/health`, "The yard API").
 
-`bridge.py --settings <settings> render-unit` prints the service for
+`<root>/bin/telegram-bridge render-unit` prints the service for
 this host: the systemd unit text on Linux and WSL 2, the launchd
 LaunchAgent plist on macOS, and `check-install` runs the checks alone
 (`--gpu-probe` adds the GPU probe, below; without it no transcription
@@ -1053,7 +1063,7 @@ objects that were sent is returned". Its parameters include
 
 `yardr call tgbridge pin slot=<name> text=<text> [format=auto|plain|html|markdown]`
 (`/v1/pin`), or on the host
-`bridge.py --settings <settings> pin --slot <name> --body-file <path> [--format html]`,
+`<root>/bin/telegram-bridge pin --slot <name> --body-file <path> [--format html]`,
 keeps one pinned bot message per slot in
 the paired chat, edited in place: a yard keeps a list at the top of the chat
 (say, what waits on the user) by running it whenever the list changes. This
@@ -1184,7 +1194,7 @@ command with one line, `settings: topic entry <n>: <problem>`. No thread id
 is a setting: Telegram assigns it when it creates the topic, and the
 ledger's `topics` table keeps it.
 
-`bridge.py --settings <settings> topics` creates each `[[topic]]` that has
+`<root>/bin/telegram-bridge topics` creates each `[[topic]]` that has
 no thread id once, in file
 order. It holds `<state_dir>/telegram-topics.lock` (created owner-only,
 never the bot lock) for its whole run and never calls getUpdates, so it runs
@@ -1245,8 +1255,9 @@ the thread id, Telegram's name as last seen and whether it was implicit, the
 crew member, when it was first seen, and the legacy `bound_at` field,
 retained without being read. No message
 text is stored. A thread a `topics` row holds (a settings topic, or a row
-whose name left the settings) is never an auto topic: `bridge.py topics
---record <name> --thread-id <id>` on an auto topic's thread is allowed and
+whose name left the settings) is never an auto topic:
+`<root>/bin/telegram-bridge topics --record <name> --thread-id <id>`
+on an auto topic's thread is allowed and
 adopts it as that settings topic, and its auto row stays, unserved and
 unlisted. With `[auto_topics]` off the rows stay too, unserved, and switching
 it on again serves them. An auto topic's display name is computed from its
@@ -1261,12 +1272,12 @@ Recovering an unconfirmed create: check the chat. If the topic is there,
 write in it, take the thread id from the `[topic: thread <id> | not
 configured ...]` line that message reaches the yard with (on General's
 conversation), and run
-`bridge.py --settings <settings> topics --record <name> --thread-id <id>`: it records the
-thread id with no Telegram call, and is refused when the name is not a
-`[[topic]]`, already has a thread id, or the id is another topic's. If the
-topic is not there, run `bridge.py --settings <settings> topics --retry <name>`: it raises the
-attempt and creates the topic under the new key. `--retry` is refused unless
-the create was ambiguous or rejected; for one not sent it says
+`<root>/bin/telegram-bridge topics --record <name> --thread-id <id>`: it
+records the thread id with no Telegram call, and is refused when the name
+is not a `[[topic]]`, already has a thread id, or the id is another topic's. If the
+topic is not there, run `<root>/bin/telegram-bridge topics --retry <name>`:
+it raises the attempt and creates the topic under the new key. `--retry`
+is refused unless the create was ambiguous or rejected; for one not sent it says
 `send again: run topics without --retry`. After a rejection, fix its cause
 first. `--record` and `--retry` are exclusive, and `--thread-id` goes only
 with `--record`.
@@ -1339,7 +1350,8 @@ identity, so one key in two conversations is `idempotency_key_conflict`.
   `conversation ID is not the paired private chat or a configured topic`, or
   `topic <name> is not configured or not created (run bridge.py topics)`; on
   the yard API a 400 with the first, or with `topic <name> is not
-  configured, created or served`. The two flags together, or `--topic` on
+  configured, created or served`. Use `<root>/bin/telegram-bridge topics`
+  to create the settings topics. The two flags together, or `--topic` on
   another command, is a usage error (exit 2). With neither, a send lands in
   General.
 - An ask with buttons sent in a topic records the topic's conversation id in
@@ -1470,7 +1482,7 @@ instead. A file or album rejected there therefore takes no text fallback
 ("Outbound attachments"): it fails the same way, with one request to Telegram.
 Only the HTML parse fallback, a 400 "can't parse entities", re-sends there.
 
-**Adopting and switching off.** `bridge.py --settings <settings> topics
+**Adopting and switching off.** `<root>/bin/telegram-bridge topics
 --record <name> --thread-id <id>` on a served topic's thread adopts it as
 that `[[topic]]` (above): it then relays under the `[[topic]]`'s name, which
 is also its `topic` from then on, `--topic <name>` reaches it, and its auto

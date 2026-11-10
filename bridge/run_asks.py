@@ -623,7 +623,7 @@ def parse_group(ask):
         card.permissions(' now')
         card.permissions(' after the approval')
         card.match(r'Other settings, kept as they stand: .+\.')
-        card.match(r"Skills: none, and the card adds none\.|Skills, kept: .+; what each holds is the yard's library, changed only through skill add's own card\.")
+        card.match(r"Skills: none, and the card adds none\.|Skills, kept: .+; (?:what each holds is the yard's library, changed only through skill add's own card|this card does not change their contents; yardr skill add does)\.")
         card.match(r'Env and login: none set, and the card sets none\.|Env and login, kept unchanged and not read: .+\.')
         card.match(rf"Login: its sessions use (?:user {VALUE}'s login \(login_for\)|the operator's login \({VALUE}; no login_for\)), kept\.")
         if not card.match(rf'Source grants: group {re.escape(name)} holds none; one given before the approval refuses it\.', optional=True):

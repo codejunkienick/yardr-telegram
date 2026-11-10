@@ -185,8 +185,11 @@ pruned automatically.
 | The service-file directory and loopback ports | host dependency | A host namespace: unit names and ports are unique per settings file. |
 | Settings, token, secrets, `state_dir` (ledger, offset, message log), `lock_dir`, the yard home and its socket, the bot | per instance | Never shared. Install writes none of them, except to mint a missing secret. |
 
-After an install or rollback, the operator repeats `yardr skill add` with
-`YARDR_HOME` set to the intended yard, refreshing only that yard's copies.
+After an install or rollback, on core `58e93b7f` or later a crew member
+(the yardmaster), a yard user or the operator repeats `yardr skill add`
+with `YARDR_HOME` set to the intended yard, refreshing only that yard's
+copies. Earlier cores require the operator; crew/group assignments stay
+the operator's on either core.
 Copies in other yards stay as they are. Never relink a shared harness skill
 folder to an instance's `current` (`yardr/SETUP.md`, "The crew's skills").
 
@@ -194,7 +197,8 @@ folder to an instance's `current` (`yardr/SETUP.md`, "The crew's skills").
 
 - Every live action: installs, restarts, settings edits, source apply,
   grants and skill copy refreshes in each yard on a real host. Those are
-  each yard's operator's, following `yardr/SETUP.md`.
+  each yard's operator's, except skill copy refreshes may be done by the
+  yardmaster or a yard user from core `58e93b7f`, following `yardr/SETUP.md`.
 - A daemon, container, virtual environment, pip or manifest service; network
   access at install or message time.
 - Automatic pruning of releases, detection of other instances' state

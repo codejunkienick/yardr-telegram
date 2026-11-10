@@ -320,9 +320,15 @@ bindings and delivery history.
 
 ### Single-file skill snapshots
 
-After the reviewed core and bridge are installed, propose a fresh skill
-snapshot and publish its returned ask number with the same per-call grant
-and pairing above:
+From core `58e93b7f`, crew members (including the yardmaster) and users may
+add directly, so new skill proposals under the core policy are refused with
+"needs no approval: run it yourself". Native skill cards remain for asks
+stored before that change and yards whose policy keeps adding the operator's.
+Before that core, the operator adds and other proposers use the card.
+
+Where that proposal policy applies, after the reviewed core and bridge are
+installed, propose a fresh skill snapshot and publish its returned ask
+number with the same per-call grant and pairing above:
 
 ```sh
 yardr bead ask <bead> "Refresh the reviewed skill?" \
@@ -872,7 +878,9 @@ tgbridge` reads it from there.
 
 ### The crew's skills (shell)
 
-The yard's operator copies this instance's skills into the yard's own home.
+With core `58e93b7f` or later, a crew member (the yardmaster), a yard user or
+the operator runs the four adds below to copy this instance's skills into
+the yard's own home; before that core, the operator runs them.
 Keep `YARDR_HOME` explicitly set to this yard as above:
 
 ```sh
@@ -884,8 +892,9 @@ yardr skill list
 ```
 
 These are copies under `$YARDR_HOME/skills/<name>`, independent of the
-checkout and the install root. Give the names to the intended crew or groups
-with `yardr crew set <crew> skills=...` or `yardr group set <group> skills=...`,
+checkout and the install root. The operator gives the names to the intended
+crew or groups with `yardr crew set <crew> skills=...` or
+`yardr group set <group> skills=...`,
 keeping their other skill names in the list. A crew member reads the new
 skills at its next session (`yardr crew restart <crew>`); groups use them
 at their next session too.
@@ -895,14 +904,17 @@ relevant `run_ask`, `ask_card` or `siding_card` per-call grants (steps 12–14).
 Message writers keep `telegram-formatting`, `telegram-attachments` and
 `telegram-voice-transcripts` as appropriate. Adding a skill grants no call access.
 
-Repeat the four `skill add` commands after an install or rollback to
-refresh this yard's copies from its active release. They replace the copies
-only in the selected yard; copies in another yard stay as they are, and
-removing this instance's root does not break another yard's skills.
+After an install or rollback, the yardmaster refreshes this yard's copies
+from its active release by repeating the four `skill add` commands on core
+`58e93b7f` or later; the operator may also do it, and must on earlier cores.
+They replace the copies only in the selected yard; copies in another yard
+stay as they are, and removing this instance's root does not break another
+yard's skills.
 For a rollback to a release without `telegram-decisions`, refresh the three
-skills present there and remove `telegram-decisions` from the crew's skill
-list, keeping its other names, then restart that crew member. A source commit
-alone neither installs a release nor refreshes or activates the yard's copies.
+skills present there; the operator removes `telegram-decisions` from the
+crew's skill list, keeping its other names, then restarts that crew member.
+A source commit alone neither installs a release nor refreshes or activates
+the yard's copies.
 
 Harness folders such as `~/.claude/skills` and `~/.codex/skills` are shared
 by every yard using that harness on the host. Never relink an entry there
@@ -940,8 +952,9 @@ yardr pack check <root>/pack        # where it shows a change, apply as above
 
 It verifies `previous` against its `SHA256SUMS`, swaps `current` and
 `previous`, and returns `<root>/pack` to that release's own. A second
-`--rollback` goes forward again. Refresh this yard's skill copies with the
-three `skill add` commands above.
+`--rollback` goes forward again. On core `58e93b7f` or later the yardmaster
+(or the operator) refreshes this yard's skill copies with the `skill add`
+commands above for that release; before that core, the operator runs them.
 
 Undoing this first move, when there is no previous release (`--rollback`
 says so and names `service.previous`):
@@ -956,9 +969,10 @@ systemctl --user start <unit>
 The unit runs the checkout again, so the checkout must still be there. The
 pack applied above still works with it (the same port or alias); apply
 `<checkout>/yardr` with the same flags only to move the recorded origin back.
-To revert the skill version too, repeat `yardr skill add` from
-`<checkout>/skills/<name>` for this yard. The host-wide voice-transcribe
-link remains the operator's choice as above.
+To revert the skill version too, the yardmaster (or the operator) on core
+`58e93b7f` or later repeats `yardr skill add` from
+`<checkout>/skills/<name>` for this yard; on earlier cores the operator does.
+The host-wide voice-transcribe link remains the operator's choice as above.
 
 ### Never
 

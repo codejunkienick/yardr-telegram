@@ -125,12 +125,17 @@ for the outstanding contracts and required passing check.
 - The [yard-local skill setup](yardr/SETUP.md#the-crews-skills-shell) needs
   `yardr skill add` and crew/group `skills=` (local core baseline `a66722bb`,
   not a public install target), under the same public-core release gate.
+  From core `58e93b7f`, crew members and yard users may add directly;
+  assignment stays the operator's. Earlier cores require the operator to add.
 - Optional native skill review needs the core captured single-file proposal
   capability (local baseline `a79f6f8162c8`, not a public install target)
   and the paired operator setup in
   [SETUP.md](yardr/SETUP.md#single-file-skill-snapshots). Full review parts
   precede buttons; tap Approve, then Confirm on the same card within 60
   seconds. Only one regular `SKILL.md` with supported metadata can use skill review.
+  From core `58e93b7f`, new proposals under the core policy refuse because
+  the proposer may add directly; cards still serve stored asks and yards
+  whose policy keeps adding the operator's.
 - Optional native herdr group cards (`group add`, `group set`) need core
   support for the local `fc7375cf5ad4` contract, also not a public install
   target, and the same setup
@@ -239,9 +244,11 @@ both directions.
 ## Skills
 
 The skills are the shared base set, written for any yard and any bot,
-naming no yard, person or product. Each yard's operator copies them from
-its installed release with `yardr skill add` into that yard's home and gives
-them to its crew or groups. See [the crew's skills](yardr/SETUP.md#the-crews-skills-shell)
+naming no yard, person or product. With core `58e93b7f` or later, a crew
+member (the yardmaster), a yard user or the operator copies them from its
+installed release with `yardr skill add` into that yard's home; earlier
+cores require the operator. Giving the names to crew or groups stays the
+operator's. See [the crew's skills](yardr/SETUP.md#the-crews-skills-shell)
 for setup and refresh after an install or rollback. Harness skill folders
 such as `~/.claude/skills` are shared by all yards on the host; keep
 instance-specific links out of them.

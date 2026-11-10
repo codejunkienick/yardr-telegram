@@ -236,6 +236,10 @@ human confirmation and canonical carry settlement apply. Extra skill files
 and skill deletion remain refused. See
 [the exact scope and recovery limits](bridge/OPERATIONS.md#captured-single-file-skill-review)
 and [bootstrap requirements](yardr/SETUP.md#single-file-skill-snapshots).
+From core `58e93b7f`, crew members (including the yardmaster), yard users
+and the operator may add directly, making this card dormant for new
+proposals under the core policy; it still serves earlier stored asks and
+yards whose policy keeps adding the operator's, as earlier cores do.
 
 Native `source add <file>` reviews the complete declaration, relative command
 files, replacement diffs and inventory before controls appear (local core

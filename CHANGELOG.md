@@ -46,6 +46,14 @@ sees and does, not how the code is organised.
 
 ### Changed
 
+- Group-set cards accept both the earlier skills wording and core
+  `58e93b7f`'s wording; a delivered card whose canonical text changes still
+  refuses approval. From that core, the yardmaster, other crew members and
+  yard users may refresh skill copies directly after installation or
+  rollback; earlier cores require the operator. Assigning skills stays the
+  operator's. Native skill review remains for earlier stored asks and
+  policies that keep adding the operator's.
+
 - Weighty native run cards now take Approve, then Confirm on the same card
   within 60 seconds. Cancel occupies Approve's former position; Confirm
   has its own row. Typed numbers no longer approve, and legacy pending

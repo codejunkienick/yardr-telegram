@@ -2246,6 +2246,11 @@ contains no grants; builder/secretary/blanket grants are not required.
 
 ### Captured single-file skill review
 
+From core `58e93b7f`, crew members (including the yardmaster), yard users
+and the operator may add directly, so this card is dormant for new proposals
+under the core policy and serves earlier stored asks or yards whose policy
+keeps adding the operator's; earlier cores require the operator to add.
+
 A native `skill add <absolute-source> [--name <name>]` can add or refresh one
 regular `SKILL.md`. Both source and standing destination must contain only
 that file, each at most 32768 UTF-8 bytes. Extra files, directories, symlinks,

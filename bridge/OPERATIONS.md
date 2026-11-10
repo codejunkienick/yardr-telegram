@@ -2249,31 +2249,61 @@ or additional metadata keys require Footplate/cards. It adds no dependency
 or permission layer. Core remains the authority for live target/holder and
 operator checks under its apply lock.
 
-The bundle shows every canonical Does line: metadata/holders, old/new
-identity, complete proposed and standing bytes and the replacement diff.
-Quoted strings preserve CRLF, tabs, trailing newlines, Unicode and literal
-weight marks. Content is HTML-escaped inside preformatted blocks and labelled
-untrusted in every envelope. It is never stripped, normalized or shortened.
-A long line splits between Unicode codepoints; the *whole* envelope stays
-within 3500 visible UTF16 units. An envelope/card that cannot fit refuses
-before sending any bundle part. No file attachment or partial preview is
-used as approval evidence.
+Every new skill, source, source-pack and group bundle arrives as **one
+UTF-8 review document, then one compact confirmation card**. The document
+contains the full question, context, command, weight and undo, followed by
+the complete canonical review text previously carried in numbered parts.
+That review text is byte-identical: metadata/holders, manifests, every
+quoted file, inventory, old/new hashes and replacement diffs. Quoted strings
+preserve CRLF, tabs, trailing newlines, Unicode and literal weight marks.
+Quoted content remains untrusted file content. It is never normalized or
+shortened and cannot inject markup or controls into the card.
 
-SQLite's existing native row stores the binding/proposal digest, ordered
-bundle and part hashes, stable send keys, conversation and confirmed message
-IDs. Every part replies to its predecessor; the final card names the bundle
-digest/count and replies to its last part. Open that quoted reply, then
-follow the part reply chain to part 1. ALL parts must be confirmed before a
-live Approve button is sent. A definitely unsent part retries under its
-original key; confirmed parts stay sent. Ambiguous delivery stays blocked
-under the existing ledger's manual reconciliation semantics, even after a
-restart or a different caller key. There is no automatic duplicate-send
-repair or recovery of a deleted Telegram message. Preserve the ledger.
+The document names the bundle digest and frames the canonical review with
+its UTF-8 byte count. It is atomically written, mode 0600, as
+`<state_dir>/run-ask-documents/review-<bundle-digest>.txt`. The existing native
+SQLite row retains the immutable bytes, document SHA-256, size, stable send
+key and confirmed message ID. The proposal digest still binds native
+approval; the document hash is delivery evidence in the bridge, requiring
+no new core field or authority.
+
+The card shows each create/change/remove and its path hashes, current skill
+holders or kept source/group grants, size, one-document/zero-text-message
+counts, the equivalent old text-part count, bundle digest, filename,
+document SHA-256, canonical weight and undo. The full proposal and review
+stay in the document. A complete compact card that exceeds 3500 visible
+UTF-16 units refuses before any send; plan identities and kept grants are
+never silently dropped to make it fit.
+
+The whole document, including framing and any directory snapshot, must fit
+**52428800 bytes (50 MiB)**, the bridge's Telegram document ceiling. There
+is no 128-text-part cap on new document bundles. An oversized document
+refuses before delivery or buttons with
+`run_ask_review_document_too_large`, naming an **explicit part-based review
+fallback** the operator can request through Footplate or the yard cards.
+There is no automatic split, truncation or text fallback.
+
+The document has no keyboard. Only a confirmed Telegram document receipt
+with an integer size matching the captured bytes permits the card, which
+replies directly to it. Missing, boolean or mismatched sizes remain
+unconfirmed. A summary, partial document, reply to the document or unknown
+receipt cannot approve. Definitely unsent delivery retries under its
+original key; ambiguous delivery stays blocked under the existing ledger's
+manual reconciliation rules across restarts and caller keys. Reconciliation
+must confirm the document size as well as its message ID. A crash after a
+ledger receipt resumes without resending the document or card.
+
+Already captured legacy bundles retain their original text parts, optional
+snapshot document, filenames, hashes, keys and receipts; a restart never
+converts that generation or resends confirmed parts. Preserve the ledger
+and review documents. There is no automatic recovery of a deleted Telegram
+message. Rollback uses the existing release rollback: the previous runtime
+can read the same native rows and finish either delivery shape.
 
 Skill bundle digests also bind the native home directory device/inode, so
 replacing a home at the same path cannot reuse an identical proposal.
-Native ownership/proposal/state is reread before each part, transport retry
-and final card, as well as before every decision. Changes invalidate the
+Native ownership/proposal/state is reread before the document, each
+transport retry and final card, as well as before every decision. Changes invalidate the
 binding; old/new bundles cannot mix. Approve first opens the existing
 five-minute direct-reply ask-number confirmation; the tap does not install.
 Decline/cancel never install. Approval recorded/pending carry, verified
@@ -2285,7 +2315,7 @@ recovery belong entirely to the core server, never the bridge.
 ### Source-add declaration and command review
 
 `source add <file>` uses the same native `run_ask` call, pairing, receipt
-ledger, reply chain and approval gate as skill/group bundles. This adds no
+ledger, document delivery and approval gate as skill/group bundles. This adds no
 RPC, grant or setting. Verified against isolated core `546e3fdd2127`; the
 actual carried contract is checked on every read rather than inferred from
 its version. The bridge never reads the declaration's provenance path or
@@ -2307,12 +2337,12 @@ Limits match landed core: declaration 32768 bytes, each command file 8192 bytes,
 32768 bytes for those texts together, 65536 bytes for command texts, diffs
 and removed texts, and at most 80 native Does lines. Complete declaration,
 each command file, each replacement diff, inventory, removed records/text
-and every native Does line arrive as quoted untrusted review parts. Each
+and every native Does line arrive in the quoted untrusted review document. Each
 section names its exact UTF-8 hash and size; diff sections also retain the
 old/new file identities. No whitespace or line ending is normalized.
-The final card names the immutable bundle digest/count and replies to its
-last part; every part must have a confirmed receipt before controls appear.
-Canonical weight lines precede the card's question and contents.
+The compact card names the immutable bundle digest/count and document hash
+and replies to that document; its matching size must be confirmed before
+controls appear. Canonical weight lines precede the plan.
 
 New/changed code and every replacement use core's weight gate: the first
 tap asks for the exact ask number in a direct bound reply within five
@@ -2321,7 +2351,7 @@ verified Approve tap, as core specifies. Cancellation and decline write no
 source. A changed standing file is refused by core and shown as a stale
 source proposal with no controls; decline it in the yard and ask again.
 Approval pending carry, settled success and failed carry use the existing
-canonical result/restart reconciliation. A confirmed or ambiguous part/card
+canonical result/restart reconciliation. A confirmed or ambiguous document/card
 is never resent under another key. Preserve the ledger.
 
 Offline evidence: `python3 -B scripts/preview_run_asks.py --source` drives
@@ -2348,32 +2378,27 @@ source validator also verifies diffs, inventory and removals. Unknown
 payloads, secret/setup/identity/value fields, input flags and depot plans
 refuse whole. The provenance directory is never opened by the bridge.
 
-Numbered, escaped, untrusted text parts contain every native Does line,
-each declaration and command file, full replacement diffs, old/new hashes,
-inventory and removed entries. Thus the plan includes all declaration-key
-changes, grants kept and work still owed. Text is never shortened. Limits
-are **128 text parts**, each within the existing 3500 UTF-16-unit envelope,
-and **327680 document bytes (320 KiB)** including framing. Core also bounds
-the directory snapshot to 64 files and 262144 text bytes, declarations to
-262144 bytes together, command texts/diffs/removed text to 65536 bytes and
-Does to 80 lines. An over-bound bundle sends nothing, including no buttons.
+One review document contains every native Does line, each declaration and
+command file, full replacement diffs, old/new hashes, inventory and removed
+entries, followed by the complete directory snapshot. Thus the review
+includes declaration-key changes, grants kept and work still owed. Text is
+never shortened. The shared 50 MiB document ceiling includes all framing;
+core additionally bounds the snapshot to 64 files and 262144 text bytes,
+declarations to 262144 bytes together, command texts/diffs/removed text to
+65536 bytes and Does to 80 lines. Oversize refuses before any send or button.
 The repository's actual tgbridge upgrade from `7c0ce69` fits with headroom.
 
-The directory bundle includes one UTF-8 `.txt` document, replied to the
-last text part, without a keyboard or text fallback. Its header names the
-pack, pack digest and file count. Each section has a JSON-quoted `Path:`,
+The snapshot section retains its existing exact format: its header names
+the pack, pack digest and file count. Each file has a JSON-quoted `Path:`,
 decimal `Size:` and `SHA256:`, then a blank line, exactly Size original
-UTF-8 bytes, and one separator newline. Read by lengths, not delimiters in
-the untrusted file contents. Every snapshot file, including `pack.yaml`
-and setup notes, appears whole. The bridge atomically writes it under
-`<state_dir>/run-ask-documents/<document-sha256>.txt`, mode 0600, and retains
-its bytes, hash, size, send key and confirmed message ID in the native row.
-Only a confirmed Telegram message with an integer document size equal to
-the written bytes counts as delivered. A missing/wrong size is ambiguous.
+UTF-8 bytes and one separator newline. Read by lengths, not delimiters in
+untrusted contents. Every snapshot file, including `pack.yaml` and setup
+notes, appears whole in this same document; there is no second attachment.
 
-The card follows only after all text parts and the document are confirmed.
-It replies to the document and names the bundle digest, text-part count,
-document SHA-256 and pack digest, with canonical weight lines first.
+The compact card follows only after the document is confirmed. It replies
+to the document and names the create/change/remove paths and hashes, kept
+grants, bundle digest, size/counts, document SHA-256 and pack digest, with
+canonical weight lines first.
 Directory applies always require Approve, then a direct reply **to the
 card**, with the exact ask number within five minutes. Replies to parts or
 the document cannot approve. A wrong number clears the gate: tap again.
@@ -2388,10 +2413,9 @@ Keep the state directory, including its ledger and review documents.
 Decline, cancel, mismatched bindings, forwarded numbers and replay do not
 apply the pack. Changes to the proposal invalidate its generation.
 
-Embedded source-kind `pack apply <name>` uses the complete carried-source
-text bundle and core's weight rules. Its core envelope has no directory
-snapshot, pack digest, `pack.yaml` or setup notes, so no snapshot document
-is invented. Depot-kind/summary pack cards remain unsupported.
+Embedded source-kind `pack apply <name>` uses one complete carried-source
+review document and core's weight rules. Its core envelope has no directory
+snapshot, pack digest, `pack.yaml` or setup notes; those are not invented. Depot-kind/summary pack cards remain unsupported.
 
 `python3 -B scripts/preview_run_asks.py --pack` produces labelled synthetic
 presentation evidence using real-core fixtures and fake Telegram. Native
@@ -2440,16 +2464,15 @@ Core keeps the authority: it decides the weight,
 the allow-listed args and presets, the snapshot binding (group revision,
 grants, routes, roles) and refuses a stale approval atomically.
 
-The review bundle is the skill bundle's (`review_bundle`): same reply chain,
-per-part keys and receipts, rechecks before every part and the card, the same
-3500-unit envelope and digest binding of the home's device/inode. Its parts
-hold every sentence of the card as core wrote it, and each role as quoted
-JSON strings per line with its line ending, so tabs, trailing spaces, a
-trailing blank line and any invisible character show; a manifest line lists
-every role's label, path, SHA-256 and bytes. The card replying to the last
-part names the operation, kind and role digests and repeats the kind, model,
-args, effort, permission, login/env and running-session sentences; role lines
-never appear on the card even when they read like a sentence of the yard's.
+The review bundle uses the shared one-document/one-card delivery above,
+with the same stable ledger keys, confirmation and rechecks. Its complete
+review contains every canonical sentence and each role as quoted JSON
+strings per line with its line ending; tabs, trailing spaces, blank lines
+and invisible characters remain visible. A manifest lists every role's
+label, path, SHA-256 and bytes. The compact card names operation, kind and
+role paths/digests and repeats kind, model, args, effort, permission,
+login/env, running-session and kept-grant sentences. Role content never
+appears as card text even when it resembles a canonical sentence.
 
 Approval is the weighted path above: the tap opens the ask-number prompt,
 the bound reply calls ApproveAsk with weighed=true once. Core writes the

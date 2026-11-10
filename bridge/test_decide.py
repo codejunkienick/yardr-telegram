@@ -1,6 +1,7 @@
 """/decide: the operator's open canonical decisions listed and opened as the
 same native cards, over fake Telegram and a fake or real isolated core."""
 import copy
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -51,7 +52,8 @@ class DecideCase(NativeCase):
 
     def restart(self):
         request = self.bridge.request
-        self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=request)
+        multipart = self.bridge.request_multipart
+        self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=request, request_multipart=multipart)
         self.bridge.hook_secret = None
 
     def command(self, value, uid, thread=None, **changes):
@@ -234,14 +236,21 @@ class DecideTests(DecideCase):
                 self.assertIn(f'1. {question}\nrun · {bead}#13 · Synthetic {kind}', body['text'])
                 self.assertEqual([b['text'] for b in self.buttons(body)], [f'1. {bead}#13', '↻ Refresh'])
                 sent = len(self.sends())
+                documents = len(self.documents)
                 self.command('/decide ' + bead + '#13', 21 + 2*index)
                 row = self.bridge.run_asks.get(self.bridge.run_asks.ident(bead, 13))
-                parts, sends = row['bundle']['parts'], self.sends()[sent:]
-                self.assertEqual([body['text'] for body in sends[:-1]], [part['html'] for part in parts])
-                self.assertIn('Part 1/', sends[0]['text'])
-                self.assertIn('UNTRUSTED ' + kind.upper() + ' REVIEW', sends[0]['text'])
-                self.assertEqual(sends[-1]['reply_parameters']['message_id'], parts[-1]['message_id'])
-                self.assertIn(command, sends[-1]['text'])
+                sends = self.sends()[sent:]
+                self.assertEqual(row['bundle']['parts'], [])
+                self.assertEqual(len(sends), 1)
+                self.assertEqual(len(self.documents), documents + 1)
+                fields, path, raw = self.documents[-1]
+                self.assertIn(('UNTRUSTED ' + kind.upper() + ' REVIEW').encode(), raw)
+                self.assertIn(command.encode(), raw)
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), row['bundle']['document']['sha256'])
+                self.assertIn(row['bundle']['document']['sha256'], sends[0]['text'])
+                self.assertIn(path.name, sends[0]['text'])
+                self.assertNotIn('reply_markup', fields)
+                self.assertEqual(sends[-1]['reply_parameters']['message_id'], row['bundle']['document']['message_id'])
                 self.assertEqual([b['text'] for b in self.buttons(sends[-1])], ['✓ Approve in test-city', '✕ Decline'])
                 self.assertEqual(self.writes(), [])
 

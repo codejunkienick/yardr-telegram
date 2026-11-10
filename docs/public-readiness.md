@@ -161,19 +161,19 @@ pack's thread-format declaration requirement.
 
 Only one regular text SKILL.md, at most 32 KiB on either side and supported
 name/description metadata, can use native captured skill review. Complete
-numbered review parts and replacement diff precede weighted confirmation.
+review document and replacement diff precede compact weighted confirmation.
 Extra skill files and skill deletion require the full native client.
 
 [`source add <file>`](../bridge/OPERATIONS.md#source-add-declaration-and-command-review)
 reviews one declaration and its relative command files, including replacement
-diffs and inventory, in complete numbered parts before controls appear.
+diffs and inventory, in one complete review document before controls appear.
 Source-kind packs with no parameter inputs also support native review.
 Directory `pack apply <absolute-directory> --sha256 <digest>` sends complete
-review parts and one snapshot document containing every named file,
+review and snapshot in one document containing every named file,
 including `pack.yaml` and setup notes, before controls appear. Approve then
 requires a direct reply to the card with the exact ask number within five
-minutes. Embedded `pack apply <name>` uses complete carried-source text
-parts and core weight rules, without a directory snapshot document. See
+minutes. Embedded `pack apply <name>` uses one complete carried-source review
+document and core weight rules, without inventing a directory snapshot. See
 [pack upgrade setup](../yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback)
 and [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
 

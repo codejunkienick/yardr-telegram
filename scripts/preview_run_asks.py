@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
 """Print an offline HTML preview of synthetic native cards; no Telegram access."""
+import base64
 from html import escape
 from pathlib import Path
 import sys
 
 
+def document_card(document):
+    _, path, raw = document
+    download = 'data:text/plain;base64,' + base64.b64encode(raw).decode()
+    return dict(text='<b>Review document · synthetic attachment</b>\n'
+                + '<a download="' + escape(path.name) + '" href="' + download + '">' + escape(path.name) + '</a>\n'
+                + str(len(raw)) + ' bytes · UTF-8 · no controls\n'
+                + '<details><summary>Open complete document</summary><pre>' + escape(raw.decode()) + '</pre></details>')
+
+
 def skill_cards(source=False, pack=False):
     # Drive the real bridge state machine with the existing offline transports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
-    from test_run_asks import NativeTests, skill_proposal, source_proposal, pack_proposal
+    from test_run_asks import NativeTests, skill_proposal, source_proposal, pack_proposal, repack, n
     case = NativeTests()
     case.setUp()
     cards = []
@@ -23,18 +33,19 @@ def skill_cards(source=False, pack=False):
     try:
         case.native.ask = (pack_proposal('directory_replace') if pack else source_proposal() if source else
                            skill_proposal('Generic long line <&> 🙂; file content only. ' * 35 + '\n'))
+        if pack and '--dense-bundle' in sys.argv:
+            carried = case.native.ask['run']['carried'][0]
+            before = carried['text']
+            carried['text'] += '# Synthetic dense declaration review <&>; file content only.\n' * 400
+            for file in case.native.ask['run']['pack']['directory']['files']:
+                if file['text'] == before:
+                    file['text'] = carried['text']
+            repack(case.native.ask)
         case.config['yard'] = 'example'
-        case.create()
+        if not case.create()['delivered']:
+            raise RuntimeError('synthetic review document refused')
         sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
-        for index, body in enumerate(sends[:-1], 1):
-            capture(f'Complete review · part {index}/{len(sends)-1}', body, 'bundle')
-        if pack:
-            import json
-            fields, path, raw = case.documents[-1]
-            header = raw.decode('utf-8').split('\n\n', 1)[0]
-            capture('Synthetic snapshot document · header · mode 0600',
-                    dict(text='<pre>' + escape(header) + '</pre>',
-                         reply_parameters=json.loads(fields['reply_parameters'])), 'bundle')
+        capture('Complete review · one document · mode 0600', document_card(case.documents[-1]), 'bundle')
         capture('Final bound approval card', sends[-1], 'states')
         case.press()
         capture('Direct reply confirmation · first tap installs nothing', case.edits()[-1], 'states')
@@ -51,8 +62,9 @@ def skill_cards(source=False, pack=False):
         capture('Alternative canonical failure', case.edits()[-1], 'states')
         if pack:
             case.reset_native(pack_proposal())
-            case.native.ask['run']['does'] += ['Synthetic complete plan line ' + 'x'*10000] * 65
-            refused = case.create()
+            from unittest.mock import patch
+            with patch.object(n, 'PACK_DOCUMENT_BYTES', 1):
+                refused = case.create()
             if refused['delivered'] or case.sent_count:
                 raise RuntimeError('over-bound pack sent a partial preview')
             capture('Synthetic over-bound refusal · zero parts sent', dict(text=escape(refused['reason'])), 'states')
@@ -84,8 +96,7 @@ def group_cards(name):
         if not case.create()['delivered']:
             raise RuntimeError('synthetic group card refused')
         sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
-        for index, body in enumerate(sends[:-1], 1):
-            capture(f'Complete review · part {index}/{len(sends)-1}', body, 'bundle')
+        capture('Complete review · one document · mode 0600', document_card(case.documents[-1]), 'bundle')
         capture('Final bound approval card', sends[-1], 'states')
         case.press()
         capture('Direct reply confirmation · first tap writes nothing', case.edits()[-1], 'states')

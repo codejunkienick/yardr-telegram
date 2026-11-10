@@ -1,7 +1,9 @@
 """Native paths through the bridge, a framed Unix RPC and fake Telegram."""
 import copy
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+from html.parser import HTMLParser
 import http.server
 import json
 import os
@@ -1321,7 +1323,7 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.writes(), [])
                 self.assertIn("type the ask's number, 7", b.html_visible_text(self.edits()[-1]['text'])[0])
                 pending = self.row()['pending']
-                if factory is pack_proposal:
+                if factory is not proposal:
                     targets = [p['message_id'] for p in self.row()['bundle']['parts']] + [self.row()['bundle']['document']['message_id']]
                     for index, target in enumerate(targets):
                         with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
@@ -1471,9 +1473,7 @@ class NativeTests(NativeCase):
                 self.assertNotEqual(other_row['id'], self.row()['id'])
                 self.assertNotEqual(other_row['proposal'], self.row()['proposal'])
                 if factory is not proposal:
-                    self.assertNotEqual(other_row['bundle']['parts'][0]['key'], self.row()['bundle']['parts'][0]['key'])
-                    if factory is pack_proposal:
-                        self.assertNotEqual(other_row['bundle']['document']['key'], self.row()['bundle']['document']['key'])
+                    self.assertNotEqual(other_row['bundle']['document']['key'], self.row()['bundle']['document']['key'])
                 self.config.update(yardr_home=str(self.home), yard='test-city')
                 self.bridge.run_asks = original
                 self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
@@ -1641,15 +1641,38 @@ class NativeTests(NativeCase):
             self.reset_native(source_proposal(kind))
             self.assertTrue(self.create()['delivered'])
             row = self.row()
-            review = ''.join(p['plain'].split('\n', 3)[3] for p in row['bundle']['parts'])
+            review = NativeTests.bundle_review(row)
             self.assert_source_review(self.native.ask, review)
+        ask = source_proposal()
+        carried = ask['run']['carried'][0]
+        change = carried['old'][0]
+        old = n.source_diff(change, carried['files'][0]['text'])
+        carried['text'] = 'name: synthetic\n'
+        carried['files'] = []
+        change['new_sha256'] = ''
+        lines = old.removesuffix('\n').split('\n')
+        change['diff'] = '--- was\n+++ is\n' + f'@@ -1,{len(lines)} +0,0 @@\n' + ''.join('-' + line + '\n' for line in lines)
+        self.reset_native(ask)
+        self.assertTrue(self.create()['delivered'])
+        self.assertIn('Remove sources/synthetic/bin/report; sha256 ' + change['old_sha256'], self.row()['plain'])
+        self.assert_source_review(ask, self.bundle_review(self.row()))
+        for ask in (source_proposal(), pack_proposal('directory_replace')):
+            with self.subTest(missing_kept_grants=ask['run']['argv'][:2]):
+                ask['run']['does'] = [line for line in ask['run']['does']
+                                     if not line.startswith(('grants kept for source ', 'no grant of source '))]
+                self.reset_native(ask)
+                result = self.create()
+                self.assertFalse(result['delivered'])
+                self.assertIn('missing_source_grants_review', result['reason'])
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
         self.reset_native(source_proposal('new', extra='# ' + '<&>🙂\t\r\n'
             'base: https://example.invalid\n'
             'credential:\n  env: TOKEN\n  mint: [TENANT, {name: ACCOUNT, secret: false}]\n'
             '  mint_command: [bin/report]\n  header: "Authorization: Bearer {credential}"\n'
             'calls: {health: {kind: read, request: {method: GET, path: /health}}}\n'))
         self.assertTrue(self.create()['delivered'])
-        self.assert_source_review(self.native.ask, ''.join(p['plain'].split('\n', 3)[3] for p in self.row()['bundle']['parts']))
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
         # Data names and nested request bodies remain unrestricted by the declaration's field names.
         self.reset_native(source_proposal('free'))
         carried = self.native.ask['run']['carried'][0]
@@ -1659,7 +1682,7 @@ class NativeTests(NativeCase):
             'body: {future: {nested: [now, {other: later}]}}}\n'
             '    answer: {select: [future], max: 65536}\n')
         self.assertTrue(self.create()['delivered'])
-        self.assert_source_review(self.native.ask, ''.join(p['plain'].split('\n', 3)[3] for p in self.row()['bundle']['parts']))
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
         for field in ('declaration', 'file', 'total'):
             for overflow in (False, True):
                 with self.subTest(source_cap=field, overflow=overflow):
@@ -1757,8 +1780,10 @@ class NativeTests(NativeCase):
         self.reset_native(pack_proposal())
         self.native.ask['run']['does'] += ['Synthetic complete plan line ' + 'x' * 10000] * 65
         result = self.create()
-        self.assertIn('too_many_parts', result['reason'])
-        self.assertEqual(self.sent_count, 0)
+        self.assertTrue(result['delivered'], result)
+        self.assertGreater(self.row()['bundle']['text_parts'], n.PACK_PARTS)
+        self.assertEqual(len(self.documents), 1)
+        self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
         ask = pack_proposal()
         files = ask['run']['pack']['directory']['files']
         setup = next(f for f in files if f['path'] == 'SETUP.md')
@@ -1769,14 +1794,28 @@ class NativeTests(NativeCase):
         setup['text'] = 'x' * (262144 - sum(len(f['text'].encode()) for f in files if f is not setup))
         repack(ask)
         self.reset_native(ask)
-        result = self.create()
-        self.assertIn('document_too_large', result['reason'])
-        self.assertEqual(self.sent_count, 0)
+        self.assertTrue(self.create()['delivered'])
+        size = len(self.documents[-1][2])
+        self.assertGreater(size, 320 * 1024)
+        self.assertEqual(n.PACK_DOCUMENT_BYTES, self.bridge.ATTACHMENT_KINDS['document'][2])
+        for ceiling in (size, size - 1):
+            self.reset_native(ask)
+            with patch.object(n, 'PACK_DOCUMENT_BYTES', ceiling):
+                result = self.create()
+            if ceiling == size:
+                self.assertTrue(result['delivered'], result)
+            else:
+                self.assertIn('document_too_large', result['reason'])
+                self.assertIn('explicit part-based review fallback', result['reason'])
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.documents, [])
+                with self.store.connect() as db:
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM deliveries').fetchone()[0], 0)
 
 
     def test_skill_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
         self.bridge.sleep = lambda _: None
-        cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n')),
+        cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n</pre><b>FORGED CONTROL</b>\n')),
                  ('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY · not authority\n' * 150)),
                  ('group_set', group_set_proposal('\nSynthetic standing line <&>🙂\t' * 250)),
                  ('source', source_proposal(extra='# ' + 'Synthetic <&>🙂\t' * 400 + '\n')),
@@ -1785,6 +1824,38 @@ class NativeTests(NativeCase):
             with self.subTest(case=case):
                 self.bundle_delivery(case, ask)
         self.bundle_document_delivery()
+        class Attachments(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.files = []
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == 'a' and attrs.get('href', '').startswith('data:text/plain;base64,'):
+                    self.files.append((attrs['download'], base64.b64decode(attrs['href'].split(',', 1)[1], validate=True)))
+        script = Path(__file__).resolve().parents[1] / 'scripts/preview_run_asks.py'
+        for flag in ('--skill', '--source', '--pack', '--group-add', '--group-set', '--group-set-no-prompt'):
+            with self.subTest(preview=flag):
+                result = subprocess.run([sys.executable, '-B', str(script), flag, '--dense-bundle'],
+                    env=dict(HOME=self.tmp.name, PATH=self.tmp.name + ':/usr/local/bin:/usr/bin:/bin'),
+                    capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                links = Attachments()
+                links.feed(result.stdout)
+                self.assertEqual(len(links.files), 1)
+                filename, raw = links.files[0]
+                self.assertRegex(filename, r'^review-[0-9a-f]{64}\.txt$')
+                self.assertIn(hashlib.sha256(raw).hexdigest(), result.stdout)
+                section = result.stdout.split('<section class="bundle">', 1)[1].split('</section>', 1)[0]
+                self.assertNotIn('<button>', section)
+                self.assertIn('Canonical review:', raw.decode())
+
+    @staticmethod
+    def bundle_review(row):
+        raw = row['bundle']['document']['text'].encode()
+        header, body = raw.split(b'\n\nCanonical review: ', 1)[1].split(b'\n\n', 1)
+        size = int(header.removesuffix(b' UTF-8 bytes'))
+        return body[:size].decode()
 
     def bundle_delivery(self, case, ask):
         self.reset_native(copy.deepcopy(ask))
@@ -1792,68 +1863,65 @@ class NativeTests(NativeCase):
         self.store.record_topic('ops', 12, 'created')
         self.assertTrue(self.create(topic='ops')['delivered'])
         row = self.row()
-        parts = row['bundle']['parts']
+        self.assertEqual(row['bundle']['parts'], [])
         sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
-        self.assertGreater(len(parts), 0 if case.startswith('pack') else 3)
-        self.assertEqual(len(sent), len(parts) + 1)
-        bodies = []
-        for index, (part, body) in enumerate(zip(parts, sent)):
-            visible, error = b.html_visible_text(body['text'])
-            self.assertFalse(error)
-            self.assertTrue(body['text'].startswith('<b>test-city · sample-1 · ask #7'))
-            self.assertIn('<b>Part ', body['text'])
-            if index == 0:
-                self.assertIn('<b>UNTRUSTED ', body['text'])
-            self.assertEqual(visible, part['plain'])
-            self.assertLessEqual(n.units(visible), n.CAP)
-            self.assertEqual(hashlib.sha256(visible.encode()).hexdigest(), part['sha256'])
-            self.assertEqual(body['message_thread_id'], 12)
-            self.assertNotIn('reply_markup', body)
-            self.assertEqual(body.get('reply_parameters'), None if index == 0 else {'message_id': parts[index-1]['message_id']})
-            self.assertIn(row['proposal'], part['plain'])
-            bodies.append(visible.split('\n', 3)[3])
-        review = ''.join(bodies)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(len(self.documents), 1)
+        fields, path, raw = self.documents[-1]
+        document = row['bundle']['document']
+        review = self.bundle_review(row)
         self.assertEqual(hashlib.sha256(review.encode()).hexdigest(), row['bundle']['sha256'])
-        offset, continued = 0, 0
-        for body, sent_part in zip(bodies, sent):
-            start = review.rfind('\n', 0, offset) + 1
-            if start < offset and review[start] == '"':
-                self.assertTrue(sent_part['text'].split('\n', 3)[3].startswith('<pre>'))
-                continued += 1
-            offset += len(body)
-        if len(parts) > 1:
-            self.assertGreater(continued, 0)
-        else:
-            self.assertEqual(continued, 0)
+        self.assertEqual(document['text'].encode(), raw)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(path.name, 'review-' + row['proposal'] + '.txt')
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), document['sha256'])
+        self.assertEqual(len(raw), document['size'])
+        self.assertEqual(fields['message_thread_id'], '12')
+        self.assertNotIn('reply_parameters', fields)
+        self.assertNotIn('reply_markup', fields)
+        self.assertEqual(fields.get('caption', ''), '')
+        card, error = b.html_visible_text(sent[0]['text'])
+        self.assertFalse(error)
+        self.assertEqual(card, row['plain'])
+        self.assertLessEqual(n.units(card), n.CAP)
+        self.assertIn(document['sha256'], card)
+        self.assertIn(row['proposal'], card)
+        self.assertIn(path.name, card)
+        self.assertIn(str(len(raw)) + ' bytes', card)
+        self.assertIn('1 document', card)
+        self.assertIn(str(row['bundle']['text_parts']) + ' text parts contained, 0 sent', card)
+        self.assertNotIn('Synthetic long line', card)
+        self.assertNotIn('FORGED CONTROL', card)
+        self.assertNotIn('<b>role', sent[0]['text'])
+        self.assertEqual(sent[0]['message_thread_id'], 12)
         if case == 'skill':
             self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
             self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
+            self.assertIn(ask['run']['does'][4], card)
+            self.assertIn(ask['run']['carried'][0]['files'][0]['sha256'], card)
         elif case == 'source':
             self.assert_source_review(ask, review)
+            self.assertIn('no grant of source synthetic stands.', card)
         elif case.startswith('pack'):
             for line in ask['run']['does']:
                 self.assertIn(n.quote_line(line), review)
             for carried in ask['run']['carried']:
                 for line in n.source_review(carried):
                     self.assertIn(line, review)
+            if 'directory' in ask['run']['pack']:
+                self.assert_pack_document(ask, raw)
+                self.assertIn(ask['run']['pack']['digest'], card)
+            if case == 'pack_replace':
+                self.assertIn('grants kept for source synthetic: crew member reviewer: health (kept).', card)
+                for change in ask['run']['carried'][0]['old']:
+                    self.assertIn(change['old_sha256'], card)
+                    self.assertIn(change['new_sha256'], card)
         else:
             label = 'proposed role' if case == 'group_add' else 'standing role'
             self.assert_group_review(ask, review, label)
-        document = row['bundle'].get('document')
-        if document:
-            fields, path, raw = self.documents[-1]
-            self.assert_pack_document(ask, raw)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(hashlib.sha256(raw).hexdigest(), document['sha256'])
-            self.assertEqual(json.loads(fields['reply_parameters'])['message_id'], parts[-1]['message_id'])
-            self.assertEqual(fields['message_thread_id'], '12')
-            self.assertNotIn('reply_markup', fields)
-            self.assertIn(document['sha256'], sent[-1]['text'])
-            self.assertIn(ask['run']['pack']['digest'], sent[-1]['text'])
-        self.assertEqual(sent[-1]['reply_parameters']['message_id'], document['message_id'] if document else parts[-1]['message_id'])
-        self.assertIn(row['proposal'], sent[-1]['text'])
-        self.assertEqual(sent[-1]['reply_markup']['inline_keyboard'][0][0]['callback_data'], f"runask:{row['id']}:approve")
-        expected = [body['text'] for body in sent]
+        self.assertEqual(sent[0]['reply_parameters']['message_id'], document['message_id'])
+        self.assertEqual(sent[0]['reply_markup']['inline_keyboard'][0][0]['callback_data'], f"runask:{row['id']}:approve")
+        expected = [sent[0]['text']]
         original = self.bridge.request
         for failure in ('transient', 'ambiguous', 'crash-after-receipt'):
             for index, target in enumerate(expected):
@@ -1872,8 +1940,7 @@ class NativeTests(NativeCase):
                         self.bridge.request = original
                         save = self.bridge.run_asks.save
                         def crash(row):
-                            delivered = sum(p['message_id'] is not None for p in row['bundle']['parts'])
-                            if delivered == index + 1 or (index == len(parts) and row['message_id'] is not None):
+                            if row['message_id'] is not None:
                                 raise RuntimeError('synthetic crash after ledger receipt')
                             save(row)
                         with patch.object(self.bridge.run_asks, 'save', side_effect=crash):
@@ -1883,8 +1950,9 @@ class NativeTests(NativeCase):
                         result = self.create(topic='ops')
                         self.assertFalse(result['delivered'])
                         self.assertIsNone(self.row()['message_id'])
-                        self.assertEqual(sum(p['message_id'] is not None for p in self.row()['bundle']['parts']), index)
-                    confirmed = [p['message_id'] for p in self.row()['bundle']['parts'][:index]]
+                        self.assertIsNotNone(self.row()['bundle']['document']['message_id'])
+                    confirmed = self.row()['bundle']['document']['message_id']
+                    documents_before = len(self.documents)
                     before = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
                     blocked[0] = False
                     self.bridge.run_asks = n.RunAsks(self.bridge)
@@ -1893,12 +1961,13 @@ class NativeTests(NativeCase):
                         self.assertFalse(retry['delivered'])
                         self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), before)
                         # Existing ledger reconciliation can confirm an observed message; same key resumes.
-                        key = self.row()['bundle']['parts'][index]['key'] if index < len(parts) else f"runask:{self.row()['id']}:send"
+                        key = f"runask:{self.row()['id']}:send"
                         self.store.finish(key, self.bridge.receipt(True, message_id='700'))
                         self.assertTrue(self.create(topic='ops')['delivered'])
                     else:
                         self.assertTrue(retry['delivered'])
-                    self.assertEqual([p['message_id'] for p in self.row()['bundle']['parts'][:index]], confirmed)
+                    self.assertEqual(self.row()['bundle']['document']['message_id'], confirmed)
+                    self.assertEqual(len(self.documents), documents_before)
                     sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
                     complete = len(sends)
                     self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='new-repost-key', topic='ops'))['delivered'])
@@ -1944,7 +2013,7 @@ class NativeTests(NativeCase):
                 document = row['bundle']['document']
                 self.assertIsNone(row['message_id'])
                 self.assertIsNone(document['message_id'])
-                self.assertTrue(all(p['message_id'] for p in row['bundle']['parts']))
+                self.assertEqual(row['bundle']['parts'], [])
                 self.assertFalse(any(body.get('reply_markup') for url, body in self.calls if url.endswith('/sendMessage')))
                 before = len(self.documents)
                 blocked[0] = False
@@ -1978,8 +2047,76 @@ class NativeTests(NativeCase):
         self.assertTrue(self.create()['delivered'])
         self.assertEqual(len(self.documents), 1)
 
+        for damage in ('bytes', 'name'):
+            with self.subTest(document_damage=damage):
+                ask = skill_proposal()
+                ask['context'] = ['Synthetic document integrity ' + damage]
+                self.reset_native(ask)
+                with patch.object(self.bridge.run_asks, 'send_card', return_value=self.bridge.not_sent()):
+                    self.assertFalse(self.create()['delivered'])
+                row = self.row()
+                document = row['bundle']['document']
+                path = Path(self.bridge.run_asks.document_file(document))
+                if damage == 'bytes':
+                    path.write_bytes(b'Synthetic changed document')
+                else:
+                    document['name'] = '../outside.txt'
+                    self.bridge.run_asks.save(row)
+                result = self.create()
+                self.assertFalse(result['delivered'])
+                self.assertIn('document_', result['reason'])
+                self.assertEqual(self.sent_count, 0)
+
+        # Rows captured by the previous release keep their partial reply chain and ledger keys.
+        for snapshot in (False, True):
+            with self.subTest(legacy_snapshot=snapshot):
+                self.reset_native(pack_proposal())
+                with patch.object(self.bridge.run_asks, 'send_card', return_value=self.bridge.not_sent()):
+                    self.assertFalse(self.create()['delivered'])
+                row = self.row()
+                review = self.bundle_review(row)
+                parts = []
+                for index, body in enumerate(n.chunks(review, 2000)):
+                    plain = f'Legacy part {index + 1}\n' + body
+                    parts.append(dict(plain=plain, html='<pre>' + n.escape(plain) + '</pre>',
+                        sha256=n.file_hash(plain), key=f"runask:{row['id']}:bundle:{row['proposal']}:{index}", message_id=None))
+                row['bundle']['parts'] = parts
+                row['bundle'].pop('text_parts')
+                if snapshot:
+                    value = n.pack_document(self.native.ask['run']['pack'])
+                    row['bundle']['document'] = dict(text=value, sha256=n.file_hash(value), size=len(value.encode()),
+                        key=f"runask:{row['id']}:bundle:{row['proposal']}:document", message_id=None)
+                else:
+                    row['bundle'].pop('document')
+                self.bridge.run_asks.save(row)
+                original_text = self.bridge.request
+                def interrupted(url, body, *args, **kwargs):
+                    if url.endswith('/sendMessage') and body['text'] == parts[1]['html']:
+                        raise b.RequestUnconfirmed('synthetic legacy part receipt lost')
+                    return original_text(url, body, *args, **kwargs)
+                self.bridge.request = interrupted
+                self.assertFalse(self.create()['delivered'])
+                confirmed = self.row()['bundle']['parts'][0]['message_id']
+                self.assertIsNotNone(confirmed)
+                before = len(self.calls)
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.request = original_text
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(len(self.calls), before)
+                self.store.finish(parts[1]['key'], self.bridge.receipt(True, message_id='700'))
+                self.assertTrue(self.create()['delivered'])
+                self.assertEqual(self.row()['bundle']['parts'][0]['message_id'], confirmed)
+                sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                self.assertEqual(sum(body['text'] == parts[0]['html'] for body in sends), 1)
+                self.assertEqual(sum(body['text'] == parts[1]['html'] for body in sends), 0)
+                self.assertEqual(len(self.documents), int(snapshot))
+                if snapshot:
+                    self.assertEqual(self.documents[0][1].name, n.file_hash(value) + '.txt')
+                self.assertEqual(self.writes(), [])
+
     def assert_pack_document(self, ask, raw):
         pack = ask['run']['pack']
+        raw = raw[raw.index(b'UNTRUSTED SOURCE PACK SNAPSHOT\n'):]
         header, rest = raw.split(b'\n\n', 1)
         self.assertIn(('Pack: ' + pack['name']).encode(), header)
         self.assertIn(('Pack digest: ' + pack['digest']).encode(), header)
@@ -2051,10 +2188,10 @@ class NativeTests(NativeCase):
                 sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
                 self.assertEqual(len(sent), len(row['bundle']['parts']) + 1)
                 self.assertTrue(all('reply_markup' not in body for body in sent[:-1]))
-                review = ''.join(b.html_visible_text(body['text'])[0].split('\n', 3)[3] for body in sent[:-1])
+                review = self.bundle_review(row)
                 self.assert_group_review(self.native.ask, review, label)
                 if factory is group_add_proposal:
-                    self.assertIn('&lt;b&gt;role&lt;/b&gt;', sent[0]['text'])
+                    self.assertIn('<b>role</b>', review)
                     self.assertNotIn('<b>role', ''.join(body['text'] for body in sent))
                     self.assertEqual(group_role(review, label).encode().count(b'\n\n'), 1)
                 else:
@@ -2070,8 +2207,9 @@ class NativeTests(NativeCase):
                 self.assertEqual(card.count('Sessions the group runs now keep'), 0 if factory is group_add_proposal else 1)
                 self.assertNotIn('forged authority', card)
                 self.assertIn(self.native.ask['run']['command'], card)
-                self.assertIn(f"Complete review bundle {row['proposal']} · {len(row['bundle']['parts'])} parts.", card)
-                self.assertEqual(sent[-1]['reply_parameters']['message_id'], row['bundle']['parts'][-1]['message_id'])
+                self.assertIn(f"Bundle: {row['proposal']}", card)
+                self.assertIn("1 document", card)
+                self.assertEqual(sent[-1]['reply_parameters']['message_id'], row['bundle']['document']['message_id'])
                 self.assertTrue(row['weighty'])
 
         def changed(factory, path, value):
@@ -2092,7 +2230,7 @@ class NativeTests(NativeCase):
         self.assertTrue(self.create()['delivered'])
         sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
         self.assertTrue(all('reply_markup' not in body for body in sent[:-1]))
-        self.assertIn('Manifest: group set drafters; roles []', b.html_visible_text(sent[0]['text'])[0])
+        self.assertIn('Manifest: group set drafters; roles []', self.bundle_review(self.row()))
         self.assertIn('group set drafters (herdr, kind claude); it names no prompt: its sessions start with no role, and the card sets none',
                       b.html_visible_text(sent[-1]['text'])[0])
         self.assertIn(('GetGroup', ['drafters'], 'tgbridge'), self.native.calls)
@@ -2191,13 +2329,14 @@ class NativeTests(NativeCase):
         for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 original = self.bridge.request
+                multipart = self.bridge.request_multipart
                 self.bridge.sleep = lambda _: None
-                for drift in ('proposal', 'operator', 'state', *(['pack-digest'] if factory is pack_proposal else [])):
-                    with self.subTest(drift=drift):
-                        self.reset_native(factory())
-                        attempts = []
-                        def telegram(url, body, *args, **kwargs):
-                            if url.endswith('/sendMessage'):
+                for phase in ('document', 'card'):
+                    for drift in ('proposal', 'operator', 'state', *(['pack-digest'] if factory is pack_proposal else [])):
+                        with self.subTest(phase=phase, drift=drift):
+                            self.reset_native(factory())
+                            attempts = []
+                            def interrupt(body):
                                 attempts.append(body)
                                 if drift == 'proposal':
                                     self.native.ask['context'].append('new proposal')
@@ -2209,22 +2348,34 @@ class NativeTests(NativeCase):
                                 else:
                                     self.native.ask.update(state='taken back', words='withdrawn', by='proposer')
                                 raise b.RequestNotSent('not sent before drift')
-                            return original(url, body, *args, **kwargs)
-                        self.bridge.request = telegram
-                        self.assertFalse(self.create()['delivered'])
-                        self.assertEqual(len(attempts), 1)
-                        self.bridge.run_asks = n.RunAsks(self.bridge)
-                        self.assertFalse(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='new-retry'))['delivered'])
-                        self.assertEqual(len(attempts), 1)
-                        self.assertIsNone(self.row()['message_id'])
-                        self.assertEqual(self.writes(), [])
-                        key = self.row()['bundle']['parts'][0]['key']
-                        self.assertTrue(b.resendable(self.store.saved_receipt(key)))
-                        if drift == 'operator':
-                            self.native.user['role'] = 'operator'
-                            self.bridge.request = original
-                            self.assertTrue(self.create()['delivered'])
+                            def telegram(url, body, *args, **kwargs):
+                                if phase == 'card' and url.endswith('/sendMessage'):
+                                    interrupt(body)
+                                return original(url, body, *args, **kwargs)
+                            def document(url, fields, *args, **kwargs):
+                                if phase == 'document':
+                                    interrupt(fields)
+                                return multipart(url, fields, *args, **kwargs)
+                            self.bridge.request = telegram
+                            self.bridge.request_multipart = document
+                            self.assertFalse(self.create()['delivered'])
+                            self.assertEqual(len(attempts), 1)
+                            captured_document = self.row()['bundle']['document']['text']
+                            self.bridge.run_asks = n.RunAsks(self.bridge)
+                            self.assertFalse(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='new-retry'))['delivered'])
+                            self.assertEqual(len(attempts), 1)
+                            self.assertEqual(self.row()['bundle']['document']['text'], captured_document)
+                            self.assertIsNone(self.row()['message_id'])
+                            self.assertEqual(self.writes(), [])
+                            key = self.row()['bundle']['document']['key'] if phase == 'document' else f"runask:{self.row()['id']}:send"
+                            self.assertTrue(b.resendable(self.store.saved_receipt(key)))
+                            if drift == 'operator':
+                                self.native.user['role'] = 'operator'
+                                self.bridge.request = original
+                                self.bridge.request_multipart = multipart
+                                self.assertTrue(self.create()['delivered'])
                 self.bridge.request = original
+                self.bridge.request_multipart = multipart
 
     def test_skill_bundle_maximum_file_and_oversized_envelope_refuse_whole(self):
         base_size = len(skill_proposal()['run']['carried'][0]['files'][0]['text'].encode())
@@ -2233,10 +2384,10 @@ class NativeTests(NativeCase):
         self.reset_native(skill_proposal(extra))
         self.assertTrue(self.create()['delivered'])
         row = self.row()
-        review = ''.join(p['plain'].split('\n', 3)[3] for p in row['bundle']['parts'])
+        review = NativeTests.bundle_review(row)
         self.assertTrue(review.endswith('\n'.join(self.native.ask['run']['does'])))
-        self.assertTrue(all(n.units(p['plain']) <= n.CAP for p in row['bundle']['parts']))
-        self.assertTrue(all(p['message_id'] for p in row['bundle']['parts']))
+        self.assertEqual(row['bundle']['parts'], [])
+        self.assertTrue(row['bundle']['document']['message_id'])
         self.reset_native(skill_proposal(extra + 'x'))
         self.assertFalse(self.create()['delivered'])
         self.assertEqual(self.sent_count, 0)
@@ -2245,6 +2396,23 @@ class NativeTests(NativeCase):
         self.assertFalse(self.create()['delivered'])
         self.assertEqual(self.sent_count, 0)
         self.assertEqual(self.writes(), [])
+        self.config['yard'] = 'test-city'
+        # Decision-critical kept identities cannot be discarded to squeeze the card in.
+        for factory in (skill_proposal, source_proposal, pack_proposal):
+            with self.subTest(oversized_kept_plan=factory.__name__):
+                ask = factory()
+                if factory is skill_proposal:
+                    ask['run']['does'][4] = 'current holders and affected readers: ' + '<b>holder</b> ' * 500
+                else:
+                    if factory is pack_proposal:
+                        ask = pack_proposal('directory_replace')
+                    at = next(i for i, line in enumerate(ask['run']['does'])
+                              if line.startswith(('grants kept for source ', 'no grant of source ')))
+                    ask['run']['does'][at] = 'grants kept for source synthetic: ' + '<b>holder</b> ' * 500
+                self.reset_native(ask)
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
 
     def test_skill_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
         for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
@@ -3195,6 +3363,9 @@ class RealNativeTests(BridgeTestCase):
                 return status, response
             self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
             self.bridge.hook_secret = None
+            self.documents = []
+            self.sent_count = 10000
+            self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
             self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='real-native'))['delivered'])
             row = self.bridge.run_asks.rows()[0]
             query = dict(id='real-callback', data=f"runask:{row['id']}:approve", **{'from': dict(id=123, is_bot=False)},
@@ -3294,6 +3465,9 @@ class RealNativeTests(BridgeTestCase):
             self.store = b.Store(self.path, 10)
             self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
             self.bridge.hook_secret = None
+            self.documents = []
+            self.sent_count = 10000
+            self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
             query = dict(id='real-unconfirmed', data=delivered[0]['reply_markup']['inline_keyboard'][0][0]['callback_data'],
                          message=delivered[0], **{'from': dict(id=123, is_bot=False)})
             telegram_call = self.bridge.telegram
@@ -3507,8 +3681,13 @@ class RealNativeTests(BridgeTestCase):
             self.assertTrue(receipt['delivered'], receipt)
             row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == skill['ask'])
             sends = [body for url, body in self.calls[calls_before:] if url.endswith('/sendMessage')]
-            self.assertGreater(len(sends), 3)
-            self.assertEqual(len(sends), len(row['bundle']['parts']) + 1)
+            self.assertEqual(len(sends), 1)
+            self.assertEqual(len(self.documents), 1)
+            fields, path, raw = self.documents[-1]
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), row['bundle']['document']['sha256'])
+            self.assertIn(row['bundle']['document']['sha256'], sends[0]['text'])
+            self.assertIn(captured.decode(), ''.join(n.unquote(line) for line in NativeTests.bundle_review(row).split('proposed SKILL.md (quoted UTF-8 lines, including line endings):\n')[1].split('\nstanding SKILL.md', 1)[0].split('\n')))
+            self.assertNotIn('reply_markup', fields)
             self.assertTrue(all(not body.get('reply_markup') for body in sends[:-1]))
             self.assertTrue(sends[-1]['reply_markup']['inline_keyboard'])
             self.assertEqual(target.read_bytes(), before)
@@ -3872,10 +4051,14 @@ class RealNativeTests(BridgeTestCase):
                 self.assertTrue(receipt['delivered'], receipt)
                 row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
                 self.assertTrue(row['bundle']['document']['message_id'])
-                self.assertLess(len(row['bundle']['parts']), n.PACK_PARTS // 2)
+                self.assertEqual(row['bundle']['parts'], [])
+                sends = [body for url, body in self.calls if url.endswith('/sendMessage')
+                         and body.get('reply_parameters', {}).get('message_id') == row['bundle']['document']['message_id']]
+                self.assertEqual(len(sends), 1)
+                self.assertIn(hashlib.sha256(self.documents[-1][2]).hexdigest(), sends[0]['text'])
                 self.assertLess(row['bundle']['document']['size'], n.PACK_DOCUMENT_BYTES // 2)
                 if scenario == 'upgrade':
-                    print(f"Synthetic tgbridge upgrade: {len(row['bundle']['parts'])}/{n.PACK_PARTS} text parts; {row['bundle']['document']['size']}/{n.PACK_DOCUMENT_BYTES} document bytes")
+                    print(f"Synthetic tgbridge upgrade: 1 document, 1 card, {row['bundle']['text_parts']} text parts contained; {row['bundle']['document']['size']}/{n.PACK_DOCUMENT_BYTES} document bytes")
                 NativeTests.assert_pack_document(self, ask, self.documents[-1][2])
                 command.write_bytes(b'Synthetic edited after capture; never executed.\n')
                 if scenario == 'source-stale':
@@ -3945,7 +4128,7 @@ class RealNativeTests(BridgeTestCase):
         receipt = self.bridge.api_run_ask(dict(bead='pack-1', ask=ask['ask'], key='pack-embedded'))
         self.assertTrue(receipt['delivered'], receipt)
         row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
-        self.assertNotIn('document', row['bundle'])
+        self.assertIsNotNone(row['bundle']['document']['message_id'])
         press(row)
         self.assertEqual(current(ask['ask'])['state'], 'open')
         reply(row)
@@ -4005,9 +4188,9 @@ class RealNativeTests(BridgeTestCase):
                 receipt = self.bridge.api_run_ask(dict(bead='source-1', ask=ask['ask'], key='source-' + scenario))
                 self.assertTrue(receipt['delivered'], receipt)
                 row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'source-1' and r['ask'] == ask['ask'])
-                review = ''.join(p['plain'].split('\n', 3)[3] for p in row['bundle']['parts'])
+                review = NativeTests.bundle_review(row)
                 NativeTests.assert_source_review(self, ask, review)
-                self.assertTrue(all(p['message_id'] for p in row['bundle']['parts']))
+                self.assertIsNotNone(row['bundle']['document']['message_id'])
                 # Neither bridge nor carry may reopen provenance after capture.
                 file.unlink()
                 for f in carried.get('files', []):
@@ -4168,12 +4351,15 @@ class RealNativeTests(BridgeTestCase):
                 return status, response
             self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
             self.bridge.hook_secret = None
+            self.documents = []
+            self.sent_count = 10000
+            self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
             updates = iter(range(40, 400))
 
             def card(ask):
                 self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key=f"group-{ask['ask']}"))['delivered'])
                 row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
-                self.assertTrue(all(part['message_id'] for part in row['bundle']['parts']))
+                self.assertTrue(row['bundle']['document']['message_id'])
                 return row
 
             def press(row, action='approve'):
@@ -4269,6 +4455,9 @@ class RealNativeTests(BridgeTestCase):
             cli('group', 'set', 'pausers', 'prompt=roles/planner.md')
             self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
             self.bridge.hook_secret = None
+            self.documents = []
+            self.sent_count = 10000
+            self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
             self.bridge.run_asks.refresh()
             self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'approved')
             self.assertFalse(self.bridge.run_asks.get(row['id'])['uncertain'])

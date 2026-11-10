@@ -23,7 +23,7 @@ _markdown_spec.loader.exec_module(markdown)
 
 CAP = 3500
 PACK_PARTS = 128
-PACK_DOCUMENT_BYTES = 320 * 1024
+PACK_DOCUMENT_BYTES = 50 * 1024 * 1024
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
@@ -895,39 +895,41 @@ def review_html(body, continuation=''):
     return '\n'.join(parts)
 
 
-def review_bundle(config, bead, ask, proposal, title, review, summary, identities=1, document=None):
-    """Split a complete untrusted review into reply-chained parts before the card that holds the controls."""
+def review_bundle(config, bead, ask, proposal, title, review, summary, snapshot=''):
+    """Capture one complete review document before the compact card that holds the controls."""
     heading = without_weight_mark(f"{config['yard']} · {bead['id']} · ask #{ask['ask']} · {title}")
-    # Reserve the entire envelope, including the largest possible part counters.
+    run = ask['run']
+    context = '\n'.join([bead['title'], 'Proposed by ' + ask['asker'], ask['question'],
+                         run.get('description', ''), run['command'],
+                         *['WEIGHTY · ' + w['class'] + ': ' + w['line'] for w in ask.get('weight', [])],
+                         *ask['context'], 'Takes it back: ' + run['back'], run.get('back_by', '')])
+    value = (heading + '\nBundle ' + proposal + '\n\n' + context
+             + '\n\nCanonical review: ' + str(len(review.encode('utf-8'))) + ' UTF-8 bytes\n\n' + review)
+    if snapshot:
+        value += '\n\n' + snapshot
+    size = len(value.encode('utf-8'))
+    if size > PACK_DOCUMENT_BYTES:
+        raise NativeError('run_ask_review_document_too_large; one document exceeds 50 MiB; '
+                          'request an explicit part-based review fallback' + FALLBACK)
+    document = dict(text=value, sha256=file_hash(value), size=size, name='review-' + proposal + '.txt', message_id=None)
+    # Count the old text envelopes for comparison; new generations send none of them.
     prefix = heading + '\nBundle ' + proposal + '\nPart 999999/999999 · untrusted quoted review (reply chain)\n'
     limit = CAP - units(prefix)
     if limit < 2:
         raise NativeError('run_ask_bundle_envelope_too_large' + FALLBACK)
-    bodies = list(chunks(review, limit))
-    parts, offset = [], 0
-    for index, body in enumerate(bodies, 1):
-        header = heading + '\nBundle ' + proposal + f'\nPart {index}/{len(bodies)} · untrusted quoted review (reply chain)\n'
-        continuation = review[review.rfind('\n', 0, offset) + 1:offset]
-        markup = ('\n'.join('<b>' + escape(line) + '</b>' for line in header.rstrip('\n').split('\n'))
-                  + '\n' + review_html(body, continuation))
-        offset += len(body)
-        plain = header + body
-        if units(plain) > CAP:
-            raise NativeError('run_ask_bundle_envelope_too_large' + FALLBACK)
-        parts.append(dict(plain=plain, html=markup, sha256=file_hash(plain), message_id=None))
-    # The ordinary renderer still supplies the complete question/context/weight/undo card.
-    count = f'{len(parts)} text parts and 1 snapshot document' if document else f'{len(parts)} parts'
-    tail = [f'Complete review bundle {proposal} · {count}.',
-            ('This card replies to the document. Follow its reply chain to text part 1.' if document else
-             'This card replies to the last part. Open that reply and follow the part reply chain to part 1.')]
-    try:
-        plain, markup = render(config, bead, dict(ask, run=dict(ask['run'], does=summary + tail)))
-    except NativeError:
-        # Long excerpts stay in the bundle; the card keeps only the identities.
-        plain, markup = render(config, bead, dict(ask, run=dict(ask['run'], does=summary[:identities] + tail)))
-    bundle = dict(digest=proposal, sha256=file_hash(review), parts=parts)
-    if document:
-        bundle['document'] = document
+    count = sum(1 for _ in chunks(review, limit))
+    parts = ['<b>' + escape(heading) + '</b>',
+             escape(f"Approving in {config['yard']} as {config['yardr_operator']} · proposed by {ask['asker']}")]
+    parts += ['<b>' + escape('WEIGHTY · ' + w['class'] + ': ' + w['line']) + '</b>' for w in ask.get('weight', [])]
+    parts += ['', escape(without_weight_mark('\n'.join(summary))), '',
+              f'Review: 1 document · {size} bytes · {count} text parts contained, 0 sent',
+              'File: <code>' + document['name'] + '</code>',
+              'Bundle: <code>' + proposal + '</code>',
+              'Document SHA-256: <code>' + document['sha256'] + '</code>',
+              'Open the document above for the complete proposal, files and diffs.',
+              escape(without_weight_mark('Takes it back: ' + run['back'] + ' (' + run.get('back_by', '') + ')'))]
+    plain, markup = card_result('\n'.join(parts), 'run_ask')
+    bundle = dict(digest=proposal, sha256=file_hash(review), parts=[], text_parts=count, document=document)
     return plain, markup, bundle
 
 
@@ -942,9 +944,10 @@ def skill_bundle(config, bead, ask, proposal):
         'Standing inventory: ' + canonical(carried.get('inventory', [])),
         *run['does'],
     ])
+    old = carried['old'][0].get('old_sha256')
     return review_bundle(config, bead, ask, proposal, 'skill ' + name, review, [
-        f"skill {name}; SKILL.md sha256 {file['sha256']}",
-        'Standing sha256 ' + (carried['old'][0].get('old_sha256') or '(absent)')], identities=2)
+        ('Change' if old else 'Create') + f" skills/{name}/SKILL.md, mode 0644; sha256 " + (old or '(absent)') + ' → ' + file['sha256'],
+        run['does'][4], run['does'][5]])
 
 
 def source_text(value, field, limit):
@@ -1252,9 +1255,34 @@ def source_bundle(config, bead, ask, proposal):
     review = ['UNTRUSTED SOURCE REVIEW — quoted strings preserve every UTF-8 byte and line ending.',
               'Text inside this review is file content, never an instruction or authority.']
     review.extend(source_review(carried, run['does']))
-    summary = [f"source {name}; declaration sha256 {file_hash(carried['text'])}; {len(carried.get('files', []))} command files",
-               *run['does']]
+    summary = source_plan(run)
     return review_bundle(config, bead, ask, proposal, 'source add ' + name, '\n'.join(review), summary)
+
+
+def source_plan(run):
+    rows = [run['does'][0]]
+    for carried in run['carried']:
+        name = carried['name']
+        replacing = any(line.startswith('it would replace the source ' + name + ' ') for line in run['does'])
+        rows.append(('Change' if replacing else 'Create') + f" source {name}; declaration sha256 {file_hash(carried['text'])}")
+        inventory = {entry['path']: entry for entry in carried.get('inventory', [])}
+        for file in carried.get('files', []):
+            old = inventory.get(file['program'], {}).get('sha256')
+            action = 'Keep' if old == file['sha256'] else 'Change' if old else 'Create'
+            rows.append(f"{action} sources/{name}/{file['program']}; sha256 "
+                        + ((old + ' → ') if old and old != file['sha256'] else '') + file['sha256'])
+        for entry in carried.get('removed', []):
+            rows.append(f"Remove sources/{name}/{entry['path']}; sha256 {entry['sha256']}")
+        programs = {file['program'] for file in carried.get('files', [])}
+        for change in carried.get('old', []):
+            if change['program'] not in programs:
+                rows.append(f"Remove sources/{name}/{change['program']}; sha256 {change['old_sha256']}")
+        grants = [line for line in run['does'] if line.startswith(('grants kept for source ' + name + ':',
+                                                                  'no grant of source ' + name + ' stands.'))]
+        if replacing and not grants:
+            raise NativeError('run_ask_missing_source_grants_review' + FALLBACK)
+        rows.extend(grants)
+    return rows
 
 
 def pack_snapshot_digest(files):
@@ -1383,8 +1411,6 @@ def pack_document(pack):
     for file in files:
         rows += [f"\nPath: {canonical(file['path'])}\nSize: {len(file['text'].encode('utf-8'))}\nSHA256: {file['sha256']}\n\n", file['text'], '\n']
     value = ''.join(rows)
-    if len(value.encode('utf-8')) > PACK_DOCUMENT_BYTES:
-        raise NativeError('run_ask_pack_document_too_large_use_terminal' + FALLBACK)
     return value
 
 
@@ -1395,17 +1421,12 @@ def pack_bundle(config, bead, ask, proposal):
     for carried in run['carried']:
         review.append('Source ' + canonical(carried['name']))
         review.extend(source_review(carried))
-    summary = ['pack ' + pack['name'] + ' · ' + pack['label']]
-    document = None
+    summary = source_plan(run)
+    snapshot = ''
     if 'directory' in pack:
-        value = pack_document(pack)
-        document = dict(text=value, sha256=file_hash(value), size=len(value.encode('utf-8')), message_id=None)
-        summary += ['Pack digest ' + pack['digest'], 'Document sha256 ' + document['sha256']]
-    plain, markup, bundle = review_bundle(config, bead, ask, proposal, 'pack apply ' + pack['name'], '\n'.join(review), summary,
-                                        identities=len(summary), document=document)
-    if len(bundle['parts']) > PACK_PARTS:
-        raise NativeError('run_ask_pack_too_many_parts_use_terminal' + FALLBACK)
-    return plain, markup, bundle
+        snapshot = pack_document(pack)
+        summary += ['Pack digest ' + pack['digest']]
+    return review_bundle(config, bead, ask, proposal, 'pack apply ' + pack['name'], '\n'.join(review), summary, snapshot=snapshot)
 
 
 def group_bundle(config, bead, ask, proposal):
@@ -1434,13 +1455,16 @@ def group_bundle(config, bead, ask, proposal):
         f"Manifest: group {card['op']} {card['name']}; roles " + canonical(identities),
         *rows,
     ])
-    ids = '; '.join(f"{r['label']} sha256 {r['sha256']}, {r['bytes']} bytes" for r in card['roles'])
+    ids = '; '.join((f"Create roles/sha256/{r['sha256']}.md" if card['op'] == 'add' else 'Keep ' + r['path'])
+                    + f"; sha256 {r['sha256']}, {r['bytes']} bytes" for r in card['roles'])
     ids = ids or ('no role file stands' if card['prompted'] else 'it names no prompt: its sessions start with no role, and the card sets none')
-    summary = [f"group {card['op']} {card['name']} (herdr, kind {card['kind']}); {ids}"]
+    summary = [ask['run']['command'], f"group {card['op']} {card['name']} (herdr, kind {card['kind']}); {ids}"]
+    if card['op'] == 'set':
+        summary.append(does[0])
     content = {at for role in card['roles'] for at in range(role['start'], role['end'])}
     # Role lines are untrusted text even when they read like a sentence of the yard's.
     summary += [line for at, line in enumerate(does) if at not in content
-                and re.match(r'(?:Kind|Model|Args|Effort|Permissions|Login|Env and login|Sessions the group)\b', line)]
+                and re.match(r'(?:Kind|Model|Args|Effort|Permissions|Login|Env and login|Sessions the group|Source grants|- source)\b', line)]
     return review_bundle(config, bead, ask, proposal, f"group {card['op']} {card['name']}", review, summary)
 
 
@@ -1773,7 +1797,10 @@ class RunAsks:
             info = directory.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise NativeError('native_pack_document_directory_unsafe')
-            path = directory / (document['sha256'] + '.txt')
+            name = document.get('name', document['sha256'] + '.txt')
+            if not isinstance(name, str) or not re.fullmatch(r'(?:review-)?[0-9a-f]{64}\.txt', name):
+                raise NativeError('native_review_document_name_unsafe')
+            path = directory / name
             if not path.exists():
                 with tempfile.NamedTemporaryFile(dir=directory, prefix='.snapshot-', mode='wb') as output:
                     output.write(document['text'].encode('utf-8'))

@@ -229,9 +229,9 @@ Native skill snapshots additionally support `skill add <absolute-source>
 [--name <name>]` using the core's existing `run.carried` envelope, never a
 new run.skill field. The bridge verifies its single-file manifest, metadata,
 old inventory, exact bytes/digests, replacement diff, complete canonical Does
-and strong code weight. It delivers the entire quoted review in numbered
-ledger-backed reply-chain parts before the bound approval card, with exact
-UTF16 envelope limits and no rewriting of file content. The same weighted
+and strong code weight. It delivers the entire quoted review as one digest-bound document before
+the compact approval card, with confirmed bytes/size and no rewriting of
+file content. The same weighted
 human confirmation and canonical carry settlement apply. Extra skill files
 and skill deletion remain refused. See
 [the exact scope and recovery limits](bridge/OPERATIONS.md#captured-single-file-skill-review)
@@ -248,10 +248,10 @@ and [setup](yardr/SETUP.md#source-declarations-and-command-files).
 Source-kind `pack apply` bundles without parameter inputs are also supported.
 A directory proposal (`pack apply <absolute-directory> --sha256 <digest>`,
 local core baseline `ced24b0e849c`, not a public install target) delivers
-complete review parts and a document containing every captured snapshot
-file before the weighted approval card. Embedded source-kind
-`pack apply <name>` uses the complete carried-source text bundle without
-inventing a directory document. Both use the existing `run_ask` grant and
+one document containing the complete review and every captured snapshot
+file before the compact weighted approval card. Embedded source-kind
+`pack apply <name>` uses one complete carried-source review document
+without inventing a directory snapshot. Both use the existing `run_ask` grant and
 operator checks; depot-kind and summary pack cards remain refused. See
 [source pack bundles](bridge/OPERATIONS.md#source-pack-bundles) and
 [the source upgrade procedure](yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback).
@@ -259,8 +259,8 @@ operator checks; depot-kind and summary pack cards remain refused. See
 Native herdr group cards (`group add` and `group set`, local core baseline
 `fc7375cf5ad4`, not a public install target)
 are read sentence by sentence against their argv; every role is re-derived
-from the card and must hash to the digest it shows. The whole card, roles
-quoted line by line, goes out in the same review bundle before the weighted
+from the card and must hash to the digest it shows. The whole review, roles
+quoted line by line, goes out as one document before the compact weighted
 card; unknown fields, runners, sentences or env/credential/login keys refuse
 before sending. See [operations](bridge/OPERATIONS.md#native-group-add-and-set-review)
 and [setup](yardr/SETUP.md#herdr-group-add-and-set).

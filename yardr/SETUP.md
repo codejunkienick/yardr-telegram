@@ -343,11 +343,11 @@ Only one regular textual SKILL.md (at most 32 KiB on either side) is
 supported; extra source/standing files and deletion are refused. Frontmatter
 is limited to name/description with plain, quoted or simple block strings;
 other metadata/YAML requires the native full client. The complete canonical
-review, proposed/standing files and replacement diff arrive as numbered,
-escaped, untrusted review parts before the approval card. Every part and the
-card name the same bundle digest; the card replies to its final part and
-that part replies to its predecessor. Follow those replies to review all
-parts. Long lines and Unicode split safely without changing captured bytes.
+review, proposed/standing files and replacement diff arrive in one untrusted
+UTF-8 document before the compact approval card. The document and card name
+the same bundle digest; the card replies to the document and shows its
+SHA-256, size, plan hashes and current holders. Open the complete document
+before approving. No captured bytes are changed.
 
 The first Approve tap only asks for a direct reply with the exact ask number
 within five minutes; only the paired operator can confirm. The source is a
@@ -384,10 +384,10 @@ pinned pure-Python YAML reader. Absolute command programs, aliases/tags,
 unknown fields and over-limit snapshots refuse before sending; see
 [operations](../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
 
-Review every numbered part before approving. The complete declaration and
+Open the complete review document before approving. The declaration and
 command files, every replacement diff and inventory/removed records are
-quoted under exact hashes. The card names their bundle digest/count and
-replies to its last part. Core supplies the weight: replacements and new or
+quoted under exact hashes. The compact card names their bundle digest,
+size/counts and document hash and replies to the document. Core supplies the weight: replacements and new or
 changed code require a direct reply with the ask number after the first
 tap; a routine commands-free add applies on Approve. Source provenance can
 change or disappear after capture; the server installs the captured bytes.
@@ -817,10 +817,10 @@ yardr bead ask <bead> "Apply this tgbridge source pack upgrade?" \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=pack-upgrade-1
 ```
 
-Review every numbered text part and the attached snapshot document. The
-document contains every file whole, including the declaration, command
-files and setup notes. The final card names both digests, document hash and
-part count; its weight lines come first. No controls arrive until the whole
+Open the single review document. It contains the complete canonical review
+and every snapshot file whole, including the declaration, command files and
+setup notes. The compact card names both digests, document hash, size and
+counts, plus changed paths/hashes and kept grants; its weight lines come first. No controls arrive until the whole
 bundle is confirmed. Tap Approve, then reply directly to that **card** with
 the exact ask number within five minutes. The tap alone writes nothing;
 a wrong number requires another tap. Replying to a part or document cannot
@@ -830,11 +830,12 @@ nothing and needs a new ask. Existing credentials, selected base, limits
 and grants stay under the core's usual replacement rules, with grants kept
 shown in the review. The proposal takes no binding or answering flags.
 
-Limits are 128 text parts and one document of at most 320 KiB, within
-core's 64-file/256-KiB snapshot bounds. Oversized or unknown shapes refuse
-before sending. A definitely unsent part resumes under its original key;
-an ambiguous part or document needs existing ledger reconciliation and is
-never blindly resent. Preserve the state directory. See
+The document ceiling is 50 MiB including framing, within core's existing
+64-file/256-KiB snapshot bounds. An oversized review refuses before sending
+or buttons and names an explicit part-based fallback; it never truncates.
+Definitely unsent documents resume under their original key; ambiguous ones
+need existing ledger reconciliation, including confirmed size, and are
+never blindly resent. Saved legacy generations keep their parts and keys. Preserve the state directory. See
 [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
 
 For an older core/bridge, a refusal, or an explicit terminal rollback, keep

@@ -32,8 +32,10 @@ yardr reply <seq> "<the answer>"
   stdin), after the reviewed source declares `thread.formats: [markdown]`
   and core supports explicit reply formats. No flag keeps legacy auto.
 - `--file <path>` (repeatable) sends files with it: pictures as photos,
-  anything else as documents, the text as the caption where it fits in
-  1024 characters ("telegram-attachments" skill).
+  anything else as documents, the text as the caption: at most 1024 UTF-16
+  units of visible text, or the whole reply is refused
+  (`caption_exceeds_1024_utf16_units`). Send long text as its own reply and
+  give the file a short caption ("telegram-attachments" skill).
 - The yard puts each reply on record with a key before it is sent, and a
   reply run again after a lost answer finds the first one: never resend
   with other words to "retry".

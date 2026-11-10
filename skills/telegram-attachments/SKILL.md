@@ -1,6 +1,6 @@
 ---
 name: telegram-attachments
-description: Files to and from the operator's private Telegram chat through the yard's bridge - sending a photo, video, document, voice note or round video note with yardr reply --file or yardr call tgbridge send attachment=, or several screenshots as one album (kinds, size and caption limits, the text fallback), and reading the inbound "[attachment saved ...]", skipped and unavailable notes and the saved files. Use when a Telegram message carries a file, or before sending a screenshot, video, document, voice note or video note to the chat.
+description: Files to and from the operator's private Telegram chat through the yard's bridge - photos, videos and documents with yardr reply --file or yardr call tgbridge send attachment=, voice and round video notes with send attachment_kind=, and screenshot albums. Covers kinds, size and caption limits, text fallback, and inbound saved, skipped and unavailable files. Use when a Telegram message carries a file, or before sending a screenshot, video, document, voice note or video note to the chat.
 ---
 
 # Telegram attachments
@@ -14,10 +14,18 @@ caption:
 yardr reply <seq> "<caption>" --file /absolute/path.png
 ```
 
-Posting one (into a topic, silently, as another kind):
+Posting one (optionally into a topic):
 
 ```sh
 yardr call tgbridge send text="<caption>" attachment=/absolute/path.png topic=<name> --json
+```
+
+Both routes infer photo, video or document from the extension. For a real
+voice note or captionless round video note, set `attachment_kind` on `send`:
+
+```sh
+yardr call tgbridge send text="<caption>" attachment=/absolute/note.ogg attachment_kind=voice --json
+yardr call tgbridge send text="" attachment=/absolute/circle.mp4 attachment_kind=video_note --json
 ```
 
 On the host itself, outside a crew member's pane, the bridge's own command
@@ -31,13 +39,14 @@ operator chose another), which carries the bridge's settings:
 ```
 
 - The kind comes from the extension: `.png`/`.jpg`/`.jpeg` photo (10 MB),
-  `.webm`/`.mp4` video (50 MB), anything else document (50 MB). The bridge's
-  command line overrides it with
+  `.webm`/`.mp4` video (50 MB), anything else document (50 MB). Override it
+  with `attachment_kind=photo|video|document|voice|video_note` on the yard's
+  `send` call, or on the bridge's command line with
   `--attachment-kind photo|video|document|voice|video_note`; a `.png` sent as a
   document keeps full resolution.
 - `voice` (50 MB) shows as a voice note: an OGG/Opus file, captioned like the
   others. `video_note` (50 MB) is the round "circle": a square MP4 of at most
-  60 s, and it takes no caption: pass an empty text (`--body-file /dev/null`);
+  60 s, and it takes no caption: pass `text=""` (host: `--body-file /dev/null`);
   any text is refused before sending (`video_note_takes_no_caption`). Neither
   is ever inferred from the extension, and the bridge does not inspect the
   media: a wrong format or shape is Telegram's rejection (text fallback below).

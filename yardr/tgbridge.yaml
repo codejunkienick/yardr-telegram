@@ -40,6 +40,7 @@ calls:
       # --attachment does: a file parameter would make the body a
       # multipart upload, and the bridge takes JSON.
       attachment:   { type: string, pattern: "^/", max: 4096, optional: true }
+      attachment_kind: { type: enum, values: [photo, video, document, voice, video_note], optional: true }
       # The send's own key, which wins over the yard's: an ask's buttons
       # carry ask:<first 16 hex of sha256(key)>:<choice>, so the caller
       # must know the key before it sends. Without it the yard's key is used.
@@ -57,6 +58,7 @@ calls:
         keyboard: "{keyboard}"
         text_options: "{text_options}"
         attachments: "{attachment}"
+        attachment_kind: "{attachment_kind}"
   react:
     kind: update
     about: React to one of the operator's messages (seen, done, none or an emoji)

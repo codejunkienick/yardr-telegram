@@ -63,15 +63,24 @@ class MediaKindTests(BridgeTestCase):
         return json.loads(row[0]) if row else None
 
     def test_voice_goes_out_as_send_voice_with_its_caption(self):
-        receipt = self.bridge.publish(self.request('voice', 'listen to this', reply_to_message_id='5'))
-        self.assertEqual((receipt['delivered'], receipt['message_id']), (True, '88'))
-        url, fields, field, path = self.multipart_calls[0]
-        self.assertTrue(url.endswith('/sendVoice'))
-        self.assertEqual((field, Path(path).name), ('voice', 'note.ogg'))
-        self.assertEqual(fields['caption'], 'listen to this')
-        self.assertEqual(json.loads(fields['reply_parameters']), {'message_id': 5})
+        for boundary in ('publish', 'api'):
+            with self.subTest(boundary=boundary):
+                key = 'voice-' + boundary
+                request = self.request('voice', 'listen to this', key=key, reply_to_message_id='5')
+                if boundary == 'publish':
+                    receipt = self.bridge.publish(request)
+                else:
+                    receipt = self.bridge.api_send(dict(key=key, text='listen to this', reply_to=5,
+                        attachments=[request['attachment']['path']], attachment_kind='voice'))
+                self.assertEqual((receipt['delivered'], receipt['message_id']), (True, '88'))
+                url, fields, field, path = self.multipart_calls[-1]
+                self.assertTrue(url.endswith('/sendVoice'))
+                self.assertEqual((field, Path(path).name), ('voice', 'note.ogg'))
+                self.assertEqual(fields['caption'], 'listen to this')
+                self.assertEqual(json.loads(fields['reply_parameters']), {'message_id': 5})
+                self.assertTrue(self.ledger(key)['delivered'])
+        self.assertEqual(len(self.multipart_calls), 2)
         self.assertEqual(self.calls, [])
-        self.assertEqual(self.ledger('media-1'), receipt)
 
     def test_voice_caption_keeps_the_html_validator_and_the_1024_unit_cap(self):
         request = self.request('voice', '<b>listen</b>')

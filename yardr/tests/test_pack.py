@@ -3,6 +3,7 @@ object on stdin, one on stdout, with only the environment the yard hands a
 source's command. thread talks to a fake bridge on loopback; nothing
 reaches the network."""
 import http.server
+import io
 import runpy
 import json
 import os
@@ -273,7 +274,7 @@ class RenderedThreadTests(ThreadTests):
 
 class DeclarationTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('yardr'), 'yardr is not on PATH')
-    def test_yardr_reads_the_pack(self):
+    def test_yardr_reads_the_pack_and_sends_explicit_attachment_kinds(self):
         binary = str(Path(shutil.which('yardr')).resolve())
         with tempfile.TemporaryDirectory(prefix='pack-') as tmp:
             root = Path(tmp)
@@ -295,12 +296,124 @@ class DeclarationTests(unittest.TestCase):
                 self.assertEqual(setup.returncode, 0, setup.stderr)
                 result = subprocess.run(command + ['pack', 'check', str(PACK)], env=env, cwd=root,
                                         capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.check_attachment_sends(command, env, root)
             finally:
                 server.terminate()
                 server.wait(timeout=10)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('declared source tgbridge', result.stdout)
         self.assertIn('runs 2 programs of the pack as you: tgbridge/normalize, tgbridge/thread', result.stdout)
+
+    def check_attachment_sends(self, command, env, root):
+        b = runpy.run_path(str(BRIDGE))
+        sent, bodies = [], []
+
+        def multipart(url, fields, field, path, timeout=20):
+            sent.append((url.rsplit('/', 1)[1], fields, field, path))
+            return 200, dict(ok=True, result=dict(message_id=88, chat=dict(id=123)))
+
+        def unexpected_request(*args, **kwargs):
+            self.fail('attachment sends must use the multipart transport')
+
+        store = b['Store'](root / 'ledger.sqlite3', 10)
+        bridge = b['Bridge'](dict(bot_id=999, user_id=123, chat_id=123, bot_username='test_bot',
+                                 yard='test-yard', timezone='UTC'), store, 'test-token', SECRET,
+                             request=unexpected_request, request_multipart=multipart)
+
+        class Handler(b['_callback_handler'](bridge)):
+            def do_POST(self):
+                original = self.rfile
+                raw = original.read(int(self.headers['Content-Length']))
+                bodies.append(raw)
+                self.rfile = io.BytesIO(raw)
+                try:
+                    super().do_POST()
+                finally:
+                    self.rfile = original
+
+        callback = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=callback.serve_forever, daemon=True)
+        thread.start()
+
+        def cli(*args, actor='operator', ok=True):
+            result = subprocess.run(command[:-1] + [actor, *args], env=env, cwd=root,
+                                    capture_output=True, text=True, timeout=60)
+            if ok:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            else:
+                self.assertNotEqual(result.returncode, 0)
+            return result
+
+        def send(key, path, text, kind=None):
+            args = ['call', 'tgbridge', 'send', 'key=' + key, 'text=' + text, 'attachment=' + str(path), '--json']
+            if kind is not None:
+                args.append('attachment_kind=' + kind)
+            return json.loads(cli(*args, actor='sender').stdout)
+
+        try:
+            rendered = root / 'pack'
+            b['stage_pack'](b['render_pack'](PACK, callback.server_address[1]), rendered)
+            credential = root / 'synthetic.env'
+            credential.write_text('TGBRIDGE_SECRET=' + SECRET + '\n')
+            credential.chmod(0o600)
+            cli('settings', 'set', 'operator', 'operator')
+            cli('pack', 'apply', str(rendered), '--source-env', 'tgbridge=' + str(credential), '--yes')
+            cli('source', 'set', 'tgbridge', 'updates_per_hour=100')
+            cli('crew', 'add', 'sender', '--set', 'kind=codex')
+            cli('source', 'grant', 'tgbridge', 'send', '--crew', 'sender')
+
+            for suffix, kind, method in (('png', 'photo', 'sendPhoto'), ('mp4', 'video', 'sendVideo'),
+                                         ('ogg', 'document', 'sendDocument')):
+                with self.subTest(inferred=kind):
+                    path = root / ('inferred.' + suffix)
+                    path.write_bytes(b'media')
+                    key = 'inferred-' + kind
+                    self.assertTrue(send(key, path, 'caption')['delivered'])
+                    self.assertEqual(bodies[-1], json.dumps(dict(attachments=str(path), key=key, text='caption'),
+                                                           sort_keys=True, separators=(',', ':')).encode())
+                    self.assertEqual(sent[-1], (method, dict(chat_id='123', caption='caption'), kind, str(path)))
+
+            for kind, suffix, method in (('photo', 'zip', 'sendPhoto'), ('video', 'jpg', 'sendVideo'),
+                                         ('document', 'png', 'sendDocument'), ('voice', 'mp4', 'sendVoice'),
+                                         ('video_note', 'ogg', 'sendVideoNote')):
+                with self.subTest(explicit=kind):
+                    path = root / (kind + '.' + suffix)
+                    path.write_bytes(b'media')
+                    text = '' if kind == 'video_note' else 'caption'
+                    key = 'explicit-' + kind
+                    self.assertEqual(send(key, path, text, kind),
+                                     dict(delivered=True, message_id='88', conversation='123'))
+                    self.assertEqual(json.loads(bodies[-1]),
+                                     dict(attachments=str(path), attachment_kind=kind, key=key, text=text))
+                    fields = dict(chat_id='123') if kind == 'video_note' else dict(chat_id='123', caption=text)
+                    self.assertEqual(sent[-1], (method, fields, kind, str(path)))
+                    self.assertTrue(store.saved_receipt(key)['delivered'])
+                    count = len(sent)
+                    self.assertTrue(send(key, path, text, kind)['delivered'])
+                    self.assertEqual(len(sent), count)
+
+            count = len(sent)
+            answer = send('explicit-voice', root / 'voice.mp4', 'caption', 'document')
+            self.assertFalse(answer['delivered'])
+            self.assertEqual(answer['reason'], 'idempotency_key_conflict')
+            self.assertTrue(store.saved_receipt('explicit-voice')['delivered'])
+            self.assertEqual(len(sent), count)
+            path = root / 'video_note.ogg'
+            answer = send('caption-refused', path, 'caption', 'video_note')
+            self.assertFalse(answer['delivered'])
+            self.assertEqual(answer['reason'], 'video_note_takes_no_caption')
+            self.assertIsNone(store.saved_receipt('caption-refused'))
+            self.assertEqual(len(sent), count)
+            count = len(bodies)
+            bad = cli('call', 'tgbridge', 'send', 'text=caption', 'attachment=' + str(path),
+                      'attachment_kind=audio', actor='sender', ok=False)
+            self.assertIn('attachment_kind', bad.stderr)
+            self.assertIn('one of', bad.stderr)
+            self.assertEqual(len(bodies), count)
+        finally:
+            callback.shutdown()
+            callback.server_close()
+            thread.join(timeout=10)
 
 
 if __name__ == '__main__':

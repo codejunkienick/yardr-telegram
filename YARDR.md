@@ -141,10 +141,15 @@ must likewise become `crew`. See [compatibility names and their checks](docs/pub
   name).
 - `thread`: `reply` (to `/v1/send`, `format: auto`, files as attachments),
   `posted` (to `/v1/posted`), `read` (to `/v1/read`).
-- `calls`: `send`, `react`, `pin`, `unpin`, `ask_close` (updates) and
-  `health` (the check), each under `http://127.0.0.1:<port>`.
-- `notify`: `tell` to the user's `TGBRIDGE_CONVERSATION`, so what lands in
-  the operator's inbox can reach the phone.
+- `calls`: `send`, `react`, `pin`, `unpin`, `ask_close`, `run_ask`,
+  `ask_card`, `siding_card` and `tell` (updates), and `health` (the check),
+  each under `http://127.0.0.1:<port>`. See
+  [Native operator approvals](#native-operator-approvals) for `run_ask` and
+  `ask_card`, and
+  [Siding status and guarded store actions](bridge/OPERATIONS.md#siding-status-and-guarded-store-actions)
+  for `siding_card`.
+- `notify`: the `tell` call to the user's `TGBRIDGE_CONVERSATION`, so what
+  lands in the operator's inbox can reach the phone.
 - `hear`: by identity, on the `sender` field: the operator's Telegram id
   is their identity in the source (`yardr user identity`), and a
   delivery carries `speaker=<user>`.

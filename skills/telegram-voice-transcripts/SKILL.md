@@ -1,6 +1,6 @@
 ---
 name: telegram-voice-transcripts
-description: Voice and audio notes from the operator's Telegram chat - the "transcribing" note and the follow-up transcript in the configured language, the fixed failure reasons, how much to trust a transcript, and re-running one by hand with voice-transcribe (whisper.cpp, configured language). Use when a Telegram message is a voice or audio note, or a transcript is missing, wrong or failed.
+description: Voice and audio notes from the operator's Telegram chat - the "transcribing" note and the follow-up transcript in the configured language, the fixed failure reasons, how much to trust a transcript, and re-running one by hand with voice-transcribe (whisper.cpp, explicit language and path overrides). Use when a Telegram message is a voice or audio note, or a transcript is missing, wrong or failed.
 ---
 
 # Telegram voice transcripts
@@ -56,26 +56,33 @@ reason is an install problem for the operator (the bridge's
 
 Use the bridge instance's own launcher, `<install root>/bin/voice-transcribe`
 (the install root is `~/.local/share/yardr-telegram/<unit stem>` unless the
-operator chose another). It runs that instance's installed transcriber;
-a bare `voice-transcribe` may resolve to another instance through the
+operator chose another). It runs that instance's installed transcriber but
+carries none of the bridge's transcribe settings.
+A bare `voice-transcribe` may resolve to another instance through the
 host-wide PATH link. If the launcher is missing, ask the operator to run
 the bridge's `install.sh --settings <file>`.
+
+For a manual re-run, set `VOICE_TRANSCRIBE_LANGUAGE` to the language the
+bridge's transcripts arrive in; ask the operator if unknown. Without it,
+the manual run defaults to English. If the host's whisper.cpp uses other
+paths than `~/work/whisper.cpp/build/bin/whisper-cli` and
+`~/work/whisper.cpp/models`, set `VOICE_TRANSCRIBE_WHISPER_CLI` and
+`VOICE_TRANSCRIBE_MODEL_DIR` to the respective paths the operator provides.
 
 Re-run one by hand (CPU; it waits its turn in the host-wide queue, then takes
 about a minute per minute of audio with the default model):
 
 ```sh
+export VOICE_TRANSCRIBE_LANGUAGE=ru  # replace ru with the bridge's language
 "<install root>/bin/voice-transcribe" --quiet <path>          # writes <name>.txt next to the audio, prints the text
-"<install root>/bin/voice-transcribe" --model small.en <path> # about 4x cheaper, more slips in names
+VOICE_TRANSCRIBE_LANGUAGE=en "<install root>/bin/voice-transcribe" --model small.en <path> # English-only; about 4x cheaper, more slips in names
 VOICE_TRANSCRIBE_GPU=1 "<install root>/bin/voice-transcribe" --quiet <path>  # the GPU when the GPU check allows it: seconds
 ```
 
 stderr names the device per file (`device gpu`, `device gpu: <reason>`,
 or `device cpu: <reason>`).
 
-It applies the same rules: the configured language (`VOICE_TRANSCRIBE_LANGUAGE`
-when set, otherwise English), Silero VAD (silence gives no text),
-and a phrase repeated three or more times in a row retried once without
-context.
+Manual runs use Silero VAD (silence gives no text), and a phrase repeated
+three or more times in a row is retried once without context.
 
 The source file and symbol behind each claim in this skill are in `citations.md`, next to this file; open it only when you need them.

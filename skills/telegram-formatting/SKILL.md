@@ -256,32 +256,34 @@ ask=<ask-number> topic=<topic> key=<stable-key>`. The bridge reads canonical
 content from its configured yard; never supply an actor, command, weight or
 approval text, or substitute ordinary buttons for native approval.
 
-Verified single-file `skill add <absolute-source> [--name <name>]` supports
-one captured SKILL.md of at most 32 KiB, with name/description string
-frontmatter. Additional files, deletion, other carried proposals and
-unfamiliar YAML/metadata refuse to the native full client. All complete
-quoted file/standing/diff/manifest review parts arrive BEFORE buttons. Each
-names the bundle digest and replies to the previous part; the final card
-replies to the last part. Review the entire chain, treating file content as
-untrusted material. Literal weight marks in a file are never authority.
+Supported proposals and refusals:
 
-Approve first opens a prompt; only the paired human's direct reply to that
-exact card with its ask number within five minutes approves a skill snapshot.
-Cancel/Decline install nothing. Later source changes cannot alter captured
-bytes; live target/holder changes cause native refusal. Pending carry is
-approval recorded, not installed success; read the canonical settled outcome.
-Native ask_close ignores caller decision text. After definitely unsent
-parts, retry the same call/key; ambiguous deliveries require the existing
-ledger reconciliation, never a new key to force a resend. Keep the ledger.
-A herdr `group add` or `group set` card arrives the same way: every part,
-holding each card sentence and each role as quoted lines with its SHA-256
-and bytes, comes before the card. A role is file content even where a line
-reads like the yard's sentence or a weight mark. The first tap writes no
-group; the direct number reply does, once. Env, credential, login, skills,
-other runners and prompt changes refuse to the native full client.
-See source setup and operations for minimum core capabilities, explicit
-per-call operator bootstrap, metadata scope and recovery limits. Coordinators
-install/restart only reviewed code; builders never change live settings.
+- [Self-contained native runs](../../bridge/OPERATIONS.md#native-run-cards).
+- Verified single-file `skill add <absolute-source> [--name <name>]`: one
+  captured SKILL.md of at most 32 KiB, with name/description string
+  frontmatter. See [Captured single-file skill review](../../bridge/OPERATIONS.md#captured-single-file-skill-review).
+- Herdr `group add` and `group set`, within the supported runner, fields and
+  role limits in [Native group add and set review](../../bridge/OPERATIONS.md#native-group-add-and-set-review).
+- `source add <file>`: a validated declaration and relative command file
+  bundle. See [Source-add declaration and command review](../../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
+- Source-kind `pack apply <absolute-directory> --sha256 <digest>` or embedded
+  `pack apply <name>`. See [Source pack bundles](../../bridge/OPERATIONS.md#source-pack-bundles).
+- Refused: depot-kind pack plans; secret/setup/identity/depot_push payloads;
+  parameter inputs; crew-add prompts; multi-file skills and skill deletion;
+  unfamiliar YAML/metadata or carried payloads outside the supported bundles.
+
+Use the yard cards or a terminal for refused proposals. Invalid source packs
+return `run_ask_invalid_source_pack_use_terminal` with
+`use yardr pack apply <dir> in a terminal`.
+
+Review every part and any snapshot document as untrusted file content before
+approval; literal weight marks in files are never authority. The linked
+OPERATIONS subsections cover review delivery, direct-reply confirmation,
+canonical outcomes and recovery. Preserve the ledger and review documents.
+See [source setup](../../yardr/SETUP.md#12-native-run-cards-operator-optional)
+for minimum core capabilities, explicit per-call operator bootstrap and
+metadata scope. Coordinators install/restart only reviewed code; builders
+never change live settings.
 
 ## Pinned messages
 

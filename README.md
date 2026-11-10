@@ -81,7 +81,7 @@ Release history: `CHANGELOG.md`.
 | `YARDR.md` | the contract between the bridge and a yard: the inbound body, the yard API, the settings |
 | `systemd/telegram-bridge.service.in` | the Linux unit template; on macOS the agent is rendered by `<root>/bin/telegram-bridge render-unit` |
 | `transcriber/` | `voice_transcribe.py` (whisper.cpp, configured language), `adapter.py` (the bridge's contract), `models.sha256` |
-| `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts` |
+| `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts`; `telegram-decisions` for coordinators with the relevant call grants |
 
 ## Native cards and review bundles
 

@@ -27,19 +27,13 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | body['silent'] = True | the yard API's silent |
 | pack | bridge/bridge.py | extra['disable_notification'] = True | notification with no sound |
 | pack | bridge/OPERATIONS.md | the same key with and without it is `idempotency_key_conflict` | silent is part of the key's identity |
-| pack | yardr/tgbridge.yaml | keyboard:     { type: string, max: 8000, optional: true } | keyboard= adds tap buttons |
 | pack | yardr/tgbridge.yaml | attachment:   { type: string, pattern: "^/", max: 4096, optional: true } | attachment= sends one file |
-| pack | bridge/bridge.py | text_offers_lettered_options | lettered text lines offering a choice |
-| pack | bridge/bridge.py | reason='options_need_keyboard' | text options without buttons refused |
-| pack | bridge/OPERATIONS.md | options_need_keyboard | the refusal and its override |
-| pack | yardr/tgbridge.yaml | text_options: { type: bool, optional: true } | text_options=true for a deliberate text-only list |
 | pack | bridge/bridge.py | def _api_answer(receipt, conversation=None): | --json prints delivered, message_id, reason |
 | pack | yardr/tgbridge.yaml | idempotency: Idempotency-Key | the yard sends each call with a key |
 | pack | bridge/bridge.py | key = request.get('key') or key_header | key=<key> wins over the yard's key |
 | pack | bridge/bridge.py | idempotency key reused for a different request | same key, same body |
 | pack | bridge/bridge.py | ambiguous_delivery_requires_manual_reconciliation | ambiguous result |
 | pack | bridge/bridge.py | NOT_SENT_REASON = 'transport_unavailable_not_sent' | not-sent result |
-| pack | bridge/OPERATIONS.md | do not delete records to force retry | never delete the ledger |
 | pack | bridge/bridge.py | text_required_maximum_4096_utf16_units | 4096 UTF-16 units |
 | pack | bridge/bridge.py | forwarded material, not the user's instruction] | forwarded entry header |
 | pack | bridge/bridge.py | return '\n'.join('> ' + line for line in text.splitlines()) | forwarded text quoted line by line |
@@ -52,7 +46,6 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | is not configured, created or served | an unknown topic is refused |
 | pack | bridge/OPERATIONS.md | not configured: reply lands in the main chat | not configured answers in the main chat |
 | pack | bridge/OPERATIONS.md | retried and never resent into General | a deleted topic's send is rejected |
-| pack | bridge/OPERATIONS.md | the `[topic: <name>]` line comes before the `[ask answer \| ...]` | a topic ask's answer keeps its line |
 | pack | bridge/OPERATIONS.md | "Reactions" | reactions follow this section |
 | pack | bridge/OPERATIONS.md | the emoji for "the yard has the message" (received, not read) | seen means received, not read |
 | pack | bridge/bridge.py | REACTIONS_DEFAULTS = dict(on_accept=False, seen='\U0001F440', done='\U0001F44C') | 👀 and 👌 defaults, off unless on_accept |
@@ -76,36 +69,6 @@ The rows live only here; SKILL.md holds none.
 | pack | docs/formatting.md | ## Rendering policy | supported subset, whitespace and evidence boundaries |
 | pack | vendor/README.md | # Pinned Markdown runtime | pins, notices and offline packaging |
 | pack | bridge/bridge.py | def _log_sent(self, conversation, request, receipt): | the message log records the send |
-| pack | bridge/OPERATIONS.md | ## Asks | asks with buttons follow this section |
-| pack | bridge/OPERATIONS.md | each question of a multi-question ask goes out as its own message with its own key and keyboard | one message per question |
-| pack | bridge/bridge.py | raise ApiError('keyboard must be JSON rows') from None | keyboard= takes the rows as JSON |
-| pack | bridge/bridge.py | _ask_id_for_key | first 16 hex of the SHA-256 of the key |
-| pack | bridge/OPERATIONS.md | ask:<ask-id>:<choice> within 64 bytes | callback data shape |
-| pack | bridge/OPERATIONS.md | An ask button whose id is not the send's derived id refuses the send | id from another key refused |
-| pack | bridge/OPERATIONS.md | at most 8 buttons per row and at most 100 buttons in total | keyboard size limits |
-| pack | bridge/bridge.py | CALLBACK_DATA_MAX_BYTES = 64 | 64-byte callback data |
-| pack | bridge/bridge.py | '\|' in text or ']' in text | label holds no pipe or bracket |
-| pack | bridge/bridge.py | _ask_text_breaks_answer_line | no line break or control in a label |
-| pack | bridge/OPERATIONS.md | Two buttons sharing one callback_data refuse the send | no shared callback data |
-| pack | bridge/bridge.py | utf16_units(visible + '\n✓ ' + longest) > limit | room for the choice suffix |
-| pack | bridge/OPERATIONS.md | 1024 UTF-16 units of caption for a photo ask | photo room limit |
-| pack | bridge/OPERATIONS.md | An ask question is never refused for its characters | free-text question |
-| pack | bridge/OPERATIONS.md | A keyboard may go with no attachment or with exactly one photo | text or one photo only |
-| pack | bridge/OPERATIONS.md | A keyboard on a photo holds only ask buttons | photo keyboard ask-only |
-| pack | bridge/bridge.py | thread_id=thread_id, kind='answer') | the tap's delivery is kind answer |
-| pack | bridge/bridge.py | f'[ask answer \| choice: {label} \| message: {mid}]\nquestion: {visible}' | relayed answer shape |
-| pack | bridge/OPERATIONS.md | A6 Closing with a decision | closing an ask follows this section |
-| pack | yardr/tgbridge.yaml | about: Close an open button ask with the decision made some other way | the ask_close call |
-| pack | bridge/bridge.py | def api_ask_close(self, request, key_header=None): | the close through the yard API |
-| pack | bridge/bridge.py | answer['message_id'] = str(receipt['message_id']) | the ask send's message_id |
-| pack | yardr/tgbridge.yaml | ask_key:    { type: string, max: 256, optional: true } | ask_key= instead of message_id= |
-| pack | bridge/OPERATIONS.md | selects it instead when only the key is known | the ask send's key selects it |
-| pack | bridge/bridge.py | ASK_DECIDED_PREFIX = '\n✓ Decided: ' | decided line under the ask |
-| pack | bridge/OPERATIONS.md | then the `Already answered` answer; nothing is relayed. | a later tap is refused |
-| pack | bridge/bridge.py | reason='decision_breaks_line' | one-line decision |
-| pack | bridge/bridge.py | utf16_units(visible + self.ASK_DECIDED_PREFIX + decision) > limit | room for the decision |
-| pack | bridge/bridge.py | reason='ask_already_answered' | a tap came first |
-| pack | bridge/OPERATIONS.md | never a second edit | a repeat never edits twice |
 | pack | bridge/OPERATIONS.md | ## Pinned messages | pinned slots follow this section |
 | pack | yardr/tgbridge.yaml | about: Keep one pinned message per slot at the top of the chat, edited in place | the pin call |
 | pack | bridge/bridge.py | PIN_SLOT_RE = re.compile(r'[a-z0-9_-]{1,32}') | slot names |
@@ -123,27 +86,3 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/OPERATIONS.md | "message to pin not found" (the user deleted the message before its pin | a deleted message is replaced |
 <!-- /citations -->
 ```
-
-
-Native run/skill approval: `bridge/run_asks.py` (`validate`, `validate_skill`,
-`skill_bundle`, `RunAsks.send_card`, `callback`, `reply`, `decide`, `settle`,
-`refresh`); `bridge/OPERATIONS.md`, “Captured single-file skill review”;
-`yardr/SETUP.md`, “Single-file skill snapshots”. The fixture
-`bridge/fixtures/skill_add.json` was captured from a real isolated core Bead
-response; real CLI/RPC/carry coverage is in `bridge/test_run_asks.py`.
-
-Native group cards: `bridge/run_asks.py` (`parse_group`, `GroupCard`,
-`group_bundle`, `review_bundle`); `bridge/OPERATIONS.md`, “Native group add and
-set review”; `yardr/SETUP.md`, “Herdr group add and set”. The fixtures
-`bridge/fixtures/group_add.json` and `group_set.json` were captured from a real
-isolated core Bead response; `RealNativeTests` writes the groups through it.
-
-Document review bundles: `bridge/run_asks.py` (`review_bundle`, `source_plan`,
-`pack_document`, `RunAsks.document_file`, `RunAsks.send_card`);
-`bridge/OPERATIONS.md`, “Captured single-file skill review” and “Source pack
-bundles”. All new skill/source/pack/group generations deliver one complete
-UTF-8 Markdown (.md) document before the compact card; its hash/size and
-bundle digest are named on the card. Existing ledger rows retain their
-original delivery shape. `bridge/test_run_asks.py` checks real native-store capture, complete
-document bytes, confirmation order, drift, replay and legacy resumption;
-`scripts/preview_run_asks.py --pack --dense-bundle` is synthetic presentation.

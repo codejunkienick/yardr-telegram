@@ -1,0 +1,169 @@
+---
+name: telegram-decisions
+description: Choose and publish Telegram asks and decisions, approvals, run cards and siding cards through the yard's bridge. Covers chat ask keyboards, native tool selection, stable keys, refusals and fallbacks. Use for coordinating crew members holding the relevant per-call grants.
+---
+
+# Telegram asks and native cards
+
+## Choose the decision path
+
+| Need | Use |
+| --- | --- |
+| No human decision is needed | No ask; send an update using `telegram-formatting`. |
+| A chat question with two to four fixed options | `send` with chat ask buttons below. |
+| A canonical option, words or generated manual-stage decision | `ask_card`. |
+| Approval of a supported native proposal | `run_ask`. |
+| Canonical waiting-siding status or a guarded fold/release proposal | `siding_card`. |
+
+Never substitute ordinary or chat buttons for native approval or a native answer.
+Any message offering a choice goes out with buttons. Lettered option lines
+(`A:` / `B:`, bulleted or in HTML) without a keyboard refuse as
+`options_need_keyboard` before sending; `text_options=true` is only for a
+deliberate text-only list. Message formatting and routing follow `telegram-formatting`.
+
+## Chat asks with buttons
+
+These are chat questions, not native yard asks: run approval and secrets stay
+on the yard's cards. One question per message: each question of a multi-question
+ask has its own message, key and keyboard. Choose the key first, then save JSON rows:
+
+```json
+[
+  [{"text": "Yes", "callback_data": "ask:cad903a6a137a717:yes"},
+   {"text": "No", "callback_data": "ask:cad903a6a137a717:no"}]
+]
+```
+
+```sh
+yardr call tgbridge send key=ask-demo-2026-10-25-01 text="$(cat question.html)" \
+  keyboard="$(cat rows.json)" topic=<the topic, or general> --json
+```
+
+- The ask id is the first 16 hex characters of the SHA-256 of the send's key
+  (`ask-demo-2026-10-25-01` gives `cad903a6a137a717`). Every button uses
+  `callback_data` `ask:<ask-id>:<choice>` with that id; another key's id refuses.
+- At most 8 buttons per row and 100 in total. A label holds no `|`, `]`, line
+  break or control character; each `callback_data` fits in 64 bytes and is unique.
+- The question (or photo caption) plus `\n✓ <longest label>` fits within 4096
+  UTF-16 units of text, 1024 of caption. The question itself is free text and
+  is never refused for its characters.
+- Text or one photo only: no attachment or exactly one photo whose caption is
+  the question. A photo keyboard holds only ask buttons; other attachments refuse.
+- A tap reaches you as a delivery of `kind` `answer`, with
+  `[ask answer | choice: <label> | message: <id>]`, then `question: ` and the
+  visible question verbatim. In a topic, its topic line comes first.
+- When the user answers by typing or chooses something outside the options,
+  close the open chat ask with the decision made, in one line:
+
+  ```sh
+  yardr call tgbridge ask_close message_id=<id> decision="<the decision, one line>" --json
+  ```
+
+  `<id>` is the send's `message_id`; use `ask_key=<key>` instead if only its key
+  is known. The buttons go and the ask shows `✓ Decided: <decision>`; later taps
+  say "Already answered" and never reach you. For close refusals and recovery,
+  see [Asks, A6 Closing with a decision](../../bridge/OPERATIONS.md#asks).
+
+The send returns a delivery receipt (`delivered`, `message_id`, or a refusal
+`reason`); delivery-key retry rules are in `telegram-formatting`.
+See [Asks](../../bridge/OPERATIONS.md#asks) for keyboard and answer mechanics.
+
+## Native cards
+
+The bridge reads canonical content from its configured yard. Never supply an
+actor, command, weight or approval text to a native card call. Only the paired
+human answers or approves; a crew member publishes the card.
+
+Choose a stable key per request and the intended topic before publishing: a
+native card stays in the conversation it was first sent to. Calls below return
+`delivered: true` with a `message_id`, or `delivered: false` with a `reason` and
+`failure_kind`. A delivered card confirms presentation, not approval or execution.
+Read the canonical state in the yard for the answer, pending carry, success or
+failure; native replies stay in chat rather than becoming chat-ask deliveries.
+
+After definitely unsent parts, retry the same call and key. Ambiguous delivery
+needs ledger reconciliation, never a new key or a blind resend. Keep the ledger
+and review documents across restarts, moves and rollback. See
+[Delivery recovery](../../bridge/OPERATIONS.md#delivery-recovery) and the card's
+section below for its reconciliation path.
+
+Native settings, source identity and explicit per-call grants are the operator's
+bootstrap; builders never change live settings. See
+[12. Native run cards (operator, optional)](../../yardr/SETUP.md#12-native-run-cards-operator-optional),
+[13. Ordinary native decisions (operator; optional)](../../yardr/SETUP.md#13-ordinary-native-decisions-operator-optional)
+and [14. Optional native siding cards (store-backed first slice)](../../yardr/SETUP.md#14-optional-native-siding-cards-store-backed-first-slice).
+Without the relevant grant, ask the coordinator; do not enable it yourself.
+
+### Ordinary native decisions
+
+Create a canonical ask with `yardr bead ask` (or use its generated manual-stage
+ask), then publish its returned number:
+
+```sh
+yardr call tgbridge ask_card bead=<bead> ask=<number> topic=<topic> key=<stable-key> --json
+```
+
+It presents the complete question, context, choices, consequences, recommendation
+and about-beads. Only ordinary decisions addressed to the configured paired
+operator are supported. Unknown, operation-bearing, weighted or oversized cards
+refuse whole; use the yard cards. Run proposals use `run_ask` instead.
+See [Ordinary native ask cards](../../bridge/OPERATIONS.md#ordinary-native-ask-cards)
+for human input, stale cards, conflicts and delivery recovery.
+
+### Native run and skill approval
+
+```sh
+yardr call tgbridge run_ask bead=<bead> ask=<ask-number> topic=<topic> key=<stable-key> --json
+```
+
+Supported proposals and their mechanics:
+
+- [Self-contained native runs](../../bridge/OPERATIONS.md#native-run-cards).
+- Verified single-file `skill add <absolute-source> [--name <name>]`: one
+  captured SKILL.md of at most 32 KiB, with name/description string
+  frontmatter. See [Captured single-file skill review](../../bridge/OPERATIONS.md#captured-single-file-skill-review).
+- Herdr `group add` and `group set`, within the supported runner, fields and
+  role limits in [Native group add and set review](../../bridge/OPERATIONS.md#native-group-add-and-set-review).
+- `source add <file>`: a validated declaration and relative command file
+  bundle. See [Source-add declaration and command review](../../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
+- Source-kind `pack apply <absolute-directory> --sha256 <digest>` or embedded
+  `pack apply <name>`. See [Source pack bundles](../../bridge/OPERATIONS.md#source-pack-bundles).
+- Refused: depot-kind pack plans; secret/setup/identity/depot_push payloads;
+  parameter inputs; crew-add prompts; multi-file skills and skill deletion;
+  unfamiliar YAML/metadata or carried payloads outside the supported bundles.
+
+Use the yard cards or a terminal for refused proposals. Invalid source packs
+return `run_ask_invalid_source_pack_use_terminal` with
+`use yardr pack apply <dir> in a terminal`. Bundles deliver the complete review
+document before the compact approval card. Weighty cards require Approve, then
+Confirm on that same card within 60 seconds; typed numbers never approve.
+The linked sections hold the human's review and confirmation procedure.
+
+### Siding status and guarded actions
+
+```sh
+yardr call tgbridge siding_card depot=<depot> key=<stable-key> --json
+```
+
+Add `flow=<flow> stage=<stage> group=<group>` to narrow discovery and
+`topic=<topic>` or `conversation=<id>` to route it. It presents canonical
+waiting status and selected proposals. Only store-guarded proposals with no
+refusals offer approval controls; repository-backed inputs remain status only.
+An ambiguous selection needs narrower filters. Unknown or oversized proposals
+refuse whole: use the yard's canonical status/cards instead of inventing a subset
+or another mutation path. An uncertain attempted action needs reconciliation,
+not a new proposal. See
+[Siding status and guarded store actions](../../bridge/OPERATIONS.md#siding-status-and-guarded-store-actions)
+for selection replies, expiry, withdrawal, outcomes and recovery.
+
+### Refresh a native outcome
+
+```sh
+yardr call tgbridge ask_close ask_key=<original-key> decision=refresh --json
+```
+
+Or select by `message_id=<id>`. Native close ignores the required decision text
+and reads canonical state; it cannot answer or approve an open card. Follow the
+matching OPERATIONS section when a refusal reports an open or uncertain card.
+
+The source file and symbol behind each claim in this skill are in `citations.md`, next to this file; open it only when you need them.

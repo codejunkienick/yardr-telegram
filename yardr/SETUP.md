@@ -879,6 +879,7 @@ Keep `YARDR_HOME` explicitly set to this yard as above:
 yardr skill add <root>/current/skills/telegram-formatting
 yardr skill add <root>/current/skills/telegram-attachments
 yardr skill add <root>/current/skills/telegram-voice-transcripts
+yardr skill add <root>/current/skills/telegram-decisions
 yardr skill list
 ```
 
@@ -889,10 +890,19 @@ keeping their other skill names in the list. A crew member reads the new
 skills at its next session (`yardr crew restart <crew>`); groups use them
 at their next session too.
 
-Repeat the three `skill add` commands after an install or rollback to
+Give `telegram-decisions` only to coordinating crew members holding the
+relevant `run_ask`, `ask_card` or `siding_card` per-call grants (steps 12–14).
+Message writers keep `telegram-formatting`, `telegram-attachments` and
+`telegram-voice-transcripts` as appropriate. Adding a skill grants no call access.
+
+Repeat the four `skill add` commands after an install or rollback to
 refresh this yard's copies from its active release. They replace the copies
 only in the selected yard; copies in another yard stay as they are, and
 removing this instance's root does not break another yard's skills.
+For a rollback to a release without `telegram-decisions`, refresh the three
+skills present there and remove `telegram-decisions` from the crew's skill
+list, keeping its other names, then restart that crew member. A source commit
+alone neither installs a release nor refreshes or activates the yard's copies.
 
 Harness folders such as `~/.claude/skills` and `~/.codex/skills` are shared
 by every yard using that harness on the host. Never relink an entry there

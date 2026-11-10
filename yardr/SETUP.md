@@ -276,9 +276,10 @@ yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=native-examp
 ```
 
 The asking crew proposes the operation; the paired human approves it. A
-routine card needs one verified tap. A weighty card first shows a prompt:
-reply **directly to that card** with its exact ask number within five
-minutes. A free-standing number never confirms anything. Cancel clears the
+routine card needs one verified tap. On a weighty card, tap Approve, then
+Confirm on the same card within 60 seconds. The added line restates the
+ask, bead and command. Cancel occupies Approve's former position; Confirm
+is on its own second row. Typed numbers never approve. Cancel clears the
 confirmation; Decline records a native decline without execution. Telegram
 never asks for a device or account password.
 
@@ -349,9 +350,9 @@ the same bundle digest; the card replies to the document and shows its
 SHA-256, size, plan hashes and current holders. Open the complete document
 before approving. No captured bytes are changed.
 
-The first Approve tap only asks for a direct reply with the exact ask number
-within five minutes; only the paired operator can confirm. The source is a
-captured snapshot, so later source edits/deletion do not change approval.
+The first Approve tap opens a 60-second Confirm step on the same card;
+only the paired operator can confirm with that second button. The source
+is a captured snapshot, so later source edits/deletion do not change approval.
 Changed standing state or holders are refused by core. Approval recorded
 and pending carry are separate from verified installed success or failure;
 check the canonical outcome after uncertainty. There is no automatic undo.
@@ -387,10 +388,11 @@ unknown fields and over-limit snapshots refuse before sending; see
 Open the complete review document before approving. The declaration and
 command files, every replacement diff and inventory/removed records are
 quoted under exact hashes. The compact card names their bundle digest,
-size/counts and document hash and replies to the document. Core supplies the weight: replacements and new or
-changed code require a direct reply with the ask number after the first
-tap; a routine commands-free add applies on Approve. Source provenance can
-change or disappear after capture; the server installs the captured bytes.
+size/counts and document hash and replies to the document. Core supplies
+the weight: replacements and new or
+changed code require Approve, then Confirm on the same card within 60
+seconds; a routine commands-free add applies on Approve. Source provenance
+can change or disappear after capture; the server installs the captured bytes.
 A changed standing copy is stale and writes nothing. Canonical pending,
 success and failed carry remain distinct; ambiguous delivery never resends.
 
@@ -429,8 +431,8 @@ card. No new grant, setting, socket, whole-yard write or sandbox exception is
 added; the role file is written by the core server, never by the bridge.
 
 All parts arrive before the card: every sentence of the card, each role
-whole as quoted lines with its SHA-256 and bytes. The tap only opens the
-prompt; a direct reply with the ask number within five minutes approves. A
+whole as quoted lines with its SHA-256 and bytes. Approve only opens the
+Confirm step; tap Confirm on that same card within 60 seconds to approve. A
 group or role that changed since the card is refused by core with nothing
 written. Env, credentials, logins, skills, worktrees, other runners and
 prompt changes are not proposable and refuse before sending. Details:
@@ -454,7 +456,7 @@ store-generated manual-stage cards. It refuses run, secret, setup, identity,
 depot-push, unknown or weighted payloads before posting. In the current core,
 ordinary weight belongs to identity mapping, which requires a different review;
 no unconditional `weighed` approval is sent. Run cards retain their existing
-bound ask-number confirmation.
+bound Approve, then Confirm gate.
 
 Ordinary cards require core `7fa0d4c75ff6` or a compatible build exposing
 `Bead.asks[].turn` and `AnswerAskExpected`, `DeferAskExpected` and
@@ -820,11 +822,12 @@ yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=pack-upgrade
 Open the single review document. It contains the complete canonical review
 and every snapshot file whole, including the declaration, command files and
 setup notes. The compact card names both digests, document hash, size and
-counts, plus changed paths/hashes and kept grants; its weight lines come first. No controls arrive until the whole
-bundle is confirmed. Tap Approve, then reply directly to that **card** with
-the exact ask number within five minutes. The tap alone writes nothing;
-a wrong number requires another tap. Replying to a part or document cannot
-approve. Core applies the captured bytes even if `<root>/pack` later changes.
+counts, plus changed paths/hashes and kept grants; its weight lines come
+first. No controls arrive until the whole
+bundle is confirmed. Tap Approve, then Confirm on that **same card** within
+60 seconds. The first tap writes nothing; Cancel or expiry requires a new
+Approve. Typed numbers and replies to a part or document cannot approve.
+Core applies the captured bytes even if `<root>/pack` later changes.
 Check the canonical ran/failed state after carrying; stale state writes
 nothing and needs a new ask. Existing credentials, selected base, limits
 and grants stay under the core's usual replacement rules, with grants kept

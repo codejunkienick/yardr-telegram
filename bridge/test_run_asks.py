@@ -359,6 +359,8 @@ class NativeCase(BridgeTestCase):
         message.update(changes)
         prefix = 'askcard' if row.get('kind') == 'decision' else 'runask'
         suffix = ':' + str(row['turn']) if prefix == 'askcard' else ''
+        if action == 'confirm':
+            suffix = ':' + row['pending']['nonce']
         query = dict(id=f'query-{uid}', data=f"{prefix}:{row['id']}:{action}{suffix}", message=message,
                      **{'from': dict(id=123, is_bot=False)})
         self.bridge.inbound(dict(update_id=uid, callback_query=query))
@@ -1311,108 +1313,179 @@ class NativeTests(NativeCase):
                             self.assertIn('Taken back by proposer: new canonical reason', self.edits()[-1]['text'])
                 self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
 
-    def test_weight_requires_bound_reply_cancel_expiry_mismatch_and_one_use(self):
+    def test_weight_requires_bound_confirm_cancel_expiry_nonce_and_one_use(self):
         for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 if factory is proposal:
                     self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
-                self.sent_count = -76  # first synthetic card has message ID 1, distinct from boolean True
+                clock = [1000]
+                self.bridge.run_asks.now = lambda: clock[0]
                 first = self.create()
-                self.press()
-                self.assertEqual(self.writes(), [])
-                self.assertIn("type the ask's number, 7", b.html_visible_text(self.edits()[-1]['text'])[0])
+                original = self.row()['html']
+                tap = self.press()
                 pending = self.row()['pending']
-                if factory is not proposal:
-                    targets = [p['message_id'] for p in self.row()['bundle']['parts']] + [self.row()['bundle']['document']['message_id']]
-                    for index, target in enumerate(targets):
+                self.assertEqual({k: v for k, v in pending.items() if k != 'nonce'},
+                                 dict(armed_at=1000, expires=1060, update=40))
+                self.assertRegex(pending['nonce'], r'^[0-9a-f]{16}$')
+                confirm = 'confirm:' + pending['nonce']
+                edit = self.edits()[-1]
+                self.assertEqual(edit['message_id'], self.row()['message_id'])
+                self.assertTrue(edit['text'].startswith(original + '\n'))
+                self.assertIn('Confirm ask 7 on sample-1: runs ' + self.native.ask['run']['command'],
+                              b.html_visible_text(edit['text'])[0])
+                self.assertIn('Tap Confirm within 60 s, or Cancel.', edit['text'])
+                buttons = edit['reply_markup']['inline_keyboard']
+                self.assertEqual([[b['text'] for b in row] for row in buttons],
+                                 [['Cancel', '✕ Decline'], ['✓ Confirm ask 7']])
+                self.assertEqual(buttons[1][0]['callback_data'], f"runask:{self.row()['id']}:{confirm}")
+                self.assertEqual(len(buttons[1][0]['callback_data'].encode()), 56)
+                self.assertEqual(self.writes(), [])
+                with patch.object(self.bridge, '_answer_callback', wraps=self.bridge._answer_callback) as answer:
+                    self.bridge.inbound(dict(update_id=40, callback_query=tap))
+                    self.assertEqual(answer.call_args.args[2], 'Already handled')
+                clock[0] += 10
+                self.press(uid=41)
+                self.assertEqual(self.row()['pending'], pending)
+                self.assertEqual(self.create(), first)
+                for changes in (dict(message_id=True), dict(message_id=9999), dict(chat=dict(id=124, type='private')),
+                                dict(chat=dict(id=123, type='group')), dict(forward_date=123),
+                                dict(is_topic_message=True, message_thread_id=12)):
+                    self.press(confirm, uid=100 + len(self.calls), **changes)
+                    self.assertEqual(self.row()['pending'], pending)
+                if self.row().get('bundle'):
+                    bundle = self.row()['bundle']
+                    targets = [p['message_id'] for p in bundle['parts']]
+                    if bundle.get('document'):
+                        targets.append(bundle['document']['message_id'])
+                    for target in targets:
+                        self.press(confirm, uid=100 + len(self.calls), message_id=target)
+                        self.assertEqual(self.row()['pending'], pending)
                         with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
-                            self.reply(uid=100+index, reply_to_message=dict(message_id=target))
+                            self.reply(uid=1000 + target, reply_to_message=dict(message_id=target))
                         self.assertEqual(self.writes(), [])
                         self.assertEqual(self.row()['pending'], pending)
-                for payload in (dict(text=None, photo=[dict(file_id='photo', width=1, height=1)], caption='7'),
-                                dict(text='7', document=dict(file_id='document')), dict(text=None, sticker=dict(file_id='sticker'))):
+                for uid, payload in enumerate((dict(text=None, photo=[dict(file_id='photo', width=1, height=1)], caption='7'),
+                                               dict(text='7', document=dict(file_id='document')),
+                                               dict(text=None, sticker=dict(file_id='sticker'))), 2000):
                     with self.subTest(nontext_confirmation=payload), \
                          patch.object(self.bridge, '_relay', return_value=self.bridge.conversation), \
                          patch.object(self.bridge, '_fetch_inbound_attachment',
                                       return_value=(Path(self.tmp.name) / 'reply', 1, None)):
-                        self.reply(uid=80, **payload)
+                        self.reply(uid=uid, **payload)
+                    self.assertEqual(self.writes(), [])
                     self.assertEqual(self.row()['pending'], pending)
-                    self.assertEqual(self.writes(), [])
-                count = len(self.calls)
-                for restart in (False, True):
-                    with self.subTest(restart=restart):
-                        if restart:
-                            self.bridge.run_asks = n.RunAsks(self.bridge)
-                        self.assertEqual(self.create(), first)
-                        self.assertEqual(self.row()['pending'], pending)
-                        self.assertEqual(len(self.calls), count)
-                        self.assertEqual(self.writes(), [])
-                for changes in ({'reply_to_message': {'message_id': 900}}, {'reply_to_message': {}},
-                                {'reply_to_message': {'message_id': True}},
-                                {'forward_origin': {'type': 'hidden_user'}}, {'from': {'id': 124, 'is_bot': False}},
-                                {'from': {'id': 123, 'is_bot': True}}, {'is_topic_message': True, 'message_thread_id': 12}):
-                    # Non-confirmations retain their ordinary routing; only the bound reply is consumed.
-                    with patch.object(self.bridge, '_relay'):
-                        self.reply(**changes)
-                    self.assertEqual(self.writes(), [])
-                self.reply(value='wrong', uid=51)
+                with patch.object(self.bridge, '_relay') as relay:
+                    self.reply(uid=50)
+                    for uid, value in enumerate(('ordinary words', ' 7', '7 '), 80):
+                        self.reply(value, uid=uid)
+                    self.assertEqual(relay.call_count, 3)
+                self.assertEqual(self.row()['pending'], pending)
+                self.assertEqual(self.writes(), [])
+                self.press('cancel', uid=42)
+                self.assertIsNone(self.row()['pending'])
+                self.assertIn('Cancelled; nothing ran', self.edits()[-1]['text'])
+                self.press(confirm, uid=43)
+                self.assertIn('Nothing to confirm; tap Approve first. Nothing ran.', self.edits()[-1]['text'])
+                self.press(uid=44)
+                self.press(confirm, uid=45)
                 self.assertIsNone(self.row()['pending'])
                 self.assertEqual(self.writes(), [])
-                self.press(uid=42)
-                self.press('cancel', uid=43)
-                with patch.object(self.bridge, '_relay'):
-                    self.reply(uid=52)
+                self.press(uid=46)
+                expired = 'confirm:' + self.row()['pending']['nonce']
+                clock[0] += 61
+                self.press(expired, uid=47)
+                self.assertIsNone(self.row()['pending'])
+                self.assertIn(n.CONFIRM_EXPIRED, self.edits()[-1]['text'])
+                self.press(uid=57)
+                expired_arm = self.row()['pending']
+                clock[0] = expired_arm['expires'] + 1
+                self.press(uid=58)
+                self.assertNotEqual(self.row()['pending']['nonce'], expired_arm['nonce'])
+                self.assertEqual(self.row()['pending']['expires'], clock[0] + 60)
                 self.assertEqual(self.writes(), [])
-                self.press(uid=44)
-                row = self.row()
-                row['pending']['expires'] = 0
-                self.bridge.run_asks.save(row)
-                self.reply(uid=53)
-                self.assertEqual(self.writes(), [])
-                self.press(uid=45)
-                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.press(uid=48)
+                backwards = 'confirm:' + self.row()['pending']['nonce']
+                clock[0] -= 1
+                self.press(backwards, uid=49)
+                self.assertIsNone(self.row()['pending'])
+                self.assertIn(n.CONFIRM_EXPIRED, self.edits()[-1]['text'])
+                self.press(uid=52)
+                self.bridge.run_asks = n.RunAsks(self.bridge, now=lambda: clock[0])
                 self.native.mode = 'lost-open'
-                self.reply(uid=54)
-                self.assertEqual(self.writes()[-1][1]['weighed'], True)
-                self.assertEqual(self.row()['state'], 'open')
-                self.assertEqual([button['callback_data'] for button in self.edits()[-1]['reply_markup']['inline_keyboard'][0]],
-                                 [f"runask:{self.row()['id']}:approve", f"runask:{self.row()['id']}:decline"])
-                with patch.object(self.bridge, '_relay'):
-                    self.reply(uid=54)
+                query = self.press('confirm', uid=53)
+                self.assertEqual(len(self.writes()), 1)
+                self.assertTrue(self.writes()[-1][1]['weighed'])
+                self.assertIsNone(self.row()['pending'])
+                self.assertIn(n.UNCERTAIN, self.edits()[-1]['text'])
+                self.bridge.inbound(dict(update_id=53, callback_query=query))
                 self.assertEqual(len(self.writes()), 1)
                 self.native.mode = None
-                self.press(uid=46)
-                self.assertEqual(len(self.writes()), 1)  # retry still needs a fresh bound confirmation
-                self.reply(uid=55)
+                self.press(uid=54)
+                clock[0] = self.row()['pending']['expires']
+                confirmed = self.press('confirm', uid=55)
+                self.bridge.inbound(dict(update_id=55, callback_query=confirmed))
+                self.bridge.inbound(dict(update_id=56, callback_query=confirmed))
                 self.assertEqual(self.row()['state'], 'approved')
                 self.assertEqual(len(self.writes()), 2)
                 self.assertTrue(self.writes()[-1][1]['weighed'])
-        for reply_first in (False, True):
-            with self.subTest(pack_poll_reply_first=reply_first):
-                self.reset_native(pack_proposal())
-                self.assertTrue(self.create()['delivered'])
-                row = self.row()
-                tap = dict(callback_query=dict(id='batch-tap', data=f"runask:{row['id']}:approve",
-                    message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
-                                 **{'from': dict(id=999, is_bot=True)}), **{'from': dict(id=123, is_bot=False)}))
-                reply = dict(message=dict(message_id=502, text='7', chat=dict(id=123, type='private'),
-                    reply_to_message=dict(message_id=row['message_id']), **{'from': dict(id=123, is_bot=False)}))
-                batch = [reply, tap] if reply_first else [tap, reply]
-                batch = [dict(update, update_id=500+i) for i, update in enumerate(batch)]
-                telegram = self.bridge.telegram
-                def fetched(method, body, timeout=15):
-                    if method == 'getUpdates':
-                        return 200, dict(ok=True, result=batch)
-                    return telegram(method, body, timeout)
-                with patch.object(self.bridge, 'telegram', side_effect=fetched), \
-                     patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
-                    self.bridge.poll_once()
-                self.assertEqual(len(self.writes()), 0 if reply_first else 1)
-                if reply_first:
-                    self.reply(uid=503)
-                self.assertEqual(len(self.writes()), 1)
-                self.assertTrue(self.writes()[0][1]['weighed'])
+                for url, body in self.calls:
+                    if not url.endswith('/editMessageText'):
+                        self.assertNotIn(':confirm:', json.dumps(body.get('reply_markup', {})))
+                self.reset_native(factory())
+                if factory is proposal:
+                    self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
+                self.create()
+                self.press()
+                self.press('decline', uid=41)
+                self.assertEqual([method for method, _ in self.writes()], ['DeclineAsk'])
+                self.assertIsNone(self.row()['pending'])
+
+        # A saved arm survives a crash before its first edit; a fresh Approve repairs that edit.
+        self.reset_native(skill_proposal())
+        self.create()
+        with patch.object(self.bridge.run_asks, 'display', side_effect=RuntimeError('synthetic crash')):
+            with self.assertRaises(RuntimeError):
+                self.press()
+        pending = self.row()['pending']
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.press(uid=41)
+        self.assertEqual(self.row()['pending'], pending)
+        self.assertIn(':confirm:' + pending['nonce'], json.dumps(self.edits()[-1]['reply_markup']))
+        # Consumption survives a crash before the native write; the old nonce cannot be reused.
+        with patch.object(self.bridge.run_asks, 'decide', side_effect=RuntimeError('synthetic crash')):
+            with self.assertRaises(RuntimeError):
+                self.press('confirm', uid=42)
+        self.assertIsNone(self.row()['pending'])
+        self.press('confirm:' + pending['nonce'], uid=43)
+        self.assertEqual(self.writes(), [])
+
+        # The confirmation line keeps the whole card and only shortens a command at Telegram's bound.
+        for command_units in (400, 1200):
+            self.reset_native(proposal())
+            self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run'}]
+            self.native.ask['run']['argv'] += ['🙂' * (command_units // 2)]
+            self.native.ask['run']['command'] = 'yardr ' + ' '.join(self.native.ask['run']['argv'])
+            base = n.render(self.config, self.native.bead, self.native.ask)[0]
+            self.native.ask['question'] += 'x' * (n.CAP - n.units(base))
+            self.assertTrue(self.create()['delivered'])
+            original = self.row()['html']
+            self.press()
+            visible = b.html_visible_text(self.edits()[-1]['text'])[0]
+            self.assertTrue(self.edits()[-1]['text'].startswith(original + '\n'))
+            self.assertLessEqual(n.units(visible), 4096)
+            self.assertIn('Confirm ask 7 on sample-1: runs ', visible)
+            if command_units == 400:
+                self.assertIn(self.native.ask['run']['command'], visible.split('Confirm ask', 1)[1])
+            else:
+                self.assertTrue(visible.endswith('… · Tap Confirm within 60 s, or Cancel.'))
+            self.assertEqual(self.writes(), [])
+        result = subprocess.run([sys.executable, '-B', 'scripts/preview_run_asks.py', '--confirm'],
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for label in ('Unarmed weighty card', 'Confirm step', 'Expired', 'Cancelled', '✓ Confirm ask 7'):
+            self.assertIn(label, result.stdout)
+        self.assertNotIn("type the ask's number", result.stdout)
 
     def test_callback_and_proposal_binding_refusals(self):
         for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
@@ -1449,6 +1522,39 @@ class NativeTests(NativeCase):
                 self.native.user.update(role='member')
                 self.press(uid=44)
                 self.assertEqual(self.writes(), [])
+
+        # A retained card's chat-scoped message id must not intercept replies after re-pairing.
+        for armed in (False, True):
+            self.config.update(user_id=123, chat_id=123)
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.bridge.request)
+            self.bridge.request_multipart = self.pack_transport
+            self.bridge.hook_secret = None
+            self.reset_native(skill_proposal())
+            self.assertTrue(self.create()['delivered'])
+            if armed:
+                self.press()
+            old = self.row()
+            self.native.user['identities']['tgbridge'] = {'id': '456'}
+            self.config.update(user_id=456, chat_id=456)
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.bridge.request)
+            self.bridge.request_multipart = self.pack_transport
+            self.bridge.hook_secret = None
+            n.verify_operator(self.bridge.run_asks.client, self.config)
+            for seen, value, uid in ((False, str(old['ask']), 50), (True, 'ordinary words', 51)):
+                with self.subTest(previous_pairing_arm=armed, replay=seen):
+                    if seen:
+                        self.assertTrue(self.bridge.run_asks.claim_update(uid))
+                    start = len(self.calls)
+                    with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation) as relay:
+                        self.reply(value, uid=uid, chat=dict(id=456, type='private'),
+                                   reply_to_message=dict(message_id=old['message_id'],
+                                       **{'from': dict(id=999, is_bot=True)}),
+                                   **{'from': dict(id=456, is_bot=False)})
+                        relay.assert_called_once()
+                        self.assertEqual(relay.call_args.args[2], value)
+                    self.assertEqual(self.calls[start:], [])
+                    self.assertEqual(self.row(), old)
+                    self.assertEqual(self.writes(), [])
 
     def test_same_operator_two_homes_and_conversations_cannot_cross(self):
         for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
@@ -2425,7 +2531,7 @@ class NativeTests(NativeCase):
                 replacement = NativeSocket(self.home)
                 replacement.ask = factory()
                 self.addCleanup(replacement.close)
-                self.reply()
+                self.press('confirm', uid=50)
                 self.assertEqual(self.row()['state'], 'stale')
                 self.assertEqual(self.writes(), [])
                 self.assertFalse(any(method == 'ApproveAsk' for method, _, _ in replacement.calls))
@@ -2521,7 +2627,7 @@ class NativeTests(NativeCase):
                 self.native.mode = mode
                 self.press()
                 self.assertEqual(self.writes(), [])
-                self.reply()
+                self.press('confirm', uid=50)
                 self.assertEqual(len(self.writes()), 1)
                 self.assertTrue(self.writes()[0][1]['weighed'])
                 if mode in ('lost-commit', 'invalid-commit', 'wire-error-commit'):
@@ -2544,7 +2650,7 @@ class NativeTests(NativeCase):
                 self.assertTrue(self.create()['delivered'])
                 self.native.mode = mode
                 self.press()
-                self.reply()
+                self.press('confirm', uid=50)
                 self.assertEqual(self.native.ask['state'], 'answered')
                 self.assertEqual((self.row()['state'], self.row()['uncertain']), ('approved', False))
                 self.bridge.run_asks = n.RunAsks(self.bridge)
@@ -2571,11 +2677,11 @@ class NativeTests(NativeCase):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
-                initial_sends = self.sent_count
+                initial_sends = sum(url.endswith('/sendMessage') for url, _ in self.calls)
                 self.native.mode = 'carrying'
                 self.press()
                 if factory is not proposal:
-                    self.reply()
+                    self.press('confirm', uid=50)
                 self.assertEqual(self.row()['state'], 'carrying')
                 self.assertIn('approved, to be carried out', self.edits()[-1]['text'])
                 self.native.ask['ran']['pending_reason'] = 'waiting for report'
@@ -2588,7 +2694,7 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.row()['state'], 'failed')
                 sends = [body['text'] for url, body in self.calls if url.endswith('/sendMessage')][initial_sends:]
                 footer = ''.join(sends)
-                self.assertTrue(footer.endswith(result))
+                self.assertEqual(footer, '✕ approved, failed: ' + self.native.ask['run']['command'] + '\n' + result)
                 self.assertTrue(all(n.units(part) <= 4096 for part in sends))
                 count = self.sent_count
                 self.bridge.run_asks.refresh()
@@ -3080,7 +3186,7 @@ class NativeTests(NativeCase):
                         self.native.ask['run']['does'].append('changed since tap')
                     else:
                         self.native.ask.update(state='taken back', by='proposer', words='replaced')
-                    self.reply(uid=200 + len(self.calls))
+                    self.press('confirm', uid=200 + len(self.calls))
                     self.assertEqual(self.writes(), [])
                     row = self.row()
                     row.update(state='open', pending=None)
@@ -3396,9 +3502,8 @@ class RealNativeTests(BridgeTestCase):
             query['message']['message_id'] = row['message_id']
             self.bridge.inbound(dict(update_id=42, callback_query=query))
             self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]['state'], 'open')
-            self.bridge.inbound(dict(update_id=43, message=dict(message_id=901, text=str(strong['ask']),
-                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
-                reply_to_message=dict(message_id=row['message_id'], **{'from': dict(id=999, is_bot=True)}))))
+            query['data'] = f"runask:{row['id']}:confirm:{self.bridge.run_asks.get(row['id'])['pending']['nonce']}"
+            self.bridge.inbound(dict(update_id=43, callback_query=query))
             settled = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
             self.assertEqual(settled['state'], 'answered')
             self.assertEqual(settled['ran']['argv'], ['user', 'add', 'synthetic-member'])
@@ -3705,9 +3810,8 @@ class RealNativeTests(BridgeTestCase):
                     approvals.append(reply)
                 return reply
             self.bridge.run_asks.client.call = record_call
-            confirmation = dict(update_id=51, message=dict(message_id=901, text=str(skill['ask']),
-                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
-                reply_to_message=dict(message_id=row['message_id'], **{'from': dict(id=999, is_bot=True)})))
+            query['data'] = f"runask:{row['id']}:confirm:{self.bridge.run_asks.get(row['id'])['pending']['nonce']}"
+            confirmation = dict(update_id=51, callback_query=copy.deepcopy(query))
             self.bridge.inbound(confirmation)
             self.assertEqual(len(approvals), 1)
             self.assertEqual(approvals[0]['result'], n.PENDING)
@@ -3785,9 +3889,8 @@ class RealNativeTests(BridgeTestCase):
                         drifted = before.replace(b'Keep', b'Change')
                         target.write_bytes(drifted)
                     if scenario != 'decline':
-                        self.bridge.inbound(dict(update_id=101 + offset * 2, message=dict(
-                            message_id=1001 + offset, text=str(proposed['ask']), chat=dict(id=123, type='private'),
-                            **{'from': dict(id=123, is_bot=False)}, reply_to_message=dict(message_id=row['message_id']))))
+                        query['data'] = f"runask:{row['id']}:confirm:{self.bridge.run_asks.get(row['id'])['pending']['nonce']}"
+                        self.bridge.inbound(dict(update_id=101 + offset * 2, callback_query=query))
                     deadline = time.monotonic() + 10
                     while True:
                         final = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
@@ -4003,9 +4106,273 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(hashlib.sha256(file.read_bytes()).digest(), hashlib.sha256(evidence).digest())
             self.exercise_source_packs(root, home, cli, client)
             self.exercise_source_adds(root, home, cli, client)
+            self.exercise_weighty_confirmations(cli, client)
         finally:
             server.terminate()
             server.wait(timeout=10)
+
+    def exercise_weighty_confirmations(self, cli, client):
+        cli('bead', 'create', 'Synthetic confirmation boundary', '--id', 'confirm-1')
+        clock = [1000]
+        updates = iter(range(30000, 40000))
+        self.bridge.run_asks.now = lambda: clock[0]
+
+        def current(row):
+            return next(a for a in client.call('Bead', dict(bead='confirm-1', viewer='pat'))['asks']
+                        if a['ask'] == row['ask'])
+
+        def saved(row):
+            return self.bridge.run_asks.get(row['id'])
+
+        def make(label):
+            cli('--actor', 'proposer', 'bead', 'ask', 'confirm-1', 'Add the synthetic member?',
+                '--to', 'pat', '--context', 'Isolated trust confirmation ' + label,
+                '--run', 'user add synthetic-member-' + label)
+            ask = client.call('Bead', dict(bead='confirm-1', viewer='pat'))['asks'][-1]
+            self.assertEqual(ask['weight'][0]['class'], 'trust')
+            self.assertTrue(self.bridge.api_run_ask(dict(bead='confirm-1', ask=ask['ask'], key='confirm-' + label))['delivered'])
+            return next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'confirm-1' and r['ask'] == ask['ask'])
+
+        def update(row, action='approve'):
+            if action == 'confirm':
+                action += ':' + saved(row)['pending']['nonce']
+            uid = next(updates)
+            return dict(update_id=uid, callback_query=dict(id=f'confirm-{uid}', data=f"runask:{row['id']}:{action}",
+                message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                             **{'from': dict(id=999, is_bot=True)}), **{'from': dict(id=123, is_bot=False)}))
+
+        def tap(row, action='approve'):
+            value = update(row, action)
+            self.bridge.inbound(value)
+            return value
+
+        def poll(batch):
+            telegram = self.bridge.telegram
+            def fetched(method, body, timeout=15):
+                return (200, dict(ok=True, result=batch)) if method == 'getUpdates' else telegram(method, body, timeout)
+            with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                self.bridge.poll_once()
+
+        def restart():
+            transport = self.bridge.request
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=transport)
+            self.bridge.hook_secret = None
+            self.bridge.run_asks.now = lambda: clock[0]
+
+        def events(row):
+            return [e for e in client.call('EventsOfKind', ['user_added', 1000])
+                    if e['data'].get('approved', {}).get('ask') == row['ask']
+                    and e['data'].get('approved', {}).get('bead') == 'confirm-1']
+
+        def untouched(row, before):
+            self.assertEqual(current(row), before)
+            self.assertEqual(events(row), [])
+            self.assertNotIn('ran', current(row))
+            with self.assertRaises(n.RPCRefused):
+                client.call('GetUser', dict(name=before['run']['argv'][2]))
+
+        def no_controls(row, words):
+            edits = [body for url, body in self.calls if url.endswith('/editMessageText')
+                     and body['message_id'] == row['message_id']]
+            self.assertIn(words, edits[-1]['text'])
+            self.assertEqual(edits[-1]['reply_markup']['inline_keyboard'], [])
+
+        row = make('r1')
+        tap(row)
+        before = current(row)
+        self.assertEqual(before['state'], 'open')
+        self.assertNotIn('ran', before)
+        confirmation = tap(row, 'confirm')
+        settled = current(row)
+        self.assertEqual(settled['state'], 'answered')
+        self.assertEqual(settled['ran']['argv'], ['user', 'add', 'synthetic-member-r1'])
+        self.assertEqual(client.call('GetUser', dict(name='synthetic-member-r1'))['name'], 'synthetic-member-r1')
+        self.assertEqual(len(events(row)), 1)
+        self.bridge.inbound(confirmation)
+        confirmation['update_id'] = next(updates)
+        self.bridge.inbound(confirmation)
+        self.assertEqual(current(row), settled)
+        self.assertEqual(len(events(row)), 1)
+
+        row = make('r2')
+        tap(row)
+        arm = saved(row)['pending']
+        before = current(row)
+        other = make('other-card')
+        for kind in ('topic', 'chat', 'user', 'bot', 'forward', 'other-card', 'group', 'message-bot'):
+            with self.subTest(real_confirm_origin=kind):
+                value = update(row, 'confirm')
+                query = value['callback_query']
+                message = query['message']
+                if kind == 'topic':
+                    message.update(message_thread_id=12, is_topic_message=True)
+                elif kind == 'chat':
+                    message['chat']['id'] = 124
+                elif kind == 'user':
+                    query['from']['id'] = 124
+                elif kind == 'bot':
+                    query['from']['is_bot'] = True
+                elif kind == 'forward':
+                    message['forward_origin'] = dict(type='hidden_user')
+                elif kind == 'other-card':
+                    message['message_id'] = other['message_id']
+                elif kind == 'group':
+                    message['chat']['type'] = 'group'
+                else:
+                    message['from']['id'] = 998
+                self.bridge.inbound(value)
+                self.assertEqual(saved(row)['pending'], arm)
+                untouched(row, before)
+
+        for kind in ('taken-back', 'proposal', 'socket-answer'):
+            with self.subTest(real_confirm_stale=kind):
+                row = make('r3-' + kind)
+                tap(row)
+                if kind == 'taken-back':
+                    client.call('TakeBackAsk', dict(bead='confirm-1', ask=row['ask'], actor='proposer',
+                                                   reason='synthetic withdrawal'))
+                elif kind == 'proposal':
+                    cli('bead', 'update', 'confirm-1', '--title', 'Synthetic edited confirmation')
+                else:
+                    client.call('ApproveAsk', dict(bead='confirm-1', ask=row['ask'], actor='pat', weighed=True, values={}))
+                before = current(row)
+                prior_events = events(row)
+                tap(row, 'confirm')
+                self.assertEqual(current(row), before)
+                self.assertEqual(events(row), prior_events)
+                if kind == 'taken-back':
+                    no_controls(row, 'Taken back')
+                elif kind == 'socket-answer':
+                    no_controls(row, 'approved, ran')
+                else:
+                    no_controls(row, 'Proposal changed')
+                    cli('bead', 'update', 'confirm-1', '--title', 'Synthetic confirmation boundary')
+
+        row = make('r3-old-nonce')
+        tap(row)
+        old = 'confirm:' + saved(row)['pending']['nonce']
+        tap(row, 'cancel')
+        tap(row)
+        before = current(row)
+        tap(row, old)
+        self.assertIsNone(saved(row)['pending'])
+        untouched(row, before)
+
+        for lapse in ('tap', 'poll', 'backwards'):
+            with self.subTest(real_confirm_expiry=lapse):
+                row = make('r4-' + lapse)
+                tap(row)
+                value = update(row, 'confirm')
+                before = current(row)
+                clock[0] += -1 if lapse == 'backwards' else 61
+                poll([]) if lapse == 'poll' else self.bridge.inbound(value)
+                self.assertIsNone(saved(row)['pending'])
+                self.assertIn(n.CONFIRM_EXPIRED, saved(row)['display']['footer'])
+                self.assertEqual(len(saved(row)['display']['keyboard']), 1)
+                untouched(row, before)
+
+        row = make('r5-cancel')
+        tap(row)
+        old = update(row, 'confirm')
+        before = current(row)
+        tap(row, 'cancel')
+        self.bridge.inbound(old)
+        untouched(row, before)
+        row = make('r5-decline')
+        tap(row)
+        tap(row, 'decline')
+        self.assertEqual(current(row)['state'], 'declined')
+        self.assertEqual(current(row)['words'], 'Declined in Telegram')
+        self.assertEqual(events(row), [])
+        self.assertNotIn('ran', current(row))
+
+        row = make('r6')
+        tap(row, 'confirm:' + '0' * 16)
+        self.assertIn('Nothing to confirm', saved(row)['display']['footer'])
+        before = current(row)
+        approval = tap(row)
+        arm = saved(row)['pending']
+        with patch.object(self.bridge, '_answer_callback', wraps=self.bridge._answer_callback) as answer:
+            self.bridge.inbound(approval)
+            self.assertEqual(answer.call_args.args[2], 'Already handled')
+        clock[0] += 10
+        tap(row)
+        self.assertEqual(saved(row)['pending'], arm)
+        untouched(row, before)
+
+        for expired in (False, True):
+            row = make('r7-' + str(expired).lower())
+            tap(row)
+            value = update(row, 'confirm')
+            restart()
+            if expired:
+                clock[0] += 61
+            before = current(row)
+            calls_before = len(self.calls)
+            poll([value])
+            if expired:
+                edits = [body for url, body in self.calls[calls_before:] if url.endswith('/editMessageText')
+                         and body['message_id'] == row['message_id']]
+                self.assertIn(n.CONFIRM_EXPIRED, edits[0]['text'])
+                self.assertIn('Nothing to confirm', edits[1]['text'])
+                untouched(row, before)
+                self.assertIsNone(saved(row)['pending'])
+            else:
+                self.assertEqual(current(row)['state'], 'answered')
+                self.assertEqual(len(events(row)), 1)
+
+        for confirm_first in (False, True):
+            row = make('r8-' + str(confirm_first).lower())
+            before = current(row)
+            tap(row)
+            old = 'confirm:' + saved(row)['pending']['nonce']
+            tap(row, 'cancel')
+            actions = [old, 'approve'] if confirm_first else ['approve', old]
+            poll([update(row, action) for action in actions])
+            untouched(row, before)
+            if not saved(row)['pending']:
+                poll([update(row)])
+            poll([update(row, 'confirm')])
+            self.assertEqual(current(row)['state'], 'answered')
+            self.assertEqual(len(events(row)), 1)
+
+        row = make('r9')
+        tap(row)
+        before = current(row)
+        arm = saved(row)['pending']
+        def reply(bound=True):
+            uid = next(updates)
+            message = dict(message_id=uid, text=str(row['ask']), chat=dict(id=123, type='private'),
+                           **{'from': dict(id=123, is_bot=False)})
+            if bound:
+                message['reply_to_message'] = dict(message_id=row['message_id'])
+            return dict(update_id=uid, message=message)
+        with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation) as relay:
+            poll([reply()])
+            relay.assert_not_called()
+            self.assertEqual(self.calls[-1][1]['text'], n.TYPED_CONFIRM_ENDED)
+            poll([reply(False)])
+            relay.assert_called_once()
+        self.assertEqual(saved(row)['pending'], arm)
+        untouched(row, before)
+
+        row = make('r10')
+        row['pending'] = dict(expires=clock[0] + 300, update=next(updates))
+        self.bridge.run_asks.save(row)
+        before = current(row)
+        restart()
+        poll([])
+        self.assertIsNone(saved(row)['pending'])
+        self.assertEqual(saved(row)['display']['footer'], n.LEGACY_CONFIRM_ENDED)
+        with patch.object(self.bridge, '_relay') as relay:
+            poll([reply()])
+            relay.assert_not_called()
+        untouched(row, before)
+        poll([update(row)])
+        poll([update(row, 'confirm')])
+        self.assertEqual(current(row)['state'], 'answered')
+        self.assertEqual(len(events(row)), 1)
+        print('RealNative confirm R1-R10: real isolated RPC/store, fake Telegram, no live state')
 
     def exercise_source_packs(self, root, home, cli, client):
         cli('bead', 'create', 'Synthetic source pack review', '--id', 'pack-1')
@@ -4027,6 +4394,8 @@ class RealNativeTests(BridgeTestCase):
         def current(number):
             return next(a for a in client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'] if a['ask'] == number)
         def press(row, action='approve'):
+            if action == 'confirm':
+                action += ':' + (self.bridge.run_asks.get(row['id']).get('pending') or {}).get('nonce', '0' * 16)
             self.bridge.inbound(dict(update_id=next(updates), callback_query=dict(id='pack-callback',
                 data=f"runask:{row['id']}:{action}", message=dict(message_id=row['message_id'],
                     chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}),
@@ -4088,11 +4457,11 @@ class RealNativeTests(BridgeTestCase):
                     self.assertEqual(current(ask['ask'])['state'], 'open')
                     if scenario == 'cancel':
                         press(row, 'cancel')
-                        reply(row)
+                        press(row, 'confirm')
                         self.assertEqual(current(ask['ask'])['state'], 'open')
                     else:
                         press(row)
-                        reply(row)
+                        press(row, 'confirm')
                 if scenario != 'upgrade':
                     self.assertEqual(client.call('GetSource', ['tgbridge']), standing)
                     self.assertEqual(target.read_bytes(), standing_bytes)
@@ -4114,7 +4483,7 @@ class RealNativeTests(BridgeTestCase):
                         self.assertEqual((home / 'sources' / carried['name'] / file['program']).read_bytes(), file['text'].encode())
                 self.bridge.run_asks = n.RunAsks(self.bridge)
                 self.bridge.run_asks.refresh()
-                press(row); reply(row)
+                press(row); press(row, 'confirm')
                 self.assertEqual(current(ask['ask']), settled)
                 events = [e for e in client.call('EventsOfKind', ['pack_applied', 100])
                           if e['data'].get('approved', {}).get('ask') == ask['ask']
@@ -4131,7 +4500,7 @@ class RealNativeTests(BridgeTestCase):
         self.assertIsNotNone(row['bundle']['document']['message_id'])
         press(row)
         self.assertEqual(current(ask['ask'])['state'], 'open')
-        reply(row)
+        press(row, 'confirm')
         deadline = time.monotonic() + 15
         while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
             self.assertLess(time.monotonic(), deadline, 'embedded pack carry did not settle')
@@ -4149,6 +4518,8 @@ class RealNativeTests(BridgeTestCase):
         def current(number):
             return next(a for a in client.call('Bead', dict(bead='source-1', viewer='pat'))['asks'] if a['ask'] == number)
         def press(row, action='approve', **changes):
+            if action == 'confirm':
+                action += ':' + (self.bridge.run_asks.get(row['id']).get('pending') or {}).get('nonce', '0' * 16)
             message = dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
                            **{'from': dict(id=999, is_bot=True)})
             message.update(changes)
@@ -4198,8 +4569,6 @@ class RealNativeTests(BridgeTestCase):
                 before = source(carried['name'])
                 target = home / 'sources' / carried['name'] / 'bin/report'
                 before_bytes = target.read_bytes() if target.exists() else None
-                if scenario == 'stale':
-                    target.write_bytes(b'Synthetic standing file changed after capture\n')
                 if scenario == 'decline':
                     press(row, 'decline')
                     self.assertEqual(current(ask['ask'])['state'], 'declined')
@@ -4209,6 +4578,8 @@ class RealNativeTests(BridgeTestCase):
                 press(row, message_id=row['message_id'] + 1000)
                 self.assertEqual(current(ask['ask'])['state'], 'open')
                 press(row)
+                if scenario == 'stale':
+                    target.write_bytes(b'Synthetic standing file changed after capture\n')
                 if ask.get('weight'):
                     self.assertEqual(current(ask['ask'])['state'], 'open')
                     self.assertEqual(source(carried['name']), before)
@@ -4216,18 +4587,19 @@ class RealNativeTests(BridgeTestCase):
                     self.assertEqual(current(ask['ask'])['state'], 'open')
                     if scenario == 'cancel':
                         press(row, 'cancel')
-                        reply(row)
+                        press(row, 'confirm')
                         self.assertEqual(current(ask['ask'])['state'], 'open')
                         self.assertEqual(source(carried['name']), before)
                         self.assertEqual(target.read_bytes(), before_bytes)
                         continue
-                    reply(row)
+                    press(row, 'confirm')
                 if scenario == 'stale':
                     self.assertEqual(current(ask['ask'])['state'], 'open')
                     self.assertEqual(source(carried['name']), before)
                     self.assertEqual(target.read_bytes(), b'Synthetic standing file changed after capture\n')
                     saved = self.bridge.run_asks.get(row['id'])
                     self.assertEqual(saved['state'], 'stale')
+                    self.assertEqual(saved['display']['keyboard'], [])
                     self.assertIn('Stale source proposal', next(body['text'] for url, body in reversed(self.calls) if url.endswith('/editMessageText')))
                     target.write_bytes(before_bytes)
                     continue
@@ -4252,7 +4624,7 @@ class RealNativeTests(BridgeTestCase):
                 identity = (target.stat().st_ino, target.stat().st_mtime_ns) if target.exists() else None
                 sends = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
                 press(row)
-                reply(row)
+                press(row, 'confirm')
                 self.assertTrue(self.bridge.api_run_ask(dict(bead='source-1', ask=ask['ask'], key='replay-' + scenario))['delivered'])
                 self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends)
                 self.assertEqual(current(ask['ask']), settled)
@@ -4264,7 +4636,7 @@ class RealNativeTests(BridgeTestCase):
                           and e['data'].get('approved', {}).get('bead') == 'source-1']
                 self.assertEqual(len(events), 1)
 
-    def test_real_native_group_add_and_set_apply_once_after_typed_number(self):
+    def test_real_native_group_add_and_set_apply_once_after_confirm(self):
         binary = shutil.which('yardr')
         if binary is None:
             self.skipTest('yardr binary required for isolated native integration')
@@ -4363,24 +4735,29 @@ class RealNativeTests(BridgeTestCase):
                 return row
 
             def press(row, action='approve'):
-                self.bridge.inbound(dict(update_id=next(updates), callback_query=dict(
+                if action == 'confirm':
+                    action += ':' + (self.bridge.run_asks.get(row['id']).get('pending') or {}).get('nonce', '0' * 16)
+                update = dict(update_id=next(updates), callback_query=dict(
                     id=f'query-{action}', data=f"runask:{row['id']}:{action}", **{'from': dict(id=123, is_bot=False)},
-                    message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))))
+                    message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)})))
+                self.bridge.inbound(update)
+                return update
 
             def reply(row, value):
                 update = dict(update_id=next(updates), message=dict(message_id=2000 + len(self.calls), text=value,
                     chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
                     reply_to_message=dict(message_id=row['message_id'], **{'from': dict(id=999, is_bot=True)})))
-                self.bridge.inbound(update)
+                with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                    self.bridge.inbound(update)
                 return update
 
-            # Create: the tap only opens the number prompt; a wrong number does nothing; the typed number writes once.
+            # Create: Approve arms; a typed number does nothing; Confirm writes once.
             row = card(create)
             press(row)
             reply(row, str(create['ask'] + 1))
             self.assertIsNone(group('builders'))
             press(row)
-            confirmation = reply(row, str(create['ask']))
+            confirmation = press(row, 'confirm')
             made = group('builders')
             self.assertEqual((made['runner'], made['limit']), ('herdr', 2))
             self.assertEqual({k: made['config'][k] for k in ('kind', 'model', 'args')},
@@ -4399,7 +4776,7 @@ class RealNativeTests(BridgeTestCase):
             row = card(update)
             planner.write_text('# Synthetic planner\nPlan the work, changed.')
             press(row)
-            reply(row, str(update['ask']))
+            press(row, 'confirm')
             self.assertEqual(current(update['ask'])['state'], 'open')
             self.assertEqual(group('planners'), planners)
             self.assertEqual(approvals(update['ask']), [])
@@ -4409,7 +4786,7 @@ class RealNativeTests(BridgeTestCase):
             press(row, 'cancel')
             self.assertEqual(group('planners'), planners)
             press(row)
-            reply(row, str(update['ask']))
+            press(row, 'confirm')
             changed = group('planners')
             self.assertEqual(changed['config']['model'], 'claude-opus-5-5')
             self.assertEqual(changed['config']['args'], ['--permission-mode', 'auto', '--effort', 'xhigh'])
@@ -4430,7 +4807,7 @@ class RealNativeTests(BridgeTestCase):
                           b.html_visible_text([body for url, body in self.calls if url.endswith('/sendMessage')][-1]['text'])[0])
             press(row)
             self.assertEqual(group('drafters'), drafters)
-            reply(row, str(bare['ask']))
+            press(row, 'confirm')
             changed = group('drafters')
             self.assertEqual((changed['config']['model'], changed['config']['args']), ('claude-opus-5-5', ['--effort', 'xhigh']))
             self.assertNotIn('prompt', changed['config'])
@@ -4445,7 +4822,7 @@ class RealNativeTests(BridgeTestCase):
             self.assertIn(', limit 0;', paused['run']['does'][0])
             row = card(paused)
             press(row)
-            reply(row, str(paused['ask']))
+            press(row, 'confirm')
             changed = group('pausers')
             self.assertEqual((changed['limit'], changed['config']['model'], changed['config']['args']),
                              (0, 'claude-opus-5-5', ['--effort', 'xhigh']))
@@ -4477,7 +4854,7 @@ class RealNativeTests(BridgeTestCase):
             row = card(stale)
             cli('group', 'add', 'testers', '--runner', 'manual')
             press(row)
-            reply(row, str(stale['ask']))
+            press(row, 'confirm')
             self.assertEqual(current(stale['ask'])['state'], 'open')
             self.assertEqual(group('testers')['runner'], 'manual')
             self.assertEqual(approvals(stale['ask']), [])

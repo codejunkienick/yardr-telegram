@@ -143,7 +143,7 @@ status is for use with this shipped pack, as checked on 2026-11-09.
 | --- | --- | --- | --- |
 | Apply the pack, required even for hook/chat | Source packs accepting `thread.formats: [markdown]` (`0035b8c13e27`) | None yet | None |
 | Ordinary send/react/pin/unpin/chat ask close | Source packs and matching loopback API | None yet; pack application blocked | Individually `send`, `react`, `pin`, `unpin`, `ask_close` as needed |
-| Routine run ask, weighted direct-reply confirmation | Canonical Bead/ApproveAsk and current operator mapping | None yet | `run_ask` |
+| Routine run ask, weighted Approve then Confirm | Canonical Bead/ApproveAsk and current operator mapping | None yet | `run_ask` |
 | Yard-local skill copies and crew/group assignment | `yardr skill add` and crew/group `skills=` (`a66722bb`) | None yet | None; operator CLI |
 | Captured skill file review | Captured single-file proposal contract (`a79f6f8162c8`) | None yet | Same `run_ask` |
 | Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | None yet | Same `run_ask` |
@@ -171,8 +171,8 @@ Source-kind packs with no parameter inputs also support native review.
 Directory `pack apply <absolute-directory> --sha256 <digest>` sends complete
 review and snapshot in one document containing every named file,
 including `pack.yaml` and setup notes, before controls appear. Approve then
-requires a direct reply to the card with the exact ask number within five
-minutes. Embedded `pack apply <name>` uses one complete carried-source review
+requires Confirm on that same card within 60 seconds; typed numbers never
+approve. Embedded `pack apply <name>` uses one complete carried-source review
 document and core weight rules, without inventing a directory snapshot. See
 [pack upgrade setup](../yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback)
 and [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).

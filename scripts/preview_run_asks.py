@@ -48,9 +48,9 @@ def skill_cards(source=False, pack=False):
         capture('Complete review · one document · mode 0600', document_card(case.documents[-1]), 'bundle')
         capture('Final bound approval card', sends[-1], 'states')
         case.press()
-        capture('Direct reply confirmation · first tap installs nothing', case.edits()[-1], 'states')
+        capture('Confirm step · first tap installs nothing', case.edits()[-1], 'states')
         case.native.mode = 'carrying'
-        case.reply()
+        case.press('confirm', uid=50)
         capture('Approval recorded · pending carry', case.edits()[-1], 'states')
         case.native.ask['ran'].update(result=('applied pack synthetic to the yard: 1 created, 0 changed, 0 unchanged' if pack else
             'source synthetic saved: installed the captured declaration and bin/report bytes' if source else
@@ -99,13 +99,13 @@ def group_cards(name):
         capture('Complete review · one document · mode 0600', document_card(case.documents[-1]), 'bundle')
         capture('Final bound approval card', sends[-1], 'states')
         case.press()
-        capture('Direct reply confirmation · first tap writes nothing', case.edits()[-1], 'states')
+        capture('Confirm step · first tap writes nothing', case.edits()[-1], 'states')
         case.native.mode = 'refused'
-        case.reply(uid=51)
+        case.press('confirm', uid=51)
         capture('Core refused (stale group, grant or role) · nothing written', case.edits()[-1], 'states')
         case.native.mode = None
         case.press(uid=41)
-        case.reply(uid=52)
+        case.press('confirm', uid=52)
         result = ('group builders created (herdr, kind claude, limit 2); its prompt is roles/sha256/'
                   'a1d5578cf96ebb1492df410277eafdbe822ae64c2e59b3c56488d551610987e1.md' if name == 'group_add' else
                   'group drafters saved: model claude-opus-5-5, args "--effort" "xhigh"' if name == 'group_set_no_prompt' else
@@ -282,6 +282,43 @@ def markdown_cards():
     return cards
 
 
+def confirmation_cards():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests, proposal
+    case = NativeTests()
+    case.setUp()
+    cards = []
+    def capture(label, body):
+        rows = body.get('reply_markup', {}).get('inline_keyboard', [])
+        controls = ''.join('<div class="buttons">' + ''.join('<button>' + escape(item['text']) + '</button>'
+                           for item in row) + '</div>' for row in rows)
+        cards.append('<section><h2>' + escape(label) + '</h2><article><div class="body">' + body['text']
+                     + '</div>' + controls + '</article></section>')
+    try:
+        case.reset_native(proposal())
+        case.config['yard'] = 'example'
+        case.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
+        clock = [1000]
+        case.bridge.run_asks.now = lambda: clock[0]
+        if not case.create()['delivered']:
+            raise RuntimeError('synthetic confirmation card refused')
+        capture('Unarmed weighty card', case.calls[-1][1])
+        case.press()
+        capture('Confirm step · first tap writes nothing', case.edits()[-1])
+        clock[0] += 61
+        case.bridge.run_asks.refresh()
+        capture('Expired · nothing ran', case.edits()[-1])
+        case.press(uid=41)
+        case.press('cancel', uid=42)
+        capture('Cancelled · nothing ran', case.edits()[-1])
+        if case.writes():
+            raise RuntimeError('synthetic confirmation preview wrote a native answer')
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
 def main():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
     import bridge
@@ -310,15 +347,16 @@ def main():
 
     card('Routine proposal', routine, buttons=('✓ Approve in example', '✕ Decline'))
     card('Complete old + new setting', weighty, buttons=('✓ Approve in example', '✕ Decline'))
-    card('Weight confirmation', weighty,
-         "type the ask's number, 8, to approve this weighty card. Reply directly to this card with 8.",
-         ('Cancel', '✕ Decline'))
     card('Approval recorded; execution pending', routine,
          '⏳ approved, to be carried out: yardr source set example calls_per_hour=60\napproved, to be carried out\nWaiting for the external report')
     card('Settled canonical outcome', routine,
          '✓ approved, ran: yardr source set example calls_per_hour=60\nsource example: calls_per_hour: 60')
     card('Failed canonical outcome', routine,
          '✕ approved, failed: yardr source set example calls_per_hour=60\nThe synthetic external operation failed')
+    if len(sys.argv) == 1:
+        cards += confirmation_cards()
+    if '--confirm' in sys.argv:
+        cards = confirmation_cards()
     if '--skill' in sys.argv:
         cards = skill_cards()
     if '--source' in sys.argv:
@@ -353,7 +391,7 @@ h2{font-size:16px;margin:0 0 10px}article{background:white;border:1px solid #cfd
 b{font-weight:700}.footer{white-space:pre-wrap;border-top:1px solid #d9e5ed;padding-top:12px;margin-bottom:0}
 .buttons{display:flex;gap:8px;margin-top:16px}button{flex:1;border:0;border-radius:7px;padding:11px 5px;background:#e2eff9;color:#226295;font-weight:600}
 .navigation{font-size:12px;color:#496175;margin-bottom:8px}section{min-width:0}
-</style><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid" style="--columns:''' + str(min(len(cards), 3)) + '''">'''
+</style><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid" style="--columns:''' + str(2 if '--confirm' in sys.argv else min(len(cards), 3)) + '''">'''
           + ''.join(cards) + '''</div><script>
 const view = new URLSearchParams(location.search).get('view');
 if (view === 'bundle' || view === 'states') {

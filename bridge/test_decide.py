@@ -303,6 +303,33 @@ class DecideTests(DecideCase):
                 self.assertTrue(self.buttons(self.sends()[-1]))
                 self.assertEqual(self.writes(), [])
 
+        # /decide points at an armed run card without changing its arm or display.
+        self.reset_native(proposal())
+        self.native.beads = beads()
+        run = self.native.beads['run-1']['asks'][0]
+        run['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
+        self.command('/decide run-1#3', 50)
+        row = self.bridge.run_asks.rows()[0]
+        self.tap(f"runask:{row['id']}:approve", row['message_id'], 51)
+        armed = copy.deepcopy(self.bridge.run_asks.get(row['id']))
+        body, list_id = self.listing(uid=52)
+        data = next(b['callback_data'] for b in self.buttons(body) if b['text'] == '2. run-1#3')
+        edit_count = len(self.edits())
+        for uid, command in ((53, True), (54, False)):
+            self.restart()
+            self.bridge.run_asks.now = lambda: armed['pending']['expires'] + 1
+            if command:
+                self.command('/decide run-1#3', uid, thread=OPS)
+            else:
+                self.tap(data, list_id, uid)
+            notice = self.sends()[-1]
+            self.assertEqual(notice['text'], 'The card for run-1#3 is already open.')
+            self.assertEqual(notice['reply_parameters'], dict(message_id=row['message_id']))
+            self.assertNotIn('message_thread_id', notice)
+            self.assertEqual(self.bridge.run_asks.get(row['id']), armed)
+            self.assertEqual(len(self.edits()), edit_count)
+            self.assertEqual(self.writes(), [])
+
     def test_stale_selection_reports_the_canonical_outcome_and_never_reopens(self):
         body, list_id = self.listing()
         data = {b['text']: b['callback_data'] for b in self.buttons(body)}

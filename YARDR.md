@@ -208,10 +208,10 @@ context, command, description, every does/current/proposed/back line and
 canonical weight come from Bead. No actor, command, weight, weighed or
 approval text is accepted. `runask:` is reserved from add-ons/publish.
 Routine approval calls native ApproveAsk unweighed. Weighty approval first
-opens a five-minute confirmation, consumed only by the paired human's
-direct reply to that card containing its exact ask number. Cancel sends
-no approval. All interactions recheck home, pairing, recipient, proposal,
-message, conversation, current role/mapping and native state.
+opens a 60-second confirmation on the same card. The paired human then
+taps Confirm on its own second row; Cancel takes Approve's former place
+and sends no approval. Typed numbers never approve. All interactions recheck
+home, pairing, recipient, proposal, message, conversation, current role/mapping and native state.
 
 The supported scope, installation/bootstrap commands, explicit per-call
 operator grant and recovery limitations are in
@@ -241,7 +241,7 @@ Native `source add <file>` reviews the complete declaration, relative command
 files, replacement diffs and inventory before controls appear (local core
 baseline `546e3fdd2127`, not a public install target). It uses the same
 `run_ask` grant, pairing and canonical carry settlement; core's weight rules
-determine whether approval needs the direct ask-number reply. See
+determine whether approval needs Approve, then Confirm within 60 seconds. See
 [source review](bridge/OPERATIONS.md#source-add-declaration-and-command-review)
 and [setup](yardr/SETUP.md#source-declarations-and-command-files).
 

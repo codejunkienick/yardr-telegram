@@ -46,6 +46,11 @@ sees and does, not how the code is organised.
 
 ### Changed
 
+- Weighty native run cards now take Approve, then Confirm on the same card
+  within 60 seconds. Cancel occupies Approve's former position; Confirm
+  has its own row. Typed numbers no longer approve, and legacy pending
+  confirmations clear on the first poll after updating.
+
 - **BREAKING CHANGE:** Install, dry-run and rollback refuse a unit or root
   owned by another settings path, or whose ownership cannot be read. Moving
   a settings file requires a fresh unit and root: stop the old service,

@@ -2185,15 +2185,32 @@ other carried files, depot-kind pack plans and crew-add prompts still refuse bef
 sending, with Footplate/cards as the fallback.
 
 Routine Approve calls ApproveAsk with weighed=false after fresh checks.
-Weighty Approve only persists a pending confirmation and edits the card
-with a direct-reply prompt. The paired human must reply to that bound
-message, in the same chat/topic, with the exact ask number within 300
-seconds. No sole-pending-card fallback exists. Forwarded/bot/wrong-owner/
-wrong-topic/wrong-reply/expired/cancelled/stale/replayed confirmations cannot
-approve. Mismatch/expiry clear the confirmation. Cancel restores the open
-card. Decline needs the same ownership checks and no weight confirmation.
-Only actual bound confirmation replies are consumed; other chat continues.
+Weighty Approve persists a 60-second confirmation and edits that same bound
+card. The complete card stays visible; an added line names the ask, bead
+and fresh native command (shortened only if needed to fit Telegram). The
+paired human taps Confirm on its own second row, in the same chat/topic.
+Cancel takes Approve's former position, so a reflex tap there cancels.
+Repeated Approve keeps the same nonce and deadline; the host's clock starts
+the window when it handles the first tap. Forwarded/bot/wrong-owner/
+wrong-topic/wrong-message/expired/cancelled/stale/replayed confirmations cannot
+approve. A wrong nonce, expiry or backward host-clock jump clears the arm.
+Cancel restores the open card with ‘Cancelled; nothing ran’. Decline records
+the native decline immediately with the same ownership checks.
+A text reply exactly matching the bound run card's number is consumed with
+‘Typed numbers no longer approve in Telegram; tap Approve, then Confirm.
+Nothing ran.’ Other replies and free-standing numbers keep ordinary routing.
 No account or device passwords are requested.
+
+On the first poll after updating, legacy typed-number arms are cleared,
+never converted; their cards say the old confirmation ended and nothing
+ran. Existing unarmed cards need no redraw. A restart preserves a current
+arm; each poll clears expired arms before processing queued updates.
+
+Rollback (`install.sh --rollback`) keeps the ledger readable: the previous
+release treats a current arm's `expires` and `update` as its own typed
+confirmation, and its callback regex rejects the new `confirm` data. After
+rollback, use that release's typed gate or cancel and reopen the card.
+Native answers and operations already carried out remain canonical.
 
 The state lives beside ordinary asks in the existing SQLite ledger;
 process locks serialize terminal interactions and durable update claims
@@ -2305,7 +2322,7 @@ replacing a home at the same path cannot reuse an identical proposal.
 Native ownership/proposal/state is reread before the document, each
 transport retry and final card, as well as before every decision. Changes invalidate the
 binding; old/new bundles cannot mix. Approve first opens the existing
-five-minute direct-reply ask-number confirmation; the tap does not install.
+60-second Confirm step on the same bound card; the first tap does not install.
 Decline/cancel never install. Approval recorded/pending carry, verified
 installation, failure and uncertain transport remain distinct canonical
 states. Polling/restart and ask_close reconcile the same native answer;
@@ -2345,8 +2362,7 @@ and replies to that document; its matching size must be confirmed before
 controls appear. Canonical weight lines precede the plan.
 
 New/changed code and every replacement use core's weight gate: the first
-tap asks for the exact ask number in a direct bound reply within five
-minutes. Commands-free new sources can be routine and apply on the first
+tap opens the Confirm step on the same bound card for 60 seconds. Commands-free new sources can be routine and apply on the first
 verified Approve tap, as core specifies. Cancellation and decline write no
 source. A changed standing file is refused by core and shown as a stale
 source proposal with no controls; decline it in the yard and ask again.
@@ -2399,9 +2415,9 @@ The compact card follows only after the document is confirmed. It replies
 to the document and names the create/change/remove paths and hashes, kept
 grants, bundle digest, size/counts, document SHA-256 and pack digest, with
 canonical weight lines first.
-Directory applies always require Approve, then a direct reply **to the
-card**, with the exact ask number within five minutes. Replies to parts or
-the document cannot approve. A wrong number clears the gate: tap again.
+Directory applies always require Approve, then Confirm **on the same
+card** within 60 seconds. Replies to parts, the document or the card cannot
+approve. Cancel or an expired confirmation requires another Approve.
 Only core records approval, carrying, ran or failed. Core refuses standing
 source/copy/grant drift; the bridge shows a stale card without controls.
 
@@ -2474,8 +2490,8 @@ role paths/digests and repeats kind, model, args, effort, permission,
 login/env, running-session and kept-grant sentences. Role content never
 appears as card text even when it resembles a canonical sentence.
 
-Approval is the weighted path above: the tap opens the ask-number prompt,
-the bound reply calls ApproveAsk with weighed=true once. Core writes the
+Approval is the weighted path above: Approve opens the Confirm step;
+Confirm on that bound card calls ApproveAsk with weighed=true once. Core writes the
 group (and an add's `roles/sha256/<sha256>.md`) in that write, with
 `approved` on its `group_set` event; the card settles from the canonical
 `ran`, "✓ approved, ran" with core's result line. A stale group, grant,
@@ -2529,7 +2545,7 @@ lock, paired-human checks and configured home's socket. Old rows without a
 kind remain run cards. There is no caller-selected yard, operator or payload.
 Unknown canonical shapes and operation-bearing/weighted asks refuse whole.
 The current ordinary weight gate belongs to unsupported identity mappings;
-run cards keep their bound number confirmation. Read-only 503s during core
+run cards keep their bound Approve, then Confirm gate. Read-only 503s during core
 replacement get at most three attempts with bounded delay; writes are never
 automatically retried. Error bodies and HTTP errors after writes remain
 ambiguous until a canonical Bead reread establishes the result.

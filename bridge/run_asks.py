@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import socket
 import stat
 import tempfile
@@ -30,6 +31,10 @@ FALLBACK = '; use Footplate or the yard cards'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'SidingProposal', 'SidingOutcome', 'Groups', 'Routes')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
+CONFIRM_SECONDS = 60
+CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
+TYPED_CONFIRM_ENDED = 'Typed numbers no longer approve in Telegram; tap Approve, then Confirm. Nothing ran.'
+LEGACY_CONFIRM_ENDED = 'Confirmation by typed number ended with a bridge update; nothing ran. Tap Approve, then Confirm.'
 
 
 class NativeError(Exception):
@@ -1679,7 +1684,22 @@ class RunAsks:
                                for label, action in [('Later', 'later'), ('✕ Decline', 'decline')]]]
         actions = [('Cancel', 'cancel')] if row.get('pending') else [(f"✓ Approve in {self.config['yard']}", 'approve')]
         actions.append(('✕ Decline', 'decline'))
-        return [[dict(text=label, callback_data=f"runask:{row['id']}:{action}") for label, action in actions]]
+        buttons = [[dict(text=label, callback_data=f"runask:{row['id']}:{action}") for label, action in actions]]
+        if (row.get('pending') or {}).get('nonce'):
+            buttons.append([dict(text=f"✓ Confirm ask {row['ask']}",
+                                 callback_data=f"runask:{row['id']}:confirm:{row['pending']['nonce']}")])
+        return buttons
+
+    def confirm_step(self, row, ask):
+        prefix = f"Confirm ask {row['ask']} on {row['bead']}: runs "
+        suffix = f' · Tap Confirm within {CONFIRM_SECONDS} s, or Cancel.'
+        command = ask['run']['command']
+        available = 4096 - units(row['plain'] + '\n' + prefix + suffix)
+        if available < 1:
+            raise NativeError('run_ask_confirmation_too_large' + FALLBACK)
+        if units(command) > available:
+            command = short(command, available)
+        return self.display(row, prefix + command + suffix)
 
     def create(self, bead_id, number, key, conversation, silent=False, kind='run'):
         binding = self.binding()
@@ -2056,7 +2076,7 @@ class RunAsks:
         return True
 
     def callback(self, update_id, query):
-        match = re.fullmatch(r'(runask|askcard):([0-9a-f]{24}):(approve|decline|cancel|later|pick[1-9][0-9]{0,3})(?::(0|[1-9][0-9]{0,18}))?', query.get('data', ''))
+        match = re.fullmatch(r'(runask|askcard):([0-9a-f]{24}):(approve|decline|cancel|confirm|later|pick[1-9][0-9]{0,3})(?::([0-9a-f]{16}|0|[1-9][0-9]{0,18}))?', query.get('data', ''))
         notice = 'Native card not authorized'
         try:
             with self.lock():
@@ -2065,6 +2085,8 @@ class RunAsks:
                 if not row or sender.get('id') != self.config['user_id'] or sender.get('is_bot') is not False:
                     return
                 decision = row.get('kind') == 'decision'
+                if decision and match[4] is not None and not re.fullmatch(r'0|[1-9][0-9]{0,18}', match[4]):
+                    return
                 if not self.authorized_origin(row, query.get('message')):
                     candidate = dict(row, turn=int(match[4])) if decision and match[4] is not None else row
                     if decision and self.unconfirmed_receipt(candidate):
@@ -2075,6 +2097,9 @@ class RunAsks:
                     return
                 if decision:
                     if action not in ('later', 'decline') and not (action.startswith('pick') and 1 <= int(action[4:]) <= len(row['options'])):
+                        return
+                elif action == 'confirm':
+                    if not re.fullmatch(r'[0-9a-f]{16}', match[4] or ''):
                         return
                 elif match[4] is not None or action not in ('approve', 'decline', 'cancel'):
                     return
@@ -2104,13 +2129,32 @@ class RunAsks:
                 elif action == 'cancel':
                     row['pending'] = None
                     self.save(row)
-                    self.display(row)
-                    notice = 'Cancelled'
+                    notice = 'Cancelled; nothing ran'
+                    self.display(row, notice)
+                elif action == 'confirm':
+                    pending = row.get('pending')
+                    notice = 'Nothing to confirm; tap Approve first. Nothing ran.'
+                    if pending:
+                        row['pending'] = None
+                        self.save(row)  # consume durably before the native write, including crashes
+                        now = self.now()
+                        if match[4] != pending.get('nonce'):
+                            notice = 'Confirmation changed; nothing ran. Tap Approve again.'
+                        elif now > pending['expires'] or now < pending['armed_at']:
+                            notice = CONFIRM_EXPIRED
+                        else:
+                            notice = self.decide(row, 'approve', True)
+                            return
+                    self.display(row, notice)
                 elif action == 'approve' and row['weighty']:
-                    row['pending'] = dict(expires=self.now() + 300, update=update_id)
-                    self.save(row)
-                    self.display(row, f"type the ask's number, {row['ask']}, to approve this weighty card. Reply directly to this card with {row['ask']}.")
-                    notice = f"Reply to this card with {row['ask']}"
+                    now = self.now()
+                    pending = row.get('pending')
+                    if not (pending and pending.get('nonce') and pending['armed_at'] <= now <= pending['expires']):
+                        row['pending'] = dict(expires=now + CONFIRM_SECONDS, update=update_id,
+                                              armed_at=now, nonce=secrets.token_hex(8))
+                        self.save(row)
+                    self.confirm_step(row, ask)
+                    notice = f"Tap Confirm ask {row['ask']} within {CONFIRM_SECONDS} s, or Cancel."
                 else:
                     notice = self.decide(row, action, False, turn=input_turn)
         except NativeError as error:
@@ -2123,7 +2167,11 @@ class RunAsks:
         if not isinstance(reply, dict) or type(reply.get('message_id')) is not int or reply['message_id'] <= 0:
             return False
         with self.lock():
-            bindings = self.bound_messages(reply['message_id'])
+            # Retained run rows from an earlier pairing do not own this chat's message ids.
+            bindings = [(row, turn) for row, turn in self.bound_messages(reply['message_id'])
+                        if row.get('kind') == 'decision'
+                        or (self.client is not None and self.config.get('yardr_operator')
+                            and row['binding'] == self.binding())]
             known_decision = any(row.get('kind') == 'decision' for row, _ in bindings)
             text_reply = isinstance(message.get('text'), str) and self.bridge._extract_attachment(message) is None
             valid_reply = (
@@ -2141,7 +2189,7 @@ class RunAsks:
                     return True
             candidates = [(row, turn) for row, turn in bindings
                           if row.get('kind') == 'decision'
-                          or (row.get('pending') and self.authorized_message(row, message, reply=True))]
+                          or (message['text'] == str(row['ask']) and self.authorized_message(row, message, reply=True))]
             if not candidates:
                 return False
             row, input_turn = candidates[0]
@@ -2151,6 +2199,11 @@ class RunAsks:
                     return False
                 notice = 'Native card message binding ambiguous' if len(bindings) != 1 else 'Native card not authorized'
                 self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
+                return True
+            if not known_decision:
+                if self.claim_update(update_id):
+                    self.bridge._command_message(f'runask:{update_id}:notice',
+                        dict(type='send', text=TYPED_CONFIRM_ENDED, plain=None), self.thread(row))
                 return True
             try:
                 ask = self.ensure(row)
@@ -2175,21 +2228,6 @@ class RunAsks:
                         notice = self.decide(row, 'answer', False, option, words, turn=input_turn)
                     self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
                     return True
-                pending = row['pending']
-                row['pending'] = None
-                self.save(row)  # consumed durably before the write, including crashes
-                if self.settle(row, ask):
-                    notice = 'Ask is ' + ask['state']
-                elif self.now() > pending['expires']:
-                    notice = 'Weighty confirmation expired; tap Approve on the card again'
-                    self.display(row)
-                elif not isinstance(message.get('text'), str) or message['text'].strip() != str(row['ask']):
-                    notice = f"ask {row['ask']}'s number was not typed back, so nothing was done"
-                    self.display(row)
-                elif ask['state'] != 'open':
-                    notice = 'Ask is ' + ask['state']
-                else:
-                    notice = self.decide(row, 'approve', True)
             except NativeError as error:
                 notice = str(error)
             self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
@@ -2281,10 +2319,13 @@ class RunAsks:
                     continue
                 try:
                     ask = self.ensure(row)
-                    if not self.settle(row, ask) and row.get('pending') and self.now() > row['pending']['expires']:
-                        row['pending'] = None
-                        self.save(row)
-                        self.display(row, 'Weighty confirmation expired; tap Approve again')
+                    if not self.settle(row, ask) and row.get('pending'):
+                        pending, now = row['pending'], self.now()
+                        legacy = 'nonce' not in pending
+                        if legacy or now > pending['expires'] or now < pending['armed_at']:
+                            row['pending'] = None
+                            self.save(row)
+                            self.display(row, LEGACY_CONFIRM_ENDED if legacy else CONFIRM_EXPIRED)
                 except NativeError:
                     continue
 

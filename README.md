@@ -103,8 +103,8 @@ for the outstanding contracts and required passing check.
   capability (local baseline `a79f6f8162c8`, not a public install target)
   and the paired operator setup in
   [SETUP.md](yardr/SETUP.md#single-file-skill-snapshots). Full review parts
-  precede buttons; Approve requires a direct ask-number reply. Only one
-  regular `SKILL.md` with supported metadata can use skill review.
+  precede buttons; tap Approve, then Confirm on the same card within 60
+  seconds. Only one regular `SKILL.md` with supported metadata can use skill review.
 - Optional native herdr group cards (`group add`, `group set`) need core
   support for the local `fc7375cf5ad4` contract, also not a public install
   target, and the same setup

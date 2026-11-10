@@ -3422,7 +3422,7 @@ class Bridge:
         except TransportError:
             return pending
 
-    def publish(self, request):
+    def publish(self, request, format_fallback_reason=None):
         """Send one request on the paired chat's conversation, on a
         configured, recorded topic's or on a served auto topic's, bound or
         not (OPERATIONS.md, "Topics"); any other conversation is
@@ -3432,13 +3432,14 @@ class Bridge:
         fails with no text fallback: the user may have deleted the topic."""
         conversation = request.get('conversation')
         if conversation == self.conversation:
-            receipt = self._publish(request)
+            receipt = self._publish(request, format_fallback_reason=format_fallback_reason)
         else:
             topic = next((topic for topic in self._sendable_topics() if topic['conversation'] == conversation), None)
             if topic is None:
                 return self.receipt(reason='recipient_not_authorized')
             # Only served auto topics carry a display_name.
-            receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic)
+            receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic,
+                                    format_fallback_reason=format_fallback_reason)
             receipt = dict(receipt, conversation=topic['conversation'])
         self._log_sent(conversation, request, receipt)
         return receipt
@@ -3499,6 +3500,8 @@ class Bridge:
         if conversation is not None:
             answer['conversation'] = receipt.get('conversation', conversation)['conversation_id'] \
                 if isinstance(receipt.get('conversation', conversation), dict) else conversation['conversation_id']
+        if answer['delivered'] and receipt.get('format_fallback_reason'):
+            answer.update(delivered_format='plain', format_fallback_reason=receipt['format_fallback_reason'])
         if not answer['delivered']:
             answer['reason'] = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
             answer['failure_kind'] = receipt.get('failure_kind', 'permanent')
@@ -3518,10 +3521,13 @@ class Bridge:
             raise ApiError('key is required, in the body or the Idempotency-Key header')
         conversation = self._api_conversation(request)
         fmt = request.get('format')
+        format_fallback_reason = None
         if fmt is None or fmt == '':  # null and "" are auto; any other value is checked below
             fmt = 'auto'
         if fmt == 'auto':
             fmt = auto_format(text)
+            if fmt == 'plain' and ('<' in text or '&' in text):
+                format_fallback_reason = 'invalid_html'
         if fmt not in ('plain', 'html', 'markdown'):
             raise ApiError('format must be plain, html, markdown or auto')
         body = dict(conversation=conversation, idempotency_key=key, text=text)
@@ -3556,7 +3562,7 @@ class Bridge:
                 body['attachment'] = files[0]
             else:
                 body['attachments'] = files
-        return self._api_answer(self.publish(body), conversation)
+        return self._api_answer(self.publish(body, format_fallback_reason=format_fallback_reason), conversation)
 
     TELL_TITLE_MAX = 250
     TELL_TEXT_MAX = 3500
@@ -3741,7 +3747,7 @@ class Bridge:
                 last = None
         return dict(ok=True, bot=self.account, last_poll_ok=last)
 
-    def _publish(self, request, thread_id=None, text_fallback=True):
+    def _publish(self, request, thread_id=None, text_fallback=True, format_fallback_reason=None):
         key, text = request.get('idempotency_key'), request.get('text')
         if not isinstance(key, str) or not key.strip() or len(key) > 256:
             return self.receipt(reason='stable_idempotency_key_required')
@@ -3898,6 +3904,8 @@ class Bridge:
                 self.store.set_ask_message(ask_ids, int(receipt['message_id']))
             if text_options and receipt.get('delivered'):
                 receipt = dict(receipt, text_options=True)
+            if receipt.get('delivered') is True and format_fallback_reason is not None:
+                receipt = dict(receipt, format_fallback_reason=format_fallback_reason)
             return receipt
         return self._reserve_and_deliver(key, request, deliver)
 

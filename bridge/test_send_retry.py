@@ -289,11 +289,20 @@ class SendRetryTests(BridgeTestCase):
 
     def test_html_not_sent_first_attempts_retry_the_html_before_any_fallback(self):
         rejected = (400, dict(ok=False, error_code=400, description="Bad Request: can't parse entities"))
-        self.answers = [not_sent(), rejected, OK]
-        receipt = self.publish(text='<b>hi</b>', format='html')
-        self.assertTrue(receipt['delivered'])
-        self.assertEqual(receipt['format_fallback_reason'], 'telegram_html_parse_rejected_400')
-        self.assertEqual([body.get('parse_mode') for _, body, _ in self.calls], ['HTML', 'HTML', None])
+        for fmt in ('auto', 'html', 'markdown'):
+            with self.subTest(format=fmt):
+                self.calls.clear()
+                self.answers = [not_sent(), rejected, OK]
+                request = dict(key='parse-' + fmt, text='**hi**' if fmt == 'markdown' else '<b>hi</b>', format=fmt)
+                receipt = self.bridge.api_send(request)
+                self.assertEqual(receipt, dict(delivered=True, message_id='77', conversation='123',
+                    delivered_format='plain', format_fallback_reason='telegram_html_parse_rejected_400'))
+                self.assertEqual([body.get('parse_mode') for _, body, _ in self.calls], ['HTML', 'HTML', None])
+                self.assertEqual(self.calls[-1][1]['text'], 'hi')
+                self.assertEqual(self.ledger(request['key'])['format_fallback_reason'],
+                                 'telegram_html_parse_rejected_400')
+                self.assertEqual(self.bridge.api_send(request), receipt)
+                self.assertEqual(len(self.calls), 3)
 
     def test_attachment_sends_follow_the_same_rules(self):
         self.answers = [not_sent(), not_sent()]

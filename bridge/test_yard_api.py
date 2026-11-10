@@ -322,28 +322,73 @@ class YardApiTests(BridgeTestCase):
 
     def test_format_auto_is_the_default_and_sends_html_only_for_valid_markup(self):
         cases = [
-            (dict(text='<b>done</b> &amp; dusted'), 'HTML'),
-            (dict(text='<b>done</b>', format='auto'), 'HTML'),
-            (dict(text='a < b & c > d'), None),
-            (dict(text='use <div> here'), None),
-            (dict(text='plain words'), None),
-            (dict(text='<b>literal</b>', format='plain'), None),
-            (dict(text='<i>x</i>', format='html'), 'HTML'),
-            (dict(text='```\necho hello\n```'), None),
-            (dict(text='```\n<b>x</b>\n```'), 'HTML'),
-            (dict(text='a & b; echo "$x" && ls < input'), None),
-            (dict(text='<b>done</b>', format=None), 'HTML'),
-            (dict(text='<b>done</b>', format=''), 'HTML'),
+            (dict(text='<b>done</b> &amp; dusted'), 'HTML', False),
+            (dict(text='<b>done</b>', format='auto'), 'HTML', False),
+            (dict(text='a < b & c > d'), None, True),
+            (dict(text='use <div> here'), None, True),
+            (dict(text='plain words'), None, False),
+            (dict(text='<b>literal</b>', format='plain'), None, False),
+            (dict(text='<i>x</i>', format='html'), 'HTML', False),
+            (dict(text='```\necho hello\n```'), None, False),
+            (dict(text='```\n<b>x</b>\n```'), 'HTML', False),
+            (dict(text='a & b; echo "$x" && ls < input'), None, True),
+            (dict(text='<b>done</b>', format=None), 'HTML', False),
+            (dict(text='<b>done</b>', format=''), 'HTML', False),
+            (dict(text='<code>echo ready && echo done</code>'), None, True),
+            (dict(text='<code>echo ready && echo done</code>', format='auto'), None, True),
+            (dict(text='<code>echo ready && echo done</code>', format=None), None, True),
+            (dict(text='<code>echo ready && echo done</code>', format=''), None, True),
+            (dict(text='<code>echo ready && echo done</code>', format='plain'), None, False),
+            (dict(text='<code>echo ready &amp;&amp; echo done</code>'), 'HTML', False),
         ]
-        for index, (body, parse_mode) in enumerate(cases):
+        for index, (body, parse_mode, fallback) in enumerate(cases):
             with self.subTest(body=body):
                 self.calls.clear()
-                status, answer = self.call('/v1/send', dict(body, key=f'fmt-{index}'))
+                request = dict(body, key=f'fmt-{index}')
+                status, answer = self.call('/v1/send', request)
                 self.assertEqual(status, 200)
-                self.assertTrue(answer['delivered'])
+                expected = dict(delivered=True, message_id='77', conversation='123')
+                if fallback:
+                    expected.update(delivered_format='plain', format_fallback_reason='invalid_html')
+                self.assertEqual(answer, expected)
+                self.assertEqual(self.store.saved_receipt(request['key']).get('format_fallback_reason'),
+                                 'invalid_html' if fallback else None)
                 [(_, sent)] = self.telegram_calls()
                 self.assertEqual(sent['text'], body['text'])
                 self.assertEqual(sent.get('parse_mode'), parse_mode)
+                self.assertEqual(self.call('/v1/send', request), (200, answer))
+                self.assertEqual(len(self.telegram_calls()), 1)
+
+        for first_format, fallback in (('plain', False), ('auto', True)):
+            with self.subTest(first_format=first_format):
+                self.calls.clear()
+                request = dict(key='format-replay-' + first_format, format=first_format,
+                               text='<code>echo ready && echo done</code>')
+                expected = dict(delivered=True, message_id='77', conversation='123')
+                if fallback:
+                    expected.update(delivered_format='plain', format_fallback_reason='invalid_html')
+                self.assertEqual(self.call('/v1/send', request), (200, expected))
+                identity = dict(conversation=self.bridge.conversation, idempotency_key=request['key'],
+                                text=request['text'])
+                fingerprint = b.Bridge.delivery_fingerprint(identity)
+                self.assertEqual(self.store.saved_delivery(request['key'])[0], fingerprint)
+                restored = b.Bridge(self.config, b.Store(self.path, 0), 'SECRET', 'CAPABILITY',
+                                    request=self.transport)
+                port = self.start_callback_server(bridge=restored)
+                for replay_format in ('plain', 'auto', None, ''):
+                    replay = dict(request, format=replay_format)
+                    self.assertEqual(self.api_call(port, '/v1/send', replay), (200, expected))
+                self.assertEqual(self.api_call(port, '/v1/send', dict(request, text='another body')),
+                                 (200, dict(delivered=False, conversation='123',
+                                     reason='idempotency_key_conflict', failure_kind='permanent')))
+                self.assertEqual(self.store.saved_delivery(request['key'])[0], fingerprint)
+                self.assertEqual(len(self.telegram_calls()), 1)
+
+        invalid = dict(text='<code>echo ready && echo done</code>', key='explicit-invalid', format='html')
+        before = len(self.telegram_calls())
+        self.assertEqual(self.call('/v1/send', invalid)[1], dict(delivered=False, conversation='123',
+            reason='html_text_not_escaped', failure_kind='permanent'))
+        self.assertEqual(len(self.telegram_calls()), before)
 
         def transport(url, body, *args, **kwargs):
             status, answer = self.transport(url, body, *args, **kwargs)

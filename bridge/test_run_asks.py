@@ -4167,6 +4167,32 @@ class RealNativeTests(BridgeTestCase):
             result = json.loads(cli('call', 'mdbridge', 'send', 'text=**Source**', 'format=markdown', '--json'))
             self.assertTrue(result['delivered'])
             self.assertEqual(self.calls[-1][1]['text'], '<b>Source</b>')
+            before = len(self.calls)
+            source = '<code>echo ready && echo done</code>'
+            result = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
+                                    'key=native-format-fallback', '--json'))
+            self.assertEqual(result, dict(delivered=True,
+                message_id=self.store.saved_receipt('native-format-fallback')['message_id'], conversation='123',
+                delivered_format='plain', format_fallback_reason='invalid_html'))
+            self.assertEqual(self.calls[-1][1]['text'], source)
+            self.assertNotIn('parse_mode', self.calls[-1][1])
+            again = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
+                                   'key=native-format-fallback', '--json'))
+            self.assertEqual(again, result)
+            self.assertEqual(self.store.saved_receipt('native-format-fallback')['format_fallback_reason'],
+                             'invalid_html')
+            again = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
+                                   'key=native-format-fallback', 'format=plain', '--json'))
+            self.assertEqual(again, result)
+            self.assertEqual(len(self.calls), before + 1)
+            result = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
+                                    'key=native-explicit-plain', 'format=plain', '--json'))
+            self.assertEqual(result, dict(delivered=True,
+                message_id=self.store.saved_receipt('native-explicit-plain')['message_id'], conversation='123'))
+            again = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
+                                   'key=native-explicit-plain', 'format=auto', '--json'))
+            self.assertEqual(again, result)
+            self.assertEqual(len(self.calls), before + 2)
             result = json.loads(cli('call', 'mdbridge', 'send', 'text=```\necho legacy\n```', '--json'))
             self.assertTrue(result['delivered'])
             self.assertEqual(self.calls[-1][1]['text'], '```\necho legacy\n```')

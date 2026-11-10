@@ -29,9 +29,12 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/OPERATIONS.md | the same key with and without it is `idempotency_key_conflict` | silent is part of the key's identity |
 | pack | yardr/tgbridge.yaml | attachment:   { type: string, pattern: "^/", max: 4096, optional: true } | attachment= sends one file |
 | pack | bridge/bridge.py | def _api_answer(receipt, conversation=None): | --json prints delivered, message_id, reason |
+| pack | bridge/bridge.py | answer.update(delivered_format='plain', format_fallback_reason=receipt['format_fallback_reason']) | confirmed fallback results name plain delivery and its reason |
+| pack | bridge/bridge.py | format_fallback_reason = 'invalid_html' | auto sends invalid HTML as plain text with tags visible |
+| pack | bridge/test_yard_api.py | test_format_auto_is_the_default_and_sends_html_only_for_valid_markup | unescaped && inside code falls back; &amp;&amp; sends formatted |
 | pack | yardr/tgbridge.yaml | idempotency: Idempotency-Key | the yard sends each call with a key |
 | pack | bridge/bridge.py | key = request.get('key') or key_header | key=<key> wins over the yard's key |
-| pack | bridge/bridge.py | idempotency key reused for a different request | same key, same body |
+| pack | bridge/bridge.py | idempotency key reused for a different request | same key, same body; an escaped correction after confirmed fallback needs a fresh key as a new send, duplicating the delivered content |
 | pack | bridge/bridge.py | ambiguous_delivery_requires_manual_reconciliation | ambiguous result |
 | pack | bridge/bridge.py | NOT_SENT_REASON = 'transport_unavailable_not_sent' | not-sent result |
 | pack | bridge/bridge.py | text_required_maximum_4096_utf16_units | 4096 UTF-16 units |

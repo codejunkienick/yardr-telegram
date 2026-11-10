@@ -136,6 +136,12 @@ The operator reads on a phone. Format anything longer than two lines as Telegram
 - If Telegram cannot parse the markup, the bridge sends the same text once without formatting under the
   same key; the receipt says `format_fallback_reason`. The bridge's delivery ledger and message log
   record it.
+- A send result with `delivered_format: plain` and `format_fallback_reason`
+  means plain delivery, never formatted success (`invalid_html` leaves tags
+  visible). Immediately correct escaping of `&`, `<`, `>` in the same content
+  and send the corrected version as a new message under a fresh key, accepting
+  one duplicate of the delivered content. Other same-key/ledger rules above
+  still apply. Shell `&&` inside `<code>` needs `&amp;&amp;`.
 
 ### Explicit Markdown
 

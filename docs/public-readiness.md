@@ -5,6 +5,14 @@ publication, a push, history rewriting, changing repository visibility, live
 settings/source/grant writes or service activation. A clean source tree,
 installed code and a live accepted instance are three different states.
 
+**Public source, not an installable release (2026-11-10).** The source
+is published alongside the thread-formats change proposed for
+[yardr-dev/yardr](https://github.com/yardr-dev/yardr). A core with
+`thread.formats` declaration support is required; released cores today
+refuse this pack at `yardr pack check yardr/` with
+`thread.formats: unknown key`. The installation steps below apply only
+after the [public-core release gate](#public-core-release-gate) closes.
+
 ## Portable installation
 
 Follow [SETUP](../yardr/SETUP.md) for a clean install, using the fictional
@@ -100,10 +108,18 @@ No persisted or wire identifier is renamed by this preparation.
 
 ## Public-core release gate
 
-Release order: publish and accept the required yardr core changes first,
-then publish this bridge naming the compatible public core. Core publication
-belongs to the owner. Until that happens, there is no compatible public core
-for the shipped pack, including hook/chat configurations without native keys.
+Release order, as decided by the owner on 2026-11-10: publish this
+repository as public source alongside the thread-formats change proposed
+for [yardr-dev/yardr](https://github.com/yardr-dev/yardr). Repository
+visibility remains the owner's action. This is not an installable release.
+
+An installable pack release must wait for the thread-formats change to
+merge upstream, a public core release carrying it, and the final
+compatibility re-check below. Until then, no tag, release notes or setup
+instructions may present the pack as installable. Released cores today
+refuse `yardr pack check yardr/` with `thread.formats: unknown key`,
+including hook/chat configurations without native keys. Keep
+`thread.formats: [markdown]` in the pack.
 
 Checked on 2026-11-09: public upstream
 [`019090bef09973fb51ca8081b0f764a26a65e60a`](https://github.com/yardr-dev/yardr/commit/019090bef09973fb51ca8081b0f764a26a65e60a)
@@ -122,11 +138,11 @@ does expose Answer/Defer/DeclineAskExpected, but still lacks the pack's
 thread-format declaration support. Public previews of individual contracts
 do not establish a compatible core for this pack.
 
-Before bridge publication, replace each unavailable public-core entry below
-with a publicly reachable tag or commit containing that contract. Build the
-selected core and record a passing `yardr pack check yardr/` against the exact
-candidate bridge commit, then check the instance's rendered `<root>/pack`
-before applying it. The recorded failure above leaves this release gate open;
+Before an installable bridge release, replace each unavailable public-core
+entry below with a publicly reachable tag or commit containing that contract.
+Build the selected core and record a passing `yardr pack check yardr/` against
+the exact candidate bridge commit, then check the instance's rendered
+`<root>/pack` before applying it. The recorded failure above leaves this release gate open;
 local-core tests cannot supply the required public-core success evidence.
 
 ## Capabilities and grants
@@ -235,19 +251,25 @@ is not an installable checkout.
 
 1. Complete normal/expert review and local landing. Run the committed-head
    gate again on the actual landing tree with `YARDR_LANDING=1`.
-2. Close the [public-core release gate](#public-core-release-gate): the owner
-   publishes the required core changes first; name the compatible public
-   tag/commit for every capability and attach a passing pack check with that
-   core on the exact candidate pack. This bridge stays unpublished until then.
-3. Regenerate scan/export from that clean landed commit before freezing the
+2. Regenerate scan/export from that clean landed commit before freezing the
    candidate tree and running the final audit; landing may squash and change
-   its commit ID. The final compatibility/publication auditor must
-   compare that exact tree/manifest/archive and review the remaining contextual
-   identifiers, attribution, attachments, license sources and old history
-   separately. This work does not certify historical exposure or rewrite it.
-4. Resolve the destination/history strategy and exact public payload with the
-   owner. Preserve this development repository. A future explicitly authorized
-   publication step may use the reviewed clean export; none runs here.
+   its commit ID. Compare that exact tree/manifest/archive and review the
+   remaining contextual identifiers, attribution, attachments, license sources
+   and old history separately. Resolve the destination/history strategy and
+   exact public payload with the owner; preserve this development repository.
+   This work does not certify historical exposure or rewrite it.
+3. The owner may then make the reviewed repository public as source alongside
+   the thread-formats PR, following the 2026-11-10 decision. Link that PR
+   here and in the README once it has a number; until then, name the change
+   and upstream repository. Keep the source-only status visible before setup
+   steps. Visibility does not close the release gate. No publication runs here.
+4. Before any installable tag or release, close the
+   [public-core release gate](#public-core-release-gate). After the
+   thread-formats change merges and a public core release carries it,
+   rerun the final compatibility audit on the exact candidate pack.
+   Name the compatible public tag/commit for every capability and attach
+   a passing `yardr pack check yardr/` with that core. Public source
+   remains non-installable until this check passes.
 5. Each instance's operator owns installation, source apply, minimum grants,
    activation and acceptance: probe, check-install, correct ExecStart/current,
    source health, ordinary chat/topic/file and any enabled native card. Verify

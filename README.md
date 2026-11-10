@@ -1,5 +1,14 @@
 # yardr-telegram
 
+**Public source, not an installable release (2026-11-10).** This source
+is published alongside the thread-formats change proposed for
+[yardr-dev/yardr](https://github.com/yardr-dev/yardr). It requires a core
+with `thread.formats` declaration support. Released cores today refuse
+this pack at `yardr pack check yardr/` with
+`thread.formats: unknown key`. An installable release must wait for
+the change to merge, a compatible public core release and the
+[compatibility re-check](docs/public-readiness.md#public-core-release-gate).
+
 A private Telegram bridge for a [yardr](https://github.com/yardr-dev/yardr)
 yard: one paired chat with the yard's crew, its topics, tap-button asks,
 pins, reactions, typing and on-host voice transcription. The bridge runs
@@ -74,14 +83,31 @@ Release history: `CHANGELOG.md`.
 | `transcriber/` | `voice_transcribe.py` (whisper.cpp, configured language), `adapter.py` (the bridge's contract), `models.sha256` |
 | `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts` |
 
+## Native cards and review bundles
+
+Native run cards bind the proposed command to its ask and bead. For a
+weighty change, tap Approve, then Confirm on the same card within 60
+seconds. The confirmation names the ask, bead, command and time window.
+
+[View the synthetic Approve and Confirm card sequence](docs/images/native-card-confirmation.png).
+
+Synthetic offline HTML capture: unarmed Approve, armed Confirm, expired
+and cancelled cards. These are test fixtures, not a live Telegram chat.
+
+A review bundle arrives as one document with the complete proposal,
+files and diffs, followed by one compact approval card bound to it.
+
+[View the synthetic review document and compact approval card](docs/images/review-bundle.png).
+
+Synthetic offline HTML capture: one review document and its approval
+card, using fictional data. Open the image at full size to read the
+details; this is not a live Telegram chat.
+
 ## Prerequisites
 
-**Public-core release gate (2026-11-09): no compatible public yardr core is
-available yet for this pack.** Public upstream
-[`019090bef099`](https://github.com/yardr-dev/yardr/commit/019090bef09973fb51ca8081b0f764a26a65e60a)
-rejects `thread.formats` in `yardr pack check yardr/`, so even hook/chat
-setup cannot apply the shipped pack. The required core changes must be
-published and accepted before this bridge is published. See the
+This is public source for review. The setup steps below require a
+compatible public core release; released cores currently reject the
+shipped declaration, including for hook/chat-only setup. See the
 [public-core gate and capability table](docs/public-readiness.md#public-core-release-gate)
 for the outstanding contracts and required passing check.
 

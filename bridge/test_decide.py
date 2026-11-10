@@ -140,6 +140,44 @@ class DecideTests(DecideCase):
         for notice in notices:
             self.assertEqual(notice['text'], 'The card for sample-1#7 is already open.')
             self.assertEqual(notice['reply_parameters'], {'message_id': card_id})
+        transport = self.bridge.request
+
+        def refused(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'reply_parameters' in body:
+                self.calls.append((url, body))
+                return 400, dict(ok=False, error_code=400, description=description)
+            return transport(url, body, *args, **kwargs)
+        self.bridge.request = refused
+        for uid, description in ((8, 'Bad Request: message to be replied not found'),
+                                 (9, 'Bad Request: message is too old')):
+            with self.subTest(quote_refused=description):
+                before = len(self.sends())
+                def select():
+                    if uid == 8:
+                        self.command('/decide sample-1#7', uid)
+                    else:
+                        self.tap(data, list_id, uid)
+                select()
+                attempts = self.sends()[before:]
+                self.assertEqual(len(attempts), 2)
+                self.assertEqual(attempts[0], dict(attempts[1], reply_parameters={'message_id': card_id}))
+                self.assertEqual(attempts[1]['text'], 'The card for sample-1#7 is already open.')
+                self.assertNotIn('reply_parameters', attempts[1])
+                self.assertNotIn('reply_markup', attempts[1])
+                self.assertTrue(self.store.saved_delivery(f'decide:{uid}:notice:0')[1]['delivered'])
+                self.restart()
+                select()
+                self.assertEqual(len(self.sends()), before + 2)
+        before = len(self.sends())
+        with patch.object(self.store, 'finish', side_effect=RuntimeError('interrupted before receipt')):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted before receipt'):
+                self.command('/decide sample-1#7', 10)
+        self.assertEqual(len(self.sends()), before + 2)
+        self.restart()
+        self.command('/decide sample-1#7', 10)
+        self.assertEqual(len(self.sends()), before + 2)
+        self.assertEqual(len(self.bridge.run_asks.rows()), 1)
+        self.bridge.request = transport
         # A receipt committed before its generation row (a crash, or a notification mid-save):
         # listing recovers the generation outside the decide_ids write and sends no card.
         row = self.bridge.run_asks.rows()[0]
@@ -150,7 +188,7 @@ class DecideTests(DecideCase):
         with patch.object(b.sqlite3, 'connect', lambda path, timeout: connect(path, timeout=0.2)):
             self.listing(7)
         self.assertTrue(self.sends()[-1]['text'].startswith('6 open decisions'))
-        self.assertEqual(self.sent_count, sent + 4)
+        self.assertEqual(self.sent_count, sent + 7)
         self.assertEqual([g['message_id'] for g in self.bridge.run_asks.rows()[0]['generations']], [card_id])
         # The card opened by /decide answers through the existing native path.
         self.press('pick2', uid=6)
@@ -427,14 +465,50 @@ class DecideTests(DecideCase):
         data = next(b['callback_data'] for b in self.buttons(body) if b['text'] == '5. sample-1#7')
         self.tap(data, list_id, 2, thread=OPS)
         card = self.sends()[-1]
+        card_id = self.bridge.run_asks.rows()[0]['message_id']
         self.assertEqual(card['message_thread_id'], OPS)
         self.assertEqual(self.bridge.run_asks.rows()[0]['conversation'], f'123:topic:{OPS}')
         # From the chat itself the open card is pointed at, not sent again in another conversation.
         self.command('/decide sample-1#7', 3)
         notice = self.sends()[-1]
         self.assertEqual(notice['text'], 'The card for sample-1#7 is already open.')
-        self.assertNotIn('reply_parameters', notice)
-        self.assertNotIn('message_thread_id', notice)
+        self.assertEqual(notice['reply_parameters'], {'message_id': card_id})
+        self.assertEqual(notice['message_thread_id'], OPS)
+        self.command('/decide sample-1#8', 4)
+        root_card = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', 8))
+        self.assertNotIn('message_thread_id', self.sends()[-1])
+        _, root_list_id = self.listing(uid=5)
+        root_data = next(b['callback_data'] for b in self.buttons(body) if b['text'] == '6. sample-1#8')
+        for uid, selected, target, target_thread, origin, origin_thread in (
+                (6, data, card_id, OPS, root_list_id, None),
+                (7, root_data, root_card['message_id'], None, list_id, OPS)):
+            self.tap(selected, origin, uid, thread=origin_thread)
+            notice = self.sends()[-1]
+            self.assertEqual(notice['reply_parameters'], {'message_id': target})
+            self.assertEqual(notice.get('message_thread_id'), target_thread)
+            self.assertNotIn('reply_markup', notice)
+        self.command('/decide sample-1#8', 8, thread=OPS)
+        self.assertEqual(self.sends()[-1]['reply_parameters'], {'message_id': root_card['message_id']})
+        self.assertNotIn('message_thread_id', self.sends()[-1])
+        transport = self.bridge.request
+
+        def lost(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'reply_parameters' in body:
+                self.calls.append((url, body))
+                raise b.TransportError('connection reset after send')
+            return transport(url, body, *args, **kwargs)
+        self.bridge.request = lost
+        before = len(self.sends())
+        self.command('/decide sample-1#7', 11)
+        self.restart()
+        self.command('/decide sample-1#7', 11)
+        self.assertEqual(len(self.sends()), before + 1)
+        self.assertEqual(self.sends()[-1]['reply_parameters'], {'message_id': card_id})
+        self.assertEqual(self.sends()[-1]['message_thread_id'], OPS)
+        self.assertEqual(len(self.bridge.run_asks.rows()), 2)
+        cards = [s for s in self.sends() if 'askcard:' in str(s.get('reply_markup'))]
+        self.assertEqual(len(cards), 2)
+        self.bridge.request = transport
         # A run row saved for ops whose send was interrupted, then ops no longer served: never relocated or sent.
         def interrupted(row):
             raise RuntimeError('interrupted before delivery')
@@ -444,7 +518,7 @@ class DecideTests(DecideCase):
         self.config['topics'] = ()
         self.restart()
         before = len(self.sends())
-        for uid, value in ((4, '/decide run-1#3'), (5, '/decide sample-1#7')):
+        for uid, value in ((12, '/decide run-1#3'), (13, '/decide sample-1#7')):
             self.command(value, uid)
             label = value.split()[1]
             self.assertEqual(self.sends()[-1]['text'], f'The card for {label} belongs to a conversation this bridge '
@@ -637,12 +711,17 @@ class RealDecideTests(BridgeTestCase):
         cli('bead', 'answer', 'sample-1', str(answered), '--words', 'done already')
         cli('bead', 'answer', 'sample-1', str(later), '--later')  # after the asker's notes, which bring it back
 
-        self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+        self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge',
+                           topics=(dict(name='ops', agent='yardmaster'),))
+        self.store.record_topic('ops', OPS, 'created')
         ids = iter(range(77, 300))
+        quote_refused = False
 
         def telegram(url, body, *args, **kwargs):
             status, response = self.transport(url, body, *args, **kwargs)
             if url.endswith('/sendMessage'):
+                if quote_refused and 'reply_parameters' in body:
+                    return 400, dict(ok=False, error_code=400, description='Bad Request: message to be replied not found')
                 response['result']['message_id'] = next(ids)
             elif url.endswith('/editMessageText'):
                 response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
@@ -651,14 +730,20 @@ class RealDecideTests(BridgeTestCase):
         bridge.hook_secret = None
         sends = lambda: [body for url, body in self.calls if url.endswith('/sendMessage')]
 
-        def say(value, uid):
-            bridge.inbound(dict(update_id=uid, message=dict(message_id=900 + uid, text=value, chat=dict(id=123, type='private'),
-                                                             **{'from': dict(id=123, is_bot=False)})))
+        def say(value, uid, thread=None):
+            message = dict(message_id=900 + uid, text=value, chat=dict(id=123, type='private'),
+                           **{'from': dict(id=123, is_bot=False)})
+            if thread is not None:
+                message.update(is_topic_message=True, message_thread_id=thread)
+            bridge.inbound(dict(update_id=uid, message=message))
             return sends()[-1]
 
-        def tap(data, message_id, uid):
-            bridge.inbound(dict(update_id=uid, callback_query=dict(id=f'q{uid}', data=data, **{'from': dict(id=123, is_bot=False)},
-                message=dict(message_id=message_id, chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))))
+        def tap(data, message_id, uid, thread=None):
+            message = dict(message_id=message_id, chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)})
+            if thread is not None:
+                message.update(is_topic_message=True, message_thread_id=thread)
+            bridge.inbound(dict(update_id=uid, callback_query=dict(id=f'q{uid}', data=data,
+                **{'from': dict(id=123, is_bot=False)}, message=message)))
 
         listing = say('/decide', 1)
         text = listing['text']
@@ -668,11 +753,32 @@ class RealDecideTests(BridgeTestCase):
         for absent in ('Not for pat?', 'Later?', 'Taken back?', 'Answered?'):
             self.assertNotIn(absent, text)
         buttons = {b['text'].split('. ', 1)[-1]: b['callback_data'] for row in listing['reply_markup']['inline_keyboard'] for b in row}
-        tap(buttons[f'sample-1#{option}'], 77, 2)
-        card = sends()[-1]
+        card = say(f'/decide sample-1#{option}', 20, thread=OPS)
         self.assertIn('Where do the links go?', card['text'])
         row = next(r for r in bridge.run_asks.rows() if r['ask'] == option)
-        tap(f"askcard:{row['id']}:pick1:{row['turn']}", row['message_id'], 3)
+        self.assertEqual((row['conversation'], card['message_thread_id']), (f'123:topic:{OPS}', OPS))
+        before = len(sends())
+        tap(buttons[f'sample-1#{option}'], 77, 2)
+        self.assertEqual(len(sends()), before + 1)
+        self.assertEqual(sends()[-1]['text'], f'The card for sample-1#{option} is already open.')
+        self.assertEqual(sends()[-1]['reply_parameters'], {'message_id': row['message_id']})
+        self.assertEqual(sends()[-1]['message_thread_id'], OPS)
+        notice = say(f'/decide sample-1#{option}', 21)
+        self.assertEqual(notice['reply_parameters'], {'message_id': row['message_id']})
+        self.assertEqual(notice['message_thread_id'], OPS)
+        quote_refused = True
+        before = len(sends())
+        notice = say(f'/decide sample-1#{option}', 22)
+        self.assertEqual(len(sends()), before + 2)
+        self.assertEqual(sends()[-2], dict(notice, reply_parameters={'message_id': row['message_id']}))
+        self.assertEqual(notice['text'], f'The card for sample-1#{option} is already open.')
+        self.assertNotIn('reply_parameters', notice)
+        self.assertEqual(notice['message_thread_id'], OPS)
+        self.assertEqual(len([s for s in sends() if 'askcard:' in str(s.get('reply_markup'))]), 1)
+        self.assertEqual(len(bridge.run_asks.rows()), 1)
+        self.assertEqual(len(row['generations']), 1)
+        quote_refused = False
+        tap(f"askcard:{row['id']}:pick1:{row['turn']}", row['message_id'], 3, thread=OPS)
         client = n.YardSocketClient(home, 'tgbridge')
         stored = next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == option)
         self.assertEqual((stored['state'], stored['option']), ('answered', 1))

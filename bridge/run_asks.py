@@ -2403,13 +2403,21 @@ class RunAsks:
             return f"The yard {self.config['yard']} is unavailable; nothing was listed or opened."
         return str(error)
 
-    def decide_notice(self, key, value, thread, reply=None):
+    def decide_notice(self, key, value, thread, card=None):
         b = self.bridge
+        if card:
+            thread = self.thread(dict(conversation=card[1]))
         for index, part in enumerate(chunks(value, 4000)):
+            reply = card[0] if card and index == 0 else None
             extra = {} if thread is None else dict(message_thread_id=thread)
-            identity = dict(text=part, reply=reply if index == 0 else None, **extra)
-            b._reserve_and_deliver(f'{key}:{index}', identity, lambda pending, part=part, index=index:
-                                   b._deliver_text(part, reply if index == 0 else None, pending, extra=extra))
+            identity = dict(text=part, reply=reply, **extra)
+            def deliver(pending):
+                receipt = b._deliver_text(part, reply, pending, extra=extra)
+                if reply is not None and receipt.get('metadata', {}).get('reason') == 'telegram_rejected_not_sent_400':
+                    # The quote was rejected before sending; keep the fallback under this reservation.
+                    return b._deliver_text(part, None, pending, extra=extra)
+                return receipt
+            b._reserve_and_deliver(f'{key}:{index}', identity, deliver)
 
     def decide_command(self, update_id, args, thread):
         conversation = self.bridge.decide_conversation(thread)
@@ -2427,8 +2435,7 @@ class RunAsks:
         except NativeError as error:
             notice = self.decide_error(error)
         if notice:
-            reply = card[0] if card and card[1] == conversation['conversation_id'] else None
-            self.decide_notice(f'decide:{update_id}:notice', notice, thread, reply)
+            self.decide_notice(f'decide:{update_id}:notice', notice, thread, card)
 
     def decide_message(self, message):
         if not isinstance(message, dict) or any(key in message for key in self.bridge.FORWARD_KEYS):
@@ -2469,8 +2476,7 @@ class RunAsks:
             result, card = self.decide_open(found[0], int(found[1]), conversation['conversation_id'])
             notice = 'Card sent' if result is None else result
             if result is not None:
-                reply = card[0] if card and card[1] == conversation['conversation_id'] else None
-                self.decide_notice(f'decide:{update_id}:notice', result, thread, reply)
+                self.decide_notice(f'decide:{update_id}:notice', result, thread, card)
         except NativeError as error:
             notice = self.decide_error(error)
             self.decide_notice(f'decide:{update_id}:notice', notice, thread)

@@ -6,16 +6,19 @@ description: Voice and audio notes from the operator's Telegram chat - the "tran
 # Telegram voice transcripts
 
 With transcription on in the bridge's settings, a voice or audio note arrives
-as two deliveries:
+as two deliveries (`voice|audio` below means `voice` or `audio`):
 
-1. At once: `[attachment saved: <path> | voice <m:ss> | transcribing]` (and the
+1. At once: `[attachment saved: <path> | voice|audio <m:ss> | transcribing]` (and the
    caption, if any). The file is already saved; wait for the second message
-   before acting on the note.
+   before acting on the note. If none follows within a few minutes, re-run
+   by hand as shown under [Failures](#failures).
 2. Seconds to a few minutes later, from the same chat (its `kind` is
    `transcript`):
-   `[voice <m:ss> transcript (msg <id>): <text>] (audio: <path>)`.
-   The inbox keeps 500 characters of it: a longer note's transcript is
-   cut there, so read it whole with `yardr thread show <seq>`.
+   `[voice|audio <m:ss> transcript (msg <id>): <text>] (audio: <path>)`.
+   The inbox keeps 500 characters of it: read beyond that preview with
+   `yardr thread show <seq>`. The bridge also caps transcript text at 4000
+   characters, ending a cut with `…`; re-run by hand under [Failures](#failures)
+   for the full text.
 
 A note written in a topic of the chat has a topic line first,
 `[topic: <name>]` (or a `not configured` label), on both messages; the lines
@@ -23,9 +26,11 @@ above follow it, and the transcript arrives on the same conversation as its
 note.
 
 The transcript is the user's message. Act on it as if typed, and quote it
-lightly cleaned when you write it into a bead or a reply. With transcription
-off, a note arrives as a plain `[attachment saved: ...]` note: say you cannot
-listen to it and ask for text.
+lightly cleaned when you write it into a bead or a reply.
+
+A voice or audio note arriving as a plain `[attachment saved: ...]` has no
+transcript coming: transcription is off or its queue could not be written.
+Say you cannot listen to it and ask for text.
 
 ## Configured language
 

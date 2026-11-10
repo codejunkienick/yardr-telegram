@@ -6,11 +6,18 @@ The rows live only here; SKILL.md holds none.
 ```text
 <!-- citations -->
 | kind | path | symbol | note |
+| pack | bridge/bridge.py | TRANSCRIBE_KINDS = ('voice', 'audio') | both delivery kinds use transcription |
 | pack | bridge/bridge.py | note = f'[attachment saved: {path} \| {kind} {duration} \| transcribing]' | first note |
 | pack | bridge/bridge.py | return f'[{kind} {duration} transcript (msg {mid}): {body}] (audio: {path})' | follow-up |
 | pack | bridge/bridge.py | self._relay(mid, f'{mid}-transcript', text, thread_id=state.get('thread_id'), kind='transcript', | the follow-up is kind transcript and follows its note's topic |
 | pack | YARDR.md | The yard keeps at most 500 characters of a delivery's text | a long transcript is cut in the inbox |
-| pack | yardr/tgbridge.yaml | read:   [tgbridge/thread, read] | yardr thread show reads it whole |
+| pack | yardr/tgbridge.yaml | read:   [tgbridge/thread, read] | yardr thread show reads beyond the inbox preview, within the bridge cap |
+| pack | bridge/bridge.py | TRANSCRIPT_MAX_CHARS = 4000 | bridge transcript text cap |
+| pack | bridge/bridge.py | value[:limit - 1] + '\u2026' | a capped transcript ends with an ellipsis |
+| pack | transcriber/voice_transcribe.py | _write_text(out, text) | a manual re-run saves the full text without the bridge cap |
+| pack | bridge/bridge.py | state['gave_up'] = True | follow-up delivery can stop after relay failures; re-run by hand if none follows within a few minutes |
+| pack | bridge/bridge.py | if self.transcribe and failure is None and kind in self.TRANSCRIBE_KINDS: | transcription off leaves a plain saved note |
+| pack | bridge/bridge.py | voice transcript queue unavailable (msg {mid}); relaying without transcription | queue write failure also leaves a plain saved note |
 | pack | bridge/bridge.py | body = transcript if reason is None else f'transcription failed: {reason}' | failure text |
 | pack | bridge/bridge.py | self._relay_to_yard(provider_message_id, f"[topic: {topic['name']}]\n{text}", reply, | topic line first |
 | pack | bridge/bridge.py | 'VOICE_TRANSCRIBE_LANGUAGE': language, | configured language reaches the transcriber |

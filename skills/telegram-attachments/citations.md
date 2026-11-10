@@ -41,5 +41,10 @@ The rows live only here; SKILL.md holds none.
 | pack | yardr/tgbridge.yaml | read:   [tgbridge/thread, read] | yardr thread show reads the whole message |
 | pack | bridge/bridge.py | INBOUND_MAX_BYTES = 50 * 1024 * 1024 | 50 MB inbound cap |
 | pack | bridge/bridge.py | INBOUND_DOWNLOAD_ATTEMPTS = 3 | three fetch attempts |
+| pack | bridge/bridge.py | INBOUND_KINDS = ('document', 'video', 'voice', 'audio') | only these kinds and photo are supported inbound |
+| pack | bridge/bridge.py | if attachment is None and (not isinstance(text, str) or not text.strip() | unsupported media without text is not relayed |
+| pack | bridge/bridge.py | conversation = self._relay(mid, str(mid), relay_text, reply, thread_id, forwarded=forward is not None) | each inbound file is relayed separately; no media-group aggregation |
+| pack | bridge/bridge.py | caption = message.get('caption') | each delivery carries its own message's caption |
+| api | https://core.telegram.org/bots/api#message | Message.media_group_id, Message.caption | album membership and captions belong to individual messages; no first-item caption guarantee |
 <!-- /citations -->
 ```

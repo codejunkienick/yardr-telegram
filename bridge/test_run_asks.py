@@ -1950,7 +1950,8 @@ class NativeTests(NativeCase):
                 links.feed(result.stdout)
                 self.assertEqual(len(links.files), 1)
                 filename, raw = links.files[0]
-                self.assertRegex(filename, r'^review-[0-9a-f]{64}\.txt$')
+                self.assertRegex(filename, r'^review-[0-9a-f]{64}\.md$')
+                self.assertIn('Markdown review document', result.stdout)
                 self.assertIn(hashlib.sha256(raw).hexdigest(), result.stdout)
                 section = result.stdout.split('<section class="bundle">', 1)[1].split('</section>', 1)[0]
                 self.assertNotIn('<button>', section)
@@ -1979,7 +1980,7 @@ class NativeTests(NativeCase):
         self.assertEqual(hashlib.sha256(review.encode()).hexdigest(), row['bundle']['sha256'])
         self.assertEqual(document['text'].encode(), raw)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(path.name, 'review-' + row['proposal'] + '.txt')
+        self.assertEqual(path.name, 'review-' + row['proposal'] + '.md')
         self.assertEqual(hashlib.sha256(raw).hexdigest(), document['sha256'])
         self.assertEqual(len(raw), document['size'])
         self.assertEqual(fields['message_thread_id'], '12')
@@ -2083,9 +2084,20 @@ class NativeTests(NativeCase):
 
     def bundle_document_delivery(self):
         original = self.bridge.request_multipart
-        for failure in ('transient', 'ambiguous', 'size', 'missing-size', 'boolean-size', 'rejected', 'crash-after-receipt'):
-            with self.subTest(document_failure=failure):
+        failures = ('transient', 'ambiguous', 'size', 'missing-size', 'boolean-size', 'rejected', 'crash-after-receipt')
+        for extension, failure in ((ext, failure) for ext in ('.md', '.txt') for failure in failures):
+            with self.subTest(document_failure=failure, extension=extension):
                 self.reset_native(pack_proposal())
+                if extension == '.txt':
+                    with patch.object(self.bridge.run_asks, 'send_card', return_value=self.bridge.not_sent()):
+                        self.assertFalse(self.create()['delivered'])
+                    row = self.row()
+                    document = row['bundle']['document']
+                    old_name = document['name']
+                    document['name'] = 'review-' + row['proposal'] + '.txt'
+                    for field in ('plain', 'html'):
+                        row[field] = row[field].replace(old_name, document['name'])
+                    self.bridge.run_asks.save(row)
                 blocked = [True]
                 def multipart(*args, **kwargs):
                     if blocked[0]:
@@ -2139,6 +2151,9 @@ class NativeTests(NativeCase):
                 count = len(self.calls)
                 self.assertTrue(self.create()['delivered'])
                 self.assertEqual(len(self.calls), count)
+                self.assertEqual(self.row()['bundle']['document']['name'], 'review-' + row['proposal'] + extension)
+                self.assertIn('review-' + row['proposal'] + extension, self.row()['plain'])
+                self.assertEqual(len(self.documents), before + int(failure == 'transient'))
                 self.assertEqual(self.writes(), [])
         self.bridge.request_multipart = original
         ask = pack_proposal()
@@ -3789,6 +3804,7 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(len(sends), 1)
             self.assertEqual(len(self.documents), 1)
             fields, path, raw = self.documents[-1]
+            self.assertEqual(path.name, 'review-' + row['proposal'] + '.md')
             self.assertEqual(hashlib.sha256(raw).hexdigest(), row['bundle']['document']['sha256'])
             self.assertIn(row['bundle']['document']['sha256'], sends[0]['text'])
             self.assertIn(captured.decode(), ''.join(n.unquote(line) for line in NativeTests.bundle_review(row).split('proposed SKILL.md (quoted UTF-8 lines, including line endings):\n')[1].split('\nstanding SKILL.md', 1)[0].split('\n')))
@@ -4420,6 +4436,7 @@ class RealNativeTests(BridgeTestCase):
                 self.assertTrue(receipt['delivered'], receipt)
                 row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
                 self.assertTrue(row['bundle']['document']['message_id'])
+                self.assertEqual(self.documents[-1][1].name, 'review-' + row['proposal'] + '.md')
                 self.assertEqual(row['bundle']['parts'], [])
                 sends = [body for url, body in self.calls if url.endswith('/sendMessage')
                          and body.get('reply_parameters', {}).get('message_id') == row['bundle']['document']['message_id']]

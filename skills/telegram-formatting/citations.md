@@ -142,8 +142,8 @@ Document review bundles: `bridge/run_asks.py` (`review_bundle`, `source_plan`,
 `pack_document`, `RunAsks.document_file`, `RunAsks.send_card`);
 `bridge/OPERATIONS.md`, “Captured single-file skill review” and “Source pack
 bundles”. All new skill/source/pack/group generations deliver one complete
-UTF-8 document before the compact card; its hash/size and bundle digest are
-named on the card. Existing ledger rows retain their original delivery
-shape. `bridge/test_run_asks.py` checks real native-store capture, complete
+UTF-8 Markdown (.md) document before the compact card; its hash/size and
+bundle digest are named on the card. Existing ledger rows retain their
+original delivery shape. `bridge/test_run_asks.py` checks real native-store capture, complete
 document bytes, confirmation order, drift, replay and legacy resumption;
 `scripts/preview_run_asks.py --pack --dense-bundle` is synthetic presentation.

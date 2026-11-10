@@ -9,7 +9,7 @@ import sys
 def document_card(document):
     _, path, raw = document
     download = 'data:text/plain;base64,' + base64.b64encode(raw).decode()
-    return dict(text='<b>Review document · synthetic attachment</b>\n'
+    return dict(text='<b>Markdown review document · synthetic attachment</b>\n'
                 + '<a download="' + escape(path.name) + '" href="' + download + '">' + escape(path.name) + '</a>\n'
                 + str(len(raw)) + ' bytes · UTF-8 · no controls\n'
                 + '<details><summary>Open complete document</summary><pre>' + escape(raw.decode()) + '</pre></details>')

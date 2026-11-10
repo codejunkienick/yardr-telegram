@@ -916,7 +916,7 @@ def review_bundle(config, bead, ask, proposal, title, review, summary, snapshot=
     if size > PACK_DOCUMENT_BYTES:
         raise NativeError('run_ask_review_document_too_large; one document exceeds 50 MiB; '
                           'request an explicit part-based review fallback' + FALLBACK)
-    document = dict(text=value, sha256=file_hash(value), size=size, name='review-' + proposal + '.txt', message_id=None)
+    document = dict(text=value, sha256=file_hash(value), size=size, name='review-' + proposal + '.md', message_id=None)
     # Count the old text envelopes for comparison; new generations send none of them.
     prefix = heading + '\nBundle ' + proposal + '\nPart 999999/999999 · untrusted quoted review (reply chain)\n'
     limit = CAP - units(prefix)
@@ -1818,7 +1818,7 @@ class RunAsks:
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise NativeError('native_pack_document_directory_unsafe')
             name = document.get('name', document['sha256'] + '.txt')
-            if not isinstance(name, str) or not re.fullmatch(r'(?:review-)?[0-9a-f]{64}\.txt', name):
+            if not isinstance(name, str) or not re.fullmatch(r'(?:review-)?[0-9a-f]{64}\.(?:txt|md)', name):
                 raise NativeError('native_review_document_name_unsafe')
             path = directory / name
             if not path.exists():

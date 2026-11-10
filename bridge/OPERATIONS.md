@@ -2267,9 +2267,9 @@ or permission layer. Core remains the authority for live target/holder and
 operator checks under its apply lock.
 
 Every new skill, source, source-pack and group bundle arrives as **one
-UTF-8 review document, then one compact confirmation card**. The document
-contains the full question, context, command, weight and undo, followed by
-the complete canonical review text previously carried in numbered parts.
+UTF-8 Markdown review document (.md), then one compact confirmation card**.
+The document contains the full question, context, command, weight and undo,
+followed by the complete canonical review text previously carried in numbered parts.
 That review text is byte-identical: metadata/holders, manifests, every
 quoted file, inventory, old/new hashes and replacement diffs. Quoted strings
 preserve CRLF, tabs, trailing newlines, Unicode and literal weight marks.
@@ -2278,7 +2278,7 @@ shortened and cannot inject markup or controls into the card.
 
 The document names the bundle digest and frames the canonical review with
 its UTF-8 byte count. It is atomically written, mode 0600, as
-`<state_dir>/run-ask-documents/review-<bundle-digest>.txt`. The existing native
+`<state_dir>/run-ask-documents/review-<bundle-digest>.md`. The existing native
 SQLite row retains the immutable bytes, document SHA-256, size, stable send
 key and confirmed message ID. The proposal digest still binds native
 approval; the document hash is delivery evidence in the bridge, requiring
@@ -2314,8 +2314,16 @@ Already captured legacy bundles retain their original text parts, optional
 snapshot document, filenames, hashes, keys and receipts; a restart never
 converts that generation or resends confirmed parts. Preserve the ledger
 and review documents. There is no automatic recovery of a deleted Telegram
-message. Rollback uses the existing release rollback: the previous runtime
-can read the same native rows and finish either delivery shape.
+message. Saved `.txt` review generations keep their original names, bytes,
+hashes and receipts, including across restart and manual reconciliation.
+
+Rollback uses the existing release rollback. The previous runtime still
+reads `.md` rows and keeps already bound cards' Approve then Confirm gate,
+with no document resends. Its delivery API rejects `.md` filenames with
+`native_review_document_name_unsafe`, including on a previously confirmed
+generation; it cannot finish an interrupted `.md` document/card delivery.
+Return to a Markdown-capable release to resume those deliveries with their
+saved keys and receipts. Rollback never renames an already sent document.
 
 Skill bundle digests also bind the native home directory device/inode, so
 replacing a home at the same path cannot reuse an identical proposal.

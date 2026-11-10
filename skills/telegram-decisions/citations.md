@@ -58,6 +58,13 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/OPERATIONS.md | ## Siding status and guarded store actions | filters, canonical selection, store-only controls, refusals and uncertain outcomes |
 | pack | bridge/bridge.py | def api_siding_card(self, request, key_header=None): | siding call selection, routing, stable key and receipt |
 | pack | bridge/OPERATIONS.md | Native selectors ignore decision and refuse open/put-aside asks | native close reads canonical state rather than using caller decision text |
+| pack | yardr/tgbridge.yaml | decision:   { type: string, max: 200 } | native ask_close still requires the decision field; use decision=refresh |
+| pack | bridge/OPERATIONS.md | tap the action they intend to take. That tap both reconciles | tapping the original card reconciles delivery and may perform the chosen action |
+| pack | bridge/OPERATIONS.md | A reply alone cannot recover an unknown message id. | a reply alone cannot reconcile an unbound card |
+| pack | bridge/OPERATIONS.md | ask_card_delivery_unconfirmed | native refresh before recovery; tap the original card or decide in the yard and delete it manually |
+| pack | bridge/OPERATIONS.md | Do not delete ledger rows or | keep the ledger and original key; never publish under another key to work around ambiguity |
+| pack | bridge/OPERATIONS.md | ## /decide: the operator's open decisions | list open decisions and reopen by button or /decide <bead>#<ask> using the same delivery key |
+| pack | bridge/OPERATIONS.md | send is reported as unconfirmed and never retried by | /decide reports an unconfirmed send without retrying it |
 | pack | yardr/SETUP.md | ## 12. Native run cards (operator, optional) | native bootstrap and explicit per-call grants belong to the operator |
 | pack | yardr/SETUP.md | ## 13. Ordinary native decisions (operator; optional) | ask-card setup and supported canonical asks |
 | pack | yardr/SETUP.md | ## 14. Optional native siding cards (store-backed first slice) | siding operator bootstrap, activation and rollback |

@@ -166,4 +166,25 @@ Or select by `message_id=<id>`. Native close ignores the required decision text
 and reads canonical state; it cannot answer or approve an open card. Follow the
 matching OPERATIONS section when a refusal reports an open or uncertain card.
 
+### When a card's send is unconfirmed
+
+For an ordinary native card whose send is ambiguous:
+
+1. Keep the original key and ledger; do not publish again under a new key.
+2. Ask the paired operator to look for the original card and tap the action
+   they intend. The tap reconciles delivery and may perform that action;
+   a reply alone cannot recover it.
+3. Check with the native `ask_close` call above, using the original key and
+   `decision=refresh`. Expect `ask_card_delivery_unconfirmed` until the card
+   is reconciled; then retry to show canonical state.
+4. Alternatively, ask the operator to decide in the yard and manually delete
+   the original Telegram card if present. Use this path if no card is visible
+   or the tap cannot reconcile it.
+
+The operator can list open decisions with `/decide`, then tap an entry or
+send `/decide <bead>#<ask>` to reopen its card using the same delivery key.
+An ambiguous send stays unconfirmed; `/decide` does not resend it. See
+[Ordinary native ask cards](../../bridge/OPERATIONS.md#ordinary-native-ask-cards)
+and [/decide: the operator's open decisions](../../bridge/OPERATIONS.md#decide-the-operators-open-decisions).
+
 The source file and symbol behind each claim in this skill are in `citations.md`, next to this file; open it only when you need them.

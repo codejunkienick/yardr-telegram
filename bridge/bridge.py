@@ -3517,7 +3517,9 @@ class Bridge:
         if not isinstance(key, str) or not key.strip():
             raise ApiError('key is required, in the body or the Idempotency-Key header')
         conversation = self._api_conversation(request)
-        fmt = request.get('format', 'auto')
+        fmt = request.get('format')
+        if fmt is None or fmt == '':  # null and "" are auto; any other value is checked below
+            fmt = 'auto'
         if fmt == 'auto':
             fmt = auto_format(text)
         if fmt not in ('plain', 'html', 'markdown'):
@@ -3644,7 +3646,9 @@ class Bridge:
             text = request.get('text')
             if not isinstance(text, str) or not text.strip():
                 raise ApiError('text is required to pin')
-            fmt = request.get('format', 'auto')
+            fmt = request.get('format')
+            if fmt is None or fmt == '':
+                fmt = 'auto'
             if fmt == 'auto':
                 fmt = auto_format(text)
             if fmt not in ('plain', 'html', 'markdown'):

@@ -281,7 +281,7 @@ class YardApiTests(BridgeTestCase):
             (dict(key='k', text=5), 'text must be a string'),
             (dict(key='k', text=None, format='markdown'), 'markdown text must be a string'),
             (dict(key='k', text='x', format='rich'), 'format must be plain, html, markdown or auto'),
-            *[(dict(key='k', text='x', format=value), 'format must be') for value in (None, '', False, [], {}, 5)],
+            *[(dict(key='k', text='x', format=value), 'format must be') for value in (False, [], {}, 5)],
             (dict(key='k', text='x', topic='nope'), 'topic nope is not configured'),
             (dict(key='k', text='x', conversation='124'), b.UNRESOLVED_CONVERSATION),
             (dict(key='k', text='x', conversation='123:topic:99'), b.UNRESOLVED_CONVERSATION),
@@ -332,6 +332,8 @@ class YardApiTests(BridgeTestCase):
             (dict(text='```\necho hello\n```'), None),
             (dict(text='```\n<b>x</b>\n```'), 'HTML'),
             (dict(text='a & b; echo "$x" && ls < input'), None),
+            (dict(text='<b>done</b>', format=None), 'HTML'),
+            (dict(text='<b>done</b>', format=''), 'HTML'),
         ]
         for index, (body, parse_mode) in enumerate(cases):
             with self.subTest(body=body):
@@ -544,6 +546,14 @@ class YardApiTests(BridgeTestCase):
         self.calls.clear()
         self.assertFalse(self.call('/v1/pin', request)[1]['changed'])
         self.assertEqual(self.telegram_calls(), [])
+        for index, empty in enumerate((None, '')):  # an empty format is auto, as before
+            self.calls.clear()
+            status, answer = self.call('/v1/pin', dict(slot=f'empty-{index}', text='<b>2</b> wait', format=empty))
+            self.assertEqual((status, answer['delivered']), (200, True))
+            self.assertEqual(self.telegram_calls()[0][1]['parse_mode'], 'HTML')
+        status, answer = self.call('/v1/pin', dict(slot='bad', text='x', format='rich'))
+        self.assertEqual(status, 400)
+        self.assertIn('format must be plain, html, markdown or auto', answer['error'])
 
     def test_pin_refuses_a_bad_slot_text_or_format(self):
         for body in (dict(slot='Bad Slot', text='x'), dict(text='x'), dict(slot='s'), dict(slot='s', text='  '),

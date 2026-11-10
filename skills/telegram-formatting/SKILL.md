@@ -51,9 +51,10 @@ file by path):
 yardr call tgbridge send text="$(cat body.html)" topic=homelab format=html silent=true --json
 ```
 
-- `topic=<name>` posts into a topic by its exact name (`general` is the
-  main chat); `conversation=<id>` names one by id instead. With neither it
-  goes to the main chat.
+- `topic=<name>` posts into a configured topic by its exact name (`general`
+  is the main chat); use `conversation=<id>` from the delivery for a topic
+  the operator created ("Topics" below). With neither it goes to the main
+  chat.
 - `format=auto` is the default (HTML when the text is valid HTML), `html`
   refuses text that is not, `plain` sends tags as text. `format=markdown`
   explicitly renders the subset below; auto never detects Markdown fences.
@@ -97,12 +98,19 @@ to it. A topic the operator created in the chat reaches you the same way,
 when the bridge serves such topics.
 
 - `yardr reply` answers in the delivery's own topic.
-- `topic=<name>` posts into a configured topic, or one the operator
-  created, by its exact name.
+- `topic=<name>` posts into a configured topic by its exact name.
+- For a topic the operator created, post with
+  `conversation=<the delivery's conversation>`; its display name can change.
+- For an unprompted post, use the subject's topic: the conversation the
+  request or work came from. `yardr subscribe` with no arguments shows
+  subscriptions; check your column and use the conversation of the latest
+  delivery on that subject. Use General only when no topic fits.
+- A native card (`run_ask` or `ask_card`) stays in the topic it was first
+  sent to, so choose its topic deliberately.
 - A message labelled `[topic: thread <id> | not configured: reply lands in the main chat]`
   came from a topic the bridge does not serve: answer in the main chat.
 - A send into a topic the operator deleted comes back rejected
-  (`telegram_rejected_not_sent_400`) and is not sent anywhere else: answer
+  (`telegram_rejected_not_sent_<code>`) and is not sent anywhere else: answer
   in the main chat instead.
 
 ## Acknowledge

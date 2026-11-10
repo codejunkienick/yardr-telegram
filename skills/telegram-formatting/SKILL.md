@@ -43,6 +43,12 @@ yardr reply <seq> "<the answer>"
 
 ## Post
 
+`yardr reply` needs only your source credential. Each
+`yardr call tgbridge <call>` needs a per-call grant from the operator
+(`yardr/SETUP.md`, steps 8, 12, 13 and 14). Without that grant, answer with
+`yardr reply` or ask the coordinator. Updates are capped per caller
+(10 an hour by default), so prefer one well-shaped message over several.
+
 For anything that is not a plain answer (a message nobody asked for, a
 message into another topic, a silent update, an ask with buttons, a
 file by path):

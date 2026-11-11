@@ -143,15 +143,38 @@ def group_set_no_prompt_proposal():
     return group_proposal('group_set_no_prompt')
 
 
-def group_role(review, label):
-    """The role bytes a delivered review shows, read back from its quoted lines."""
-    rows = review.split('\n')
-    at = rows.index(label + ' (quoted UTF-8 lines, including line endings):') + 1
-    text = ''
-    while at < len(rows) and rows[at].startswith('"'):
-        text += json.loads(rows[at])
-        at += 1
-    return text
+def review_parts(review):
+    """Read rendered facts and recover each raw payload independently of the serializer."""
+    tokens = n.markdown.MarkdownIt('commonmark').parse(review)
+    blocks = iter(re.finditer(r'^(`{3,})\n(.*?)\n\1(?=\n|$)', review, re.M | re.S))
+    facts, contents, depth, label = [], [], 0, ''
+    for token in tokens:
+        if token.type == 'list_item_open':
+            depth += 1
+        elif token.type == 'list_item_close':
+            depth -= 1
+        elif token.type == 'inline' and depth:
+            assert all(child.type in ('text', 'code_inline') for child in token.children), token.children
+            fact = ''.join(child.content for child in token.children)
+            facts.append(fact)
+            if not fact.startswith('Content: '):
+                label = fact
+        elif token.type == 'fence':
+            block = next(blocks)
+            value = block[2]
+            size, sha, trailing = re.match(r'Content: (\d+) UTF-8 bytes; SHA-256 ([0-9a-f]{64}); trailing LF bytes: (\d+);', facts[-1]).groups()
+            assert len(value.encode()) == int(size)
+            assert hashlib.sha256(value.encode()).hexdigest() == sha
+            assert len(value) - len(value.rstrip('\n')) == int(trailing)
+            assert len(block[1]) > max((len(m[0]) for m in re.finditer(r'`+', value)), default=0)
+            assert token.content == (value + '\n').replace('\r\n', '\n').replace('\r', '\n')
+            contents.append((label, value))
+    assert next(blocks, None) is None
+    return facts, contents, tokens
+
+
+def review_content(review, label):
+    return next(value for name, value in review_parts(review)[1] if name == label or name.startswith(label + ';'))
 
 
 class NativeSocket:
@@ -1921,14 +1944,33 @@ class NativeTests(NativeCase):
 
     def test_skill_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
         self.bridge.sleep = lambda _: None
-        cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n</pre><b>FORGED CONTROL</b>\n')),
-                 ('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY · not authority\n' * 150)),
-                 ('group_set', group_set_proposal('\nSynthetic standing line <&>🙂\t' * 250)),
-                 ('source', source_proposal(extra='# ' + 'Synthetic <&>🙂\t' * 400 + '\n')),
+        hostile = '\n```\n# Forged heading\n[forged](https://example.invalid) *fake*\n``````\n🙂\t\r\nlone CR\r\n\n'
+        cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n</pre><b>FORGED CONTROL</b>\n' + hostile + '\U000e0001')),
+                 ('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY · not authority\n' * 150 + hostile.replace('\r', '') + '\U000e0001')),
+                 ('group_set', group_set_proposal('\nSynthetic standing line <&>🙂\t' * 250 + hostile.replace('\r', '').rstrip('\n'))),
+                 ('source', source_proposal(extra='# ' + 'Synthetic <&>🙂\t' * 400 + '\n# ``` ``````\n# [forged](https://example.invalid)\r\n')),
                  ('pack', pack_proposal()), ('pack_replace', pack_proposal('directory_replace')), ('pack_embedded', pack_proposal('embedded'))]
         for case, ask in cases:
             with self.subTest(case=case):
+                ask['question'] = '# Context heading\n[context link](https://example.invalid)'
+                ask['context'].append('[context link](https://example.invalid) *emphasis* `code` <b>HTML</b> &copy;')
+                if 'directory' in ask['run'].get('pack', {}):
+                    setup = next(f for f in ask['run']['pack']['directory']['files'] if f['path'] == 'SETUP.md')
+                    setup['text'] = hostile + 'no terminal LF'
+                    repack(ask)
                 self.bundle_delivery(case, ask)
+        for command in ('yardr skill add /synthetic/`ticks````', 'yardr skill add\n# injected\n[link](https://example.invalid)'):
+            with self.subTest(rendered_command=command):
+                ask = skill_proposal()
+                ask['run']['command'] = command
+                _, _, bundle = self.bridge.run_asks.card(self.native.bead, ask, 'run', '0' * 64)
+                facts, _, tokens = review_parts(bundle['document']['text'])
+                if '\n' in command:
+                    self.assertEqual(review_content(bundle['document']['text'], 'Command:'), command)
+                else:
+                    self.assertIn('Command: ' + command, facts)
+                    self.assertTrue(any(child.type == 'code_inline' and child.content == command
+                                        for token in tokens for child in token.children or []))
         self.bundle_document_delivery()
         class Attachments(HTMLParser):
             def __init__(self):
@@ -1955,20 +1997,19 @@ class NativeTests(NativeCase):
                 self.assertIn(hashlib.sha256(raw).hexdigest(), result.stdout)
                 section = result.stdout.split('<section class="bundle">', 1)[1].split('</section>', 1)[0]
                 self.assertNotIn('<button>', section)
-                self.assertIn('Canonical review:', raw.decode())
+                self.assertIn('## Canonical review', raw.decode())
+                review_parts(raw.decode())
 
     @staticmethod
     def bundle_review(row):
-        raw = row['bundle']['document']['text'].encode()
-        header, body = raw.split(b'\n\nCanonical review: ', 1)[1].split(b'\n\n', 1)
-        size = int(header.removesuffix(b' UTF-8 bytes'))
-        return body[:size].decode()
+        return row['bundle']['document']['text']
 
     def bundle_delivery(self, case, ask):
         self.reset_native(copy.deepcopy(ask))
         self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
         self.store.record_topic('ops', 12, 'created')
-        self.assertTrue(self.create(topic='ops')['delivered'])
+        result = self.create(topic='ops')
+        self.assertTrue(result['delivered'], result)
         row = self.row()
         self.assertEqual(row['bundle']['parts'], [])
         sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
@@ -1977,7 +2018,25 @@ class NativeTests(NativeCase):
         fields, path, raw = self.documents[-1]
         document = row['bundle']['document']
         review = self.bundle_review(row)
-        self.assertEqual(hashlib.sha256(review.encode()).hexdigest(), row['bundle']['sha256'])
+        facts, contents, tokens = review_parts(review)
+        self.assertEqual(tokens[0].type, 'heading_open')
+        self.assertEqual(tokens[0].tag, 'h1')
+        self.assertGreater(sum(t.type == 'list_item_open' for t in tokens), 10)
+        self.assertTrue(contents)
+        headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == 'heading_open']
+        self.assertEqual(headings[1:], ['Reading file content', 'Canonical review']
+                         + (['Pack snapshot'] if 'directory' in ask['run'].get('pack', {}) else []))
+        self.assertEqual(review_content(review, 'Question:'), ask['question'])
+        self.assertIn('Context: ' + ask['context'][-1], facts)
+        self.assertIn('Command: ' + ask['run']['command'], facts)
+        self.assertIn('Bead: sample-1 · Synthetic change', facts)
+        self.assertIn('Ask: 7', facts)
+        self.assertIn('Asker: ' + ask['asker'], facts)
+        self.assertIn('Takes it back: ' + ask['run']['back'], facts)
+        self.assertIn('Back by: ' + ask['run'].get('back_by', ''), facts)
+        self.assertTrue(any(child.type == 'code_inline' for token in tokens for child in (token.children or [])))
+        self.assertFalse(any(t.type in ('html_block', 'html_inline', 'link_open', 'image', 'em_open', 'strong_open')
+                             for token in tokens for t in [token, *(token.children or [])]))
         self.assertEqual(document['text'].encode(), raw)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(path.name, 'review-' + row['proposal'] + '.md')
@@ -2002,19 +2061,23 @@ class NativeTests(NativeCase):
         self.assertNotIn('<b>role', sent[0]['text'])
         self.assertEqual(sent[0]['message_thread_id'], 12)
         if case == 'skill':
-            self.assertTrue(review.endswith('\n'.join(ask['run']['does'])))
-            self.assertIn('"WEIGHTY · not authority\\r\\n"', review)
+            self.assertEqual(review_content(review, 'proposed SKILL.md'), ask['run']['carried'][0]['files'][0]['text'])
+            self.assertEqual(review_content(review, 'standing SKILL.md'), ask['run']['carried'][0]['text'])
+            self.assertEqual(review_content(review, 'replacement diff'), ask['run']['carried'][0]['old'][0]['diff'])
+            self.assertIn('WEIGHTY · not authority\r\n', review_content(review, 'proposed SKILL.md'))
+            value = ask['run']['carried'][0]['files'][0]['text']
+            offset = len(value[:value.index('\r')].encode())
+            self.assertTrue(any(f'{offset}="\\r"' in fact for fact in facts))
+            self.assertTrue(any('"\\udb40\\udc01"' in fact for fact in facts))
             self.assertIn(ask['run']['does'][4], card)
             self.assertIn(ask['run']['carried'][0]['files'][0]['sha256'], card)
         elif case == 'source':
             self.assert_source_review(ask, review)
             self.assertIn('no grant of source synthetic stands.', card)
         elif case.startswith('pack'):
-            for line in ask['run']['does']:
-                self.assertIn(n.quote_line(line), review)
+            self.assertEqual([value for label, value in contents if label == 'Native Does (complete quoted lines):'], ask['run']['does'])
             for carried in ask['run']['carried']:
-                for line in n.source_review(carried):
-                    self.assertIn(line, review)
+                self.assert_source_review(dict(run=dict(carried=[carried])), review)
             if 'directory' in ask['run']['pack']:
                 self.assert_pack_document(ask, raw)
                 self.assertIn(ask['run']['pack']['digest'], card)
@@ -2156,6 +2219,39 @@ class NativeTests(NativeCase):
                 self.assertEqual(len(self.documents), before + int(failure == 'transient'))
                 self.assertEqual(self.writes(), [])
         self.bridge.request_multipart = original
+        for extension in ('.md', '.txt'):
+            with self.subTest(saved_plain_document=extension):
+                ask = group_set_proposal()
+                ask['context'].append('Synthetic previously delivered plain document ' + extension)
+                self.reset_native(ask)
+                with patch.object(self.bridge.run_asks, 'send_card', return_value=self.bridge.not_sent()):
+                    self.assertFalse(self.create()['delivered'])
+                row = self.row()
+                document = row['bundle']['document']
+                old = dict(document)
+                value = 'Legacy plain review\n' + '\n'.join(ask['run']['does'])
+                document.update(text=value, sha256=hashlib.sha256(value.encode()).hexdigest(),
+                                size=len(value.encode()), name='review-' + row['proposal'] + extension)
+                for field in ('plain', 'html'):
+                    row[field] = (row[field].replace(old['name'], document['name'])
+                                  .replace(old['sha256'], document['sha256'])
+                                  .replace(str(old['size']) + ' bytes', str(document['size']) + ' bytes'))
+                self.bridge.run_asks.save(row)
+                self.assertTrue(self.create()['delivered'])
+                saved = copy.deepcopy(self.row())
+                with self.store.connect() as db:
+                    ledger = db.execute('SELECT * FROM deliveries ORDER BY key').fetchall()
+                before = len(self.calls)
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                with patch.object(n, 'review_bundle', side_effect=AssertionError('saved document regenerated')):
+                    self.assertTrue(self.create()['delivered'])
+                    self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='legacy-repost'))['delivered'])
+                self.assertEqual(self.row(), saved)
+                self.assertEqual(len(self.calls), before)
+                self.assertEqual(len(self.documents), 1)
+                self.assertEqual(self.documents[0][2], value.encode())
+                with self.store.connect() as db:
+                    self.assertEqual(db.execute('SELECT * FROM deliveries ORDER BY key').fetchall(), ledger)
         ask = pack_proposal()
         ask['run']['pack']['directory']['files'][0]['text'] += 'Synthetic atomic publication\n'
         repack(ask)
@@ -2237,32 +2333,12 @@ class NativeTests(NativeCase):
 
     def assert_pack_document(self, ask, raw):
         pack = ask['run']['pack']
-        raw = raw[raw.index(b'UNTRUSTED SOURCE PACK SNAPSHOT\n'):]
-        header, rest = raw.split(b'\n\n', 1)
-        self.assertIn(('Pack: ' + pack['name']).encode(), header)
-        self.assertIn(('Pack digest: ' + pack['digest']).encode(), header)
-        self.assertIn(('Files: ' + str(len(pack['directory']['files']))).encode(), header)
-        found = []
-        for expected in pack['directory']['files']:
-            metadata, rest = rest.split(b'\n\n', 1)
-            path, size, sha = metadata.split(b'\n')
-            self.assertTrue(path.startswith(b'Path: '))
-            self.assertTrue(size.startswith(b'Size: '))
-            self.assertTrue(sha.startswith(b'SHA256: '))
-            path = json.loads(path[6:])
-            count = int(size[6:])
-            body, rest = rest[:count], rest[count:]
-            self.assertEqual(body, expected['text'].encode())
-            self.assertEqual(sha[8:].decode(), hashlib.sha256(body).hexdigest())
-            self.assertEqual(path, expected['path'])
-            self.assertTrue(rest.startswith(b'\n'))
-            rest = rest[1:]
-            if rest:
-                self.assertTrue(rest.startswith(b'\n'))
-                rest = rest[1:]
-            found.append(path)
-        self.assertEqual(rest, b'')
-        self.assertEqual(len(found), len(set(found)))
+        facts, contents, _ = review_parts(raw.decode())
+        self.assertIn('Pack: ' + pack['name'], facts)
+        self.assertIn('Pack digest: ' + pack['digest'], facts)
+        self.assertIn('Files: ' + str(len(pack['directory']['files'])), facts)
+        self.assertEqual([(label.removeprefix('Path: '), value) for label, value in contents if label.startswith('Path: ')],
+                         [(file['path'], file['text']) for file in pack['directory']['files']])
 
     def assert_source_review(self, ask, review):
         carried = ask['run']['carried'][0]
@@ -2270,35 +2346,29 @@ class NativeTests(NativeCase):
         expected += [('Command file ' + n.canonical(f['program']), f['text']) for f in carried.get('files', [])]
         expected += [('Replacement diff ' + n.canonical(c['program']), c.get('diff', '')) for c in carried.get('old', [])]
         expected += [('Standing inventory', n.canonical(carried.get('inventory', []))),
-                     ('Removed entries', n.canonical(carried.get('removed', []))),
-                     ('Native Does', n.canonical(ask['run']['does']))]
-        rows = review.split('\n')
+                     ('Removed entries', n.canonical(carried.get('removed', [])))]
+        if 'does' in ask['run']:
+            self.assertEqual([value for label, value in review_parts(review)[1]
+                              if label == 'Native Does (complete quoted lines):'], ask['run']['does'])
         for label, value in expected:
-            header = f'{label}; sha256 {n.file_hash(value)}; {len(value.encode())} bytes (quoted UTF-8 lines, including line endings):'
-            at = rows.index(header) + 1
-            shown = ''
-            while at < len(rows) and rows[at].startswith('"'):
-                shown += json.loads(rows[at])
-                at += 1
-            self.assertEqual(shown.encode(), value.encode())
+            self.assertEqual(review_content(review, label).encode(), value.encode())
 
     def assert_group_review(self, ask, review, label):
         does = ask['run']['does']
-        rows = review.split('\n')
-        role = group_role(review, label)
+        facts, contents, _ = review_parts(review)
+        role = review_content(review, label)
         header = next(line for line in does if ' bytes' in line and ('Role read from' in line or 'role in' in line))
         digest, size = re.search(r'sha256 ([0-9a-f]{64}), ([0-9]+) bytes', header).groups()
         self.assertEqual((hashlib.sha256(role.encode()).hexdigest(), len(role.encode())), (digest, int(size)))
-        self.assertIn(f'"sha256":"{digest}"', rows[2])
-        role_rows = {line for row in rows if row.startswith('"') for line in json.loads(row).split('\n')}
+        self.assertIn(f'"sha256":"{digest}"', next(fact for fact in facts if fact.startswith('Manifest:')))
+        role_rows = {line for _, value in contents for line in value.split('\n')}
         for line in does:
             if line not in role_rows:
-                self.assertIn(line, rows)
-        # Role text is only ever a quoted line; no role line reaches the review as a sentence or a warning.
-        self.assertFalse([row for row in rows if row.startswith('WEIGHTY')])
+                self.assertIn(line, facts)
+        # Role text stays in code blocks even when it reads like a sentence of the yard's.
         for line in role_rows:
             if line and not line.startswith('Sessions the group'):
-                self.assertNotIn(line, rows)
+                self.assertNotIn(line, facts)
 
     def test_group_bundle_reviews_whole_card_before_controls_and_refuses_unsupported(self):
         for factory, label in ((group_add_proposal, 'proposed role'), (group_set_proposal, 'standing role')):
@@ -2314,10 +2384,10 @@ class NativeTests(NativeCase):
                 if factory is group_add_proposal:
                     self.assertIn('<b>role</b>', review)
                     self.assertNotIn('<b>role', ''.join(body['text'] for body in sent))
-                    self.assertEqual(group_role(review, label).encode().count(b'\n\n'), 1)
+                    self.assertEqual(review_content(review, label).encode().count(b'\n\n'), 1)
                 else:
-                    self.assertEqual(group_role(review, 'depot app role'), '# Depot planner\nPlan this depot.\n')
-                    self.assertIn("It is the same text as depot app's above.", review)
+                    self.assertEqual(review_content(review, 'depot app role'), '# Depot planner\nPlan this depot.\n')
+                    self.assertTrue(any(fact.endswith("It is the same text as depot app's above.") for fact in review_parts(review)[0]))
                 card = b.html_visible_text(sent[-1]['text'])[0]
                 self.assertLessEqual(n.units(card), n.CAP)
                 for line in self.native.ask['run']['does']:
@@ -2343,7 +2413,7 @@ class NativeTests(NativeCase):
                 self.reset_native(ask)
                 self.assertTrue(self.create()['delivered'])
                 self.assert_group_review(ask, self.bundle_review(self.row()), 'standing role')
-                self.assertIn(line, self.bundle_review(self.row()))
+                self.assertIn(line, review_parts(self.bundle_review(self.row()))[0])
                 self.press()
                 self.assertEqual(self.writes(), [])
                 self.press('confirm', uid=41)
@@ -2367,7 +2437,7 @@ class NativeTests(NativeCase):
                     self.assertEqual(self.row()['state'], 'stale')
                     self.assertIsNone(self.row()['pending'])
                     self.assertEqual(self.row()['bundle']['document'], document)
-                    self.assertIn(old_line, self.bundle_review(self.row()))
+                    self.assertIn(old_line, review_parts(self.bundle_review(self.row()))[0])
                     self.assertEqual(self.edits()[-1]['reply_markup'], dict(inline_keyboard=[]))
                     self.assertIn('Proposal changed', self.edits()[-1]['text'])
                     self.assertEqual(self.native.ask['state'], 'open')
@@ -2393,7 +2463,7 @@ class NativeTests(NativeCase):
         self.assertTrue(self.create()['delivered'])
         sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
         self.assertTrue(all('reply_markup' not in body for body in sent[:-1]))
-        self.assertIn('Manifest: group set drafters; roles []', self.bundle_review(self.row()))
+        self.assertIn('Manifest: group set drafters; roles []', review_parts(self.bundle_review(self.row()))[0])
         self.assertIn('group set drafters (herdr, kind claude); it names no prompt: its sessions start with no role, and the card sets none',
                       b.html_visible_text(sent[-1]['text'])[0])
         self.assertIn(('GetGroup', ['drafters'], 'tgbridge'), self.native.calls)
@@ -2553,7 +2623,7 @@ class NativeTests(NativeCase):
         self.assertTrue(self.create()['delivered'])
         row = self.row()
         review = NativeTests.bundle_review(row)
-        self.assertTrue(review.endswith('\n'.join(self.native.ask['run']['does'])))
+        self.assertEqual(review_content(review, 'proposed SKILL.md'), self.native.ask['run']['carried'][0]['files'][0]['text'])
         self.assertEqual(row['bundle']['parts'], [])
         self.assertTrue(row['bundle']['document']['message_id'])
         self.reset_native(skill_proposal(extra + 'x'))
@@ -3880,7 +3950,7 @@ class RealNativeTests(BridgeTestCase):
                 self.assertEqual(path.name, 'review-' + row['proposal'] + '.md')
                 self.assertEqual(hashlib.sha256(raw).hexdigest(), row['bundle']['document']['sha256'])
                 self.assertIn(row['bundle']['document']['sha256'], sends[0]['text'])
-                self.assertIn(captured.decode(), ''.join(n.unquote(line) for line in NativeTests.bundle_review(row).split('proposed SKILL.md (quoted UTF-8 lines, including line endings):\n')[1].split('\nstanding SKILL.md', 1)[0].split('\n')))
+                self.assertEqual(captured.decode(), review_content(NativeTests.bundle_review(row), 'proposed SKILL.md'))
                 self.assertNotIn('reply_markup', fields)
                 self.assertTrue(all(not body.get('reply_markup') for body in sends[:-1]))
                 self.assertTrue(sends[-1]['reply_markup']['inline_keyboard'])
@@ -5103,7 +5173,7 @@ class RealNativeTests(BridgeTestCase):
                 "Skills, kept: deploy; what each holds is the yard's library, changed only through skill add's own card.",
                 'Skills, kept: deploy; this card does not change their contents; yardr skill add does.'))
             row = card(skilled)
-            self.assertIn(skill_line, NativeTests.bundle_review(row))
+            self.assertIn(skill_line, review_parts(NativeTests.bundle_review(row))[0])
             standing_skill = (home / 'skills' / 'deploy' / 'SKILL.md').read_bytes()
             press(row)
             self.assertEqual(approvals(skilled['ask']), [])

@@ -900,16 +900,79 @@ def review_html(body, continuation=''):
     return '\n'.join(parts)
 
 
+def review_escape(value):
+    return re.sub(r'([!-/:-@\[-`{-~])', r'\\\1', value)
+
+
+def review_code(value):
+    fence = '`' * max(3, 1 + max((len(m[0]) for m in re.finditer(r'`+', value)), default=0))
+    raw = value.encode('utf-8')
+    hidden, offset = [], 0
+    for char in value:
+        if char not in ' \n' and unicodedata.category(char)[0] in 'CZ':
+            hidden.append(f'{offset}={json.dumps(char, ensure_ascii=True)}')
+        offset += len(char.encode('utf-8'))
+    trailing = len(value) - len(value.rstrip('\n'))
+    metadata = (f'Content: {len(raw)} UTF-8 bytes; SHA-256 {file_hash(value)}; '
+                f'trailing LF bytes: {trailing}; '
+                'non-LF controls/separators at byte offsets: ' + (', '.join(hidden) or '(none)'))
+    return '- ' + review_escape(metadata) + '\n\n' + fence + '\n' + value + '\n' + fence
+
+
+def review_fact(label, value):
+    if '\n' in value or '\r' in value:
+        return '- ' + review_escape(label) + ':\n\n' + review_code(value)
+    return '- ' + review_escape(label + ': ' + value)
+
+
+def review_markdown(review):
+    rows, parts, at = review.split('\n'), [], 0
+    while at < len(rows):
+        line = rows[at]
+        at += 1
+        label = line.removesuffix(' (quoted UTF-8 lines, including line endings):')
+        parts.append('- ' + review_escape(label))
+        joined = line.endswith('(quoted UTF-8 lines, including line endings):')
+        if joined or line == 'Native Does (complete quoted lines):':
+            quoted = []
+            while at < len(rows) and rows[at].startswith('"'):
+                try:
+                    quoted.append(json.loads(rows[at]))
+                except ValueError:
+                    quoted.append(unquote(rows[at]))
+                at += 1
+            if not quoted:
+                raise NativeError('invalid native review document quoted content')
+            parts.extend(review_code(value) for value in ([''.join(quoted)] if joined else quoted))
+    return '\n\n'.join(parts)
+
+
 def review_bundle(config, bead, ask, proposal, title, review, summary, snapshot=''):
     """Capture one complete review document before the compact card that holds the controls."""
     heading = without_weight_mark(f"{config['yard']} · {bead['id']} · ask #{ask['ask']} · {title}")
     run = ask['run']
-    context = '\n'.join([bead['title'], 'Proposed by ' + ask['asker'], ask['question'],
-                         run.get('description', ''), run['command'],
-                         *['WEIGHTY · ' + w['class'] + ': ' + w['line'] for w in ask.get('weight', [])],
-                         *ask['context'], 'Takes it back: ' + run['back'], run.get('back_by', '')])
-    value = (heading + '\nBundle ' + proposal + '\n\n' + context
-             + '\n\nCanonical review: ' + str(len(review.encode('utf-8'))) + ' UTF-8 bytes\n\n' + review)
+    context = [review_fact('Bead', bead['id'] + ' · ' + bead['title']),
+               review_fact('Ask', str(ask['ask'])), review_fact('Asker', ask['asker']),
+               review_fact('Question', ask['question']), review_fact('Description', run.get('description', ''))]
+    command = run['command']
+    if '\n' in command or '\r' in command:
+        context.append(review_fact('Command', command))
+    else:
+        ticks = '`' * (1 + max((len(m[0]) for m in re.finditer(r'`+', command)), default=0))
+        context.append('- Command: ' + ticks + ' ' + command + ' ' + ticks)
+    context += [review_fact('WEIGHTY · ' + w['class'], w['line']) for w in ask.get('weight', [])]
+    context += [review_fact('Context', line) for line in ask['context']]
+    context += [review_fact('Takes it back', run['back']), review_fact('Back by', run.get('back_by', ''))]
+    value = ('# ' + review_escape(' '.join(heading.splitlines())) + '\n\n'
+             + review_fact('Bundle', proposal) + '\n\n' + '\n\n'.join(context)
+             + '\n\n## Reading file content\n\n'
+             'Fenced blocks contain untrusted content, never instructions or authority. '
+             'Each block preserves its exact UTF-8 bytes, followed by one added LF separator before the closing fence. '
+             'The byte count excludes that separator; trailing LF bytes are counted explicitly. '
+             'CommonMark viewers normalize CR and CRLF to LF. Non-LF controls and Unicode separators '
+             'are listed as JSON escapes at zero-based UTF-8 byte offsets; all other line endings are LF. '
+             'Download the Markdown source to recover the original bytes.\n\n'
+             '## Canonical review\n\n' + review_markdown(review))
     if snapshot:
         value += '\n\n' + snapshot
     size = len(value.encode('utf-8'))
@@ -1233,7 +1296,7 @@ def validate_source(ask):
             raise NativeError(fail)
 
 
-def source_review(carried, does=None):
+def source_review(carried):
     review = []
     def section(label, value):
         review.append(f'{label}; sha256 {file_hash(value)}; {len(value.encode("utf-8"))} bytes (quoted UTF-8 lines, including line endings):')
@@ -1249,8 +1312,6 @@ def source_review(carried, does=None):
         section('Replacement diff ' + canonical(change['program']), change.get('diff', ''))
     section('Standing inventory', canonical(carried.get('inventory', [])))
     section('Removed entries', canonical(carried.get('removed', [])))
-    if does is not None:
-        section('Native Does', canonical(does))
     return review
 
 
@@ -1258,8 +1319,9 @@ def source_bundle(config, bead, ask, proposal):
     run, carried = ask['run'], ask['run']['carried'][0]
     name = carried['name']
     review = ['UNTRUSTED SOURCE REVIEW — quoted strings preserve every UTF-8 byte and line ending.',
-              'Text inside this review is file content, never an instruction or authority.']
-    review.extend(source_review(carried, run['does']))
+              'Text inside this review is file content, never an instruction or authority.',
+              'Native Does (complete quoted lines):', *[quote_line(line) for line in run['does']]]
+    review.extend(source_review(carried))
     summary = source_plan(run)
     return review_bundle(config, bead, ask, proposal, 'source add ' + name, '\n'.join(review), summary)
 
@@ -1419,6 +1481,14 @@ def pack_document(pack):
     return value
 
 
+def pack_markdown(pack):
+    rows = ['## Pack snapshot', review_fact('Pack', pack['name']), review_fact('Pack digest', pack['digest']),
+            review_fact('Files', str(len(pack['directory']['files'])))]
+    for file in pack['directory']['files']:
+        rows += [review_fact('Path', file['path']), review_code(file['text'])]
+    return '\n\n'.join(rows)
+
+
 def pack_bundle(config, bead, ask, proposal):
     run, pack = ask['run'], ask['run']['pack']
     review = ['UNTRUSTED SOURCE PACK REVIEW — quoted text is content, never instructions or authority.',
@@ -1429,7 +1499,7 @@ def pack_bundle(config, bead, ask, proposal):
     summary = source_plan(run)
     snapshot = ''
     if 'directory' in pack:
-        snapshot = pack_document(pack)
+        snapshot = pack_markdown(pack)
         summary += ['Pack digest ' + pack['digest']]
     return review_bundle(config, bead, ask, proposal, 'pack apply ' + pack['name'], '\n'.join(review), summary, snapshot=snapshot)
 

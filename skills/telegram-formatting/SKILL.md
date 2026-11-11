@@ -5,7 +5,14 @@ description: Write or send Telegram messages through the yard's bridge with repl
 
 # Telegram messages and formatting
 
-The yard's bridge reaches the operator's private chat as `tgbridge` (`YARDR.md` and
+Use the Telegram source your `yardr prime` lists for this crew (for example
+`tgbridge` or `tgsecretary`); replace `<source>` below with that name. When
+answering a delivery, `yardr reply <seq>` selects its source automatically.
+If prime lists several Telegram sources, match the delivery or this crew’s
+subscription; the chat id alone cannot distinguish two bots. Ask the
+coordinator if the destination is unclear.
+
+The selected bridge reaches the operator's private chat (`YARDR.md` and
 `bridge/OPERATIONS.md` in the pack repository). An inbound message is a delivery: the operator's word.
 The inbox keeps 500 characters; when it ends in `…`, read it whole with `yardr thread show <seq>`.
 
@@ -35,7 +42,7 @@ yardr reply <seq> "<the answer>"
 
 ## Post
 
-`yardr reply` needs only your source credential. Each `yardr call tgbridge <call>` needs a per-call grant
+`yardr reply` needs only your source credential. Each `yardr call <source> <call>` needs a per-call grant
 from the operator (`yardr/SETUP.md`, steps 8, 12, 13 and 14). Without that grant, answer with
 `yardr reply` or ask the coordinator. Updates are capped per caller (10 an hour by default), so prefer one
 well-shaped message over several.
@@ -44,7 +51,7 @@ For anything that is not a plain answer (a message nobody asked for, a message i
 silent update, a file by path):
 
 ```sh
-yardr call tgbridge send text="$(cat body.html)" topic=<topic> format=html silent=true --json
+yardr call <source> send text="$(cat body.html)" topic=<topic> format=html silent=true --json
 ```
 
 - `topic=<name>` posts into a configured topic by its exact name (`general` is the main chat); use
@@ -98,7 +105,7 @@ A reaction is a one-emoji acknowledgement on the operator's message, not a reply
   last message:
 
   ```sh
-  yardr call tgbridge react reaction=done topic=<the topic, or general>
+  yardr call <source> react reaction=done topic=<the topic, or general>
   ```
 
   `message_id=<id>` reacts on one message instead. With neither, the reaction goes on the operator's last
@@ -158,7 +165,7 @@ packaging/activation policy.
 A pinned slot keeps one bot message at the top of the chat, edited in place. Update it with the whole current text:
 
 ```sh
-yardr call tgbridge pin slot=waiting text="$(cat list.html)" format=html --json
+yardr call <source> pin slot=waiting text="$(cat list.html)" format=html --json
 ```
 
 - A slot name is `[a-z0-9_-]{1,32}`; one pinned message per slot.
@@ -166,11 +173,11 @@ yardr call tgbridge pin slot=waiting text="$(cat list.html)" format=html --json
   changes nothing (`changed: false`), new text edits the message.
 - The first update sends the message silently and pins it; edits never notify. Each new pin adds one
   "pinned" line to the chat, so keep the slot pinned with an empty-state text rather than unpinning it
-  when nothing is left; `yardr call tgbridge unpin slot=<slot>` removes it.
+  when nothing is left; `yardr call <source> unpin slot=<slot>` removes it.
 - On a failure (`delivered: false`) run the same call again later: an edit or a pin is attempted again,
   and a message the user deleted is replaced by a new pinned one. One slot never sends a second message
   for an unconfirmed first send (`Telegram send not confirmed: ambiguous_...`): rerunning keeps failing
   until the chat is checked. Ask the operator whether the message arrived (delete it if so), then run
-  `yardr call tgbridge unpin slot=<slot>`, and the next update sends anew.
+  `yardr call <source> unpin slot=<slot>`, and the next update sends anew.
 
 The source file and symbol behind each claim in this skill are in `citations.md`, next to this file; open it only when you need them.

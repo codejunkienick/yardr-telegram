@@ -5,9 +5,11 @@ hook and a loopback API. It owns the delivery ledger, topics, asks, pins,
 reactions, typing, transcription and the `[[command]]` add-on protocol;
 the yard owns conversations and crew routing.
 
-One bridge serves one yard with one bot. A second yard gets its own bot,
-settings file, native home/operator/socket, state directory, port, unit
-and independently versioned install root. No instance routes through another.
+One bridge serves one bot in one yard. A yard may have several bridges, one
+per crew member's bot, sharing its home and socket. Each has a distinct source
+and hook name, settings, bot credentials, state directory, port, unit and
+independently versioned install root. A second yard has its own home/socket.
+See [Add a second crew member's bot](yardr/SETUP.md#add-a-second-crew-members-bot).
 
 ## Why the bridge stays a process of its own
 
@@ -124,7 +126,8 @@ subscribe: yardr subscribe yardmaster tgbridge --scope all --where type=message 
   `[[topic]] crew` overrides it for one topic.
 - `[yardr]`: `hook_url` (`http://127.0.0.1:<port>/hooks/<name>`,
   loopback only), `hook_secret_file` (owner-only), `source` (default
-  `tgbridge`, the declared source's name, for printed lines).
+  `tgbridge`, the declared source's name, used by the rendered installation
+  pack and printed lines).
 
 Legacy `city`, `agent`, `gc_base_url` and `gc_api_token_file` settings
 are refused with the replacement key named. A legacy `[[topic]] agent`
@@ -185,6 +188,29 @@ requirements are:
 - The bridge's message log (`/v1/read`) holds each conversation's full text.
 - Binding topics: a topic is routed by a subscription in the yard, made
   once by the operator from the line `topics` prints.
+- Two private bots see the same user's chat id. Conversation IDs stay
+  `<chat_id>` (or `<chat_id>:topic:<thread_id>`); the yard scopes threads,
+  subscriptions and replies by **source + thread**, not by thread alone.
+  `yardr reply <seq>` selects the delivery's source and its bridge endpoint.
+  Inbound delivery IDs additionally include the **bot id**. Each bridge's
+  ledger, delivery keys, pins, message log, offsets and transcript jobs live
+  under its own **state_dir**; never share or copy a first bot's state into
+  a second bot's installation.
+- Menus are set through each bot's token with Telegram's chat scope. Quota
+  notices watch `crew` (or the topic's crew), using each bridge's ledger.
+  `[[command]]` registrations and their handler settings belong to one
+  installation; external handlers must select the intended yard and crew
+  and keep their own mutable state separate. The transcription FIFO alone
+  is intentionally shared per host user; input files and results stay in
+  the submitting bridge's state directory.
+- Native asks are **yard-wide**, without a destination-source field.
+  Keep `[yardr] home`/`operator` and native grants on the primary bridge
+  alone. A secondary omits both keys: it does no native discovery or
+  reconciliation, offers no `/decide`, and refuses `run_ask`, `ask_card` and
+  `siding_card`. It can still use ordinary chat questions and buttons.
+  Source/bot bindings protect existing native callbacks; they do not route
+  a yard-wide ask to a particular bot. Enabling native keys on both bots
+  would expose the same operator queue on both and is outside this setup.
 
 ## Native operator approvals
 

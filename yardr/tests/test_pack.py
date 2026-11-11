@@ -223,6 +223,19 @@ class RenderedPackTests(unittest.TestCase):
                 self.assertIn(bases, new)
                 digests.add(self.b['pack_digest'](rendered))
         self.assertEqual(len(digests), 2)
+        # Two bots in one yard need distinct pack/source registrations too.
+        for source in ('tgsecretary', 'MyBot', 'My.Bot_2-3', 'N' * 64, 'on', '123'):
+            with self.subTest(source=source):
+                named = self.b['render_pack'](PACK, 28942, source)
+                quoted = json.dumps(source)
+                self.assertIn(f'name: {quoted}\n'.encode(), named['tgbridge.yaml'][0])
+                self.assertIn(f'name: {quoted}\n'.encode(), named['pack.yaml'][0])
+                self.assertIn(f'  {quoted}:\n    declaration: tgbridge.yaml'.encode(), named['pack.yaml'][0])
+                self.assertIn(b'base: http://127.0.0.1:28942\n', named['tgbridge.yaml'][0])
+                self.assertIn(bases, named['tgbridge.yaml'][0])
+                self.assertEqual(named['tgbridge/thread'], release['tgbridge/thread'])
+                self.assertEqual(named['tgbridge/normalize'], release['tgbridge/normalize'])
+                self.assertNotIn(self.b['pack_digest'](named), digests)
 
     def test_a_declaration_without_exactly_one_base_line_is_refused_and_nothing_is_written(self):
         line = 'base: http://127.0.0.1:8941\n'
@@ -239,6 +252,19 @@ class RenderedPackTests(unittest.TestCase):
                 self.assertEqual(str(caught.exception), f'{copy}/tgbridge.yaml must have exactly one top-level '
                                  f'line base: http://127.0.0.1:<port>; {has}')
                 self.assertFalse(root.exists())
+        for filename, marker in (('pack.yaml', 'name: tgbridge\n'),
+                                 ('pack.yaml', '  tgbridge:\n'), ('tgbridge.yaml', 'name: tgbridge\n')):
+            with self.subTest(filename=filename, marker=marker), tempfile.TemporaryDirectory() as tmp:
+                copy, root = Path(tmp) / 'yardr', Path(tmp) / 'root'
+                shutil.copytree(PACK, copy, ignore=shutil.ignore_patterns('__pycache__'))
+                path = copy / filename
+                path.write_text(path.read_text().replace(marker, ''))
+                with self.assertRaisesRegex(ValueError, 'must name exactly one tgbridge source'):
+                    self.b['pack_plan'](root, copy, 18941, 'tgsecretary')
+                self.assertFalse(root.exists())
+        for invalid in ('bad/source', 'bad\nname', '.bad', '_bad', '-bad', 'two words', 'x' * 65, '', None, 7):
+            with self.subTest(source=invalid), self.assertRaisesRegex(ValueError, 'invalid installation source name'):
+                self.b['render_pack'](PACK, 18941, invalid)
 
     def test_a_link_in_the_release_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -291,12 +317,28 @@ class DeclarationTests(unittest.TestCase):
                     if server.poll() is not None or time.monotonic() > deadline:
                         self.fail('isolated pack-check server did not start')
                     time.sleep(.02)
-                setup = subprocess.run(command + ['settings', 'set', 'default_kind', 'codex'],
-                                       env=env, cwd=root, capture_output=True, text=True, timeout=20)
-                self.assertEqual(setup.returncode, 0, setup.stderr)
+                for setting, value in (('default_kind', 'codex'), ('operator', 'operator')):
+                    setup = subprocess.run(command + ['settings', 'set', setting, value],
+                                           env=env, cwd=root, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(setup.returncode, 0, setup.stderr)
                 result = subprocess.run(command + ['pack', 'check', str(PACK)], env=env, cwd=root,
                                         capture_output=True, text=True, timeout=60)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                b = runpy.run_path(str(BRIDGE))
+                client = b['run_asks'].YardSocketClient(home, 'operator')
+                for source in ('on', 'off', 'yes', 'no', 'true', 'false', 'null',
+                               '123', '0123', '0x10', '1e3', '1_000'):
+                    with self.subTest(source=source):
+                        rendered = root / source
+                        files = b['render_pack'](PACK, 18941, source)
+                        b['stage_pack'](files, rendered)
+                        for args in (['pack', 'check', str(rendered)], ['pack', 'apply', str(rendered), '--yes']):
+                            checked = subprocess.run(command + args, env=env, cwd=root,
+                                                     capture_output=True, text=True, timeout=60)
+                            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                        stored = client.call('GetSource', [source])
+                        self.assertEqual(stored['name'], source)
+                        self.assertEqual(stored['declaration'].encode(), files['tgbridge.yaml'][0])
                 self.check_attachment_sends(command, env, root)
             finally:
                 server.terminate()

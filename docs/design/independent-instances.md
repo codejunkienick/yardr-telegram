@@ -1,6 +1,6 @@
 # Independent bridge installations
 
-The decision record for running each yard's bridge as an installation of its
+The decision record for running each bot's bridge as an installation of its
 own. The operator's steps are in `yardr/SETUP.md` ("Move an existing bridge to
 its own installation"); the install transaction in detail is in
 `bridge/OPERATIONS.md` ("Install and launch") and the header of `install.sh`.
@@ -65,7 +65,7 @@ another.
   previous -> releases/<commit>
   bin/telegram-bridge    exec <python> <root>/current/bridge/bridge.py --settings <settings> "$@"
   bin/voice-transcribe   exec <python> -B <root>/current/transcriber/voice_transcribe.py "$@"
-  packs/<digest>/        a release's yardr/ with its base line naming the settings' port
+  packs/<digest>/        a release's yardr/ rendered for its source name and port
   pack -> packs/<digest>
   service.previous       the service file the install last replaced (mode 600)
 ```
@@ -156,8 +156,10 @@ file is that rollback.
 and stay until the operator deletes them (README.md, "Uninstall").
 
 **Source pack.** `install.sh` publishes `<root>/pack` on every install and
-rollback: the release's `yardr/` with only its one top-level `base:` line
-rewritten to the settings' port; the legacy `bases:` are byte-identical.
+rollback: the release's `yardr/` with its one top-level `base:` line
+rewritten to the settings' port. A non-default `[yardr] source` also changes
+the declaration name, manifest pack name and manifest source key; relative
+command paths stay intact inside each source. The legacy `bases:` are byte-identical.
 Generations are content-addressed under `packs/`, so a refused or failed
 publication keeps the previous pack. The yard re-applies it from there, which
 also moves the yard's recorded import origin off the checkout. An existing
@@ -171,6 +173,15 @@ source is deleted. Concurrent and interrupted installs keep or restore one
 consistent release, service file, launcher set and pack. Releases are never
 pruned automatically.
 
+Several bots may now share one yard's home/socket. The same-yard test uses
+distinct pack/source names, the same operator and chat/message IDs, separate
+bridge ledgers and real native hooks/RPC. It proves independent replies and
+readback, a replay after native accept but before cursor advance, per-ledger
+key conflicts and native refusal by the secondary. The primary alone keeps
+the optional native `home`/`operator` keys: native asks have no source
+destination and are not partitioned by a crew name. Both installations use
+the same bot lock directory; their bot-id lock files stay distinct.
+
 ## Host resources
 
 | Resource | Class | Now |
@@ -183,7 +194,9 @@ pruned automatically.
 | whisper.cpp build, models (about 600 MB), the GPU | host dependency | Shared and read-only at runtime. `transcriber/setup.sh` builds only what is missing and never overwrites a model. Not duplicated. |
 | `python3` (the settings' `python`), curl, ffmpeg, sha256sum, git (at install only), systemd `--user` or launchd | host dependency | Host packages, shared. |
 | The service-file directory and loopback ports | host dependency | A host namespace: unit names and ports are unique per settings file. |
-| Settings, token, secrets, `state_dir` (ledger, offset, message log), `lock_dir`, the yard home and its socket, the bot | per instance | Never shared. Install writes none of them, except to mint a missing secret. |
+| Settings, token, secrets, `state_dir` (ledger, offset, message log), the bot | per instance | Never shared. Install writes none of them, except to mint a missing secret. |
+| The yard home and socket | per yard | Shared by bridges serving that yard; native card authority is enabled on the primary alone. |
+| `lock_dir` | per host user | Shared by pollers; each bot id has a separate lock file, so a second local poller of that bot refuses. |
 
 After an install or rollback, on core `58e93b7f` or later a crew member
 (the yardmaster), a yard user or the operator repeats `yardr skill add`

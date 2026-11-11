@@ -179,9 +179,11 @@ class SettingsTests(unittest.TestCase):
                     b.load_settings(self.with_yardr(table))
                 self.assertTrue(str(caught.exception).startswith(line), str(caught.exception))
         self.assertEqual(b.load_settings(self.with_yardr(url + file)).config['yardr_source'], 'tgbridge')
-        settings = b.load_settings(self.with_yardr(url + file + 'source = "telegram-ops"\n'))
-        self.assertEqual(settings.config['yardr_source'], 'telegram-ops')
-        self.assertEqual(settings.config['hook_url'], 'http://127.0.0.1:8797/hooks/tgbridge')
+        for source in ('telegram-ops', 'MyBot', 'My.Bot_2-3', 'N' * 64):
+            with self.subTest(source=source):
+                settings = b.load_settings(self.with_yardr(url + file + f'source = "{source}"\n'))
+                self.assertEqual(settings.config['yardr_source'], source)
+                self.assertEqual(settings.config['hook_url'], 'http://127.0.0.1:8797/hooks/tgbridge')
 
     def test_the_hook_url_must_be_plain_http_on_loopback_at_a_hooks_path(self):
         line = ('settings: yardr.hook_url must be http://<loopback address>:<port>/hooks/<name>, '
@@ -1718,6 +1720,7 @@ class InstanceTests(unittest.TestCase):
     native yard home: nothing done to one changes another."""
 
     def setUp(self):
+        self.natives = {}
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.home = self.root / 'home'
         self.home.mkdir()
@@ -1744,6 +1747,7 @@ class InstanceTests(unittest.TestCase):
         yard_home = top / 'yard'
         yard_home.mkdir(mode=0o700)
         native = NativeSocket(yard_home)
+        self.natives[yard] = native
         self.addCleanup(native.close)
         path = write_settings(top, yard=f'"{yard}"', port=str(port), python=f'"{sys.executable}"')
         text = path.read_text().replace('[yardr]', f'[yardr]\nhome = "{yard_home}"\noperator = "pat"')
@@ -1765,6 +1769,7 @@ class InstanceTests(unittest.TestCase):
                               capture_output=True, text=True, timeout=60)
 
     def test_two_instances_stay_independent_through_upgrade_rollback_and_removal(self):
+        self.same_yard_instances()
         a_settings, a_root, a_unit = self.instance('alder', 998, 18941)
         b_settings, b_root, b_unit = self.instance('birch', 997, 18951)
         self.ok(self.run_install(a_settings))
@@ -1957,6 +1962,49 @@ class InstanceTests(unittest.TestCase):
         requests = (self.bin / 'requests.jsonl').read_text().splitlines()
         self.assertEqual(len(requests), 2)
         self.assertIn('<b>Offline</b> <code>&lt;b&gt;literal&lt;/b&gt;</code>', json.loads(requests[-1]))
+
+    def same_yard_instances(self):
+        a_settings, a_root, a_unit = self.instance('shared', 996, 18971)
+        b_settings, b_root, b_unit = self.instance('shared-secretary', 995, 18981)
+        # Preflight accepts two source identities on the very same native socket.
+        shared = self.root / 'shared/yard'
+        text = b_settings.read_text().replace(str(self.root / 'shared-secretary/yard'), str(shared))
+        text = text.replace('yard = "shared-secretary"', 'yard = "shared"\ncrew = "secretary"\nunit = "shared-secretary-telegram.service"')
+        text = text.replace('[yardr]', f'lock_dir = "{self.root / "shared/private"}"\n\n[yardr]')
+        text = text.replace('[yardr]', '[yardr]\nsource = "MyBot"').replace('/hooks/tgbridge', '/hooks/MyBot')
+        # The shared NativeSocket fixture maps both independent source identities.
+        native = self.natives['shared']
+        native.user['identities']['MyBot'] = {'id': '123', 'key': 'Pat'}
+        b_settings.write_text(text)
+        self.ok(self.run_install(a_settings))
+        before = tree_digest(a_root, a_unit, a_settings, self.root / 'shared/private', self.root / 'shared/state')
+        absent = tree_digest(b_root, b_unit, b_settings, self.root / 'shared-secretary/private')
+        out = self.ok(self.run_install(b_settings, '--dry-run'))
+        self.assertIn('ok    native yard socket and current operator identity', out)
+        self.assertEqual(tree_digest(b_root, b_unit, b_settings, self.root / 'shared-secretary/private'), absent)
+        # Only the primary owns native cards; the secondary's runtime has no native keys.
+        b_settings.write_text('\n'.join(line for line in text.split('\n')
+                                        if not line.startswith(('home =', 'operator ='))))
+        out = self.ok(self.run_install(b_settings))
+        self.assertIn(f'wrote pack {b_root}/pack (base http://127.0.0.1:18981)', out)
+        self.assertEqual(self.launch(b_root, 'check-install').returncode, 0)
+        self.assertIn('name: "MyBot"\n', (b_root / 'pack/tgbridge.yaml').read_text())
+        self.assertIn('name: "MyBot"\n', (b_root / 'pack/pack.yaml').read_text())
+        self.assertIn('  "MyBot":\n', (b_root / 'pack/pack.yaml').read_text())
+        first_pack = os.readlink(b_root / 'pack')
+        upgrade = self.root / 'shared-upgrade'
+        shutil.copytree(self.source, upgrade)
+        with (upgrade / 'yardr/SETUP.md').open('a') as stream:
+            stream.write('\nSynthetic second-source upgrade.\n')
+        commit_source(upgrade, self.home, 'update setup')
+        self.ok(self.run_install(b_settings, source=upgrade))
+        self.assertNotEqual(os.readlink(b_root / 'pack'), first_pack)
+        self.ok(self.run_install(b_settings, '--rollback', source=b_root / 'current'))
+        self.assertEqual(os.readlink(b_root / 'pack'), first_pack)
+        self.assertIn('name: "MyBot"\n', (b_root / 'pack/tgbridge.yaml').read_text())
+        self.assertEqual(tree_digest(a_root, a_unit, a_settings, self.root / 'shared/private', self.root / 'shared/state'), before)
+        print('Same-yard install: shared native socket preflight, second-source dry-run/install/check-install, '
+              'upgrade/rollback; primary files unchanged')
 
     def assert_pack(self, root, port):
         """root/pack is a generation under packs/ holding the current

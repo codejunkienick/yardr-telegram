@@ -3226,6 +3226,20 @@ class ConflictExitStatusTests(BridgeTestCase):
                             run_main(self, 'bridge.py', '--settings', str(settings), *argv)
                     self.assertEqual(ctx.exception.code, expected)
                     self.assertIn('another Telegram poller or webhook owns this bot', err.getvalue())
+            # A shared lock directory fences the same bot across state/settings files.
+            other = Path(root) / 'other'
+            other.mkdir()
+            duplicate = write_settings(other, lock_dir=f'"{Path(root) / "private"}"')
+            with (Path(root) / 'private/telegram-bot-999.lock').open('a') as lock:
+                b.fcntl.flock(lock, b.fcntl.LOCK_EX | b.fcntl.LOCK_NB)
+                with patch.object(b.Bridge, 'run') as run:
+                    with self.assertRaisesRegex(b.TransportError, 'another bridge already owns this bot'):
+                        run_main(self, 'bridge.py', '--settings', str(duplicate), 'run')
+                    run.assert_not_called()
+                duplicate.write_text(duplicate.read_text().replace('bot_id = 999', 'bot_id = 998'))
+                with patch.object(b.Bridge, 'run') as run, patch.object(b.signal, 'signal', lambda *a, **k: None):
+                    run_main(self, 'bridge.py', '--settings', str(duplicate), 'run')
+                    run.assert_called_once()
 
     def test_conflict_exit_status_is_a_run_only_flag_of_0_to_255(self):
         parser = b._build_parser()

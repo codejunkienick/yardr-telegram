@@ -16,8 +16,11 @@ running it, and the skills are an agent's writing guides. Where README.md or
 a skill differs from this guide, this guide is right and the other is the
 one to fix; where this guide differs from `bridge/bridge.py`, the code is.
 
-Every yard runs its own bridge process, with its own bot, from this one
-`bridge.py`, configured only by its own settings file. Below, `<repo>` is
+Every bot runs its own bridge process from this one `bridge.py`, configured
+only by its own settings file. Several bots may share a yard, with distinct
+sources and state directories; the primary alone enables native cards.
+See [the second-bot procedure](../yardr/SETUP.md#add-a-second-crew-members-bot).
+Below, `<repo>` is
 this repository's directory and `<settings>` that bridge's settings file.
 
 ## Terms
@@ -129,7 +132,8 @@ with no tracked changes; its HEAD is the release. The root defaults to
   --settings <settings>`) and `bin/voice-transcribe`;
 - `service.previous`: the service file the install last replaced;
 - `packs/<digest>/` and `pack`: a release's `yardr/` with its `base` line
-  naming the settings' port, and the link to the active release's one, which
+  naming the settings' port and its pack/source names taken from `[yardr]
+  source`, and the link to the active release's one, which
   the yard applies (`yardr/SETUP.md`, step 5).
 
 Use `<root>/bin/telegram-bridge` for the operator commands below; it supplies

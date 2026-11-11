@@ -1,9 +1,16 @@
 ---
 name: telegram-attachments
-description: Files to and from the operator's private Telegram chat through the yard's bridge - photos, videos and documents with yardr reply --file or yardr call tgbridge send attachment=, voice and round video notes with send attachment_kind=, and screenshot albums. Covers kinds, size and caption limits, text fallback, and inbound saved, skipped and unavailable files. Use when a Telegram message carries a file, or before sending a screenshot, video, document, voice note or video note to the chat.
+description: Files to and from the operator's private Telegram chat through the yard's bridge - photos, videos and documents with yardr reply --file or yardr call <source> send attachment=, voice and round video notes with send attachment_kind=, and screenshot albums. Covers kinds, size and caption limits, text fallback, and inbound saved, skipped and unavailable files. Use when a Telegram message carries a file, or before sending a screenshot, video, document, voice note or video note to the chat.
 ---
 
 # Telegram attachments
+
+Use the Telegram source your `yardr prime` lists for this crew (for example
+`tgbridge` or `tgsecretary`); replace `<source>` below with that name. When
+answering a delivery, `yardr reply <seq>` selects its source automatically.
+If prime lists several Telegram sources, match the delivery or this crew’s
+subscription; the chat id alone cannot distinguish two bots. Ask the
+coordinator if the destination is unclear.
 
 ## Send a file
 
@@ -17,15 +24,15 @@ yardr reply <seq> "<caption>" --file /absolute/path.png
 Posting one (optionally into a topic):
 
 ```sh
-yardr call tgbridge send text="<caption>" attachment=/absolute/path.png topic=<name> --json
+yardr call <source> send text="<caption>" attachment=/absolute/path.png topic=<name> --json
 ```
 
 Both routes infer photo, video or document from the extension. For a real
 voice note or captionless round video note, set `attachment_kind` on `send`:
 
 ```sh
-yardr call tgbridge send text="<caption>" attachment=/absolute/note.ogg attachment_kind=voice --json
-yardr call tgbridge send text="" attachment=/absolute/circle.mp4 attachment_kind=video_note --json
+yardr call <source> send text="<caption>" attachment=/absolute/note.ogg attachment_kind=voice --json
+yardr call <source> send text="" attachment=/absolute/circle.mp4 attachment_kind=video_note --json
 ```
 
 On the host itself, outside a crew member's pane, the bridge's own command

@@ -7,7 +7,7 @@
 #   current, previous   links to releases/<commit>
 #   bin/telegram-bridge, bin/voice-transcribe   launchers with the settings' python
 #   service.previous    the service file this install last replaced
-#   packs/<digest>/     a release's yardr/ with its base line naming the settings' port
+#   packs/<digest>/     a release's yardr/ rendered for the settings' source and port
 #   pack                a link to the active release's packs/<digest>, for yardr pack apply
 # An install, in order:
 # 1. checks python and the settings, and the contract: the instance runs,
@@ -90,6 +90,7 @@ try:
     print("root=" + shlex.quote(str(root)))
     print("python=" + shlex.quote(str(s.python)))
     print("port=" + str(s.port))
+    print("source=" + shlex.quote(s.config["yardr_source"]))
     print("queue_dir=" + shlex.quote(str(s.queue_dir) if s.transcribe else ""))
     print("secret=" + shlex.quote(str(s.callback_secret_file)))
     print("hook_secret=" + shlex.quote(str(s.hook_secret_file)))
@@ -151,12 +152,12 @@ if [ "$mode" = install ]; then pack_from=$pack/yardr; else pack_from=$release/ya
 python3 -B -c '
 import runpy, sys
 try:
-    runpy.run_path(sys.argv[1])["pack_plan"](sys.argv[2], sys.argv[3], int(sys.argv[4]))
+    runpy.run_path(sys.argv[1])["pack_plan"](sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5])
 except ValueError as error:
     sys.exit(f"install.sh: {error}")
 except OSError as error:
     sys.exit(f"install.sh: cannot read {error.filename}: {error.strerror}")
-' "$bridge" "$root" "$pack_from" "$port"
+' "$bridge" "$root" "$pack_from" "$port" "$source"
 
 # Stage the commit under the root; it becomes the release only once its own
 # check-install passes. An existing release of the commit is reused only
@@ -325,7 +326,7 @@ for path, (text, mode) in files.items():
 try:
     # A reused release another activation took back is renamed from this stage, which holds its files.
     release = Path(stage) if stage and not (root / target).exists() else Path(bridge).parents[1]
-    pack_files, generation, pack_state = r['pack_plan'](root, release / 'yardr', s.port)
+    pack_files, generation, pack_state = r['pack_plan'](root, release / 'yardr', s.port, s.config['yardr_source'])
 except (ValueError, OSError) as error:
     sys.exit(f'install.sh: {error}; not activated')
 pack_line = f'pack {root / "pack"} (base http://127.0.0.1:{s.port})'

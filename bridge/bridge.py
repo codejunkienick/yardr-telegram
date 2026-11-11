@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Private Telegram transport for a yardr yard; no agent or decision engine.
 
-One process per yard, configured only by that yard's settings file
+One process per bot, configured only by that installation's settings file
 (settings.example.toml in this pack); nothing yard-specific lives here."""
 import argparse
 import contextlib
@@ -5740,10 +5740,13 @@ def pack_tree(directory):
     return files
 
 
-def render_pack(directory, port):
+def render_pack(directory, port, source='tgbridge'):
     """pack_tree of a release's yardr/ directory with the one top-level line
-    base: http://127.0.0.1:<n> of its declaration naming port instead, every
-    other byte as it is; ValueError when there is not exactly one such line."""
+    base: http://127.0.0.1:<n> of its declaration naming port instead. A named
+    source also renames the manifest's pack and source as YAML strings,
+    keeping the relative command paths and legacy bases intact."""
+    if not isinstance(source, str) or not NAME_RE.fullmatch(source):
+        raise ValueError('invalid installation source name')
     files = pack_tree(directory)
     declaration = Path(directory) / PACK_DECLARATION
     if PACK_DECLARATION not in files:
@@ -5756,6 +5759,18 @@ def render_pack(directory, port):
         raise ValueError(f'{declaration} must have exactly one top-level line base: http://127.0.0.1:<port>; {has}')
     lines[found[0]] = f'base: http://127.0.0.1:{port}'.encode() + lines[found[0]][len(lines[found[0]].rstrip(b'\n')):]
     files[PACK_DECLARATION] = (b''.join(lines), mode)
+    if source != 'tgbridge':
+        quoted = json.dumps(source)
+        for relative, old, new in (
+                (PACK_DECLARATION, b'name: tgbridge\n', f'name: {quoted}\n'.encode()),
+                ('pack.yaml', b'name: tgbridge\n', f'name: {quoted}\n'.encode()),
+                ('pack.yaml', b'  tgbridge:\n', f'  {quoted}:\n'.encode())):
+            if relative not in files:
+                raise ValueError(f'{Path(directory) / relative} is missing')
+            content, mode = files[relative]
+            if content.splitlines(keepends=True).count(old) != 1:
+                raise ValueError(f'{Path(directory) / relative} must name exactly one tgbridge source')
+            files[relative] = (b''.join(new if line == old else line for line in content.splitlines(keepends=True)), mode)
     return files
 
 
@@ -5767,12 +5782,12 @@ def pack_digest(files):
     return digest.hexdigest()[:16]
 
 
-def pack_plan(root, directory, port):
+def pack_plan(root, directory, port, source='tgbridge'):
     """(files, generation, what) for the instance's pack rendered from the
     release's yardr/ directory: the generation is root-relative, and what is
     current, link (the generation is there, the link is not on it) or write;
     ValueError on what install.sh refuses."""
-    files, root = render_pack(directory, port), Path(root)
+    files, root = render_pack(directory, port, source), Path(root)
     generation = 'packs/' + pack_digest(files)
     link, path = root / 'pack', root / generation
     if (root / 'packs').is_symlink():

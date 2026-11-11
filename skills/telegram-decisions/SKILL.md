@@ -5,6 +5,13 @@ description: Choose and publish Telegram asks and decisions, approvals, run card
 
 # Telegram asks and native cards
 
+Use the Telegram source your `yardr prime` lists for this crew (for example
+`tgbridge` or `tgsecretary`); replace `<source>` below with that name. When
+answering a delivery, `yardr reply <seq>` selects its source automatically.
+If prime lists several Telegram sources, match the delivery or this crew’s
+subscription; the chat id alone cannot distinguish two bots. Ask the
+coordinator if the destination is unclear.
+
 ## Choose the decision path
 
 | Need | Use |
@@ -35,7 +42,7 @@ ask has its own message, key and keyboard. Choose the key first, then save JSON 
 ```
 
 ```sh
-yardr call tgbridge send key=ask-demo-2026-10-25-01 text="$(cat question.html)" \
+yardr call <source> send key=ask-demo-2026-10-25-01 text="$(cat question.html)" \
   keyboard="$(cat rows.json)" topic=<the topic, or general> --json
 ```
 
@@ -56,7 +63,7 @@ yardr call tgbridge send key=ask-demo-2026-10-25-01 text="$(cat question.html)" 
   close the open chat ask with the decision made, in one line:
 
   ```sh
-  yardr call tgbridge ask_close message_id=<id> decision="<the decision, one line>" --json
+  yardr call <source> ask_close message_id=<id> decision="<the decision, one line>" --json
   ```
 
   `<id>` is the send's `message_id`; use `ask_key=<key>` instead if only its key
@@ -69,6 +76,11 @@ The send returns a delivery receipt (`delivered`, `message_id`, or a refusal
 See [Asks](../../bridge/OPERATIONS.md#asks) for keyboard and answer mechanics.
 
 ## Native cards
+
+Native asks belong to the whole yard. Only the primary bridge has native
+settings and grants in a yard with several bots; a secondary crew bot uses
+chat asks above or the yard cards. Use the source explicitly granted the
+native call, and ask the coordinator if it is absent from your prime.
 
 The bridge reads canonical content from its configured yard. Never supply an
 actor, command, weight or approval text to a native card call. Only the paired
@@ -100,7 +112,7 @@ Create a canonical ask with `yardr bead ask` (or use its generated manual-stage
 ask), then publish its returned number:
 
 ```sh
-yardr call tgbridge ask_card bead=<bead> ask=<number> topic=<topic> key=<stable-key> --json
+yardr call <source> ask_card bead=<bead> ask=<number> topic=<topic> key=<stable-key> --json
 ```
 
 It presents the complete question, context, choices, consequences, recommendation
@@ -113,7 +125,7 @@ for human input, stale cards, conflicts and delivery recovery.
 ### Native run and skill approval
 
 ```sh
-yardr call tgbridge run_ask bead=<bead> ask=<ask-number> topic=<topic> key=<stable-key> --json
+yardr call <source> run_ask bead=<bead> ask=<ask-number> topic=<topic> key=<stable-key> --json
 ```
 
 Supported proposals and their mechanics:
@@ -142,7 +154,7 @@ The linked sections hold the human's review and confirmation procedure.
 ### Siding status and guarded actions
 
 ```sh
-yardr call tgbridge siding_card depot=<depot> key=<stable-key> --json
+yardr call <source> siding_card depot=<depot> key=<stable-key> --json
 ```
 
 Add `flow=<flow> stage=<stage> group=<group>` to narrow discovery and
@@ -159,7 +171,7 @@ for selection replies, expiry, withdrawal, outcomes and recovery.
 ### Refresh a native outcome
 
 ```sh
-yardr call tgbridge ask_close ask_key=<original-key> decision=refresh --json
+yardr call <source> ask_close ask_key=<original-key> decision=refresh --json
 ```
 
 Or select by `message_id=<id>`. Native close ignores the required decision text

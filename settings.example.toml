@@ -11,7 +11,7 @@ state_dir = "~/.local/state/example-telegram"   # ledger, offset, message log, i
 port = 8941                                 # the yard API's loopback port, unique per bridge on the host; the source's base
 token_file = "~/.config/example-telegram/telegram-bot-token"
 callback_secret_file = "~/.config/example-telegram/callback-secret"   # the yard API's secret: the source's TGBRIDGE_SECRET; install.sh mints it
-# lock_dir = "~/.config/example-telegram"   # default: the token file's directory
+# lock_dir = "~/.config/example-telegram"   # default: token directory; use the same lock_dir for all bots on this host
 # unit = "example-telegram.service"         # default: <yard>-telegram.service; on macOS the launchd label's source (this name without its .service suffix)
 # python = "/usr/bin/python3"               # must be Python 3.11 or later; on macOS e.g. "/opt/homebrew/bin/python3"
 user_display_name = "Alex"                  # how inbound messages name the paired user
@@ -25,7 +25,8 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 # (the yard's hook_addr) and the hook's name, and the secret the hook was
 # added with (yardr hook add tgbridge --source tgbridge --secret-file <it>).
 [yardr]
-# Optional native cards: set BOTH after installing tgbridge and binding the operator.
+# Optional native cards: set BOTH on the primary bridge after binding the operator.
+# A second crew bot in the same yard omits home/operator; native asks are yard-wide.
 # Single-file skill snapshots also require the core captured-snapshot capability
 # (a79f6f8162c8 or compatible); complete review parts precede weighted confirmation.
 # Herdr group add/set cards need core fc7375cf5ad4 or compatible, and nothing more here.
@@ -34,7 +35,7 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 # operator = "operator"             # current operator user mapped to bot.user_id
 hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
 hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints it
-# source = "tgbridge"                       # the declared source's name, in printed lines
+# source = "tgbridge"                       # the rendered pack/source name; unique per bridge in a yard
 
 [bot]
 bot_id = 1000000001                         # numeric: getMe's id

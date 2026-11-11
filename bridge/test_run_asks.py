@@ -4104,7 +4104,8 @@ class RealNativeTests(BridgeTestCase):
                     if rendered_host != host:
                         self.assertNotEqual(upgraded['keyed_host'], rendered_host)
             # Real CLI -> RPC reservation -> declared thread -> API -> Telegram fake.
-            port = self.start_callback_server()
+            markdown_bridge = self.bridge
+            port = self.start_callback_server(markdown_bridge)
             markdown_pack = Path(rendered('markdown-pack', port))
             for filename in ('pack.yaml', 'tgbridge.yaml'):
                 path = markdown_pack / filename
@@ -4221,9 +4222,140 @@ class RealNativeTests(BridgeTestCase):
             self.exercise_source_packs(root, home, cli, client)
             self.exercise_source_adds(root, home, cli, client)
             self.exercise_weighty_confirmations(cli, client)
+            self.exercise_same_yard_bots(root, cli, client, 'http://' + match[1], env, markdown_bridge)
         finally:
             server.terminate()
             server.wait(timeout=10)
+
+    def exercise_same_yard_bots(self, root, cli, client, hook_base, env, primary):
+        cli('source', 'set', 'mdbridge', 'updates_per_hour=300')
+        primary_source = client.call('GetSource', ['mdbridge'])
+        state = root / 'secretary-state'
+        state.mkdir(mode=0o700)
+        store = b.Store(state / 'telegram-bridge.sqlite3', 0)
+        config = {key: value for key, value in primary.config.items()
+                  if key not in ('yardr_home', 'yardr_operator', 'yardr_socket')}
+        config.update(bot_id=998, account_id='secretary_bot', agent='secretary', yardr_source='tgsecretary',
+                      hook_url=hook_base + '/hooks/tgsecretary', hook_secret='secretary-hook')
+        sent = []
+
+        def telegram(url, body, *args, **kwargs):
+            sent.append((url, body))
+            if url.endswith('/getUpdates'):
+                return 200, dict(ok=True, result=[])
+            if url.endswith(('/pinChatMessage', '/unpinChatMessage')):
+                return 200, dict(ok=True, result=True)
+            return 200, dict(ok=True, result=dict(message_id=77, chat=dict(id=123)))
+
+        second = b.Bridge(config, store, 'SECOND_TOKEN', 'SECOND_CAPABILITY', request=telegram, state_dir=state)
+        port = self.start_callback_server(second)
+        pack = root / 'secretary-pack'
+        pack.mkdir()
+        b.stage_pack(b.render_pack(Path(__file__).resolve().parents[1] / 'yardr', port, 'tgsecretary'), pack)
+        credential = root / 'secretary.env'
+        credential.write_text('TGBRIDGE_SECRET=SECOND_CAPABILITY\n')
+        credential.chmod(0o600)
+        cli('pack', 'check', str(pack))
+        cli('pack', 'apply', str(pack), '--yes', '--source-env', 'tgsecretary=' + str(credential))
+        cli('source', 'set', 'tgsecretary', 'updates_per_hour=300')
+        cli('user', 'identity', 'pat', '--source', 'tgsecretary', '--id', '123')
+        cli('crew', 'add', 'secretary', '--dir', str(root), '--set', 'kind=codex',
+            '--set', 'env_file=' + str(credential))
+        for crew, source in (('writer', 'mdbridge'), ('secretary', 'tgsecretary')):
+            cli('subscribe', crew, source, '--scope', 'all', '--where', 'type=message')
+        secret = root / 'secretary-hook.secret'
+        secret.write_text('secretary-hook')
+        secret.chmod(0o600)
+        cli('hook', 'add', 'tgsecretary', '--source', 'tgsecretary', '--secret-file', str(secret))
+        # The secondary cannot discover or post the primary's real native asks.
+        before = len(sent)
+        second.poll_once()
+        self.assertEqual(second.run_asks.rows(), [])
+        for call, fields in (('run_ask', ['bead=sample-1', 'ask=7']),
+                             ('ask_card', ['bead=sample-1', 'ask=7']), ('siding_card', ['depot=synthetic'])):
+            refused = json.loads(cli('call', 'tgsecretary', call, *fields, 'key=second-' + call, '--json'))
+            self.assertFalse(refused['delivered'])
+            self.assertIn('not_configured', refused['reason'])
+        self.assertEqual(len(sent), before + 1)  # only getUpdates
+        seqs = []
+        for bridge, source, crew, outgoing, capability in (
+                (primary, 'mdbridge', 'writer', self.calls, 'CAPABILITY'),
+                (second, 'tgsecretary', 'secretary', sent, 'SECOND_CAPABILITY')):
+            # reply uses the calling crew process's credential, not the source key.
+            env['TGBRIDGE_SECRET'] = capability
+            bridge.reactions['on_accept'], bridge.typing_seconds = False, 0
+            saved_request, saved_url, saved_secret = bridge.request, bridge.hook_url, bridge.hook_secret
+            accepted, interrupted = [], [False]
+
+            def request(url, body, *args, **kwargs):
+                if url != bridge.hook_url:
+                    if url.endswith(('/pinChatMessage', '/unpinChatMessage')):
+                        outgoing.append((url, body))
+                        return 200, dict(ok=True, result=True)
+                    return saved_request(url, body, *args, **kwargs)
+                req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                             headers=kwargs['headers'] | {'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    result = json.load(response)
+                accepted.append(result['seq'])
+                if not interrupted[0]:
+                    interrupted[0] = True
+                    raise b.TransportError('synthetic crash after native accept')
+                return 200, result
+
+            bridge.request, bridge.hook_url = request, hook_base + '/hooks/' + source
+            bridge.hook_secret = 'synthetic-hook' if source == 'mdbridge' else 'secretary-hook'
+            try:
+                update = dict(update_id=95000, message=dict(message_id=95000, text=source + ' inbound',
+                              chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)}))
+                offset = bridge.store.offset()
+                with self.assertRaisesRegex(b.TransportError, 'synthetic crash'):
+                    bridge.drain([update])
+                self.assertEqual(bridge.store.offset(), offset)
+                bridge.drain([update])
+                self.assertEqual(accepted[0], accepted[1])
+                self.assertEqual(bridge.store.offset(), 95001)
+                seqs.append(accepted[0])
+                cli('reply', str(accepted[0]), '--crew', crew, source + ' reply')
+                self.assertEqual([body for url, body in outgoing if url.endswith('/sendMessage')][-1]['text'], source + ' reply')
+                sent_before = len(outgoing)
+                for repeat in range(2):
+                    result = json.loads(cli('call', source, 'send', 'text=' + source + ' keyed',
+                                            'key=same-two-bot-key', '--json'))
+                    self.assertTrue(result['delivered'])
+                self.assertEqual(len(outgoing), sent_before + 1)
+                conflict = json.loads(cli('call', source, 'send', 'text=changed', 'key=same-two-bot-key', '--json'))
+                self.assertFalse(conflict['delivered'])
+                pinned = json.loads(cli('call', source, 'pin', 'slot=two-bots', 'text=' + source + ' pin', '--json'))
+                self.assertTrue(pinned['delivered'], pinned)
+                full = cli('thread', 'show', str(accepted[0]))
+                self.assertIn(source + ' inbound', full)
+                messages = bridge.store.read_messages('123', 200)
+                self.assertEqual(sum(m['text'] == source + ' inbound' for m in messages), 1)
+                self.assertTrue(any(m['text'] == source + ' reply' for m in messages))
+                self.assertFalse(any(m['text'] == ('tgsecretary' if source == 'mdbridge' else 'mdbridge') + ' inbound' for m in messages))
+            finally:
+                bridge.request, bridge.hook_url, bridge.hook_secret = saved_request, saved_url, saved_secret
+        self.assertNotEqual(*seqs)
+        for crew, source in (('writer', 'mdbridge'), ('secretary', 'tgsecretary')):
+            threads = client.call('Threads', [crew])
+            self.assertIn((source, '123'), [(t['source'], t['thread']) for t in threads])
+            other_source = 'tgsecretary' if source == 'mdbridge' else 'mdbridge'
+            self.assertNotIn((other_source, '123'), [(t['source'], t['thread']) for t in threads])
+        primary_pin = primary.store.pin_state('two-bots')
+        self.assertIsNotNone(primary_pin['message_id'])
+        self.assertTrue(json.loads(cli('call', 'tgsecretary', 'unpin', 'slot=two-bots', '--json'))['delivered'])
+        self.assertEqual(primary.store.pin_state('two-bots'), primary_pin)
+        self.assertIsNone(store.pin_state('two-bots')['message_id'])
+        self.assertEqual(client.call('GetSource', ['mdbridge']), primary_source)
+        req = urllib.request.Request(f'http://127.0.0.1:{port}/v1/send', data=b'{}',
+                                     headers={'Authorization': 'Bearer CAPABILITY', 'Content-Type': 'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(refused.exception.code, 403)
+        refused.exception.close()
+        print('Same-yard native store: same chat/message/key, distinct sources/bots/ledgers, replies/readback, '
+              'accept-before-cursor crash replay, key/secret conflicts, secondary native refusal')
 
     def exercise_weighty_confirmations(self, cli, client):
         cli('bead', 'create', 'Synthetic confirmation boundary', '--id', 'confirm-1')

@@ -7,10 +7,13 @@ capability baselines, not public install targets. The required core changes
 must be published and accepted before this bridge is published; applying
 the pack also requires `thread.formats` support when native keys are omitted.
 
-One bridge serves one yard with one bot. The examples use a fictional yard
+One bridge serves one bot in one yard; several bots may serve the same yard.
+The examples use a fictional yard
 `example`, operator `operator`, timezone `UTC`, bridge port 8941 and hook
 port 8795. Choose your own names, home, ports and timezone; every instance
-has its own settings, bot credentials, state, socket, unit and install root.
+has its own settings, bot credentials, state, source/hook, port, unit and
+install root. Bridges in one yard share that yard's home/socket. See
+[Add a second crew member's bot](#add-a-second-crew-members-bot).
 Run every `yardr` command with that yard's `YARDR_HOME` explicitly set:
 
 ```sh
@@ -655,6 +658,173 @@ cards first; old code cannot process their callbacks or source call. Siding
 rows occupy a separate table in the same ledger so older ordinary/run card
 readers remain compatible. Builder validation performs no live install,
 source apply, grant, restart or Telegram action.
+
+## Add a second crew member's bot
+
+These steps are the operator's, after the source change has landed. They add
+an existing crew member `secretary` to the same fictional yard `example`.
+They do not change the primary chat's topics or crew role. Use a distinct
+bot, source/hook `tgsecretary`, settings, secrets, state, port, unit and
+install root. Keep the same `YARDR_HOME` and existing loopback hook listener:
+
+```sh
+export YARDR_HOME="/absolute/path/to/your/yard"
+yardr settings get hook_addr
+yardr crew show secretary
+```
+
+1. In @BotFather run `/newbot`, create the secretary's bot, then open its
+   private chat and send `/start`. Leave topic mode off for a plain chat.
+   Save its new token without placing it in an argument or shell history:
+
+   ```sh
+   install -d -m 700 ~/.config/example-secretary-telegram
+   install -m 600 /dev/stdin ~/.config/example-secretary-telegram/telegram-bot-token
+   ```
+
+   Paste, Enter, Ctrl-D. Use the token-file `getMe`/pairing script in
+   README.md, "Adopt in a yard", with this new directory. It must report a
+   different `bot_id`/username from the first bot. The same human's
+   `user_id` and private `chat_id` will be identical on both bots; that is
+   expected. Never use a first bot's token for a second poller, and do not
+   apply core's webhook `telegram` pack to either bot.
+
+2. Write a new owner-only settings file from `settings.example.toml`.
+   Example (replace the numeric bot id and paired ids with the new bot's
+   observed values, and 8795 with the existing hook listener's port):
+
+   ```toml
+   yard = "example"
+   crew = "secretary"
+   unit = "example-secretary-telegram.service"
+   state_dir = "~/.local/state/example-secretary-telegram"
+   port = 8943
+   token_file = "~/.config/example-secretary-telegram/telegram-bot-token"
+   callback_secret_file = "~/.config/example-secretary-telegram/callback-secret"
+   lock_dir = "~/.config/example-telegram"
+   user_display_name = "Operator"
+   timezone = "UTC"
+
+   [yardr]
+   source = "tgsecretary"
+   hook_url = "http://127.0.0.1:8795/hooks/tgsecretary"
+   hook_secret_file = "~/.config/example-secretary-telegram/hook-secret"
+   # Omit home and operator: the primary bridge alone owns native cards.
+
+   [bot]
+   bot_id = 1000000003
+   user_id = 1000000002
+   chat_id = 1000000002
+   account_id = "example_secretary_bot"
+   ```
+
+   `lock_dir` must be the first installation's existing lock directory
+   (its token directory by default), shared by every poller on this host.
+   Its `telegram-bot-<bot_id>.lock` separates different bots and refuses
+   another local poller of the same bot even with a different state
+   directory. Telegram 409 conflicts also stop a competing external poller
+   or webhook. Distinct lock directories cannot provide that local fence.
+   Pick an unused bridge port and unique unit/root; do not copy the first
+   bot's ledger, offset, pins or topic rows. Start with no `[[topic]]` and
+   no `[auto_topics]`. Add transcription or commands only with this
+   instance's paths and crew; external handlers must keep their own state
+   separate. Both instances may intentionally use the host's transcription
+   FIFO, models and GPU.
+
+3. From the clean landed checkout, dry-run first, then install and inspect:
+
+   ```sh
+   chmod 600 ~/.config/example-secretary-telegram/telegram-bridge.toml
+   install -d -m 700 ~/.local/state/example-secretary-telegram
+   <checkout>/install.sh --settings ~/.config/example-secretary-telegram/telegram-bridge.toml --dry-run
+   <checkout>/install.sh --settings ~/.config/example-secretary-telegram/telegram-bridge.toml
+   ~/.local/share/yardr-telegram/example-secretary-telegram/bin/telegram-bridge check-install
+   ```
+
+   Installation does not activate a bot or restart either unit. The rendered
+   `<root>/pack/pack.yaml` names pack/source `tgsecretary`; its declaration
+   has the second port. Internal `tgbridge.yaml` and `tgbridge/` filenames
+   stay relative to this source, so their names do not collide. The default
+   `tgbridge` pack and legacy base aliases keep their meaning. New instances
+   use the rendered default base, never the primary's legacy alias.
+
+4. Declare the new source and hook in the same yard, with their own secrets:
+
+   ```sh
+   yardr pack apply ~/.local/share/yardr-telegram/example-secretary-telegram/pack
+   sed 's/^/TGBRIDGE_SECRET=/' ~/.config/example-secretary-telegram/callback-secret | yardr source key tgsecretary
+   yardr source set tgsecretary calls_per_hour=600
+   yardr source set tgsecretary updates_per_hour=300
+   yardr hook add tgsecretary --source tgsecretary \
+     --secret-file ~/.config/example-secretary-telegram/hook-secret --unknown ignore
+   yardr user identity <operator> --source tgsecretary --id <bot.user_id>
+   ```
+
+   The header names remain `X-Tgbridge-Secret` and `TGBRIDGE_SECRET`;
+   the hook and source records scope their independent values. Leave the
+   primary source/hook/credential unchanged. Do not configure the operator's
+   optional `tell` address on both sources unless duplicate inbox notices
+   are wanted.
+
+5. Give only this bot's callback credential to the secretary's environment.
+   `yardr crew show secretary` names its existing `env_file`; preserve its
+   other entries and replace any old `TGBRIDGE_SECRET` assignment. If it has
+   no env file, choose a new owner-only file and set
+   `yardr crew set secretary env_file=<secretary-env-file>`. With no old
+   assignment remaining, append the new one without displaying it:
+
+   ```sh
+   umask 077
+   sed 's/^/TGBRIDGE_SECRET=/' ~/.config/example-secretary-telegram/callback-secret >> <secretary-env-file>
+   chmod 600 <secretary-env-file>
+   for call in send react pin unpin ask_close; do yardr source grant tgsecretary $call --crew secretary; done
+   yardr subscribe secretary tgsecretary --scope all --where type=message
+   yardr crew restart secretary
+   ```
+
+   A `yardr reply` uses its caller's environment. A crew process carries
+   the credential for its own bot; a shell operator testing replies must
+   likewise supply that bot's credential. Do not reuse the yardmaster's
+   environment for the secretary. Call grants and subscriptions are scoped
+   to the new source. Do not grant `run_ask`, `ask_card` or `siding_card`
+   on the second source. Native asks have no bot destination: enabling
+   `home`/`operator` on both would expose the same yard-wide queue, including
+   `/decide`, on both. The secondary omits them and refuses native calls,
+   while ordinary chat asks/buttons remain available. Keep native approval
+   publishing on the primary source.
+
+6. Activate only the second bot, then check both paths:
+
+   ```sh
+   B=~/.local/share/yardr-telegram/example-secretary-telegram/bin/telegram-bridge
+   $B probe
+   systemctl --user daemon-reload
+   systemctl --user enable --now example-secretary-telegram.service
+   $B set-commands
+   yardr source check tgsecretary
+   yardr source check tgbridge
+   ```
+
+   Send distinct text to each bot, then a voice note if transcription is
+   enabled. Check that only the intended crew receives each delivery;
+   `yardr thread show <seq>` and `yardr reply <seq> "<answer>"` use that
+   delivery's source even though both thread IDs equal the human's chat id.
+   The menu is bot-token scoped, pins and quota notices use that bot's
+   ledger, and its quota watcher names `crew = "secretary"`. `/decide` stays
+   on the primary. Copy the shared Telegram skills from a landed install
+   using [The crew's skills](#the-crews-skills-shell), then assign them to
+   the secretary; their `<source>` examples follow the reader's prime.
+
+For an upgrade, dry-run/install with this same second `--settings`, restart
+only its unit, then reapply its `<root>/pack`. Roll back its code with
+`<root>/current/install.sh --settings <second-settings> --rollback`, restart
+only the second unit and reapply that pack. On the first activation there
+is no previous release: `systemctl --user disable --now
+example-secretary-telegram.service` stops that new bot; retain its ledger
+and credentials for recovery. The primary keeps running throughout.
+Landing source code, installing a release and activating it are separate
+steps. Activation, BotFather changes, credentials, grants and subscriptions
+remain the operator's; builders prove this procedure in temporary homes.
 
 ## Move an existing bridge to its own installation
 

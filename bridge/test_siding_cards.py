@@ -6,12 +6,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import time
 from unittest.mock import patch
 
 from test_bridge import BridgeTestCase, write_settings
 from test_run_asks import NativeCase
 import bridge as b
+import testyardr
 
 n = b.run_asks
 SIDING_METHODS = ('SidingProposal', 'SidingOutcome', 'FoldSidingExpected', 'ReleaseSidingExpected')
@@ -168,24 +168,15 @@ class SidingRetryTests(NativeCase):
 class SidingTests(BridgeTestCase):
     def setUp(self):
         super().setUp()
-        binary = shutil.which('yardr')
+        binary = testyardr.binary()
         if binary is None:
             self.skipTest('yardr required for isolated siding integration')
         self.root = Path(self.tmp.name)
-        self.home = self.root / 'yard'
-        self.home.mkdir(mode=0o700)
-        self.env = dict(HOME=str(self.root), XDG_CONFIG_HOME=str(self.root / 'config'),
-                        XDG_STATE_HOME=str(self.root / 'state'), XDG_CACHE_HOME=str(self.root / 'cache'),
-                        PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin', USER='pat')
-        self.command = [binary, '--home', str(self.home), '--actor', 'pat']
-        self.server = subprocess.Popen(self.command + ['server', 'run'], env=self.env, cwd=self.root,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.addCleanup(self.stop_server)
-        deadline = time.monotonic() + 15
-        while not (self.home / 'yard.sock').exists():
-            if self.server.poll() is not None or time.monotonic() > deadline:
-                self.fail('isolated siding core did not start')
-            time.sleep(.02)
+        server, self.home, self.command, self.env = testyardr.start(self.root, binary)
+        self.addCleanup(testyardr.stop, server)
+        # The guarded siding calls exist only on a pre-alignment build.
+        if testyardr.aligned(self.home):
+            self.skipTest('needs a pre-alignment yardr build (guarded siding calls); this build is aligned or upstream')
         self.client = n.YardSocketClient(self.home, 'tgbridge')
         self.cli('settings', 'set', 'operator', 'pat')
         self.cli('settings', 'set', 'default_kind', 'codex')
@@ -222,14 +213,6 @@ class SidingTests(BridgeTestCase):
             return base(url, body, *args, **kwargs)
         self.telegram = telegram
         self.restart()
-
-    def stop_server(self):
-        self.server.terminate()
-        try:
-            self.server.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.server.kill()
-            self.server.wait(timeout=10)
 
     def cli(self, *args):
         result = subprocess.run(self.command + list(args), env=self.env, cwd=self.root, capture_output=True, text=True, timeout=20)

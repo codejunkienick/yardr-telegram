@@ -2157,6 +2157,16 @@ A service that listens only on demand may otherwise find its port
 taken by a test run. With `TEST_PORT_RANGE` unset, tests bind port 0
 and the kernel picks a port.
 
+The native integration tests (`bridge/test_run_asks.py`, `bridge/test_siding_cards.py`)
+start an isolated yardr server from the build named by `TGBRIDGE_TEST_YARDR` (an
+absolute path), else the `yardr` on `PATH`; with neither, they skip. Each test says
+which build it needs. The source-limit and trust-weight store test runs on every
+build. The guarded siding, local group card and skill-add store tests need a
+pre-alignment build and skip, with their reason, on an aligned or upstream one. A
+build is read from its running server, not its version: `POST /call/SidingProposal`
+with `{}` answering `no such method SidingProposal` means aligned or upstream, and
+any other answer means pre-alignment (`bridge/testyardr.py`).
+
 Wire references: `YARDR.md` (the hook's body and the yard API) and
 `<repo>/yardr/tgbridge.yaml` (the source the yard reaches the bridge
 through).

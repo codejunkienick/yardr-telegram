@@ -19,6 +19,7 @@ import time
 import unittest
 import urllib.request
 import testports
+import testyardr
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -3548,100 +3549,29 @@ class NativeSettingsTests(unittest.TestCase):
 
 
 class RealNativeTests(BridgeTestCase):
-    def test_real_native_store_records_answer_and_applies_stored_operation_once(self):
-        binary = shutil.which('yardr')
+    def test_real_native_source_limit_and_trust_weight_apply_once(self):
+        binary = testyardr.binary()
         if binary is None:
             self.skipTest('yardr binary required for isolated native integration')
         root = Path(self.tmp.name)
-        home = root / 'yard'
-        home.mkdir(mode=0o700)
-        env = dict(HOME=str(root), XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'),
-                   PATH=str(root) + ':/usr/local/bin:/usr/bin:/bin', USER='pat')
-        command = [binary, '--home', str(home), '--actor', 'pat']
-        server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.addCleanup(lambda: server.poll() is None and server.kill())
+        server, home, command, env = testyardr.start(root, binary)
         try:
-            client = n.YardSocketClient(home, 'tgbridge')
-            deadline = time.monotonic() + 15
-            while not (home / 'yard.sock').exists():
-                if server.poll() is not None or time.monotonic() > deadline:
-                    self.fail('isolated native server did not start')
-                time.sleep(.02)
+            # No skill add card here, so every build runs it.
+            self.exercise_source_limit_and_trust(binary, root, home, command, env)
+        finally:
+            testyardr.stop(server)
 
-            def cli(*args):
-                result = subprocess.run(command + list(args), env=env, cwd=root, text=True, capture_output=True, timeout=20)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                return result.stdout
-
-            cli('settings', 'set', 'operator', 'pat')
-            cli('settings', 'set', 'default_kind', 'codex')
-            source = root / 'synthetic.yaml'
-            source.write_text('name: tgbridge\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [/bin/false]\n')
-            cli('source', 'add', str(source))
-            cli('pack', 'check', str(Path(__file__).resolve().parents[1] / 'yardr'))
-            cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
-            cli('bead', 'create', 'Synthetic operation', '--id', 'sample-1')
-            # Lowering a limit is a routine real native operation with no network side effect.
-            cli('source', 'set', 'tgbridge', 'calls_per_hour=120')
-            cli('user', 'add', 'proposer')
-            result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'sample-1',
-                                     'Lower the test limit?', '--to', 'pat', '--context', 'Synthetic isolated integration',
-                                     '--run', 'source set tgbridge calls_per_hour=60'], env=env, cwd=root, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            ask = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][0]
-            self.assertEqual(ask.get('weight', []), [])
-            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
-            ids = iter(range(77, 300))
-            def telegram(url, body, *args, **kwargs):
-                status, response = self.transport(url, body, *args, **kwargs)
-                if url.endswith('/sendMessage'):
-                    response['result']['message_id'] = next(ids)
-                elif url.endswith('/editMessageText'):
-                    response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
-                return status, response
-            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
-            self.bridge.hook_secret = None
-            self.documents = []
-            self.sent_count = 10000
-            self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
-            self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='real-native'))['delivered'])
-            row = self.bridge.run_asks.rows()[0]
-            query = dict(id='real-callback', data=f"runask:{row['id']}:approve", **{'from': dict(id=123, is_bot=False)},
-                         message=dict(message_id=77, chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))
-            self.bridge.inbound(dict(update_id=40, callback_query=query))
-            stored = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][0]
-            self.assertEqual(stored['state'], 'answered')
-            self.assertEqual(stored['ran']['argv'], ['source', 'set', 'tgbridge', 'calls_per_hour=60'])
-            self.assertIn('60', stored['ran']['result'])
-            self.assertEqual(client.call('GetSource', ['tgbridge'])['calls_per_hour'], 60)
-            events = client.call('EventsOfKind', ['source_set', 100])
-            applied = [event for event in events if event['data'].get('approved', {}).get('ask') == ask['ask']]
-            self.assertEqual(len(applied), 1)
-            self.bridge.inbound(dict(update_id=41, callback_query=query))
-            after = client.call('EventsOfKind', ['source_set', 100])
-            self.assertEqual(after, events)
-            # The same real store supplies the structured trust weight for a second, fresh proposal.
-            result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'sample-1',
-                                     'Add the synthetic member?', '--to', 'pat', '--context', 'Isolated trust gate',
-                                     '--run', 'user add synthetic-member'], env=env, cwd=root, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            strong = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
-            self.assertTrue(strong['weight'])
-            self.assertEqual(strong['weight'][0]['class'], 'trust')
-            self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=strong['ask'], key='real-weight'))['delivered'])
-            row = next(row for row in self.bridge.run_asks.rows() if row['ask'] == strong['ask'])
-            query['data'] = f"runask:{row['id']}:approve"
-            query['message']['message_id'] = row['message_id']
-            self.bridge.inbound(dict(update_id=42, callback_query=query))
-            self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]['state'], 'open')
-            query['data'] = f"runask:{row['id']}:confirm:{self.bridge.run_asks.get(row['id'])['pending']['nonce']}"
-            self.bridge.inbound(dict(update_id=43, callback_query=query))
-            settled = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
-            self.assertEqual(settled['state'], 'answered')
-            self.assertEqual(settled['ran']['argv'], ['user', 'add', 'synthetic-member'])
-            self.assertEqual(client.call('GetUser', {'name': 'synthetic-member'})['name'], 'synthetic-member')
-            additions = client.call('EventsOfKind', ['user_added', 100])
-            self.assertEqual(len([event for event in additions if event['data'].get('approved', {}).get('ask') == strong['ask']]), 1)
+    def test_real_native_store_records_answer_and_applies_stored_operation_once(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        server, home, command, env = testyardr.start(root, binary)
+        try:
+            # Its skill add card runs `yardr skill add`, which no aligned or upstream build has.
+            if testyardr.aligned(home):
+                self.skipTest('needs a pre-alignment yardr build (its skill add card); this build is aligned or upstream')
+            client, cli, telegram = self.exercise_source_limit_and_trust(binary, root, home, command, env)
 
             def publish_decision(bead_id, ask):
                 receipt = self.bridge.api_ask_card(dict(bead=bead_id, ask=ask['ask'], key=f"ordinary-{ask['ask']}"))
@@ -4294,8 +4224,86 @@ class RealNativeTests(BridgeTestCase):
             self.exercise_weighty_confirmations(cli, client)
             self.exercise_same_yard_bots(root, cli, client, 'http://' + match[1], env, markdown_bridge)
         finally:
-            server.terminate()
-            server.wait(timeout=10)
+            testyardr.stop(server)
+
+    def exercise_source_limit_and_trust(self, binary, root, home, command, env):
+        client = n.YardSocketClient(home, 'tgbridge')
+
+        def cli(*args):
+            result = subprocess.run(command + list(args), env=env, cwd=root, text=True, capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+        cli('settings', 'set', 'operator', 'pat')
+        cli('settings', 'set', 'default_kind', 'codex')
+        source = root / 'synthetic.yaml'
+        source.write_text('name: tgbridge\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [/bin/false]\n')
+        cli('source', 'add', str(source))
+        cli('pack', 'check', str(Path(__file__).resolve().parents[1] / 'yardr'))
+        cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+        cli('bead', 'create', 'Synthetic operation', '--id', 'sample-1')
+        # Lowering a limit is a routine real native operation with no network side effect.
+        cli('source', 'set', 'tgbridge', 'calls_per_hour=120')
+        cli('user', 'add', 'proposer')
+        result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'sample-1',
+                                 'Lower the test limit?', '--to', 'pat', '--context', 'Synthetic isolated integration',
+                                 '--run', 'source set tgbridge calls_per_hour=60'], env=env, cwd=root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ask = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][0]
+        self.assertEqual(ask.get('weight', []), [])
+        self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+        ids = iter(range(77, 300))
+        def telegram(url, body, *args, **kwargs):
+            status, response = self.transport(url, body, *args, **kwargs)
+            if url.endswith('/sendMessage'):
+                response['result']['message_id'] = next(ids)
+            elif url.endswith('/editMessageText'):
+                response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
+            return status, response
+        self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+        self.bridge.hook_secret = None
+        self.documents = []
+        self.sent_count = 10000
+        self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
+        self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='real-native'))['delivered'])
+        row = self.bridge.run_asks.rows()[0]
+        query = dict(id='real-callback', data=f"runask:{row['id']}:approve", **{'from': dict(id=123, is_bot=False)},
+                     message=dict(message_id=77, chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}))
+        self.bridge.inbound(dict(update_id=40, callback_query=query))
+        stored = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][0]
+        self.assertEqual(stored['state'], 'answered')
+        self.assertEqual(stored['ran']['argv'], ['source', 'set', 'tgbridge', 'calls_per_hour=60'])
+        self.assertIn('60', stored['ran']['result'])
+        self.assertEqual(client.call('GetSource', ['tgbridge'])['calls_per_hour'], 60)
+        events = client.call('EventsOfKind', ['source_set', 100])
+        applied = [event for event in events if event['data'].get('approved', {}).get('ask') == ask['ask']]
+        self.assertEqual(len(applied), 1)
+        self.bridge.inbound(dict(update_id=41, callback_query=query))
+        after = client.call('EventsOfKind', ['source_set', 100])
+        self.assertEqual(after, events)
+        # The same real store supplies the structured trust weight for a second, fresh proposal.
+        result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'sample-1',
+                                 'Add the synthetic member?', '--to', 'pat', '--context', 'Isolated trust gate',
+                                 '--run', 'user add synthetic-member'], env=env, cwd=root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        strong = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+        self.assertTrue(strong['weight'])
+        self.assertEqual(strong['weight'][0]['class'], 'trust')
+        self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=strong['ask'], key='real-weight'))['delivered'])
+        row = next(row for row in self.bridge.run_asks.rows() if row['ask'] == strong['ask'])
+        query['data'] = f"runask:{row['id']}:approve"
+        query['message']['message_id'] = row['message_id']
+        self.bridge.inbound(dict(update_id=42, callback_query=query))
+        self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]['state'], 'open')
+        query['data'] = f"runask:{row['id']}:confirm:{self.bridge.run_asks.get(row['id'])['pending']['nonce']}"
+        self.bridge.inbound(dict(update_id=43, callback_query=query))
+        settled = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+        self.assertEqual(settled['state'], 'answered')
+        self.assertEqual(settled['ran']['argv'], ['user', 'add', 'synthetic-member'])
+        self.assertEqual(client.call('GetUser', {'name': 'synthetic-member'})['name'], 'synthetic-member')
+        additions = client.call('EventsOfKind', ['user_added', 100])
+        self.assertEqual(len([event for event in additions if event['data'].get('approved', {}).get('ask') == strong['ask']]), 1)
+        return client, cli, telegram
 
     def exercise_same_yard_bots(self, root, cli, client, hook_base, env, primary):
         cli('source', 'set', 'mdbridge', 'updates_per_hour=300')
@@ -4954,23 +4962,16 @@ class RealNativeTests(BridgeTestCase):
                 self.assertEqual(len(events), 1)
 
     def test_real_native_group_add_and_set_apply_once_after_confirm(self):
-        binary = shutil.which('yardr')
+        binary = testyardr.binary()
         if binary is None:
             self.skipTest('yardr binary required for isolated native integration')
         root = Path(self.tmp.name)
-        home = root / 'yard'
-        home.mkdir(mode=0o700)
-        env = dict(HOME=str(root), XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'),
-                   PATH=str(root) + ':/usr/local/bin:/usr/bin:/bin', USER='pat')
-        command = [binary, '--home', str(home), '--actor', 'pat']
-        server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server, home, command, env = testyardr.start(root, binary)
         try:
+            # The local group card shapes exist only on a pre-alignment build.
+            if testyardr.aligned(home):
+                self.skipTest('needs a pre-alignment yardr build (local group card shapes); this build is aligned or upstream')
             client = n.YardSocketClient(home, 'tgbridge')
-            deadline = time.monotonic() + 15
-            while not (home / 'yard.sock').exists():
-                if server.poll() is not None or time.monotonic() > deadline:
-                    self.fail('isolated native server did not start')
-                time.sleep(.02)
 
             def cli(*args, actor='pat'):
                 result = subprocess.run([binary, '--home', str(home), '--actor', actor, *args], env=env, cwd=root,
@@ -5203,5 +5204,4 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(group('testers')['runner'], 'manual')
             self.assertEqual(approvals(stale['ask']), [])
         finally:
-            server.terminate()
-            server.wait(timeout=10)
+            testyardr.stop(server)

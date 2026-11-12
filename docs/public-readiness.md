@@ -160,8 +160,8 @@ status is for use with this shipped pack, as checked on 2026-11-09.
 | Apply the pack, required even for hook/chat | Source packs accepting `thread.formats: [markdown]` (`0035b8c13e27`) | None yet | None |
 | Ordinary send/react/pin/unpin/chat ask close | Source packs and matching loopback API | None yet; pack application blocked | Individually `send`, `react`, `pin`, `unpin`, `ask_close` as needed |
 | Routine run ask, weighted Approve then Confirm | Canonical Bead/ApproveAsk and current operator mapping | None yet | `run_ask` |
-| Yard-local skill copies and crew/group assignment | `yardr skill add` and crew/group `skills=` (`a66722bb`); direct crew/user adds from `58e93b7f` | None yet | None; crew (including yardmaster), user or operator CLI adds from `58e93b7f`, operator adds before it; assignments stay operator-only |
-| Captured skill file review | Captured single-file proposal contract (`a79f6f8162c8`) | None yet | Same `run_ask` |
+| Yard-local skill copies and crew/group assignment | `yardr skill add` and crew/group `skills=` (`a66722bb`) | None yet | None; operator CLI adds; assignments stay operator-only |
+| Skill add review (removed) | n/a: the bridge carries no skill card | None yet | refused before any send; decided in the yard |
 | Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | None yet | Same `run_ask` |
 | [Source-add declaration and command file review](../bridge/OPERATIONS.md#source-add-declaration-and-command-review) | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | None yet | Same `run_ask` |
 | [Source-kind pack review (directory and embedded)](../bridge/OPERATIONS.md#source-pack-bundles) | Complete carried-source pack bundles; directory snapshot/digest proposal contract (`ced24b0e849c`) for directory applies | None yet | Same `run_ask` |
@@ -175,13 +175,9 @@ string alone is insufficient. Existing settings without native home/operator sti
 and retain hook/chat behavior on a compatible core; they cannot bypass the
 pack's thread-format declaration requirement.
 
-Only one regular text SKILL.md, at most 32 KiB on either side and supported
-name/description metadata, can use native captured skill review. Complete
-review document and replacement diff precede compact weighted confirmation.
-Extra skill files and skill deletion require the full native client.
-From core `58e93b7f`, new skill proposals under the core policy refuse
-because the proposer may add directly; cards still serve earlier stored
-asks and yards whose policy keeps adding the operator's.
+The bridge carries no `skill add` card: such asks refuse before any send
+with a terminal-only `/decide` line. The operator adds and refreshes skills
+with `yardr skill add` in a terminal; assigning them stays the operator's.
 
 [`source add <file>`](../bridge/OPERATIONS.md#source-add-declaration-and-command-review)
 reviews one declaration and its relative command files, including replacement
@@ -197,7 +193,7 @@ document and core weight rules, without inventing a directory snapshot. See
 and [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
 
 Native run cards exclude depot-kind/summary pack plans, `crew add`,
-`depot push`, multi-file skills, secret/setup/identity operations and
+`depot push`, `skill add`, secret/setup/identity operations and
 parameter input; use the full native client for those. Unknown/oversized
 cards refuse whole. Ordinary asks have no operation/weight/file payload.
 Siding mutations support only

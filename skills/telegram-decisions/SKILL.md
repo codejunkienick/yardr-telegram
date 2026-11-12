@@ -122,7 +122,7 @@ refuse whole; use the yard cards. Run proposals use `run_ask` instead.
 See [Ordinary native ask cards](../../bridge/OPERATIONS.md#ordinary-native-ask-cards)
 for human input, stale cards, conflicts and delivery recovery.
 
-### Native run and skill approval
+### Native run approval
 
 ```sh
 yardr call <source> run_ask bead=<bead> ask=<ask-number> topic=<topic> key=<stable-key> --json
@@ -131,18 +131,15 @@ yardr call <source> run_ask bead=<bead> ask=<ask-number> topic=<topic> key=<stab
 Supported proposals and their mechanics:
 
 - [Self-contained native runs](../../bridge/OPERATIONS.md#native-run-cards).
-- Verified single-file `skill add <absolute-source> [--name <name>]`: one
-  captured SKILL.md of at most 32 KiB, with name/description string
-  frontmatter. See [Captured single-file skill review](../../bridge/OPERATIONS.md#captured-single-file-skill-review).
 - `group add` and `group set`, within the supported runners, settings and
   prompt limits in [Native group add and set review](../../bridge/OPERATIONS.md#native-group-add-and-set-review).
 - `source add <file>`: a validated declaration and relative command file
   bundle. See [Source-add declaration and command review](../../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
 - Source-kind `pack apply <absolute-directory> --sha256 <digest>` or embedded
   `pack apply <name>`. See [Source pack bundles](../../bridge/OPERATIONS.md#source-pack-bundles).
-- Refused: depot-kind pack plans; secret/setup/identity/depot_push payloads;
-  parameter inputs; crew-add prompts; multi-file skills and skill deletion;
-  unfamiliar YAML/metadata or carried payloads outside the supported bundles.
+- Refused: `skill add`; depot-kind pack plans; secret/setup/identity/depot_push
+  payloads; parameter inputs; crew-add prompts; unfamiliar YAML/metadata or
+  carried payloads outside the supported bundles.
 
 Use the yard cards or a terminal for refused proposals. Invalid source packs
 return `run_ask_invalid_source_pack_use_terminal` with

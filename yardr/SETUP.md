@@ -288,10 +288,10 @@ never asks for a device or account password.
 
 Self-contained native run asks retain their original behavior. Secret,
 setup, identity, depot-push, parameter input, carried source/pack files and
-crew-add prompt payloads are refused before sending, except the verified
-single-file skill snapshots, group add and set cards, validated `source add`
-declaration and relative command file bundles, and source-kind `pack apply`
-bundles described below. Approval controls appear only after complete review
+crew-add prompt payloads are refused before sending, except the group add and
+set cards, validated `source add` declaration and relative command file
+bundles, and source-kind `pack apply` bundles described below. Approval
+controls appear only after complete review
 delivery; core checks authority and stale state before applying.
 Self-contained cards over 3500 visible UTF16 units are refused whole. Use
 Footplate or the yard cards for refused proposals; ordinary send/tell
@@ -321,57 +321,12 @@ Keep the ledger when moving/restarting the bridge; deleting it loses these
 bindings and delivery history.
 
 
-### Single-file skill snapshots
+### Skill copies (shell)
 
-From core `58e93b7f`, crew members (including the yardmaster) and users may
-add directly, so new skill proposals under the core policy are refused with
-"needs no approval: run it yourself". Native skill cards remain for asks
-stored before that change and yards whose policy keeps adding the operator's.
-Before that core, the operator adds and other proposers use the card.
-
-Where that proposal policy applies, after the reviewed core and bridge are
-installed, propose a fresh skill snapshot and publish its returned ask
-number with the same per-call grant and pairing above:
-
-```sh
-yardr bead ask <bead> "Refresh the reviewed skill?" \
-  --context "Review all quoted file and replacement diff parts before approval." \
-  --run "skill add /absolute/path/to/release-notes --name release-notes"
-yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=skill-review-1
-```
-
-Minimum core capability is the captured single-file contract introduced at
-`a79f6f8162c8`, checked from the actual per-call payload, not inferred from a
-version string. Core and bridge must agree on complete canonical review,
-manifest, bytes/digests, old inventory, metadata, code weight and pending/
-settled carry semantics. Hook-only configurations still need no native keys.
-No new grant or filesystem sandbox exception is needed. Installation, source
-updates, grants and service restart are the coordinator/operator's reviewed
-steps; builders test only synthetic homes, never install their worktree.
-
-Only one regular textual SKILL.md (at most 32 KiB on either side) is
-supported; extra source/standing files and deletion are refused. Frontmatter
-is limited to name/description with plain, quoted or simple block strings;
-other metadata/YAML requires the native full client. The complete canonical
-review, proposed/standing files and replacement diff arrive in one untrusted
-UTF-8 document before the compact approval card. The document and card name
-the same bundle digest; the card replies to the document and shows its
-SHA-256, size, plan hashes and current holders. Open the complete document
-before approving. No captured bytes are changed.
-
-The first Approve tap opens a 60-second Confirm step on the same card;
-only the paired operator can confirm with that second button. The source
-is a captured snapshot, so later source edits/deletion do not change approval.
-Changed standing state or holders are refused by core. Approval recorded
-and pending carry are separate from verified installed success or failure;
-check the canonical outcome after uncertainty. There is no automatic undo.
-
-Repeat the same run_ask call after a definitely unsent part: confirmed parts
-are retained, missing parts resume, and no button appears until complete.
-An ambiguous part/card is never blindly resent, even with another key or
-a restart; use existing delivery-ledger reconciliation with the operator.
-Keep SQLite state. Details and rendering limits are in
-[operations](../bridge/OPERATIONS.md#captured-single-file-skill-review).
+The bridge carries no `skill add` card: the operator adds and refreshes
+skill copies with `yardr skill add` in a terminal, as [The crew's skills](#the-crews-skills-shell)
+says. A stored `skill add` ask refuses before any send; a `/decide` row for one
+is terminal-only, decided in the yard.
 
 ### Source declarations and command files
 
@@ -483,7 +438,7 @@ Ordinary cards require core `7fa0d4c75ff6` or a compatible build exposing
 objects, option/word answers, and generated stage movement with note and sibling
 take-back. The former `709c9ca24c94` baseline lacks the atomic guard and cannot
 safely answer ordinary cards. Missing turn or method refuses without a legacy
-write fallback. The skill-review baseline above is unchanged.
+write fallback.
 
 Do not assume the native keys exist. The operator can check, then add only
 missing keys to a private settings file without printing it:
@@ -551,7 +506,7 @@ sends retry on refresh; ambiguous sends remain unbound until verified callback
 reconciliation, without automatic resend.
 Restart preserves generation bindings. Ordinary rows without generation
 bindings refuse as unconfirmed; ordinary cards were not previously released.
-Run/skill/chat rows retain their existing contracts and upgrades.
+Run/chat rows retain their existing contracts and upgrades.
 
 If Telegram delivered an ordinary card but its response timed out, the paired
 operator can tap the intended action on that original card after the reviewed
@@ -1058,9 +1013,8 @@ tgbridge` reads it from there.
 
 ### The crew's skills (shell)
 
-With core `58e93b7f` or later, a crew member (the yardmaster), a yard user or
-the operator runs the four adds below to copy this instance's skills into
-the yard's own home; before that core, the operator runs them.
+The operator runs the four adds below to copy this instance's skills into
+the yard's own home.
 Keep `YARDR_HOME` explicitly set to this yard as above:
 
 ```sh
@@ -1084,9 +1038,8 @@ relevant `run_ask`, `ask_card` or `siding_card` per-call grants (steps 12–14).
 Message writers keep `telegram-formatting`, `telegram-attachments` and
 `telegram-voice-transcripts` as appropriate. Adding a skill grants no call access.
 
-After an install or rollback, the yardmaster refreshes this yard's copies
-from its active release by repeating the four `skill add` commands on core
-`58e93b7f` or later; the operator may also do it, and must on earlier cores.
+After an install or rollback, the operator refreshes this yard's copies
+from its active release by repeating the four `skill add` commands.
 They replace the copies only in the selected yard; copies in another yard
 stay as they are, and removing this instance's root does not break another
 yard's skills.
@@ -1132,9 +1085,8 @@ yardr pack check <root>/pack        # where it shows a change, apply as above
 
 It verifies `previous` against its `SHA256SUMS`, swaps `current` and
 `previous`, and returns `<root>/pack` to that release's own. A second
-`--rollback` goes forward again. On core `58e93b7f` or later the yardmaster
-(or the operator) refreshes this yard's skill copies with the `skill add`
-commands above for that release; before that core, the operator runs them.
+`--rollback` goes forward again. The operator refreshes this yard's skill
+copies with the `skill add` commands above for that release.
 
 Undoing this first move, when there is no previous release (`--rollback`
 says so and names `service.previous`):
@@ -1149,9 +1101,8 @@ systemctl --user start <unit>
 The unit runs the checkout again, so the checkout must still be there. The
 pack applied above still works with it (the same port or alias); apply
 `<checkout>/yardr` with the same flags only to move the recorded origin back.
-To revert the skill version too, the yardmaster (or the operator) on core
-`58e93b7f` or later repeats `yardr skill add` from
-`<checkout>/skills/<name>` for this yard; on earlier cores the operator does.
+To revert the skill version too, the operator repeats `yardr skill add` from
+`<checkout>/skills/<name>` for this yard.
 The host-wide voice-transcribe link remains the operator's choice as above.
 
 ### Never

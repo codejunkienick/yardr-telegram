@@ -93,7 +93,7 @@ calls:
       body: { slot: "{slot}", unpin: true }
   run_ask:
     kind: update
-    about: Publish a native run card or verified single-file skill, herdr group, source-add or source pack review bundle for the paired operator
+    about: Publish a native run card or verified herdr group, source-add or source pack review bundle for the paired operator
     params:
       bead:         { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" }
       ask:          { type: string, pattern: "^[1-9][0-9]*$" }

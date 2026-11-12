@@ -16,10 +16,10 @@ def document_card(document):
                 + '<details><summary>Open complete document</summary><pre>' + escape(raw.decode()) + '</pre></details>')
 
 
-def skill_cards(source=False, pack=False):
+def bundle_cards(source=False, pack=False):
     # Drive the real bridge state machine with the existing offline transports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
-    from test_run_asks import NativeTests, skill_proposal, source_proposal, pack_proposal, repack, n
+    from test_run_asks import NativeTests, source_proposal, pack_proposal, repack, n
     case = NativeTests()
     case.setUp()
     cards = []
@@ -32,8 +32,7 @@ def skill_cards(source=False, pack=False):
                      + '<div class="navigation">' + escape(navigation) + '</div><div class="body">' + body['text']
                      + '</div><div class="buttons">' + controls + '</div></article></section>')
     try:
-        case.native.ask = (pack_proposal('directory_replace') if pack else source_proposal() if source else
-                           skill_proposal('Generic long line <&> 🙂; file content only. ' * 35 + '\n'))
+        case.native.ask = (pack_proposal('directory_replace') if pack else source_proposal())
         if pack and '--dense-bundle' in sys.argv:
             carried = case.native.ask['run']['carried'][0]
             before = carried['text']
@@ -54,8 +53,7 @@ def skill_cards(source=False, pack=False):
         case.press('confirm', uid=50)
         capture('Approval recorded · pending carry', case.edits()[-1], 'states')
         case.native.ask['ran'].update(result=('applied pack synthetic to the yard: 1 created, 0 changed, 0 unchanged' if pack else
-            'source synthetic saved: installed the captured declaration and bin/report bytes' if source else
-            'skill snapshot: installed the captured SKILL.md bytes'), pending_reason='')
+            'source synthetic saved: installed the captured declaration and bin/report bytes'), pending_reason='')
         case.bridge.run_asks.refresh()
         capture('Settled canonical installation', case.edits()[-1], 'states')
         case.native.ask['ran'].update(result='Synthetic failure: target changed; nothing installed', failed=True)
@@ -363,20 +361,16 @@ def main():
         cards += confirmation_cards()
     if '--confirm' in sys.argv:
         cards = confirmation_cards()
-    if '--skill' in sys.argv:
-        cards = skill_cards()
     if '--source' in sys.argv:
-        cards = skill_cards(source=True)
+        cards = bundle_cards(source=True)
     if '--pack' in sys.argv:
-        cards = skill_cards(pack=True)
+        cards = bundle_cards(pack=True)
     if len(sys.argv) == 1:
-        cards += skill_cards(pack=True)
+        cards += bundle_cards(pack=True)
     if '--decisions' in sys.argv:
         cards = decision_cards()
     if '--dense' in sys.argv:
         cards = decision_cards(dense=True)
-    if '--bundle' in sys.argv:
-        cards = skill_cards()[:1]
     if '--decide' in sys.argv:
         cards = decide_views()
     for flag, name in (('--group-add', 'group_add'), ('--group-set', 'group_set_prompt'), ('--group-set-effort', 'group_set_effort')):

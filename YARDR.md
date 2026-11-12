@@ -251,21 +251,12 @@ and polling reconciles settlements and outcome edits. Long results split
 into bounded ledger-backed messages without truncating the canonical text.
 
 
-Native skill snapshots additionally support `skill add <absolute-source>
-[--name <name>]` using the core's existing `run.carried` envelope, never a
-new run.skill field. The bridge verifies its single-file manifest, metadata,
-old inventory, exact bytes/digests, replacement diff, complete canonical Does
-and strong code weight. It delivers the entire quoted review as one digest-bound document before
-the compact approval card, with confirmed bytes/size and no rewriting of
-file content. The same weighted
-human confirmation and canonical carry settlement apply. Extra skill files
-and skill deletion remain refused. See
-[the exact scope and recovery limits](bridge/OPERATIONS.md#captured-single-file-skill-review)
-and [bootstrap requirements](yardr/SETUP.md#single-file-skill-snapshots).
-From core `58e93b7f`, crew members (including the yardmaster), yard users
-and the operator may add directly, making this card dormant for new
-proposals under the core policy; it still serves earlier stored asks and
-yards whose policy keeps adding the operator's, as earlier cores do.
+The bridge carries no `skill add` card: the operator adds skills with
+`yardr skill add` in a terminal, and assigning them stays the operator's. A
+`skill add` ask refuses before any send, and a `/decide` row for one is
+terminal-only. See
+[the bundle scope](bridge/OPERATIONS.md#complete-review-bundles)
+and [skill copies](yardr/SETUP.md#skill-copies-shell).
 
 Native `source add <file>` reviews the complete declaration, relative command
 files, replacement diffs and inventory before controls appear (local core

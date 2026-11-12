@@ -198,11 +198,9 @@ the same bot lock directory; their bot-id lock files stay distinct.
 | The yard home and socket | per yard | Shared by bridges serving that yard; native card authority is enabled on the primary alone. |
 | `lock_dir` | per host user | Shared by pollers; each bot id has a separate lock file, so a second local poller of that bot refuses. |
 
-After an install or rollback, on core `58e93b7f` or later a crew member
-(the yardmaster), a yard user or the operator repeats `yardr skill add`
+After an install or rollback, the operator repeats `yardr skill add`
 with `YARDR_HOME` set to the intended yard, refreshing only that yard's
-copies. Earlier cores require the operator; crew/group assignments stay
-the operator's on either core.
+copies. Crew/group assignments stay the operator's.
 Copies in other yards stay as they are. Never relink a shared harness skill
 folder to an instance's `current` (`yardr/SETUP.md`, "The crew's skills").
 
@@ -210,8 +208,7 @@ folder to an instance's `current` (`yardr/SETUP.md`, "The crew's skills").
 
 - Every live action: installs, restarts, settings edits, source apply,
   grants and skill copy refreshes in each yard on a real host. Those are
-  each yard's operator's, except skill copy refreshes may be done by the
-  yardmaster or a yard user from core `58e93b7f`, following `yardr/SETUP.md`.
+  each yard's operator's, following `yardr/SETUP.md`.
 - A daemon, container, virtual environment, pip or manifest service; network
   access at install or message time.
 - Automatic pruning of releases, detection of other instances' state

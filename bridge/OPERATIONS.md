@@ -2196,7 +2196,7 @@ cannot use `runask:`. Move any existing overlapping callback_prefix to a
 different namespace before updating. The complete canonical card is HTML-escaped and limited
 to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
 following Footplate; canonical warning lines alone are bold. Self-contained
-cards keep that limit. A captured single-file `skill add` and a `group
+cards keep that limit. A `group
 add`/`group set`, native `source add` and source-kind `pack apply` use the complete review bundles below. Secret/setup/identity/depot_push, parameter inputs,
 other carried files, depot-kind pack plans and crew-add prompts still refuse before
 sending, with Footplate/cards as the fallback.
@@ -2261,34 +2261,14 @@ for declaration installation, explicit `yardr source grant tgbridge run_ask
 contains no grants; builder/secretary/blanket grants are not required.
 
 
-### Captured single-file skill review
+### Complete review bundles
 
-From core `58e93b7f`, crew members (including the yardmaster), yard users
-and the operator may add directly, so this card is dormant for new proposals
-under the core policy and serves earlier stored asks or yards whose policy
-keeps adding the operator's; earlier cores require the operator to add.
+The bridge no longer cards `skill add`: the operator adds skills with
+`yardr skill add` in a terminal, and assigning them stays the operator's. A stored `skill add`
+ask refuses before any send with a terminal-only `/decide` line; use
+Footplate or the yard cards.
 
-A native `skill add <absolute-source> [--name <name>]` can add or refresh one
-regular `SKILL.md`. Both source and standing destination must contain only
-that file, each at most 32768 UTF-8 bytes. Extra files, directories, symlinks,
-deletions and multi-file skill/crew proposals remain unsupported.
-The source is provenance: the server installs the captured bytes even after
-that source changes or disappears. No assignment, grant or account changes.
-
-This requires the core captured-snapshot contract documented in its
-`docs/api.md`, “Skill-add proposal contract”, introduced by core revision
-`a79f6f8162c8`. Version labels alone are insufficient: every call checks the
-actual canonical argv/command/description, complete carried manifest,
-metadata, old bytes/inventory/mode/size, hashes, replacement diff, complete
-quoted Does sections, truthful undo text and exact strong code weight.
-Older or unfamiliar shapes refuse before any interactive send. The bridge's
-metadata reader accepts name/description frontmatter using plain, JSON-style
-double-quoted, YAML single-quoted or simple block strings; other YAML forms
-or additional metadata keys require Footplate/cards. It adds no dependency
-or permission layer. Core remains the authority for live target/holder and
-operator checks under its apply lock.
-
-Every new skill, source, source-pack and group bundle arrives as **one
+Every new source, source-pack and group bundle arrives as **one
 UTF-8 Markdown review document (.md), then one compact confirmation card**.
 The document contains the full question, context, command, weight and undo,
 followed by the complete canonical review text previously carried in numbered parts.
@@ -2306,8 +2286,8 @@ key and confirmed message ID. The proposal digest still binds native
 approval; the document hash is delivery evidence in the bridge, requiring
 no new core field or authority.
 
-The card shows each create/change/remove and its path hashes, current skill
-holders or kept source/group grants, size, one-document/zero-text-message
+The card shows each create/change/remove and its path hashes, kept source/group
+grants, size, one-document/zero-text-message
 counts, the equivalent old text-part count, bundle digest, filename,
 document SHA-256, canonical weight and undo. The full proposal and review
 stay in the document. A complete compact card that exceeds 3500 visible
@@ -2347,7 +2327,7 @@ generation; it cannot finish an interrupted `.md` document/card delivery.
 Return to a Markdown-capable release to resume those deliveries with their
 saved keys and receipts. Rollback never renames an already sent document.
 
-Skill bundle digests also bind the native home directory device/inode, so
+Bundle digests also bind the native home directory device/inode, so
 replacing a home at the same path cannot reuse an identical proposal.
 Native ownership/proposal/state is reread before the document, each
 transport retry and final card, as well as before every decision. Changes invalidate the
@@ -2362,7 +2342,7 @@ recovery belong entirely to the core server, never the bridge.
 ### Source-add declaration and command review
 
 `source add <file>` uses the same native `run_ask` call, pairing, receipt
-ledger, document delivery and approval gate as skill/group bundles. This adds no
+ledger, document delivery and approval gate as group bundles. This adds no
 RPC, grant or setting. Verified against isolated core `546e3fdd2127`; the
 actual carried contract is checked on every read rather than inferred from
 its version. The bridge never reads the declaration's provenance path or
@@ -2571,8 +2551,7 @@ setting, ledger migration or grant changes.
 
 `python3 -B scripts/preview_run_asks.py --dense` shows a synthetic copy of the
 four-option transcription-provider decision and its recorded outcome through
-the actual offline send/edit path. `--bundle` shows its separate synthetic
-skill-review example's first part. These previews use disposable native
+the actual offline send/edit path. These previews use disposable native
 socket/ledger fixtures and fake Telegram, with no live account or store.
 They prove source rendering only. Installation/activation belongs to the
 operator through the normal release process; rollback selects the previous
@@ -2639,7 +2618,7 @@ the native ask. If no replacement card is bound, older cards lose controls
 and direct the operator to the yard, without claiming a newer card exists.
 Ordinary rows lacking generation bindings refuse as unconfirmed; these
 unreleased rows have no upgrade path.
-Run/skill rows retain their existing ledger upgrade and edit behavior.
+Run rows retain their existing ledger upgrade and edit behavior.
 
 An ordinary decision delivered by Telegram can lose its send response. Its
 saved receipt remains `ambiguous_delivery_requires_manual_reconciliation`;
@@ -2716,7 +2695,7 @@ to 100 UTF-16 units, never inside a combining or joined character), then the
 kind, the ID, the bead's title and the asker. An ID is `<bead>#<ask>`: the
 bead is unique in this yard and the ask is that bead's note seq; each bridge
 serves one yard, so no ID is looked up anywhere else. Decisions, words
-questions, run, source-add bundles, single-file skill and group add/set proposals get a
+questions, run, source-add bundles and group add/set proposals get a
 button (a group ask is listed as `run`; one with a field the card does not
 support is listed without a button, as below). Secret, setup,
 identity, depot-push, weighted, terminal-only run (file-carrying or

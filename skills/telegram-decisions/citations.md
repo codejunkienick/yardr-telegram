@@ -49,7 +49,7 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | def _api_native_card(self, request, key_header, kind): | native call inputs exclude approval content |
 | pack | bridge/bridge.py | def _api_answer(receipt, conversation=None): | delivery receipts report presentation, not a native outcome |
 | pack | bridge/OPERATIONS.md | ## Native run cards | canonical content, paired human authority, same-card Approve then Confirm within 60 seconds, no typed-number approval, ledger and refusal fallbacks |
-| pack | bridge/OPERATIONS.md | ### Captured single-file skill review | captured skill bounds, supported metadata and complete review delivery |
+| pack | bridge/OPERATIONS.md | ### Complete review bundles | no skill card; complete review delivery for source, pack and group bundles |
 | pack | bridge/OPERATIONS.md | ### Native group add and set review | supported group runners, settings, prompts and refusals |
 | pack | bridge/OPERATIONS.md | ### Source-add declaration and command review | validated declaration and relative command file bundles |
 | pack | bridge/OPERATIONS.md | ### Source pack bundles | source-kind directory and embedded pack proposals; terminal fallback |
@@ -71,12 +71,12 @@ The rows live only here; SKILL.md holds none.
 <!-- /citations -->
 ```
 
-Native run/skill approval: `bridge/run_asks.py` (`validate`, `validate_skill`,
-`skill_bundle`, `RunAsks.send_card`, `callback`, `reply`, `decide`, `settle`,
-`refresh`); `bridge/OPERATIONS.md`, “Captured single-file skill review”;
-`yardr/SETUP.md`, “Single-file skill snapshots”. The fixture
-`bridge/fixtures/skill_add.json` was captured from a real isolated core Bead
-response; real CLI/RPC/carry coverage is in `bridge/test_run_asks.py`.
+Native run approval: `bridge/run_asks.py` (`validate`, `run_scope`,
+`RunAsks.send_card`, `callback`, `reply`, `decide`, `settle`, `refresh`);
+`bridge/OPERATIONS.md`, “Complete review bundles”; `yardr/SETUP.md`,
+“Skill copies (shell)”. `skill add` refuses before any send; a stored row
+lists terminal-only in `/decide`; coverage is in `bridge/test_run_asks.py`
+and `bridge/test_decide.py`.
 
 Native group cards: `bridge/run_asks.py` (`parse_group`, `GroupCard`,
 `group_bundle`, `review_bundle`); `bridge/OPERATIONS.md`, “Native group add and
@@ -86,8 +86,8 @@ fixtures were captured from isolated aligned and upstream yardr Bead responses;
 
 Document review bundles: `bridge/run_asks.py` (`review_bundle`, `source_plan`,
 `pack_document`, `RunAsks.document_file`, `RunAsks.send_card`);
-`bridge/OPERATIONS.md`, “Captured single-file skill review” and “Source pack
-bundles”. All new skill/source/pack/group generations deliver one complete
+`bridge/OPERATIONS.md`, “Complete review bundles” and “Source pack
+bundles”. All new source/pack/group generations deliver one complete
 UTF-8 Markdown (.md) document before the compact card; its hash/size and
 bundle digest are named on the card. Existing ledger rows retain their
 original delivery shape. `bridge/test_run_asks.py` checks real native-store capture, complete

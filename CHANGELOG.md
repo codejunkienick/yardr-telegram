@@ -71,11 +71,9 @@ sees and does, not how the code is organised.
   removed; request a new card.
 - Group-set cards accept both the earlier skills wording and core
   `58e93b7f`'s wording; a delivered card whose canonical text changes still
-  refuses approval. From that core, the yardmaster, other crew members and
-  yard users may refresh skill copies directly after installation or
-  rollback; earlier cores require the operator. Assigning skills stays the
-  operator's. Native skill review remains for earlier stored asks and
-  policies that keep adding the operator's.
+  refuses approval. Refreshing skill copies after installation or rollback
+  stays the operator's, as does assigning skills. Stored `skill add` asks
+  refuse; see Removed.
 
 - Weighty native run cards now take Approve, then Confirm on the same card
   within 60 seconds. Cancel occupies Approve's former position; Confirm
@@ -92,9 +90,9 @@ sees and does, not how the code is organised.
   requires `thread.formats`. Local capability hashes are not public install
   targets; publish and accept the required core first.
 - Operator commands use this instance's launchers and explicit yard home.
-  Skills are copied into that yard with `yardr skill add` and assigned with
-  crew/group `skills=`; refresh the copies after installation or rollback
-  instead of linking shared harness folders to an instance's release.
+  The operator copies skills into that yard with `yardr skill add` and assigns
+  them with crew/group `skills=`; refresh the copies after installation or
+  rollback instead of linking shared harness folders to an instance's release.
 - Installation/examples use fictional yards/operators and home-relative paths.
   Existing source aliases and credential-host bindings remain supported;
   the readiness guide records custom-base and callback migration limits.
@@ -131,6 +129,14 @@ sees and does, not how the code is organised.
 - With native keys, `/decide` and the `decide:` prefix belong to the bridge:
   a `[[command]]` or `[[menu]]` named `decide` or an overlapping prefix
   refuses to load.
+
+### Removed
+
+- The native `skill add` review card, its single-file snapshot checks and
+  the crew self-service skill adds it carded. The operator adds and refreshes
+  skills with `yardr skill add` in a terminal, as before; assigning them stays
+  the operator's. A stored `skill add` ask refuses before any send and lists
+  as a terminal-only `/decide` row, decided in the yard.
 
 ### Fixed
 

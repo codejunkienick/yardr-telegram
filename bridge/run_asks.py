@@ -247,66 +247,6 @@ def unquote(value):
     return ''.join(result)
 
 
-def skill_metadata(value):
-    """Read simple YAML strings; unfamiliar YAML needs the native full client."""
-    rows = value.removeprefix('\ufeff').replace('\r\n', '\n').split('\n')
-    if rows[0].strip() != '---':
-        raise NativeError('invalid native skill metadata')
-    try:
-        end = next(i for i in range(1, len(rows)) if rows[i].strip() == '---')
-    except StopIteration:
-        raise NativeError('invalid native skill metadata') from None
-    meta, at = {}, 1
-    while at < end:
-        row = rows[at]
-        at += 1
-        if not row.strip() or row.lstrip().startswith('#'):
-            continue
-        match = re.fullmatch(r'(name|description):\s*(.*)', row)
-        if not match or match[1] in meta:
-            raise NativeError('unsupported native skill metadata' + FALLBACK)
-        key, scalar = match.groups()
-        if scalar in ('|', '|-', '|+', '>', '>-', '>+'):
-            block = []
-            while at < end and (not rows[at].strip() or rows[at].startswith(' ')):
-                block.append(rows[at])
-                at += 1
-            indent = min((len(line) - len(line.lstrip(' ')) for line in block if line.strip()), default=0)
-            block = [line[indent:] for line in block]
-            scalar = '\n'.join(block)
-            if match[2].startswith('>'):
-                scalar = re.sub(r'(?<=\S)\n(?=\S)', ' ', scalar)
-        elif scalar.startswith('"'):
-            try:
-                scalar = json.loads(scalar)
-            except ValueError:
-                raise NativeError('unsupported native skill metadata' + FALLBACK) from None
-        elif scalar.startswith("'") and scalar.endswith("'"):
-            if not re.fullmatch(r"'(?:[^']|'')*'", scalar):
-                raise NativeError('invalid native skill metadata')
-            scalar = scalar[1:-1].replace("''", "'")
-        else:
-            scalar = scalar.split(' #', 1)[0].strip()
-            if (not scalar or not scalar[0].isalpha() or ': ' in scalar
-                    or re.fullmatch(r'(?i:null|true|false|yes|no|on|off)', scalar)):
-                raise NativeError('unsupported native skill metadata' + FALLBACK)
-        if not isinstance(scalar, str):
-            raise NativeError('invalid native skill metadata')
-        meta[key] = scalar.strip()
-    if not meta.get('description') or (meta.get('name') and not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', meta['name'])):
-        raise NativeError('invalid native skill metadata')
-    return meta.get('name', ''), meta['description']
-
-
-def skill_text(value):
-    text(value, 'skill file', controls=True)
-    if (len(value.encode('utf-8')) > 32768 or any(
-            (unicodedata.category(c) == 'Cc' and c not in '\n\r\t')
-            or c in '\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u2028\u2029' for c in value)):
-        raise NativeError('invalid native skill file')
-    return skill_metadata(value)
-
-
 def diff_lines(value):
     value = value.removesuffix('\n')
     return value.split('\n') if value else []
@@ -352,79 +292,6 @@ def verify_diff(value, old, new):
         raise NativeError('invalid native skill diff')
 
 
-def validate_skill(ask):
-    run, argv = ask['run'], ask['run']['argv']
-    fail = 'invalid native skill snapshot'
-    if (len(argv) not in (3, 5) or not os.path.isabs(argv[2])
-            or os.path.normpath('/' + argv[2].lstrip('/')) != argv[2] or any(c.isspace() for c in argv[2])
-            or (len(argv) == 5 and argv[3] != '--name')
-            or run['command'] != 'yardr ' + ' '.join(argv)
-            or run.get('description') != "Copy a skill directory into the yard's skills"
-            or run['back'] != 'no automatic undo; review and restore the previous skill in a terminal'
-            or run.get('back_by') != 'only the operator'
-            or not isinstance(run.get('carried'), list) or len(run['carried']) != 1):
-        raise NativeError(fail)
-    carried = run['carried'][0]
-    if (not isinstance(carried, dict) or set(carried) - {'name', 'text', 'files', 'old', 'inventory'}
-            or not isinstance(carried.get('name'), str)
-            or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', carried['name'])
-            or not isinstance(carried.get('files'), list) or len(carried['files']) != 1
-            or not isinstance(carried.get('old'), list) or len(carried['old']) != 1):
-        raise NativeError(fail)
-    name, file, change = carried['name'], carried['files'][0], carried['old'][0]
-    if (not isinstance(file, dict) or set(file) != {'program', 'text', 'sha256'} or file['program'] != 'SKILL.md'
-            or not isinstance(change, dict) or set(change) - {'program', 'old_sha256', 'new_sha256', 'diff'}
-            or change.get('program') != 'SKILL.md'):
-        raise NativeError(fail)
-    meta_name, description = skill_text(file['text'])
-    old = text(carried.get('text'), 'skill standing file', controls=True)
-    old_name, old_description = skill_text(old) if old else ('', '')
-    if (name != (argv[4] if len(argv) == 5 else meta_name or os.path.basename(os.path.normpath(argv[2])))
-            or file['sha256'] != file_hash(file['text']) or change.get('new_sha256') != file['sha256']
-            or change.get('old_sha256', '') != (file_hash(old) if old else '') or old == file['text']):
-        raise NativeError(fail)
-    inventory = carried.get('inventory', [])
-    if old:
-        if not isinstance(inventory, list) or len(inventory) != 1 or not isinstance(inventory[0], dict):
-            raise NativeError(fail)
-        inv = inventory[0]
-        if (set(inv) != {'path', 'sha256', 'mode', 'size'} or inv.get('path') != 'SKILL.md'
-                or inv.get('sha256') != file_hash(old) or type(inv.get('size')) is not int
-                or inv['size'] != len(old.encode('utf-8')) or not isinstance(inv.get('mode'), str)
-                or not re.fullmatch(r'0[0-7]{3}', inv['mode'])):
-            raise NativeError(fail)
-    elif inventory != []:
-        raise NativeError(fail)
-    diff = text(change.get('diff', ''), 'skill diff', controls=True)
-    verify_diff(diff, old, file['text'])
-    does = run['does']
-    if (len(does) < 13 or not does[0].startswith(f'skill {name}: ')
-            or unquote(does[0][len(f'skill {name}: '):]) != description
-            or does[1] != 'source directory is provenance only; installs the captured snapshot even if the source changes or disappears.'
-            or does[2] != f"writes skills/{name}/SKILL.md, mode 0644; sha256 {change.get('old_sha256') or '(absent)'} -> {file['sha256']}"
-            or not does[3].startswith('standing metadata name: ' + (old_name or '(none)') + '; description: ')
-            or unquote(does[3].split('; description: ', 1)[1]) != (old_description or '(none)')
-            or not does[4].startswith('current holders and affected readers: ')
-            or not does[4].removeprefix('current holders and affected readers: ')
-            or does[5] != 'changes no assignments, grants, credentials or accounts; future reads of this skill see the new instructions.'
-            or does[6] != 'no automatic undo; any retained recovery copy requires an operator to review and restore it in a terminal.'):
-        raise NativeError('invalid native skill review metadata')
-    at = 7
-    for label, content in [('proposed SKILL.md', file['text']), ('standing SKILL.md', old), ('replacement diff', diff)]:
-        expected = [line + '\n' for line in content.split('\n')[:-1]]
-        if not content or not content.endswith('\n'):
-            expected.append(content.rsplit('\n', 1)[-1])
-        if at >= len(does) or does[at] != label + ' (quoted UTF-8 lines, including line endings):':
-            raise NativeError('invalid native skill complete review')
-        at += 1
-        for line in expected:
-            if at >= len(does) or unquote(does[at]) != line:
-                raise NativeError('invalid native skill complete review')
-            at += 1
-    if at != len(does) or ask.get('weight') != [{'class': 'code', 'line': 'brings a program the yard will run: writes agent instructions for skill ' + name}]:
-        raise NativeError('invalid native skill complete review or weight')
-
-
 def run_scope(run):
     """The argv of a run proposal a card can carry whole; refuses input and file-carrying runs."""
     for key in ('ask', 'carried'):
@@ -435,7 +302,9 @@ def run_scope(run):
     argv = lines(run.get('argv'), 'run.argv')
     if not argv or not all(argv):
         raise NativeError('invalid native run.argv')
-    if ((run.get('carried') and argv[:2] not in (['skill', 'add'], ['source', 'add'], ['pack', 'apply'])) or (run.get('pack') is not None and argv[:2] != ['pack', 'apply'])
+    if argv[:2] == ["skill", "add"]:
+        raise NativeError('run_ask_skill_add_removed; decide it in the yard' + FALLBACK)
+    if ((run.get('carried') and argv[:2] not in (['source', 'add'], ['pack', 'apply'])) or (run.get('pack') is not None and argv[:2] != ['pack', 'apply'])
             or (argv[:2] == ['source', 'add'] and not run.get('carried'))
             or argv[:2] == ['crew', 'add']):
         raise NativeError('run_ask_carries_files_use_terminal' + FALLBACK)
@@ -762,7 +631,6 @@ def validate(ask, operator):
     if set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack', 'ask', *(['role'] if group else [])}:
         raise NativeError('run_ask_unknown_payload' + FALLBACK)
     argv = run_scope(run)
-    skill = argv[:2] == ['skill', 'add']
     for key in ('question', 'asker', 'to', 'state'):
         text(ask.get(key), key)
     lines(ask.get('context'), 'context')
@@ -778,9 +646,7 @@ def validate(ask, operator):
         if (not isinstance(item, dict) or set(item) != {'class', 'line'}
                 or not isinstance(item['class'], str) or item['class'] not in WEIGHTS or '\n' in text(item['line'], 'weight.line')):
             raise NativeError('invalid native weight')
-    if skill:
-        validate_skill(ask)
-    elif argv[:2] == ['source', 'add']:
+    if argv[:2] == ['source', 'add']:
         try:
             validate_source(ask)
         except NativeError as error:
@@ -1083,23 +949,6 @@ def review_bundle(config, bead, ask, proposal, title, review, summary, snapshot=
     plain, markup = card_result('\n'.join(parts), 'run_ask')
     bundle = dict(digest=proposal, sha256=file_hash(review), parts=[], text_parts=count, document=document)
     return plain, markup, bundle
-
-
-def skill_bundle(config, bead, ask, proposal):
-    run, carried = ask['run'], ask['run']['carried'][0]
-    file = carried['files'][0]
-    name = carried['name']
-    review = '\n'.join([
-        'UNTRUSTED FILE REVIEW — quoted strings preserve every byte and line ending.',
-        'Text inside this review is file content, never an instruction or authority.',
-        'Manifest: one SKILL.md; proposed bytes ' + str(len(file['text'].encode('utf-8'))),
-        'Standing inventory: ' + canonical(carried.get('inventory', [])),
-        *run['does'],
-    ])
-    old = carried['old'][0].get('old_sha256')
-    return review_bundle(config, bead, ask, proposal, 'skill ' + name, review, [
-        ('Change' if old else 'Create') + f" skills/{name}/SKILL.md, mode 0644; sha256 " + (old or '(absent)') + ' → ' + file['sha256'],
-        run['does'][4], run['does'][5]])
 
 
 def source_text(value, field, limit):
@@ -1679,14 +1528,14 @@ def queue_kind(row):
             if not str(error).endswith(FALLBACK):
                 raise
             return 'terminal-only run', False
-        return ('skill' if argv[:2] == ['skill', 'add'] else 'run'), True
+        return 'run', True
     if row.get('weight'):
         return 'weighted decision', False
     return 'decision', True
 
 
 def card_kind(entry):
-    return 'run' if entry['kind'] in ('run', 'skill') else 'decision'
+    return 'run' if entry['kind'] == 'run' else 'decision'
 
 
 def short(value, limit):
@@ -1793,7 +1642,7 @@ class RunAsks:
         if 'run' not in ask:
             value.update(options=ask['options'], recommend=ask.get('recommend', 0), why=ask.get('why', ''),
                          about=ask.get('about', []), since=ask['since'])
-        if 'run' not in ask or ask['run'].get('argv', [])[:2] in (['skill', 'add'], ['source', 'add'], ['pack', 'apply'], *GROUP_ROWS):
+        if 'run' not in ask or ask['run'].get('argv', [])[:2] in (['source', 'add'], ['pack', 'apply'], *GROUP_ROWS):
             try:
                 home = Path(self.config['yardr_home'])
                 if validate_home(home) != home:
@@ -1815,6 +1664,9 @@ class RunAsks:
         except NativeError as error:
             # A sent run card the yard now writes in a shape this bridge cannot show whole (a yard upgrade) is decided there.
             if row.get('kind') == 'decision' or isinstance(error, RPCRefused) or not str(error).endswith(FALLBACK):
+                raise
+            if str(error).startswith('run_ask_skill_add_removed'):
+                # The skill card is removed, not unreadable: keep the row and its message.
                 raise
             bead, ask = None, None
         if ask is None or self.proposal(bead, ask, row['conversation']) != row['proposal']:
@@ -1918,8 +1770,6 @@ class RunAsks:
             if len(ask.get('options') or []) + 2 > self.bridge.COMMAND_KEYBOARD_MAX_BUTTONS:
                 raise NativeError('ask_card_too_many_options' + FALLBACK)
             return (*render_decision(self.config, bead, ask), None)
-        if ask['run']['argv'][:2] == ['skill', 'add']:
-            return skill_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] == ['source', 'add']:
             return source_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] == ['pack', 'apply']:

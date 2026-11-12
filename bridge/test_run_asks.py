@@ -66,32 +66,6 @@ def dense_decision():
                 about=[])
 
 
-def skill_proposal(extra=''):
-    # Captured from Bead on the real isolated core; only provenance/seq/time stabilized.
-    ask = json.loads(Path(__file__).with_name('fixtures').joinpath('skill_add.json').read_text())
-    if extra:
-        carried = ask['run']['carried'][0]
-        file, change = carried['files'][0], carried['old'][0]
-        file['text'] += extra
-        file['sha256'] = hashlib.sha256(file['text'].encode()).hexdigest()
-        change['new_sha256'] = file['sha256']
-        before = carried['text'].removesuffix('\n').split('\n')
-        after = file['text'].removesuffix('\n').split('\n')
-        change['diff'] = ('--- was\n+++ is\n' + f'@@ -1,{len(before)} +1,{len(after)} @@\n'
-                          + ''.join('-' + line + '\n' for line in before)
-                          + ''.join('+' + line + '\n' for line in after))
-        does = ask['run']['does'][:7]
-        does[2] = f"writes skills/snapshot/SKILL.md, mode 0644; sha256 {change['old_sha256']} -> {file['sha256']}"
-        for label, value in [('proposed SKILL.md', file['text']), ('standing SKILL.md', carried['text']), ('replacement diff', change['diff'])]:
-            does.append(label + ' (quoted UTF-8 lines, including line endings):')
-            rows = [line + '\n' for line in value.split('\n')[:-1]]
-            if not value or not value.endswith('\n'):
-                rows.append(value.rsplit('\n', 1)[-1])
-            does.extend(json.dumps(line, ensure_ascii=False) for line in rows)
-        ask['run']['does'] = does
-    return ask
-
-
 def source_proposal(kind='replace', extra=''):
     ask = json.loads(Path(__file__).with_name('fixtures').joinpath('source_' + kind + '.json').read_text())
     ask['run']['carried'][0]['text'] += extra
@@ -1319,7 +1293,7 @@ class NativeTests(NativeCase):
         self.assertEqual(len(self.calls), calls)
 
     def test_decline_and_take_back_use_canonical_words_without_execution(self):
-        for factory in (proposal, skill_proposal):
+        for factory in (proposal,):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 for state in ('decline', 'taken back'):
@@ -1336,7 +1310,7 @@ class NativeTests(NativeCase):
                 self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
 
     def test_weight_requires_bound_confirm_cancel_expiry_nonce_and_one_use(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 if factory is proposal:
@@ -1464,7 +1438,8 @@ class NativeTests(NativeCase):
                 self.assertIsNone(self.row()['pending'])
 
         # A saved arm survives a crash before its first edit; a fresh Approve repairs that edit.
-        self.reset_native(skill_proposal())
+        self.reset_native(proposal())
+        self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
         self.create()
         with patch.object(self.bridge.run_asks, 'display', side_effect=RuntimeError('synthetic crash')):
             with self.assertRaises(RuntimeError):
@@ -1510,7 +1485,7 @@ class NativeTests(NativeCase):
         self.assertNotIn("type the ask's number", result.stdout)
 
     def test_callback_and_proposal_binding_refusals(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1551,7 +1526,8 @@ class NativeTests(NativeCase):
             self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.bridge.request)
             self.bridge.request_multipart = self.pack_transport
             self.bridge.hook_secret = None
-            self.reset_native(skill_proposal())
+            self.reset_native(proposal())
+            self.native.ask['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: web'}]
             self.assertTrue(self.create()['delivered'])
             if armed:
                 self.press()
@@ -1579,7 +1555,7 @@ class NativeTests(NativeCase):
                     self.assertEqual(self.writes(), [])
 
     def test_same_operator_two_homes_and_conversations_cannot_cross(self):
-        for factory in (proposal, skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -1632,61 +1608,6 @@ class NativeTests(NativeCase):
         self.native.user['role'] = 'member'
         self.assertFalse(self.create()['delivered'])
         self.assertEqual(self.sent_count, 0)
-
-        # Mutate the actual core fixture at every authoritative boundary.
-        mutations = [
-            (('weight',), []), (('weight', 0, 'class'), 'trust'),
-            (('weight', 0, 'line'), 'WEIGHTY · invented'),
-            (('run', 'argv'), ['skill', 'add', 'relative']),
-            (('run', 'argv'), ['skill', 'add', '/synthetic/../proposal']),
-            (('run', 'command'), 'yardr skill add /elsewhere'),
-            (('run', 'description'), 'invented metadata'),
-            (('run', 'pack'), {}), (('run', 'ask'), ['value']),
-            (('run', 'carried'), []), (('run', 'carried', 0), None),
-            (('run', 'carried', 0, 'name'), '../other'),
-            (('run', 'carried', 0, 'removed'), []),
-            (('run', 'carried', 0, 'files'), []),
-            (('run', 'carried', 0, 'files', 0, 'program'), 'other.md'),
-            (('run', 'carried', 0, 'files', 0, 'text'), True),
-            (('run', 'carried', 0, 'files', 0, 'sha256'), '0' * 64),
-            (('run', 'carried', 0, 'text'), ''),
-            (('run', 'carried', 0, 'old'), []),
-            (('run', 'carried', 0, 'old', 0, 'old_sha256'), '0' * 64),
-            (('run', 'carried', 0, 'old', 0, 'new_sha256'), '0' * 64),
-            (('run', 'carried', 0, 'old', 0, 'diff'), ''),
-            (('run', 'carried', 0, 'inventory'), []),
-            (('run', 'carried', 0, 'inventory', 0, 'size'), True),
-            (('run', 'carried', 0, 'inventory', 0, 'mode'), 'symlink'),
-            (('run', 'carried', 0, 'inventory', 0, 'sha256'), '0' * 64),
-            (('run', 'does', 0), 'skill snapshot: "wrong description"'),
-            (('run', 'does', 3), 'standing metadata name: snapshot; description: "wrong"'),
-            (('run', 'does', 4), 'current holders and affected readers: '),
-            (('run', 'does', 8), '"partial bytes"'),
-            (('run', 'back'), 'automatic undo'),
-        ]
-        for path, value in mutations:
-            with self.subTest(path=path):
-                self.reset_native(skill_proposal())
-                target = self.native.ask
-                for key in path[:-1]:
-                    target = target[key]
-                target[path[-1]] = value
-                self.assertFalse(self.create()['delivered'])
-                self.assertEqual(self.sent_count, 0)
-        for field in ('files', 'old', 'inventory'):
-            self.reset_native(skill_proposal())
-            self.native.ask['run']['carried'][0][field] *= 2
-            self.assertFalse(self.create()['delivered'])
-            self.assertEqual(self.sent_count, 0)
-        for missing in (('inventory',), ('old_sha256',), ('inventory', 'old_sha256')):
-            with self.subTest(refresh_missing=missing):
-                self.reset_native(skill_proposal())
-                carried = self.native.ask['run']['carried'][0]
-                for field in missing:
-                    del (carried if field == 'inventory' else carried['old'][0])[field]
-                self.assertFalse(self.create()['delivered'])
-                self.assertEqual(self.sent_count, 0)
-                self.assertEqual(self.writes(), [])
 
         mutations = [
             (('run', 'future'), True), (('run', 'carried'), []), (('run', 'carried'), [None]),
@@ -1941,11 +1862,10 @@ class NativeTests(NativeCase):
                     self.assertEqual(db.execute('SELECT COUNT(*) FROM deliveries').fetchone()[0], 0)
 
 
-    def test_skill_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
+    def test_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
         self.bridge.sleep = lambda _: None
         hostile = '\n```\n# Forged heading\n[forged](https://example.invalid) *fake*\n``````\n🙂\t\r\nlone CR\r\n\n'
-        cases = [('skill', skill_proposal('Synthetic long line <&>🙂\t\r' * 180 + '\n</pre><b>FORGED CONTROL</b>\n' + hostile + '\U000e0001')),
-                 ('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY not authority\n' * 60 + hostile.replace('\r', '') + '\U000e0001')),
+        cases = [('group_add', group_add_proposal('Synthetic role line <&>🙂\tWEIGHTY not authority\n' * 60 + hostile.replace('\r', '') + '\U000e0001')),
                  ('group_set', group_set_proposal('\nSynthetic prompt line <&>🙂\t' * 150 + hostile.replace('\r', '').rstrip('\n'))),
                  ('source', source_proposal(extra='# ' + 'Synthetic <&>🙂\t' * 400 + '\n# ``` ``````\n# [forged](https://example.invalid)\r\n')),
                  ('pack', pack_proposal()), ('pack_replace', pack_proposal('directory_replace')), ('pack_embedded', pack_proposal('embedded'))]
@@ -1958,18 +1878,6 @@ class NativeTests(NativeCase):
                     setup['text'] = hostile + 'no terminal LF'
                     repack(ask)
                 self.bundle_delivery(case, ask)
-        for command in ('yardr skill add /synthetic/`ticks````', 'yardr skill add\n# injected\n[link](https://example.invalid)'):
-            with self.subTest(rendered_command=command):
-                ask = skill_proposal()
-                ask['run']['command'] = command
-                _, _, bundle = self.bridge.run_asks.card(self.native.bead, ask, 'run', '0' * 64)
-                facts, _, tokens = review_parts(bundle['document']['text'])
-                if '\n' in command:
-                    self.assertEqual(review_content(bundle['document']['text'], 'Command:'), command)
-                else:
-                    self.assertIn('Command: ' + command, facts)
-                    self.assertTrue(any(child.type == 'code_inline' and child.content == command
-                                        for token in tokens for child in token.children or []))
         self.bundle_document_delivery()
         class Attachments(HTMLParser):
             def __init__(self):
@@ -1981,7 +1889,7 @@ class NativeTests(NativeCase):
                 if tag == 'a' and attrs.get('href', '').startswith('data:text/plain;base64,'):
                     self.files.append((attrs['download'], base64.b64decode(attrs['href'].split(',', 1)[1], validate=True)))
         script = Path(__file__).resolve().parents[1] / 'scripts/preview_run_asks.py'
-        for flag in ('--skill', '--source', '--pack', '--group-add', '--group-set', '--group-set-effort'):
+        for flag in ('--source', '--pack', '--group-add', '--group-set', '--group-set-effort'):
             with self.subTest(preview=flag):
                 result = subprocess.run([sys.executable, '-B', str(script), flag, '--dense-bundle'],
                     env=dict(HOME=self.tmp.name, PATH=self.tmp.name + ':/usr/local/bin:/usr/bin:/bin'),
@@ -1998,6 +1906,21 @@ class NativeTests(NativeCase):
                 self.assertNotIn('<button>', section)
                 self.assertIn('## Canonical review', raw.decode())
                 review_parts(raw.decode())
+
+    def test_bundle_oversized_kept_grant_refuses_whole(self):
+        # Decision-critical kept identities cannot be discarded to squeeze the card in.
+        for factory in (source_proposal, pack_proposal):
+            with self.subTest(oversized_kept_plan=factory.__name__):
+                ask = factory()
+                if factory is pack_proposal:
+                    ask = pack_proposal('directory_replace')
+                at = next(i for i, line in enumerate(ask['run']['does'])
+                          if line.startswith(('grants kept for source ', 'no grant of source ')))
+                ask['run']['does'][at] = 'grants kept for source synthetic: ' + '<b>holder</b> ' * 500
+                self.reset_native(ask)
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual(self.sent_count, 0)
+                self.assertEqual(self.writes(), [])
 
     @staticmethod
     def bundle_review(row):
@@ -2059,18 +1982,7 @@ class NativeTests(NativeCase):
         self.assertNotIn('FORGED CONTROL', card)
         self.assertNotIn('<b>role', sent[0]['text'])
         self.assertEqual(sent[0]['message_thread_id'], 12)
-        if case == 'skill':
-            self.assertEqual(review_content(review, 'proposed SKILL.md'), ask['run']['carried'][0]['files'][0]['text'])
-            self.assertEqual(review_content(review, 'standing SKILL.md'), ask['run']['carried'][0]['text'])
-            self.assertEqual(review_content(review, 'replacement diff'), ask['run']['carried'][0]['old'][0]['diff'])
-            self.assertIn('WEIGHTY · not authority\r\n', review_content(review, 'proposed SKILL.md'))
-            value = ask['run']['carried'][0]['files'][0]['text']
-            offset = len(value[:value.index('\r')].encode())
-            self.assertTrue(any(f'{offset}="\\r"' in fact for fact in facts))
-            self.assertTrue(any('"\\udb40\\udc01"' in fact for fact in facts))
-            self.assertIn(ask['run']['does'][4], card)
-            self.assertIn(ask['run']['carried'][0]['files'][0]['sha256'], card)
-        elif case == 'source':
+        if case == 'source':
             self.assert_source_review(ask, review)
             self.assertIn('no grant of source synthetic stands.', card)
         elif case.startswith('pack'):
@@ -2264,7 +2176,7 @@ class NativeTests(NativeCase):
 
         for damage in ('bytes', 'name'):
             with self.subTest(document_damage=damage):
-                ask = skill_proposal()
+                ask = source_proposal()
                 ask['context'] = ['Synthetic document integrity ' + damage]
                 self.reset_native(ask)
                 with patch.object(self.bridge.run_asks, 'send_card', return_value=self.bridge.not_sent()):
@@ -2376,6 +2288,35 @@ class NativeTests(NativeCase):
         for line in quoted - set(lines):
             self.assertNotIn(line, facts)
         return [line for at, line in enumerate(lines) if head is None or line != does[head]]
+
+    def test_skill_add_refuses_before_send_and_lists_terminal_only(self):
+        ask = dict(proposal(), run=dict(argv=["skill", "add", '/synthetic/old'],
+                                        command='yardr skill add /synthetic/old',
+                                        description='Copy a skill directory',
+                                        does=['skill snapshot: "queued"'],
+                                        back='restore the previous skill in a terminal',
+                                        back_by='only the operator'))
+        self.reset_native(ask)
+        result = self.create()
+        self.assertFalse(result['delivered'], result)
+        self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+        self.assertIn('decide it in the yard', result['reason'])
+        self.assertEqual(self.sent_count, 0)
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.bridge.run_asks.rows(), [])
+        entry = dict(bead='sample-1', bead_title='Synthetic skill', ask=7, question=ask['question'],
+                     asker='proposer', turn=0, run=ask['run'])
+        self.assertEqual(n.queue_kind(entry), ('terminal-only run', False))
+        # A stored row from an earlier skill card refuses the same way without breaking refresh.
+        row = dict(id=self.bridge.run_asks.ident('sample-1', 7), binding=self.bridge.run_asks.binding(),
+                   bead='sample-1', ask=7, conversation='general', proposal='0' * 64,
+                   plain='old skill card', html='old skill card', weighty=True,
+                   state='open', pending=None, message_id=77, silent=False, revision=0)
+        self.bridge.run_asks.save(row)
+        self.bridge.run_asks.refresh()
+        self.assertEqual(self.bridge.run_asks.get(row['id']), row)
+        self.assertEqual(self.sent_count, 0)
+
 
     def test_group_bundle_reviews_whole_card_before_controls_and_refuses_unsupported(self):
         for name in GROUP_FIXTURES:
@@ -2601,8 +2542,8 @@ class NativeTests(NativeCase):
         self.assertFalse(self.create()['delivered'])
         self.assertEqual(self.sent_count, 0)
 
-    def test_skill_bundle_drift_rechecks_during_transport_retry_and_repost(self):
-        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+    def test_bundle_drift_rechecks_during_transport_retry_and_repost(self):
+        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 original = self.bridge.request
                 multipart = self.bridge.request_multipart
@@ -2653,45 +2594,8 @@ class NativeTests(NativeCase):
                 self.bridge.request = original
                 self.bridge.request_multipart = multipart
 
-    def test_skill_bundle_maximum_file_and_oversized_envelope_refuse_whole(self):
-        base_size = len(skill_proposal()['run']['carried'][0]['files'][0]['text'].encode())
-        remaining = 32768 - base_size
-        extra = '🙂' * (remaining // 4) + 'x' * (remaining % 4)
-        self.reset_native(skill_proposal(extra))
-        self.assertTrue(self.create()['delivered'])
-        row = self.row()
-        review = NativeTests.bundle_review(row)
-        self.assertEqual(review_content(review, 'proposed SKILL.md'), self.native.ask['run']['carried'][0]['files'][0]['text'])
-        self.assertEqual(row['bundle']['parts'], [])
-        self.assertTrue(row['bundle']['document']['message_id'])
-        self.reset_native(skill_proposal(extra + 'x'))
-        self.assertFalse(self.create()['delivered'])
-        self.assertEqual(self.sent_count, 0)
-        self.reset_native(skill_proposal())
-        self.config['yard'] = '🙂' * 2000
-        self.assertFalse(self.create()['delivered'])
-        self.assertEqual(self.sent_count, 0)
-        self.assertEqual(self.writes(), [])
-        self.config['yard'] = 'test-city'
-        # Decision-critical kept identities cannot be discarded to squeeze the card in.
-        for factory in (skill_proposal, source_proposal, pack_proposal):
-            with self.subTest(oversized_kept_plan=factory.__name__):
-                ask = factory()
-                if factory is skill_proposal:
-                    ask['run']['does'][4] = 'current holders and affected readers: ' + '<b>holder</b> ' * 500
-                else:
-                    if factory is pack_proposal:
-                        ask = pack_proposal('directory_replace')
-                    at = next(i for i, line in enumerate(ask['run']['does'])
-                              if line.startswith(('grants kept for source ', 'no grant of source ')))
-                    ask['run']['does'][at] = 'grants kept for source synthetic: ' + '<b>holder</b> ' * 500
-                self.reset_native(ask)
-                self.assertFalse(self.create()['delivered'])
-                self.assertEqual(self.sent_count, 0)
-                self.assertEqual(self.writes(), [])
-
-    def test_skill_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
-        for factory in (skill_proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+    def test_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
+        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.assertTrue(self.create()['delivered'])
@@ -2791,8 +2695,8 @@ class NativeTests(NativeCase):
         self.assertEqual(self.edits()[-1]['reply_markup'], {'inline_keyboard': []})
 
         for mode in ('lost-commit', 'invalid-commit', 'wire-error-commit', 'lost-open', 'lost-unreadable', 'refused'):
-            with self.subTest(skill_write=mode):
-                self.reset_native(skill_proposal())
+            with self.subTest(bundle_write=mode):
+                self.reset_native(source_proposal())
                 self.create()
                 self.native.mode = mode
                 self.press()
@@ -2826,7 +2730,7 @@ class NativeTests(NativeCase):
         self.assertIn('\n\nCanonical outcome follows below.', self.edits()[-1]['text'])
         outcome_parts = [body['text'] for url, body in self.calls if url.endswith('/sendMessage')][1:]
         self.assertEqual(''.join(outcome_parts), '✓ Answered: 2. Keep\n' + words + 'x')
-        for factory in (proposal, skill_proposal, source_proposal):
+        for factory in (proposal, source_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -3321,7 +3225,7 @@ class NativeTests(NativeCase):
                     self.assertIn('newer card', old['display']['footer'])
 
     def test_fresh_role_proposal_and_state_checks_on_confirmation(self):
-        for factory in (proposal, skill_proposal):
+        for factory in (proposal,):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 if factory is proposal:
@@ -3833,191 +3737,6 @@ class RealNativeTests(BridgeTestCase):
             self.bridge.inbound(bound_reply(row, '2 stale stage note', 307))
             self.assertEqual(client.call('Bead', dict(bead='stage-1', viewer='pat')), after)
 
-            def skill_proposal_or_direct(question, context, name='snapshot'):
-                args = ['skill', 'add', str(source_dir)]
-                if name != 'snapshot':
-                    args += ['--name', name]
-                asks = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks']
-                standing = {p.relative_to(home / 'skills'): p.read_bytes()
-                            for p in (home / 'skills').rglob('*') if p.is_file()}
-                result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'sample-1',
-                    question, '--to', 'pat', '--context', context, '--run', ' '.join(args)],
-                    env=env, cwd=root, capture_output=True, text=True, timeout=20)
-                if result.returncode == 0:
-                    return client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn('yardr ' + ' '.join(args) + ' needs no approval: run it yourself', result.stderr)
-                self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'], asks)
-                self.assertEqual({p.relative_to(home / 'skills'): p.read_bytes()
-                                  for p in (home / 'skills').rglob('*') if p.is_file()}, standing)
-                proposed_bytes = (source_dir / 'SKILL.md').read_bytes()
-                result = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', *args],
-                    env=env, cwd=root, capture_output=True, text=True, timeout=20)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                standing[Path(name) / 'SKILL.md'] = proposed_bytes
-                self.assertEqual({p.relative_to(home / 'skills'): p.read_bytes()
-                                  for p in (home / 'skills').rglob('*') if p.is_file()}, standing)
-                self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'], asks)
-                (source_dir / 'SKILL.md').unlink()
-                source_dir.rmdir()
-                return None
-
-            # Older policy supplies a carried review; current policy tells the proposer to install directly.
-            fixture = skill_proposal()
-            old = root / 'old'
-            old.mkdir()
-            (old / 'SKILL.md').write_bytes(fixture['run']['carried'][0]['text'].encode())
-            cli('skill', 'add', str(old))
-            source_dir = root / 'snapshot'
-            source_dir.mkdir()
-            captured = (fixture['run']['carried'][0]['files'][0]['text']
-                        + 'Generic long Unicode line 🙂 <&>\t\r' * 160 + '\n').encode()
-            target = home / 'skills' / 'snapshot' / 'SKILL.md'
-            before = target.read_bytes()
-            before_identity = target.stat().st_ino
-            (source_dir / 'SKILL.md').write_bytes(captured)
-            skill = skill_proposal_or_direct('Refresh the synthetic skill?', 'Synthetic snapshot fixture')
-            if skill is not None:
-                # Verify the frozen fixture still uses the real wire contract and canonical metadata.
-                self.assertEqual(set(skill), set(fixture))
-                self.assertEqual(set(skill['run']), set(fixture['run']))
-                self.assertEqual(skill['run']['does'][:2], fixture['run']['does'][:2])
-                self.assertEqual(skill['weight'], fixture['weight'])
-                self.assertEqual(skill['run']['carried'][0]['files'][0]['text'].encode(), captured)
-                # Source provenance is never reopened by the bridge or core carry.
-                (source_dir / 'SKILL.md').unlink()
-                source_dir.rmdir()
-                # Enough unique Telegram IDs for a complete large bundle.
-                ids = iter(range(200, 1000))
-                calls_before = len(self.calls)
-                receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=skill['ask'], key='real-skill'))
-                self.assertTrue(receipt['delivered'], receipt)
-                row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == skill['ask'])
-                sends = [body for url, body in self.calls[calls_before:] if url.endswith('/sendMessage')]
-                self.assertEqual(len(sends), 1)
-                self.assertEqual(len(self.documents), 1)
-                fields, path, raw = self.documents[-1]
-                self.assertEqual(path.name, 'review-' + row['proposal'] + '.md')
-                self.assertEqual(hashlib.sha256(raw).hexdigest(), row['bundle']['document']['sha256'])
-                self.assertIn(row['bundle']['document']['sha256'], sends[0]['text'])
-                self.assertEqual(captured.decode(), review_content(NativeTests.bundle_review(row), 'proposed SKILL.md'))
-                self.assertNotIn('reply_markup', fields)
-                self.assertTrue(all(not body.get('reply_markup') for body in sends[:-1]))
-                self.assertTrue(sends[-1]['reply_markup']['inline_keyboard'])
-                self.assertEqual(target.read_bytes(), before)
-                self.assertEqual(target.stat().st_ino, before_identity)
-                query['data'] = sends[-1]['reply_markup']['inline_keyboard'][0][0]['callback_data']
-                query['message']['message_id'] = row['message_id']
-                self.bridge.inbound(dict(update_id=50, callback_query=query))
-                self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]['state'], 'open')
-                self.assertEqual(target.read_bytes(), before)
-                approvals = []
-                actual_call = self.bridge.run_asks.client.call
-                def record_call(method, args):
-                    reply = actual_call(method, args)
-                    if method == 'ApproveAsk':
-                        approvals.append(reply)
-                    return reply
-                self.bridge.run_asks.client.call = record_call
-                query['data'] = f"runask:{row['id']}:confirm:{self.bridge.run_asks.get(row['id'])['pending']['nonce']}"
-                confirmation = dict(update_id=51, callback_query=copy.deepcopy(query))
-                self.bridge.inbound(confirmation)
-                self.assertEqual(len(approvals), 1)
-                self.assertEqual(approvals[0]['result'], n.PENDING)
-                deadline = time.monotonic() + 10
-                while True:
-                    settled = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
-                    if settled.get('ran', {}).get('result') != n.PENDING:
-                        break
-                    if time.monotonic() > deadline:
-                        self.fail('real skill carry did not settle')
-                    time.sleep(.02)
-                self.assertEqual(settled['state'], 'answered')
-                self.assertFalse(settled['ran'].get('failed'))
-                self.assertEqual(settled['ran']['argv'], skill['run']['argv'])
-                self.assertIn('snapshot', settled['ran']['result'])
-                self.assertEqual(target.read_bytes(), captured)
-                installed = (target.stat().st_ino, target.stat().st_mtime_ns)
-                intents = sorted(p.name for p in (home / 'skills').glob('.carry-skill-*'))
-                self.assertEqual(len(intents), 1)
-                self.bridge.run_asks = n.RunAsks(self.bridge)
-                self.bridge.run_asks.refresh()
-                self.assertEqual(next(r for r in self.bridge.run_asks.rows() if r['ask'] == skill['ask'])['state'], 'approved')
-                self.bridge.inbound(confirmation)
-                self.bridge.inbound(dict(update_id=52, callback_query=query))
-                self.assertTrue(self.bridge.api_ask_close(dict(ask_key='real-skill', decision='invented outcome'))['delivered'])
-                self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=skill['ask'], key='real-skill-repost'))['delivered'])
-                self.assertEqual(target.read_bytes(), captured)
-                self.assertEqual((target.stat().st_ino, target.stat().st_mtime_ns), installed)
-                self.assertEqual(sorted(p.name for p in (home / 'skills').glob('.carry-skill-*')), intents)
-                self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1], settled)
-
-            for offset, scenario in enumerate(('add', 'add-quoted', 'add-block', 'decline', 'target-drift', 'unfamiliar-metadata'), 1):
-                with self.subTest(real_skill=scenario):
-                    name = 'snapshot-' + scenario
-                    if scenario == 'target-drift':
-                        cli('skill', 'add', str(old), '--name', name)
-                    source_dir.mkdir()
-                    proposed_bytes = captured
-                    if scenario == 'add-quoted':
-                        proposed_bytes = captured.replace(b'description: Generic proposed instructions', b'description: "Generic proposed instructions"')
-                    elif scenario == 'add-block':
-                        proposed_bytes = captured.replace(b'description: Generic proposed instructions', b'description: >-\r\n  Generic proposed\r\n  instructions')
-                    elif scenario == 'unfamiliar-metadata':
-                        proposed_bytes = captured.replace(b'name: snapshot', b'license: MIT\r\nname: snapshot')
-                    (source_dir / 'SKILL.md').write_bytes(proposed_bytes)
-                    proposed = skill_proposal_or_direct('Review a synthetic single-file skill?',
-                                                       'Isolated native refusal/add case', name)
-                    if proposed is None:
-                        continue
-                    if scenario.startswith('add'):
-                        carried = proposed['run']['carried'][0]
-                        self.assertEqual(carried['text'], '')
-                        # Core omits empty old-state fields on an add, not on a refresh.
-                        self.assertNotIn('inventory', carried)
-                        self.assertNotIn('old_sha256', carried['old'][0])
-                    with self.assertRaises(n.RPCRefused):
-                        client.call('ApproveAsk', dict(bead='sample-1', ask=proposed['ask'], actor='proposer', weighed=True, values={}))
-                    shown = self.bridge.api_run_ask(dict(bead='sample-1', ask=proposed['ask'], key=name))
-                    if scenario == 'unfamiliar-metadata':
-                        self.assertFalse(shown['delivered'])
-                        self.assertIn('unsupported native skill metadata', shown['reason'])
-                        self.assertFalse((home / 'skills' / name).exists())
-                        (source_dir / 'SKILL.md').unlink()
-                        source_dir.rmdir()
-                        continue
-                    self.assertTrue(shown['delivered'], shown)
-                    row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == proposed['ask'])
-                    action = 'decline' if scenario == 'decline' else 'approve'
-                    query['data'] = f"runask:{row['id']}:{action}"
-                    query['message']['message_id'] = row['message_id']
-                    self.bridge.inbound(dict(update_id=100 + offset * 2, callback_query=query))
-                    target = home / 'skills' / name / 'SKILL.md'
-                    if scenario == 'target-drift':
-                        drifted = before.replace(b'Keep', b'Change')
-                        target.write_bytes(drifted)
-                    if scenario != 'decline':
-                        query['data'] = f"runask:{row['id']}:confirm:{self.bridge.run_asks.get(row['id'])['pending']['nonce']}"
-                        self.bridge.inbound(dict(update_id=101 + offset * 2, callback_query=query))
-                    deadline = time.monotonic() + 10
-                    while True:
-                        final = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
-                        if final.get('ran', {}).get('result') != n.PENDING:
-                            break
-                        if time.monotonic() > deadline:
-                            self.fail('real skill add did not settle')
-                        time.sleep(.02)
-                    if scenario.startswith('add'):
-                        self.assertEqual(final['state'], 'answered')
-                        self.assertEqual(target.read_bytes(), proposed_bytes)
-                    elif scenario == 'decline':
-                        self.assertEqual(final['state'], 'declined')
-                        self.assertFalse(target.exists())
-                    else:
-                        self.assertEqual(final['state'], 'open')
-                        self.assertEqual(target.read_bytes(), drifted)
-                    (source_dir / 'SKILL.md').unlink()
-                    source_dir.rmdir()
             # Reapplying the supported source pack preserves an installation's bindings and grants.
             release = str(Path(__file__).resolve().parents[1] / 'yardr')
 

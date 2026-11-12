@@ -272,6 +272,14 @@ class DecideTests(DecideCase):
         pending = dict(source_proposal(), ask=13)
         pending['run']['carried'][0]['future'] = True
         unsupported.append(('source', pending))
+        pending = dict(proposal(), ask=13, question='Refresh the synthetic skill?')
+        pending['run'] = dict(argv=["skill", "add", '/synthetic/old'],
+                              command='yardr skill add /synthetic/old',
+                              description="Copy a skill directory into the yard's skills",
+                              does=['skill snapshot: "queued skill"'],
+                              back='review and restore the previous skill in a terminal',
+                              back_by='only the operator')
+        unsupported.append(('skill', pending))
         for index, (kind, pending) in enumerate(unsupported):
             with self.subTest(unsupported_bundle=kind):
                 self.reset_native(pending)
@@ -291,7 +299,9 @@ class DecideTests(DecideCase):
                 receipt = self.bridge.api_run_ask(dict(bead='file-1', ask=13, key='unsupported-' + kind))
                 self.assertFalse(receipt['delivered'], receipt)
                 self.assertTrue(receipt['reason'].endswith(n.FALLBACK), receipt)
-                if kind != 'source':
+                if kind == 'skill':
+                    self.assertIn('decide it in the yard', receipt['reason'])
+                elif kind != 'source':
                     self.assertIn('use yardr pack apply <dir> in a terminal', receipt['reason'])
                 self.assertEqual(self.sent_count, sent)
                 self.command('/decide file-1#13', 31 + 3*index)

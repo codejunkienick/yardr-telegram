@@ -227,7 +227,7 @@ class DecideTests(DecideCase):
         self.assertEqual(self.writes(), [])
         # Typed bundles open whole through the same listing and selection path.
         for index, (kind, factory, question, command) in enumerate((
-                ('group', group_add_proposal, 'Create the synthetic builders?', 'yardr group add builders'),
+                ('group', group_add_proposal, 'Add the synthetic builders?', 'yardr group add builders'),
                 ('source', source_proposal, 'Review the synthetic source?', 'yardr source add /synthetic/source-replace.yaml'))):
             with self.subTest(bundle=kind):
                 bead = kind + '-1'

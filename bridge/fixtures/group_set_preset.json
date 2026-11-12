@@ -1,0 +1,37 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Let the drafters skip permissions?",
+  "context": [
+    "Synthetic Let the drafters skip permissions?"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "drafters",
+      "preset=bypass"
+    ],
+    "command": "yardr group set drafters preset=bypass",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the group drafters on the herdr runner: what each of its sessions runs, as the lines below say, and nothing else of it.",
+      "It starts claude (Claude Code) agents with no flags of their own now.",
+      "It will start them with \"--dangerously-skip-permissions\": the bypass preset, never asks; runs as you with full access.",
+      "It skips permissions: it runs without asking for permission."
+    ],
+    "back": "yardr group set drafters --unset args",
+    "back_by": "only the operator"
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: its permission flags of the group drafters, which each session the yard starts for it then runs as the card shows"
+    }
+  ]
+}

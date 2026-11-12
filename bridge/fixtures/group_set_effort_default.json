@@ -1,0 +1,30 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Return the planners effort to the harness?",
+  "context": [
+    "Synthetic Return the planners effort to the harness?"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "planners",
+      "effort=default"
+    ],
+    "command": "yardr group set planners effort=default",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the group planners on the herdr runner: what each of its sessions runs, as the lines below say, and nothing else of it.",
+      "Each session starts at the effort high now.",
+      "It will set no effort, so each session will start at its harness's own: no flag for an effort is added."
+    ],
+    "back": "yardr group set planners effort=high",
+    "back_by": "only the operator"
+  }
+}

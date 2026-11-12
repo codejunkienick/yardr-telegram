@@ -136,10 +136,9 @@ for the outstanding contracts and required passing check.
   From core `58e93b7f`, new proposals under the core policy refuse because
   the proposer may add directly; cards still serve stored asks and yards
   whose policy keeps adding the operator's.
-- Optional native herdr group cards (`group add`, `group set`) need core
-  support for the local `fc7375cf5ad4` contract, also not a public install
-  target, and the same setup
-  ([SETUP.md](yardr/SETUP.md#herdr-group-add-and-set)).
+- Optional native group cards (`group add`, `group set`) read upstream
+  yardr's group rows (`model=` on the aligned build alone) and need the
+  same setup ([SETUP.md](yardr/SETUP.md#group-add-and-set)).
 - Optional native source-add review (`source add <file>`) needs the carried
   source-add contract (local baseline `546e3fdd2127`, not a public install
   target). No compatible public core is available yet. It uses the same

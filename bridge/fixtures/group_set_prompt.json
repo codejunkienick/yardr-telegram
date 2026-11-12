@@ -1,0 +1,40 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Replace the planners prompt?",
+  "context": [
+    "Synthetic Replace the planners prompt?"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "planners",
+      "prompt=/synthetic/yard/roles-in/planner.md"
+    ],
+    "command": "yardr group set planners prompt=/synthetic/yard/roles-in/planner.md",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the group planners on the herdr runner: what each of its sessions runs, as the lines below say, and nothing else of it.",
+      "Its prompt is the file /synthetic/yard/roles/planner.md, which each session reads when it starts, and which holds now:",
+      "# Synthetic planner",
+      "Plan the work.",
+      "On approval the yard writes the text below to the file /synthetic/yard/roles/planners.39e08dcffc96d4860b4297a370c368ebce882019684bb3cb2ff9c71ba51f2aa1.md, read-only. Each session reads that file when it starts, so changing the file the ask names later changes no session:",
+      "# Synthetic planner, revised",
+      "Plan the work in small steps."
+    ],
+    "back": "yardr group set planners prompt=/synthetic/yard/roles/planner.md",
+    "back_by": "only the operator"
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: its prompt of the group planners, which each session the yard starts for it then runs as the card shows"
+    }
+  ]
+}

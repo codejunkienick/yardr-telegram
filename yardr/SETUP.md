@@ -289,7 +289,7 @@ never asks for a device or account password.
 Self-contained native run asks retain their original behavior. Secret,
 setup, identity, depot-push, parameter input, carried source/pack files and
 crew-add prompt payloads are refused before sending, except the verified
-single-file skill snapshots, herdr group cards, validated `source add`
+single-file skill snapshots, group add and set cards, validated `source add`
 declaration and relative command file bundles, and source-kind `pack apply`
 bundles described below. Approval controls appear only after complete review
 delivery; core checks authority and stale state before applying.
@@ -416,46 +416,56 @@ existing instance-root installer/printed restart step, retaining its ledger,
 identity and source bindings. Withdraw open source cards first; older bridge
 code refuses these bundles. Builders neither install nor activate them.
 
-### Herdr group add and set
+### Group add and set
 
-A crew member proposes a herdr group, or a group's model and args, and the
-paired operator approves it from Telegram:
+A crew member proposes a group, or a change to a group's prompt, command,
+permission preset, model or effort, and the paired operator approves it
+from Telegram:
 
 ```sh
-yardr bead ask <bead> "Create the builders?" --context "Review every part before approval." \
-  --run "group add builders runner=herdr kind=claude model=<model> limit=2 arg=--permission-mode arg=auto arg=--effort arg=medium prompt=/absolute/role.md"
-yardr bead ask <bead> "Raise the planners' effort?" \
-  --run "group set planners model=<model> arg=--permission-mode arg=auto arg=--effort arg=xhigh"
+yardr bead ask <bead> "Add the builders?" --context "Review every part before approval." \
+  --run "group add builders --runner herdr --limit 2 --set kind=claude --set prompt=<home>/roles-in/builder.md"
+yardr bead ask <bead> "Replace the planners' prompt?" --context "The new prompt is on the card." \
+  --run "group set planners prompt=<home>/roles-in/planner.md"
+yardr bead ask <bead> "Raise the drafters' effort?" --context "Effort only." \
+  --run "group set drafters effort=high"
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=group-review-1
 ```
 
-Minimum: core `fc7375cf5ad4` (group proposal contract) and this bridge. The
-bootstrap and grants are step 12's alone: `run_ask` granted to the crew that
-publishes cards, the operator user with the bridge identity, and the native
-`home`/`operator` keys. Verified against an isolated real core: the proposer
-needs nothing beyond `bead ask`; the bridge reads Bead (and GetGroup, a read
-like Bead, for a group that names no prompt) and calls
-ApproveAsk/DeclineAsk on the yard socket as the operator, as for any run
-card. No new grant, setting, socket, whole-yard write or sandbox exception is
-added; the role file is written by the core server, never by the bridge.
+`bead ask` reads the prompt file `prompt=` names (a file under the yard's
+home) and the card carries its text. `model=` rides beside another setting
+on yardr's aligned build alone; plain upstream refuses it when the ask is
+written. The bootstrap and grants are step 12's alone: `run_ask` granted to
+the crew that publishes cards, the operator user with the bridge identity,
+and the native `home`/`operator` keys. Verified against isolated aligned
+and upstream builds: the proposer needs nothing beyond `bead ask`; the
+bridge reads Bead and calls ApproveAsk/DeclineAsk on the yard socket as the
+operator, as for any run card. No new grant, setting, socket, whole-yard
+write or sandbox exception is added; the prompt file is written by the yard,
+never by the bridge.
 
-All parts arrive before the card: every sentence of the card, each role
-whole as quoted lines with its SHA-256 and bytes. Approve only opens the
-Confirm step; tap Confirm on that same card within 60 seconds to approve. A
-group or role that changed since the card is refused by core with nothing
-written. Env, credentials, logins, skills, worktrees, other runners and
-prompt changes are not proposable and refuse before sending. Details:
+The review document arrives before the card: every sentence of the card,
+and the new prompt whole as quoted lines with the SHA-256 its file is named
+by (a set's standing prompt too, as the card shows it). A group add and a
+set of a prompt, command, preset or model are weighted: Approve only opens
+the Confirm step; tap Confirm on that same card within 60 seconds. A set of
+the effort alone carries no weight and approves with one tap. A group
+changed since the card, or a prompt file that holds other text by then, is
+refused by the yard with nothing written. Env, logins, logs, peer groups and
+any other setting are not proposable and refuse before sending. Details:
 [operations](../bridge/OPERATIONS.md#native-group-add-and-set-review).
 
-Rollout: the coordinator installs reviewed core first, then this bridge as
-its own release copy (`install.sh --settings <file>`, `check-install`, the
-printed `next:` line; see the source update below); an older core never
-produces these cards, and an older bridge renders a short one through the
-generic run card or refuses a long one. Rollback: `<root>/current/install.sh
---settings <file> --rollback` and its `next:` line; open group cards then
-fall back to Footplate or the yard cards. Groups already approved
-stay as core wrote them; undo is each card's Back (`yardr group rm <name>`,
-or the `yardr group set` line it shows).
+Rollout: the coordinator installs the aligned yardr first, then this bridge
+as its own release copy (`install.sh --settings <file>`, `check-install`,
+the printed `next:` line; see the source update below). A group card the
+yard wrote before the alignment no longer reads whole here: it is refused
+before sending, and one already sent says "Proposal changed; use Footplate
+or the yard cards" at its next refresh or tap, so decide it in the yard.
+Rollback: `<root>/current/install.sh --settings <file> --rollback` and its
+`next:` line; open group cards then fall back to Footplate or the yard
+cards. Groups already approved stay as the yard wrote them; undo is each
+card's Back (`yardr group rm <name>`, or the `yardr group set` line it
+shows).
 
 ## 13. Ordinary native decisions (operator; optional)
 

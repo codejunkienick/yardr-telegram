@@ -1,0 +1,39 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Move the planners?",
+  "context": [
+    "Synthetic model"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "planners",
+      "model=claude-opus-5-5",
+      "effort=low"
+    ],
+    "command": "yardr group set planners model=claude-opus-5-5 effort=low",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the group planners on the herdr runner: what each of its sessions runs, as the lines below say, and nothing else of it.",
+      "Each session starts with the model claude-opus-4 now.",
+      "Each session will start with the model claude-opus-5-5.",
+      "It sets no effort now, so each session starts at its harness's own.",
+      "Each session will start at the effort low: \"--effort\" \"low\" are added after its other flags."
+    ],
+    "back": "yardr group set planners model=claude-opus-4 --unset effort",
+    "back_by": "only the operator"
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: its model of the group planners, which each session the yard starts for it then runs as the card shows"
+    }
+  ]
+}

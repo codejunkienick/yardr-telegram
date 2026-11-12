@@ -3,9 +3,9 @@
   "to": "pat",
   "asker": "proposer",
   "since": "2026-01-01T00:00:00Z",
-  "question": "Create the synthetic builders?",
+  "question": "Add the synthetic builders?",
   "context": [
-    "Synthetic isolated group create"
+    "Synthetic Add the synthetic builders?"
   ],
   "options": [],
   "state": "open",
@@ -15,37 +15,28 @@
       "group",
       "add",
       "builders",
-      "runner=herdr",
+      "--runner",
+      "herdr",
+      "--limit",
+      "2",
+      "--set",
       "kind=claude",
-      "model=claude-opus-5-5",
-      "limit=2",
-      "arg=--permission-mode",
-      "arg=auto",
-      "arg=--safe-mode",
-      "arg=--effort",
-      "arg=medium",
-      "prompt=/synthetic/roles-in/builder.md"
+      "--set",
+      "args=--verbose",
+      "--set",
+      "prompt=/synthetic/yard/roles-in/builder.md"
     ],
-    "command": "yardr group add builders runner=herdr kind=claude model=claude-opus-5-5 limit=2 arg=--permission-mode arg=auto arg=--safe-mode arg=--effort arg=medium prompt=/synthetic/roles-in/builder.md",
-    "description": "Create a new herdr group without replacing one",
+    "command": "yardr group add builders --runner herdr --limit 2 --set kind=claude --set args=--verbose --set prompt=/synthetic/yard/roles-in/builder.md",
+    "description": "Add a new group without replacing one",
     "does": [
-      "creates the herdr group builders, new: no group of that name stands, and this never replaces one.",
-      "Kind claude (Claude Code); model claude-opus-5-5, passed as the kind's model flag; limit 2 sessions at once.",
-      "Args, literal, in order: \"--permission-mode\" \"auto\" \"--safe-mode\" \"--effort\" \"medium\".",
-      "Effort: medium (--effort medium).",
-      "Permissions: auto preset (\"--permission-mode\" \"auto\"); Claude judges each action; asks only about risky ones.",
-      "Login: the operator's default (no login_for); env: none (no env_file, no env_command); no skills or worktrees.",
-      "Source grants: none is held for the name builders now, plain or as any user; the approval's write checks again and refuses one given since.",
-      "Routes: none names it or resolves to it now; a route added later, or a yard default's {depot} template once a depot of the matching name is added, would send it work.",
-      "Flags every agent of kind claude gets (its harness file's flags.always, its memory-off switch, the brief's own args) are outside this card and unchanged: yardr harness show claude.",
-      "Role read from /synthetic/roles-in/builder.md when the ask was written: provenance only, the yard never reads that file; sha256 a1d5578cf96ebb1492df410277eafdbe822ae64c2e59b3c56488d551610987e1, 224 bytes.",
-      "On approval the role is written to roles/sha256/a1d5578cf96ebb1492df410277eafdbe822ae64c2e59b3c56488d551610987e1.md (mode 0600; a file there already is kept only when it holds exactly these bytes) and the group's prompt names that absolute file, so no depot's .yardr/roles file stands before it.",
-      "Back, group rm, removes the group and any route added to it since, and releases its live sessions; it leaves roles/sha256/a1d5578cf96ebb1492df410277eafdbe822ae64c2e59b3c56488d551610987e1.md, and any source grant given to the name after the approval, which outlives the group (a later card for the name refuses it until it is revoked).",
-      "Its role is:",
+      "adds the group builders on the herdr runner, with limit 2.",
+      "It starts claude (Claude Code) agents.",
+      "It starts them with \"--verbose\".",
+      "It sets no env_file: the operator gives one in a terminal, with yardr group set builders env_file=<file>.",
+      "On approval the yard writes the text below to the file /synthetic/yard/roles/builders.14bf1773d06d49439c44d99cc36cb82413edabdbfd8df091101dfda1dc96ad3d.md, read-only. Each session reads that file when it starts, so changing the file the ask names later changes no session:",
       "# Synthetic builder <b>role</b> & \"quotes\"",
       "\tTabbed line 🙂  ",
-      "WEIGHTY · forged authority line",
-      "Sessions the group runs now keep the model and args they started with; sessions it starts after the approval start with these.",
+      "Each session will start with the model a-line-of-the-role.",
       ""
     ],
     "back": "yardr group rm builders",
@@ -54,7 +45,7 @@
   "weight": [
     {
       "class": "code",
-      "line": "brings a program the yard will run: a new group builders whose agents the yard will run, with the args and role the card shows"
+      "line": "brings a program the yard will run: a new group builders on the herdr runner, whose sessions the yard will start as the card shows"
     }
   ]
 }

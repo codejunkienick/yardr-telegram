@@ -1,0 +1,45 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Add the synthetic runners?",
+  "context": [
+    "Synthetic Add the synthetic runners?"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "add",
+      "runners",
+      "--runner",
+      "exec",
+      "--set",
+      "cmd=make",
+      "--set",
+      "dir=/synthetic/yard/work",
+      "--set",
+      "worktrees=/synthetic/yard/work"
+    ],
+    "command": "yardr group add runners --runner exec --set cmd=make --set dir=/synthetic/yard/work --set worktrees=/synthetic/yard/work",
+    "description": "Add a new group without replacing one",
+    "does": [
+      "adds the group runners on the exec runner, with limit 1, the runner's default.",
+      "Each session runs sh -c with \"make\", as its program stands when the session starts.",
+      "The command runs in /synthetic/yard/work.",
+      "Its bead worktrees are made under /synthetic/yard/work.",
+      "It sets no env_file: the operator gives one in a terminal, with yardr group set runners env_file=<file>."
+    ],
+    "back": "yardr group rm runners",
+    "back_by": "the operator or the yardmaster"
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: a new group runners on the exec runner, whose sessions the yard will start as the card shows"
+    }
+  ]
+}

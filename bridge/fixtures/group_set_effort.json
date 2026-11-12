@@ -1,0 +1,30 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Raise the drafters effort?",
+  "context": [
+    "Synthetic Raise the drafters effort?"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "drafters",
+      "effort=high"
+    ],
+    "command": "yardr group set drafters effort=high",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the group drafters on the herdr runner: what each of its sessions runs, as the lines below say, and nothing else of it.",
+      "It sets no effort now, so each session starts at its harness's own.",
+      "Each session will start at the effort high: \"--effort\" \"high\" are added after its other flags."
+    ],
+    "back": "yardr group set drafters --unset effort",
+    "back_by": "only the operator"
+  }
+}

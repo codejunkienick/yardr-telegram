@@ -134,8 +134,8 @@ Supported proposals and their mechanics:
 - Verified single-file `skill add <absolute-source> [--name <name>]`: one
   captured SKILL.md of at most 32 KiB, with name/description string
   frontmatter. See [Captured single-file skill review](../../bridge/OPERATIONS.md#captured-single-file-skill-review).
-- Herdr `group add` and `group set`, within the supported runner, fields and
-  role limits in [Native group add and set review](../../bridge/OPERATIONS.md#native-group-add-and-set-review).
+- `group add` and `group set`, within the supported runners, settings and
+  prompt limits in [Native group add and set review](../../bridge/OPERATIONS.md#native-group-add-and-set-review).
 - `source add <file>`: a validated declaration and relative command file
   bundle. See [Source-add declaration and command review](../../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
 - Source-kind `pack apply <absolute-directory> --sha256 <digest>` or embedded

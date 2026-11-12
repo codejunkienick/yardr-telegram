@@ -50,7 +50,7 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | def _api_answer(receipt, conversation=None): | delivery receipts report presentation, not a native outcome |
 | pack | bridge/OPERATIONS.md | ## Native run cards | canonical content, paired human authority, same-card Approve then Confirm within 60 seconds, no typed-number approval, ledger and refusal fallbacks |
 | pack | bridge/OPERATIONS.md | ### Captured single-file skill review | captured skill bounds, supported metadata and complete review delivery |
-| pack | bridge/OPERATIONS.md | ### Native group add and set review | supported group runner, fields, roles and refusals |
+| pack | bridge/OPERATIONS.md | ### Native group add and set review | supported group runners, settings, prompts and refusals |
 | pack | bridge/OPERATIONS.md | ### Source-add declaration and command review | validated declaration and relative command file bundles |
 | pack | bridge/OPERATIONS.md | ### Source pack bundles | source-kind directory and embedded pack proposals; terminal fallback |
 | pack | bridge/OPERATIONS.md | ## Ordinary native ask cards | canonical ordinary decisions, recipient, refusals, input and recovery |
@@ -80,9 +80,9 @@ response; real CLI/RPC/carry coverage is in `bridge/test_run_asks.py`.
 
 Native group cards: `bridge/run_asks.py` (`parse_group`, `GroupCard`,
 `group_bundle`, `review_bundle`); `bridge/OPERATIONS.md`, “Native group add and
-set review”; `yardr/SETUP.md`, “Herdr group add and set”. The fixtures
-`bridge/fixtures/group_add.json` and `group_set.json` were captured from a real
-isolated core Bead response; `RealNativeTests` writes the groups through it.
+set review”; `yardr/SETUP.md`, “Group add and set”. The `bridge/fixtures/group_*.json`
+fixtures were captured from isolated aligned and upstream yardr Bead responses;
+`RealNativeTests` writes the groups through them.
 
 Document review bundles: `bridge/run_asks.py` (`review_bundle`, `source_plan`,
 `pack_document`, `RunAsks.document_file`, `RunAsks.send_card`);

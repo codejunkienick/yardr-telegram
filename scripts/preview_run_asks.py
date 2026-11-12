@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Print an offline HTML preview of synthetic native cards; no Telegram access."""
 import base64
+import re
 from html import escape
 from pathlib import Path
 import sys
@@ -98,18 +99,23 @@ def group_cards(name):
         sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
         capture('Complete review · one document · mode 0600', document_card(case.documents[-1]), 'bundle')
         capture('Final bound approval card', sends[-1], 'states')
-        case.press()
-        capture('Confirm step · first tap writes nothing', case.edits()[-1], 'states')
-        case.native.mode = 'refused'
-        case.press('confirm', uid=51)
-        capture('Core refused (stale group, grant or role) · nothing written', case.edits()[-1], 'states')
-        case.native.mode = None
-        case.press(uid=41)
-        case.press('confirm', uid=52)
-        result = ('group builders created (herdr, kind claude, limit 2); its prompt is roles/sha256/'
-                  'a1d5578cf96ebb1492df410277eafdbe822ae64c2e59b3c56488d551610987e1.md' if name == 'group_add' else
-                  'group drafters saved: model claude-opus-5-5, args "--effort" "xhigh"' if name == 'group_set_no_prompt' else
-                  'group planners saved: model claude-opus-5-5, args "--permission-mode" "auto" "--effort" "xhigh"')
+        if case.row()['weighty']:
+            case.press()
+            capture('Confirm step · first tap writes nothing', case.edits()[-1], 'states')
+            case.native.mode = 'refused'
+            case.press('confirm', uid=51)
+            capture('Core refused (stale group or prompt file) · nothing written', case.edits()[-1], 'states')
+            case.native.mode = None
+            case.press(uid=41)
+            case.press('confirm', uid=52)
+        else:
+            # An effort alone carries no weight: one tap approves.
+            case.press(uid=41)
+        # The yard's own result lines for each approval (runGroupAdd, runGroupSet).
+        written = re.search(r'the file (\S+), read-only', '\n'.join(case.native.ask['run']['does']))
+        result = dict(group_add='group builders (herdr · claude · limit 2)',
+                      group_set_prompt=f'group planners saved\n  prompt: /synthetic/yard/roles/planner.md -> {written and written[1]}',
+                      group_set_effort='group drafters saved\n  effort: (not set) -> high')[name]
         case.native.ask['ran'].update(result=result)
         case.bridge.run_asks.refresh()
         capture('Settled canonical outcome', case.edits()[-1], 'states')
@@ -373,9 +379,9 @@ def main():
         cards = skill_cards()[:1]
     if '--decide' in sys.argv:
         cards = decide_views()
-    for flag in ('--group-add', '--group-set', '--group-set-no-prompt'):
+    for flag, name in (('--group-add', 'group_add'), ('--group-set', 'group_set_prompt'), ('--group-set-effort', 'group_set_effort')):
         if flag in sys.argv:
-            cards = group_cards(flag[2:].replace('-', '_'))
+            cards = group_cards(name)
     if '--markdown' in sys.argv:
         cards = markdown_cards()
     heading = ('/decide' if '--decide' in sys.argv else 'Native ordinary decisions' if '--decisions' in sys.argv or '--dense' in sys.argv

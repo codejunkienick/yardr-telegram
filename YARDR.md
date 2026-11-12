@@ -286,14 +286,15 @@ operator checks; depot-kind and summary pack cards remain refused. See
 [source pack bundles](bridge/OPERATIONS.md#source-pack-bundles) and
 [the source upgrade procedure](yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback).
 
-Native herdr group cards (`group add` and `group set`, local core baseline
-`fc7375cf5ad4`, not a public install target)
-are read sentence by sentence against their argv; every role is re-derived
-from the card and must hash to the digest it shows. The whole review, roles
-quoted line by line, goes out as one document before the compact weighted
-card; unknown fields, runners, sentences or env/credential/login keys refuse
-before sending. See [operations](bridge/OPERATIONS.md#native-group-add-and-set-review)
-and [setup](yardr/SETUP.md#herdr-group-add-and-set).
+Native group cards (`group add` and `group set`, upstream yardr's rows;
+`model=` on the aligned build alone) are read sentence by sentence against
+their argv; the prompt an approval writes is re-derived from the card and
+must hash to the digest its file is named by. The whole review, prompts
+quoted line by line, goes out as one document before the compact card,
+weighted but for an effort alone; unknown words, runners, sentences or
+env/login keys refuse before sending. See
+[operations](bridge/OPERATIONS.md#native-group-add-and-set-review)
+and [setup](yardr/SETUP.md#group-add-and-set).
 
 Native ordinary decisions use authenticated `POST /v1/ask-card`, source update
 `ask_card` and CLI `ask-card` with the same bead/ask/routing/key-only contract.

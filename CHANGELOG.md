@@ -6,6 +6,19 @@ sees and does, not how the code is organised.
 
 ## [Unreleased]
 
+### Changed
+
+- Group add and group set cards read upstream yardr's rows: `group add
+  <name> --runner herdr|exec` with its `--set` settings, and `group set`
+  with a prompt, command, permission preset, effort and, on the aligned
+  yardr, a model. The new prompt arrives whole in the review document
+  before the card, with the digest its file is named by; a set of the
+  effort alone needs one tap. A card's default limit, exec directories
+  and take-back command must be the ones the approval writes and undoes.
+  Cards in the pre-alignment shapes refuse
+  with the fallback, and one already sent says "Proposal changed" and is
+  decided in the yard.
+
 ### Added
 
 - Native source-kind `pack apply` review through the existing `run_ask`

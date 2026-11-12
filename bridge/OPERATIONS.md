@@ -2161,8 +2161,10 @@ The native integration tests (`bridge/test_run_asks.py`, `bridge/test_siding_car
 start an isolated yardr server from the build named by `TGBRIDGE_TEST_YARDR` (an
 absolute path), else the `yardr` on `PATH`; with neither, they skip. Each test says
 which build it needs. The source-limit and trust-weight store test and the siding
-card tests run on every build. The local group card and skill-add store tests need a
-pre-alignment build and skip, with their reason, on an aligned or upstream one. A
+card tests run on every build. The skill-add store test needs a pre-alignment build
+and skips, with its reason, on an aligned or upstream one. The group add and set
+test needs an aligned or upstream build and skips on a pre-alignment one; it runs
+its `model=` card on the aligned build alone (upstream refuses the ask). A
 build is read from its running server, not its version: `POST /call/RecordSkillAdded`
 with `{}` answering `no such method RecordSkillAdded` means aligned or upstream, and
 any other answer means pre-alignment (`bridge/testyardr.py`); a pre-alignment build
@@ -2183,7 +2185,7 @@ mapping. No sandbox write exceptions are installed for native cards.
 
 Authenticated `POST /v1/run-ask` accepts exactly `bead`, positive `ask`,
 `topic`/`conversation`, `silent`, and `key` (or Idempotency-Key). It reads
-GetUser and Bead (and GetGroup for a role-less group set card) over the native RPC socket with X-Yardr-Connection naming
+GetUser and Bead over the native RPC socket with X-Yardr-Connection naming
 the configured source. RPC answers use `result` or structured
 `error: {code, message}`. Caller-supplied approval data is refused.
 
@@ -2194,7 +2196,7 @@ cannot use `runask:`. Move any existing overlapping callback_prefix to a
 different namespace before updating. The complete canonical card is HTML-escaped and limited
 to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
 following Footplate; canonical warning lines alone are bold. Self-contained
-cards keep that limit. A captured single-file `skill add` and a herdr `group
+cards keep that limit. A captured single-file `skill add` and a `group
 add`/`group set`, native `source add` and source-kind `pack apply` use the complete review bundles below. Secret/setup/identity/depot_push, parameter inputs,
 other carried files, depot-kind pack plans and crew-add prompts still refuse before
 sending, with Footplate/cards as the fallback.
@@ -2473,61 +2475,72 @@ rollback.
 
 ### Native group add and set review
 
-Core's herdr group rows (`yardr group add <name> runner=herdr kind=<kind>
-[model=] [limit=] [arg=<word> ...] prompt=<abs>` and `yardr group set <name>
-[model=] [arg=<word> ...]`) reach the bridge as ordinary run asks: argv,
-command, description, the yard's `does` sentences, back/back_by and one
-`code` weight. Role text has no field of its own on the wire; core writes it
-raw in `does` after a header that gives its SHA-256 and byte count. Minimum
-core is the group proposal contract of core revision `fc7375cf5ad4` (core
-`docs/api.md`, "Group proposal contract"), checked per call from the actual
-payload, not from a version string.
+The yard's group rows (`yardr group add <name> --runner herdr|exec
+[--limit <n>] [--set cmd=|dir=|kind=|args=|prompt=|worktrees=...]` and
+`yardr group set <name>` with any of `prompt=<file>`, `cmd=<command>`,
+`preset=<label>`, `model=<model>` and `effort=<level>|default`) reach the
+bridge as ordinary run asks: argv in the yard's stored order, command,
+description, the yard's `does` sentences, back/back_by and the weight.
+`model=` exists on yardr's aligned build alone, beside another setting;
+plain upstream refuses it when the ask is written. Bead serves no `role`
+field: the prompt an approval writes is the lines after the sentence "On
+approval the yard writes the text below to the file
+`<home>/roles/<group>.<sha256>.md`", and the digest in that file name
+decides its exact bytes, a final line ending included. A `role` the yard
+may serve beside the card is accepted on these two rows alone and must be
+that text.
 
-`run_asks.parse_group` reads the card sentence by sentence in core's order.
+`run_asks.parse_group` reads the card sentence by sentence in the yard's
+order (`runask_groupadd.go`, `runask_groupset.go`, `runask_strong.go`).
 Fixed sentences match exactly; variable ones match their pattern and are tied
-to the argv: name, runner `herdr`, kind, model, limit, the quoted args, the
-effort, the prompt path, back and back_by, and the exact weight line. Each
-role (the proposed role of an add; a set's standing home role and every
-depot's own role) is consumed by its byte count, and its re-derived bytes
-must hash to the digest shown, so role lines can never pass as sentences or
-hide a sentence. A depot's "same text as depot X" line must name the depot
-that showed that digest. Refused whole before any send: any other argv key
-(env, credentials, login, skills, worktrees, cmd, prompt on set), a runner
-other than herdr, a relative or unclean prompt, an unknown or missing
-sentence, a role over 32768 bytes or holding a bidi or line-separator
-character, an unreadable or unshown role, carried files, or a different
-weight, back or description. A group set card with no prompt sentence and
-so no role is core's card for a group that names no prompt; the bridge
-accepts it only when core's GetGroup, read on every fetch while the ask is
-open or put aside, answers that group with no prompt, and its card says the
-sessions start with no role. An answered, declined or taken-back ask settles
-from core's answer alone, so a group changed or removed after the approval
-never holds the card uncertain. A paused group (limit 0) is reviewed like
-any other; the card keeps its limit.
-Core keeps the authority: it decides the weight,
-the allow-listed args and presets, the snapshot binding (group revision,
-grants, routes, roles) and refuses a stale approval atomically.
+to the argv: name, runner, limit, kind, args, command, model, effort level,
+preset label, the written file's group name, back and back_by, and the exact
+weight. An add without `--limit` says limit 1, the herdr and exec default;
+an exec add's directory and worktrees are the argv's words, so one that
+resolves through a symlink to another path refuses. A set's back is the one
+the yard writes from what the card says stands now (`strongBack`): each
+changed setting put back to its value, or unset where the card says none
+(no flags of their own may be `--unset args`, `'args=[]'` or
+`'args=null'`); a value that reads as JSON refuses. An add's settings must be ones its card shows for the runner (herdr:
+kind, args, prompt, worktrees; exec: cmd, dir, prompt, worktrees). A set's
+standing prompt, when the card shows it, is the lines before the written
+file's sentence; the card reads whole only where exactly one such split
+leaves a new prompt that hashes to its file name and the rest of the card
+in order. Refused whole before any send, with the fallback: a pre-alignment
+card (`runner=`/`arg=` words, `roles/sha256/` files), any other argv word or
+order, a manual or peer runner, a relative or unclean prompt, directory or
+worktrees path, a value
+outside plain words, an unknown, missing or extra sentence, a prompt over
+8192 bytes or holding a control, bidi or line-separator character or a
+mark the yard draws itself, carried files, `seen`, or a different weight,
+back or description. The bridge reads no group: what stands is the card's to
+say, and the yard holds the approval to it.
+
+Weight follows the yard (`strongChanged`): an add, and a set carrying a
+prompt, command, model or preset, are `code`; a set of `effort=` alone,
+or `effort=default` alone, carries none and approves with one tap.
 
 The review bundle uses the shared one-document/one-card delivery above,
 with the same stable ledger keys, confirmation and rechecks. Its complete
-review contains every canonical sentence and each role as quoted JSON
-strings per line with its line ending; tabs, trailing spaces, blank lines
-and invisible characters remain visible. A manifest lists every role's
-label, path, SHA-256 and bytes. The compact card names operation, kind and
-role paths/digests and repeats kind, model, args, effort, permission,
-login/env, running-session and kept-grant sentences. Role content never
-appears as card text even when it resembles a canonical sentence.
+review contains every sentence of the card, the new prompt as quoted JSON
+strings per line with its line ending, and a set's standing prompt the same
+way, as its lines show on the card (whether that file ends in a line ending
+is not on the card). A manifest names the written file, its SHA-256 and
+bytes. The compact card names the operation, runner and written file and
+repeats every sentence of the yard's but the prompt lines; prompt content
+never appears as card text even when it reads like a sentence of the yard's.
 
-Approval is the weighted path above: Approve opens the Confirm step;
-Confirm on that bound card calls ApproveAsk with weighed=true once. Core writes the
-group (and an add's `roles/sha256/<sha256>.md`) in that write, with
-`approved` on its `group_set` event; the card settles from the canonical
-`ran`, "✓ approved, ran" with core's result line. A stale group, grant,
-route or role, a group made under the name, or a depot role changed since
-the card refuses in core: nothing is written, the ask stays open and the
-card says the yard refused; tap again after the yard changes back, or let
-the proposer ask afresh. Decline and Cancel write nothing. There is no
-pending carry for these rows and no automatic undo beyond the card's Back.
+Approval is the gate above: Approve then Confirm on a weighted card, one
+tap on a routine one; ApproveAsk is called once. The yard writes the group
+(and a prompt's read-only `roles/<group>.<sha256>.md`) in that write; the
+card settles from the canonical `ran`. A group changed since the card, or a
+prompt file that no longer holds the text, refuses in the yard: nothing is
+written, the ask stays open and the card says the yard refused. Decline and
+Cancel write nothing. A card sent before the yard moved to these shapes no
+longer reads whole: its next refresh or tap marks it "Proposal changed; use
+Footplate or the yard cards" and drops its buttons, and the operator decides
+it in the yard. There is no pending carry for these rows and no automatic
+undo beyond the card's Back.
 
 
 ## Ordinary native ask cards
@@ -2703,7 +2716,7 @@ to 100 UTF-16 units, never inside a combining or joined character), then the
 kind, the ID, the bead's title and the asker. An ID is `<bead>#<ask>`: the
 bead is unique in this yard and the ask is that bead's note seq; each bridge
 serves one yard, so no ID is looked up anywhere else. Decisions, words
-questions, run, source-add bundles, single-file skill and herdr group add/set proposals get a
+questions, run, source-add bundles, single-file skill and group add/set proposals get a
 button (a group ask is listed as `run`; one with a field the card does not
 support is listed without a button, as below). Secret, setup,
 identity, depot-push, weighted, terminal-only run (file-carrying or

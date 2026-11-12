@@ -2160,12 +2160,13 @@ and the kernel picks a port.
 The native integration tests (`bridge/test_run_asks.py`, `bridge/test_siding_cards.py`)
 start an isolated yardr server from the build named by `TGBRIDGE_TEST_YARDR` (an
 absolute path), else the `yardr` on `PATH`; with neither, they skip. Each test says
-which build it needs. The source-limit and trust-weight store test runs on every
-build. The guarded siding, local group card and skill-add store tests need a
+which build it needs. The source-limit and trust-weight store test and the siding
+card tests run on every build. The local group card and skill-add store tests need a
 pre-alignment build and skip, with their reason, on an aligned or upstream one. A
-build is read from its running server, not its version: `POST /call/SidingProposal`
-with `{}` answering `no such method SidingProposal` means aligned or upstream, and
-any other answer means pre-alignment (`bridge/testyardr.py`).
+build is read from its running server, not its version: `POST /call/RecordSkillAdded`
+with `{}` answering `no such method RecordSkillAdded` means aligned or upstream, and
+any other answer means pre-alignment (`bridge/testyardr.py`); a pre-alignment build
+refuses the empty call on its skill name and writes nothing.
 
 Wire references: `YARDR.md` (the hook's body and the yard API) and
 `<repo>/yardr/tgbridge.yaml` (the source the yard reaches the bridge
@@ -2739,13 +2740,13 @@ contract) beside the ordinary-card baseline; no new grant, setting, table
 migration or service. The bridge adds one SQLite table, `decide_ids`, mapping
 a button id to its bead and ask.
 
-## Siding status and guarded store actions
+## Siding status and the plain fold
 
 Authenticated `POST /v1/siding-card`, CLI `siding-card` and the source update
 `siding_card` accept `depot`, optional `flow`, `stage`, `group`, routing
 (`topic` or `conversation`), `silent`, and a stable `key`. The HTTP
 `Idempotency-Key` header can supply the key. They accept no actor, command,
-member list, destination, digest or purported result from the caller.
+member list, destination or purported result from the caller.
 
 ```sh
 <root>/bin/telegram-bridge siding-card \
@@ -2754,74 +2755,74 @@ member list, destination, digest or purported result from the caller.
 yardr call tgbridge siding_card depot=<depot> key=<stable-key>
 ```
 
-Discovery follows the core's actual routes and manual groups with any
-`fold`, `fold_after` or `fold_max` key, then reads `SidingProposal`. Effective
-limits, readiness, due time, every waiting bead's title/id/points/eligibility,
-and the ordered selected proposal come from that canonical read. Defaults
-are four waiting beads, eight hours since the latest arrival and six points.
-An empty selection says no waiting siding matches. Ambiguous flows refuse:
-narrow the flow/stage/group. A complete card must fit 3500 UTF-16 units;
-otherwise publication refuses entirely with no approval controls. No subset
-is silently picked to fit either the message or the point ceiling.
+The card is built from yardr's ordinary calls, the same on the aligned and
+on plain upstream yardr; no siding guard in core is needed:
 
-Only version 1 `sp1` proposals with `guard=store` and empty `refusals` offer
-an approval button. A repository-backed own flow or an eligible until
-blocker's repository flow is **status only**: the card names `source` and
-all unguarded inputs and offers no mutation control. This is the reviewed
-first slice; repository-backed mutations remain unfinished. Unknown schemas,
-source classes or missing methods refuse before controls; there is no
-version-string guess or fallback to `FoldBeads`/`Advance`. Capability checks
-send missing-argument requests to the guarded methods: the installed contract
-rejects them before any effect; an old build rejects the method itself.
+- **Discovery.** `GetDepot`, `Groups`, `Routes` and the `operator` of
+  `Settings` find each stage whose route sends the depot's beads to a manual
+  group whose config states `fold`, `fold_after` or `fold_max` (upstream
+  `store.SidingOf`). An unstated `fold_max` is 6.
+- **Members.** `ListBeads [{"Depot": d, "Stage": s}]` lists the stage's open
+  beads, and each is a member of the siding whose group its own route names,
+  ranked and matched as yardr's `store.MatchRoute` does: a bead a more
+  specific route sends to another group is not on this card. `SidingBeads` gives each its points and why a fold would leave it
+  (`held`, `claimed`, `peer`, `train`, `blocked`, `asked`); `NextStages`
+  gives each its flow and the carrier's stage, the first stage the flow
+  leads to, as `yardr bead fold` picks it. Beads of different flows, or of
+  one flow name from different sources, make separate cards, as yardr keys
+  a siding.
+- **Proposal.** The eligible beads, oldest entered first, with their ids,
+  titles, points, the carrier's stage and `fold_max`. Over `fold_max`,
+  fewer than two eligible, or no single next stage: status only, no button.
 
-Each displayed card permanently binds its resolved ask, digest, ordered
-selected set, revisions, points, source configuration and target to this
-instance's yard, home directory identity, operator, source identity, Telegram
-human/bot/chat/topic and message token. Cards expire after 15 minutes.
-Replies `fold <id> <id> …` and `release <id>` produce a **new explicit review
-card**, retire the old card and execute nothing. The paired human must press
-the new button. Every reply to a known siding message, including media or
-forwarded content, is consumed as a proposal or refusal and never relayed as
-an agent's authority. `Leave waiting` withdraws the card without a native
-write. Callback prefix `siding:` is newly reserved; settings using it or an
-overlapping prefix must be migrated explicitly. Generic sends cannot mint
-native approval callbacks.
+Every card lists every open bead of the siding. A reply `fold <id> <id> …`
+asks for a **new card** for exactly those beads, in that order, and never
+folds; the old card is withdrawn. A hand fold has no points maximum, but the
+reply refuses a bead that is not open in the siding or that a fold would
+leave; a held or asked bead, which `FoldBeads` itself would take, is folded
+with `yardr bead fold` in a terminal. A reply `release <id>` answers that
+release is not offered on this card yet and runs nothing. `Leave waiting`
+withdraws the card. Cards expire after 15 minutes. Callback prefix
+`siding:` is reserved; generic sends cannot mint it.
 
-A click verifies the current configured operator role and
-`identities[source].id`, pairing, source/home and canonical proposal again.
-Only `FoldSidingExpected` or `ReleaseSidingExpected` is sent, with the stored
-resolved ask/digest/stable op and verified operator actor. The core transaction
-enforces configuration, eligibility, revision, membership, creation, closure,
-transition and fold limits. Native stage asks and gate flips remain normal
-consequences; no approval or weight gate is bypassed. Fold closes exactly
-the shown parts into one carrier; single release moves only the shown bead.
+A tap reads the shown beads again: each must still be open, in the siding's
+stage, routed to its group, not stuck, and bound for the shown carrier stage; any difference
+refuses with the beads' current state on the card and nothing written. Then
+the bridge marks the row attempted, calls `FoldBeads [[ids], {"To": stage,
+"Title": ""}, operator]` once with exactly the shown ids and stage, and,
+whatever it answered, reads the beads (`GetBead`):
 
-The bridge saves intent before the write and reconciles `SidingOutcome` with
-that **same** ask/digest/op before recomputing anything. Success text derives
-from the native event plus the carrier/bead's current state, including the
-remaining set at commit. External automatic folding or movement is reported
-from canonical bead state, with approval removed. A write's timeout, error
-JSON or HTTP status is never evidence of rollback. No effect is retried
-automatically. Null outcome can mean pruned history: the card honestly says
-uncertain, removes approval and never invents another op or fresh digest.
-A withdrawn card uses outcome reads only. A fresh source request with a new
-key can publish a new reviewed canonical proposal. `ask-close` ignores caller
-result text. It closes settled, stale, withdrawn or expired cards only after
-confirmed delivery of their control-free presentation, and status cards only
-from their saved publish receipt. Open cards await the human; attempted
-operations without a validated outcome remain uncertain and refuse closure.
-Every card in a request must confirm its own message under the saved pairing.
+- every bead closed `folded into C`, one C: settled; the card names C, its
+  stage, the beads and the undo `yardr bead unfold C <member> --reason <why>`;
+- every bead still open in the siding: nothing folded (a fold is all or
+  nothing); the mark clears and the card stays open;
+- anything else: the current state, no button.
 
-Siding rows, update receipts, lock, send fingerprints, delivery recovery,
-reconciliation edits and idempotency keys share the native-card ledger with
-ordinary/run cards. A recovered message must have the exact original send
-fingerprint and confirmed delivery; an unrelated send cannot become an
-approval message. Each instance uses its own settings, home and immutable
-release copy; separate stores may pair the same Telegram human.
+A repeated tap cannot fold twice: the fold refuses closed beads, and a tap
+on a settled card answers `Already folded into C` with no write. A crash
+between the fold and the ledger write is settled the same way by the next
+refresh. Reads are retried when yardr answers 503 while it replaces itself;
+the fold never is. A yard home that stops validating while a reply or tap
+arrives is logged and nothing is written; the poll goes on.
 
-`python3 -B scripts/preview_siding_cards.py` renders offline HTML by exercising
-the actual bridge against a disposable installed native core and fake
-Telegram. These previews prove the rendered states, not a Telegram runtime
-or live activation. The integration tests cover source calls, authenticated
-HTTP, installed-copy CLI/imports and production getUpdates → refresh → drain
-ordering without accessing live accounts or stores.
+Siding rows live in `siding_fold_cards`. The previous release's
+`siding_cards` rows (guarded `sp1` proposals) are retired once: their own
+`withdrawn` field says the card is from an older bridge release, and their
+message loses its buttons; a tap or reply on one answers that and runs
+nothing. Rolled back, the previous release reads its retired rows as
+withdrawn and never sees the new table. Siding rows share the native-card
+ledger with ordinary and run cards: update receipts, lock, send
+fingerprints, delivery recovery, display edits and idempotency keys. Every
+card is bound to this instance's yard, home directory identity, operator,
+source identity and Telegram human, bot, chat and topic. `ask-close` closes
+settled, stale, withdrawn or expired cards after confirmed delivery of their
+control-free presentation, and status cards from their publish receipt;
+open cards await the human.
+
+`python3 -B scripts/preview_siding_cards.py` renders offline HTML of an
+open, a status-only, an explicit-subset, a settled and a refused card from a
+disposable yardr store and fake Telegram. It proves the rendered states, not
+a Telegram runtime or live activation. The integration tests
+(`bridge/test_siding_cards.py`) run on every yardr build and cover source
+calls, authenticated HTTP, installed-copy CLI and imports, and the production
+getUpdates → refresh → drain order.

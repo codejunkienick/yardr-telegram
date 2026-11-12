@@ -149,7 +149,7 @@ must likewise become `crew`. See [compatibility names and their checks](docs/pub
   each under `http://127.0.0.1:<port>`. See
   [Native operator approvals](#native-operator-approvals) for `run_ask` and
   `ask_card`, and
-  [Siding status and guarded store actions](bridge/OPERATIONS.md#siding-status-and-guarded-store-actions)
+  [Siding status and the plain fold](bridge/OPERATIONS.md#siding-status-and-the-plain-fold)
   for `siding_card`.
 - `notify`: the `tell` call to the user's `TGBRIDGE_CONVERSATION`, so what
   lands in the operator's inbox can reach the phone.
@@ -326,15 +326,14 @@ Native siding cards use authenticated `POST /v1/siding-card`, source update
 `siding_card`, and CLI `siding-card --depot <depot> --idempotency-key <key>`.
 Optional flow/stage/group narrow discovery; topic/conversation and silent
 retain the usual routing contract. The caller supplies no actor, command,
-member set, target, digest or result. Canonical waiting/stuck status and exact
-fold proposals come from socket-only `SidingProposal`; a paired human reply
-`fold id id …` or `release id` creates a new review card before any effect.
-Only the new card's verified human button can call `FoldSidingExpected` or
-`ReleaseSidingExpected`. Version 1 guard=store with empty refusals is
-required; repository-own-flow or eligible until repository inputs are visibly
-status only. No legacy write fallback is allowed. The saved resolved
-ask/digest/op goes to `SidingOutcome` before recomputation, including after
-restart, withdrawal or an ambiguous write; null may mean pruned history and
-never permits a blind retry. `siding:` joins the reserved callback prefixes.
-See the operations and setup guides for the first-slice limit and the sole
-additional per-call grant. Existing ordinary/run/chat cards keep their paths.
+member set, target or result. The card reads the siding through yardr's
+ordinary calls (`ListBeads`, `SidingBeads`, `NextStages`), the same on the
+aligned and on plain upstream yardr, and lists every waiting bead with the
+exact fold it proposes. The paired human's tap re-reads the shown beads and
+calls the plain `FoldBeads` once with exactly those ids and the shown carrier
+stage; the beads' own state settles the card, so a repeated tap cannot fold
+twice (a fold refuses closed beads) and `yardr bead unfold` is the undo. A
+reply `fold id id …` creates a new card for exactly those beads before any
+effect; `release` is not offered yet. `siding:` is a reserved callback
+prefix. See the operations and setup guides for the one per-call grant.
+Existing ordinary/run/chat cards keep their paths.

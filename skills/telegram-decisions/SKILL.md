@@ -20,7 +20,7 @@ coordinator if the destination is unclear.
 | A chat question with two to four fixed options | `send` with chat ask buttons below. |
 | A canonical option, words or generated manual-stage decision | `ask_card`. |
 | Approval of a supported native proposal | `run_ask`. |
-| Canonical waiting-siding status or a guarded fold/release proposal | `siding_card`. |
+| A siding's waiting beads and a fold of exactly the shown beads | `siding_card`. |
 
 Never substitute ordinary or chat buttons for native approval or a native answer.
 Any message offering a choice goes out with buttons. Lettered option lines
@@ -103,7 +103,7 @@ Native settings, source identity and explicit per-call grants are the operator's
 bootstrap; builders never change live settings. See
 [12. Native run cards (operator, optional)](../../yardr/SETUP.md#12-native-run-cards-operator-optional),
 [13. Ordinary native decisions (operator; optional)](../../yardr/SETUP.md#13-ordinary-native-decisions-operator-optional)
-and [14. Optional native siding cards (store-backed first slice)](../../yardr/SETUP.md#14-optional-native-siding-cards-store-backed-first-slice).
+and [14. Optional native siding cards](../../yardr/SETUP.md#14-optional-native-siding-cards).
 Without the relevant grant, ask the coordinator; do not enable it yourself.
 
 ### Ordinary native decisions
@@ -151,22 +151,21 @@ document before the compact approval card. Weighty cards require Approve, then
 Confirm on that same card within 60 seconds; typed numbers never approve.
 The linked sections hold the human's review and confirmation procedure.
 
-### Siding status and guarded actions
+### Siding status and the plain fold
 
 ```sh
 yardr call <source> siding_card depot=<depot> key=<stable-key> --json
 ```
 
 Add `flow=<flow> stage=<stage> group=<group>` to narrow discovery and
-`topic=<topic>` or `conversation=<id>` to route it. It presents canonical
-waiting status and selected proposals. Only store-guarded proposals with no
-refusals offer approval controls; repository-backed inputs remain status only.
-An ambiguous selection needs narrower filters. Unknown or oversized proposals
-refuse whole: use the yard's canonical status/cards instead of inventing a subset
-or another mutation path. An uncertain attempted action needs reconciliation,
-not a new proposal. See
-[Siding status and guarded store actions](../../bridge/OPERATIONS.md#siding-status-and-guarded-store-actions)
-for selection replies, expiry, withdrawal, outcomes and recovery.
+`topic=<topic>` or `conversation=<id>` to route it. The card lists every bead
+waiting in the siding and proposes a fold of the eligible ones; over
+`fold_max` or with fewer than two eligible it is status only. Only the paired
+human's tap folds, exactly the beads shown. An oversized card refuses whole:
+do not invent a subset or another way to fold. The human may reply
+`fold <id> <id> …` for a card of a chosen subset. See
+[Siding status and the plain fold](../../bridge/OPERATIONS.md#siding-status-and-the-plain-fold)
+for subset replies, expiry, withdrawal, changed beads and the undo.
 
 ### Refresh a native outcome
 

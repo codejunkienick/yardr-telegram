@@ -2076,7 +2076,13 @@ class Bridge:
         thread_id = self._topic_thread(message)
         if thread_id is not None and self.auto_topics:
             self._observe_auto_topic(thread_id, message)
-        if self.siding_cards.reply(self._update_id(update), message) or self.run_asks.reply(self._update_id(update), message):
+        try:
+            siding = self.siding_cards.reply(self._update_id(update), message)
+        except run_asks.NativeError as error:
+            # An unbound yard home (validate_home) is no siding update: log it, write nothing, keep polling.
+            self._log(f'siding reply not bound (update {self._update_id(update)}): {error}')
+            siding = False
+        if siding or self.run_asks.reply(self._update_id(update), message):
             return
         found = self._match_command(text) if forward is None and attachment is None and isinstance(text, str) else None
         if found is not None and found[0] is self.DECIDE_COMMAND:

@@ -46,6 +46,14 @@ sees and does, not how the code is organised.
 
 ### Changed
 
+- Siding cards run on yardr's ordinary calls, so they work against the
+  aligned and plain upstream yardr: the card lists the open beads the
+  siding's own route sends to its group, as yardr matches routes, proposes a fold of the eligible ones, and a tap calls the plain fold with
+  exactly the shown beads and carrier stage. A repeated tap cannot fold
+  twice, the card names the carrier and the `yardr bead unfold` undo, and
+  repository-backed flows are no longer status only. A reply `release <id>`
+  says release is not offered yet. Cards from the previous release are
+  retired once with their buttons removed; request a new card.
 - Group-set cards accept both the earlier skills wording and core
   `58e93b7f`'s wording; a delivered card whose canonical text changes still
   refuses approval. From that core, the yardmaster, other crew members and
@@ -111,6 +119,10 @@ sees and does, not how the code is organised.
 
 ### Fixed
 
+- A reply or tap on a siding card while the yard home fails its safety
+  check no longer stops the bridge's poll loop: it is logged, nothing is
+  written, and polling goes on. Siding reads are retried while yardr
+  replaces itself; the fold is never retried.
 - An unconfirmed ordinary decision card can be reconciled by the paired
   operator's verified tap on the original message, without resending or
   replacing its ambiguous send receipt. Stale cards retire using canonical

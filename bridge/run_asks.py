@@ -29,7 +29,8 @@ PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
-READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'SidingProposal', 'SidingOutcome', 'Groups', 'Routes')
+READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
+         'NextStages', 'GetBead')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
@@ -156,9 +157,6 @@ class YardSocketClient:
                     if (method in ('AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected')
                             and error['code'] == 'error' and error['message'] == 'no such method ' + method):
                         raise RPCUnsupported('ask_card_requires_guarded_core' + FALLBACK)
-                    if (method in ('SidingProposal', 'SidingOutcome', 'FoldSidingExpected', 'ReleaseSidingExpected')
-                            and error['code'] == 'error' and error['message'] == 'no such method ' + method):
-                        raise RPCUnsupported('siding_card_requires_guarded_core' + FALLBACK)
                     code = error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
                     if (method == 'ApproveAsk' and code == 'error'
                             and error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (

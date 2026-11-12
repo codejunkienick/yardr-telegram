@@ -616,17 +616,16 @@ setup, grants, independent install and restart belong to that instance's
 operator after review. A bridge whose unit still runs a checkout moves first,
 by [Move an existing bridge to its own installation](#move-an-existing-bridge-to-its-own-installation).
 
-## 14. Optional native siding cards (store-backed first slice)
+## 14. Optional native siding cards
 
 Keep this instance's existing native home/operator/source identity and
-pairing. The verified minimum here is installed native core `24bcfd0955c9`,
-whose socket-only contract provides `SidingProposal`, `SidingOutcome`,
-`FoldSidingExpected` and `ReleaseSidingExpected`. The bridge checks the
-actual methods and complete version 1 guard schema before offering controls;
-a version string alone is insufficient. All bound inputs must have
-`guard=store` with no refusals. Repository-own-flow and repository-dependent
-until releases remain status only, with named unguarded inputs. This release
-does not complete repository-backed siding mutations or all administration.
+pairing. The cards use yardr's ordinary calls: `GetDepot`, `Groups`,
+`Routes`, `Settings`, `ListBeads`, `SidingBeads`, `NextStages` and `GetBead`
+to read, and the plain `FoldBeads` to fold. They exist on the aligned yardr
+(`11f81f38`), on plain upstream (`09fa95be`) and on the earlier local build
+(`10533b9e`); no siding guard in core is needed, and repository-backed flows
+are no different from store flows. Release of one siding bead is not on the
+card yet.
 
 After independent review, the operator owns installation into this
 instance's release root, supported source-pack planning/application, and
@@ -640,12 +639,11 @@ yardr source grant tgbridge siding_card --crew yardmaster
 yardr call tgbridge siding_card depot=<depot> key=<stable-card-key>
 ```
 
-These commands are checked against the installed CLI and exercised on an
-isolated source/loopback bridge. No blanket grant is needed. The caller can
-publish canonical status; only the paired human can approve the exact shown
-fold or release. See `bridge/OPERATIONS.md` for selection replies, expiry,
-withdrawal, ceiling limits, stale proposals and pruned-outcome uncertainty.
-No siding, flow, route or group is created by enabling the feature.
+These commands are exercised on an isolated source and loopback bridge. No
+blanket grant is needed. The caller can publish status; only the paired
+human's tap folds, and only the exact beads shown. See `bridge/OPERATIONS.md`
+for subset replies, expiry, withdrawal, `fold_max`, changed beads and the
+undo. No siding, flow, route or group is created by enabling the feature.
 
 A source commit is not an installation or activation. Before activation,
 review offline previews and the isolated integration gate. After an
@@ -653,10 +651,11 @@ operator-owned install/restart, check the instance's configured native
 identity and a status-only request before reviewing any real action. To
 roll back, use the existing instance-root `install.sh --rollback` procedure,
 review its printed service step and restart only that instance. Keep its
-ledger, home, credentials, source bindings and grants. Withdraw open siding
-cards first; old code cannot process their callbacks or source call. Siding
-rows occupy a separate table in the same ledger so older ordinary/run card
-readers remain compatible. Builder validation performs no live install,
+ledger, home, credentials, source bindings and grants. Siding rows live in
+their own table (`siding_fold_cards`), which the previous release never
+reads: its taps and replies on these cards run nothing, and its poll goes
+on. Cards from the previous release are retired once by this one, so after a
+rollback they stay withdrawn; request new cards. Builder validation performs no live install,
 source apply, grant, restart or Telegram action.
 
 ## Add a second crew member's bot

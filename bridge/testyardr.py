@@ -13,9 +13,9 @@ import subprocess
 import time
 
 NAMED = 'TGBRIDGE_TEST_YARDR'
-PROBE = (b'POST /call/SidingProposal HTTP/1.1\r\nHost: localhost\r\nX-Yardr-Connection: tgbridge\r\n'
+PROBE = (b'POST /call/RecordSkillAdded HTTP/1.1\r\nHost: localhost\r\nX-Yardr-Connection: tgbridge\r\n'
          b'Content-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}')
-NO_SUCH_METHOD = {'error': {'code': 'error', 'message': 'no such method SidingProposal'}}
+NO_SUCH_METHOD = {'error': {'code': 'error', 'message': 'no such method RecordSkillAdded'}}
 
 
 def binary():
@@ -59,9 +59,10 @@ def stop(server):
 
 
 def aligned(home):
-    """True for an aligned or upstream build: its server has no SidingProposal method.
+    """True for an aligned or upstream build: its server has no RecordSkillAdded method, which the alignment dropped.
 
-    Any other answer to the probe, including one that is not JSON, means pre-alignment.
+    A pre-alignment build refuses the empty probe on its skill name, so it writes nothing. Any other answer,
+    including one that is not JSON, means pre-alignment.
     """
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(10)

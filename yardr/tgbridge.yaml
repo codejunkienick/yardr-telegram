@@ -121,7 +121,7 @@ calls:
       body: { bead: "{bead}", ask: "{ask}", topic: "{topic}", conversation: "{conversation}", silent: "{silent}", key: "{key}" }
   siding_card:
     kind: update
-    about: Show canonical waiting sidings and explicit store-guarded fold or release proposals
+    about: Show a siding's waiting beads and a fold of exactly the shown beads
     params:
       depot:        { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" }
       flow:         { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$", optional: true }

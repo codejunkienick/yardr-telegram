@@ -166,7 +166,7 @@ status is for use with this shipped pack, as checked on 2026-11-09.
 | [Source-add declaration and command file review](../bridge/OPERATIONS.md#source-add-declaration-and-command-review) | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | None yet | Same `run_ask` |
 | [Source-kind pack review (directory and embedded)](../bridge/OPERATIONS.md#source-pack-bundles) | Complete carried-source pack bundles; directory snapshot/digest proposal contract (`ced24b0e849c`) for directory applies | None yet | Same `run_ask` |
 | Ordinary option/words/manual-stage decisions and `/decide` | Bead ask turns, UserAsks and guarded Answer/Defer/DeclineAskExpected (`7fa0d4c75ff6`) | None yet; preview alone cannot apply pack | `ask_card` |
-| Siding status and paired fold/release | Socket-only SidingProposal/Outcome and guarded expected writes (`24bcfd0955c9`), version 1 guard schema | None yet | `siding_card` |
+| Siding status and paired fold | Plain GetDepot, Groups, Routes, ListBeads, SidingBeads, NextStages, GetBead and FoldBeads (aligned `11f81f38`, upstream `09fa95be`) | None yet | `siding_card` |
 | Explicit Markdown replies | Core explicit reply format transport (`0035b8c13e27`) plus `thread.formats: [markdown]` in installed source | None yet | No new grant for thread replies; `send`/`pin` for those calls |
 
 These are locally verified capability baselines, not a public minimum version

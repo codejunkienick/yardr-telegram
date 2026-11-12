@@ -1,0 +1,126 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic pack?",
+  "context": [
+    "Synthetic isolated pack review"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "pack",
+      "apply",
+      "/synthetic/pack",
+      "--sha256",
+      "11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba"
+    ],
+    "command": "yardr pack apply /synthetic/pack --sha256 11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba",
+    "description": "Import a pack into the yard: set the yard to what the pack says",
+    "does": [
+      "pack synthetic (/synthetic/pack at sha256:11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba), of kind source, into the yard: it replaces 1 source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "source synthetic: its calls go to https://example.invalid. It names no credential.",
+      "it would replace the source synthetic the yard has under that name.",
+      "grants kept for source synthetic: crew member reviewer: health (kept).",
+      "the copy would remove obsolete.txt, which neither declaration names: sha256 42414dd64ba54d3a2fc57501569ae71a82647a9afde26161dc0f80ffb3cfc4d3 (mode 0644, 24 bytes).",
+      "call health (read): GET /health. It takes no parameter, and sends no query.",
+      "call health sends no body. Its answer is returned as it comes, at most 65536 bytes.",
+      "The source names no check call and no idempotency header.",
+      "it can tell no user.",
+      "it hears no deliveries.",
+      "it names no limits command.",
+      "it speaks in no threads.",
+      "its issues are no bead's link.",
+      "its identity keys keep their case.",
+      "what it sends in: deliveries are verified by the header X-Secret holding the hook's secret itself (scheme secret); it sends no delivery id; it sends no timestamp; bodies are unique; the command [bin/report] turns a verified body into the envelope, handed no credential; its events carry no field of their own.",
+      "it sends no pull-request or CI events.",
+      "command file bin/report: [bin/report] (hook.normalize, handed no credential): sha256 9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4 -> sha256 9c267c43819600558578f9aeb903ac1a3570a462bf7e564d2a2feee67163ddaa, mode 0700 (2 insertions, 2 deletions)."
+    ],
+    "back": "yardr source rm synthetic",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "synthetic",
+        "text": "name: synthetic\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [bin/report]\nabout: Synthetic reviewed upgrade\n",
+        "files": [
+          {
+            "program": "bin/report",
+            "text": "#!/bin/sh\n# Synthetic replacement <&>; never executed.\nprintf \"new\\n\"\n",
+            "sha256": "9c267c43819600558578f9aeb903ac1a3570a462bf7e564d2a2feee67163ddaa"
+          }
+        ],
+        "old": [
+          {
+            "program": "bin/report",
+            "old_sha256": "9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4",
+            "new_sha256": "9c267c43819600558578f9aeb903ac1a3570a462bf7e564d2a2feee67163ddaa",
+            "diff": "--- was\n+++ is\n@@ -1,3 +1,3 @@\n #!/bin/sh\n-# Synthetic <&> file; never executed.\n-printf \"old\\n\"\n+# Synthetic replacement <&>; never executed.\n+printf \"new\\n\"\n"
+          }
+        ],
+        "removed": [
+          {
+            "path": "obsolete.txt",
+            "sha256": "42414dd64ba54d3a2fc57501569ae71a82647a9afde26161dc0f80ffb3cfc4d3",
+            "mode": "0644",
+            "size": 24,
+            "text": "Synthetic removed copy\r\n"
+          }
+        ],
+        "inventory": [
+          {
+            "path": "bin/report",
+            "sha256": "9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4",
+            "mode": "0700",
+            "size": 63
+          },
+          {
+            "path": "obsolete.txt",
+            "sha256": "42414dd64ba54d3a2fc57501569ae71a82647a9afde26161dc0f80ffb3cfc4d3",
+            "mode": "0644",
+            "size": 24
+          }
+        ]
+      }
+    ],
+    "pack": {
+      "directory": {
+        "path": "/synthetic/pack",
+        "files": [
+          {
+            "path": "SETUP.md",
+            "text": "Synthetic setup notes\r\nNo live service.\n",
+            "sha256": "d9a518b454a270be14b223c715975927c5f55e94fe38f5c2f4a0d2191b8874d7"
+          },
+          {
+            "path": "bin/report",
+            "text": "#!/bin/sh\n# Synthetic replacement <&>; never executed.\nprintf \"new\\n\"\n",
+            "sha256": "9c267c43819600558578f9aeb903ac1a3570a462bf7e564d2a2feee67163ddaa"
+          },
+          {
+            "path": "pack.yaml",
+            "text": "name: synthetic\nkind: source\nsetup: SETUP.md\nsources:\n  synthetic:\n    declaration: source.yaml\n",
+            "sha256": "4745feb6c87c647e5a1a7355d151e75fc573b5a1507e5e90c2129224444e5b80"
+          },
+          {
+            "path": "source.yaml",
+            "text": "name: synthetic\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [bin/report]\nabout: Synthetic reviewed upgrade\n",
+            "sha256": "956d562987b3abc905eb31450f9a3b396e04988513e5e9a728d3cb3d795f45a0"
+          }
+        ]
+      },
+      "name": "synthetic",
+      "kind": "source",
+      "label": "/synthetic/pack at sha256:11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba",
+      "digest": "11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba"
+    }
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the command file bin/report of synthetic (changed)"
+    }
+  ]
+}

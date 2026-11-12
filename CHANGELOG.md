@@ -8,6 +8,14 @@ sees and does, not how the code is organised.
 
 ### Changed
 
+- Source and source-pack cards read upstream's replacement and directory
+  shapes. Kept grants appear on aligned replacement cards; plain upstream
+  replacement cards direct the operator to the yard before sending. Directory
+  reviews show carried sources and the native digest. Pack replacements that
+  keep their programs can approve with one tap; changed programs need Confirm.
+  The declaration's comments moved to setup so it fits the 8192-byte card limit
+  with every YAML value preserved. Unsupported saved cards retire on refresh.
+
 - Group add and group set cards read upstream yardr's rows: `group add
   <name> --runner herdr|exec` with its `--set` settings, and `group set`
   with a prompt, command, permission preset, effort and, on the aligned
@@ -22,9 +30,9 @@ sees and does, not how the code is organised.
 ### Added
 
 - Native source-kind `pack apply` review through the existing `run_ask`
-  grant. Directory proposals deliver complete review parts and a document
-  containing every captured file before weighted approval; embedded source
-  packs use complete text bundles. Depot packs and parameter inputs refuse.
+  grant. Directory proposals deliver one document of carried sources and the
+  native digest before approval; embedded source packs use carried-source
+  reviews. Depot packs and parameter inputs refuse.
 - Structured native decision and run cards with bold questions, spaced
   context, numbered options and separated outcomes. Quoted evidence stays
   literal, and existing delivery receipts and approval gates keep working.

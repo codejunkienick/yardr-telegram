@@ -340,8 +340,9 @@ yardr bead ask <bead> "Add or replace this source?" \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=source-review-1
 ```
 
-Verified minimum contract: core `546e3fdd2127` with carried source-add
-snapshots, inventory/diffs and canonical carry outcomes, plus this bridge.
+The upstream carried source-add contract supplies declarations, programs,
+inventory/diffs and canonical carry outcomes. The aligned build additionally
+discloses grants; replacing cards on plain upstream use the terminal fallback.
 The bridge validates actual envelopes on every read. Keep the existing
 native home/operator/source and paired identity; there is no new grant,
 setting, package install or filesystem permission. The release includes its
@@ -370,6 +371,50 @@ change or added grant is needed for this renderer. Roll back with the
 existing instance-root installer/printed restart step, retaining its ledger,
 identity and source bindings. Withdraw open source cards first; older bridge
 code refuses these bundles. Builders neither install nor activate them.
+
+### Declaration notes
+
+The comments from `tgbridge.yaml` live here so a loose source replacement
+fits upstream's 8192-byte declaration bound. Every call, parameter and YAML
+value is preserved, including the siding call's description.
+
+The bridge polls Telegram, transcribes voice notes, runs chat commands and
+keeps the delivery ledger. Both the yard's hook listener and the bridge's
+callback service use loopback. Each bot belongs to one yard on its own port;
+`install.sh` renders the source name and port into `<root>/pack`. Named bases
+remain legacy aliases for installations that selected one.
+`credential.env: TGBRIDGE_SECRET` names the callback secret without storing
+its value in the declaration. Every update carries the yard's idempotency
+key, and a retried call finds its first send in the bridge's ledger.
+
+`send.attachment` is a local path the bridge reads, like CLI `--attachment`.
+It is a string parameter because the bridge accepts JSON, rather than a
+multipart file upload. `send.key` overrides the yard's key. Ask buttons carry
+`ask:<first 16 hex of sha256(key)>:<choice>`, so callers choose the key before
+sending; without an explicit key the yard's key applies.
+
+The `notify` call tells the operator what reached their inbox, in the
+conversation named by `TGBRIDGE_CONVERSATION`: the paired chat id or
+`<chat id>:topic:<thread id>`. Register it with `yardr user key <user> tgbridge`.
+The bridge itself sends the hook secret in `X-Tgbridge-Secret`; it stays
+on this machine. Each hook entry identifies its bot, conversation and message,
+and `delivery.body: id` lets a retry find its prior relay.
+Hook keys are `chat` (paired chat id), `topic` (general or topic name), `kind`
+(message, transcript or answer), `sender` (operator Telegram id) and `thread`
+(the topic's thread id). The bridge drops other chats. Register
+`yardr user identity <user> --source tgbridge --id <Telegram user id>`;
+`hear.by: identity` then maps deliveries to `speaker=<user>`.
+
+A thread is the paired chat id or `<chat id>:topic:<thread id>`. Reply uses
+the yard's key; posted can find an answer lost after sending. Read returns
+whole messages from the bridge log; the yard's delivery keeps 500 characters.
+The command protocols are:
+
+| Command | Input | Output |
+|---|---|---|
+| `tgbridge/thread reply` | `{thread, parent, body, key, files?}` | `{id}` |
+| `tgbridge/thread posted` | `{thread, key}` | `{id}` or `{}` |
+| `tgbridge/thread read` | `{thread}` | `{messages: [...]}` |
 
 ### Group add and set
 
@@ -946,40 +991,50 @@ yardr source check tgbridge                 # health answers 200
 
 ### The source pack (crew, then you in Telegram; shell fallback)
 
-With core `ced24b0e849c`'s directory source-pack proposal contract and this
-bridge installed, propose the pack published by the installer as a native
-card. Install core first, then the bridge; yardmaster owns installation and
-the restart above. Landing source alone does not activate either release.
+With upstream's source-pack cards and this bridge installed, propose a copy
+of `yardr/` inside a registered depot's **main checkout**. The installed
+`<root>/pack` and a worktree cannot be proposed; use the terminal fallback
+below for those. Source landing does not install or activate a release.
+The operator owns installation, pack apply and restart.
+
 Use `pack check` to read the digest and complete plan, then:
 
 ```sh
-yardr pack check <root>/pack
+yardr pack check <depot-main-checkout>/yardr
 yardr bead ask <bead> "Apply this tgbridge source pack upgrade?" \
-  --context "Read the complete plan, diffs, grants kept and snapshot document." \
-  --run "pack apply <root>/pack --sha256 <digest>"
+  --context "Read the complete declarations, programs, diffs and grants kept." \
+  --run "pack apply <depot-main-checkout>/yardr --sha256 <digest>"
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=pack-upgrade-1
 ```
 
-Open the single review document. It contains the complete canonical review
-and every snapshot file whole, including the declaration, command files and
-setup notes. The compact card names both digests, document hash, size and
-counts, plus changed paths/hashes and kept grants; its weight lines come
-first. No controls arrive until the whole
-bundle is confirmed. Tap Approve, then Confirm on that **same card** within
-60 seconds. The first tap writes nothing; Cancel or expiry requires a new
-Approve. Typed numbers and replies to a part or document cannot approve.
-Core applies the captured bytes even if `<root>/pack` later changes.
-Check the canonical ran/failed state after carrying; stale state writes
-nothing and needs a new ask. Existing credentials, selected base, limits
-and grants stay under the core's usual replacement rules, with grants kept
-shown in the review. The proposal takes no binding or answering flags.
+The pin is optional. Open the single review document: every carried source,
+program, diff, inventory, removal and native Does line appears whole, with
+the directory digest. Upstream supplies no snapshot of `pack.yaml`, setup
+notes or other directory files. The compact card names the review and pack
+digests, document hash/size/counts, changed paths/hashes and kept grants.
+Controls appear only after the document is confirmed.
 
-The document ceiling is 50 MiB including framing, within core's existing
-64-file/256-KiB snapshot bounds. An oversized review refuses before sending
-or buttons and names an explicit part-based fallback; it never truncates.
-Definitely unsent documents resume under their original key; ambiguous ones
-need existing ledger reconciliation, including confirmed size, and are
-never blindly resent. Saved legacy generations keep their parts and keys. Preserve the state directory. See
+New or changed programs require Approve, then Confirm on that same card
+within 60 seconds. The first tap writes nothing; Cancel or expiry requires
+a new Approve. A pack replacement keeping its programs can be routine and
+approve with one tap. Replies cannot approve weighted cards. The native
+server re-reads the directory at approval; changed bytes or standing state
+make the card stale with nothing run. Ask again instead of editing a proposal.
+Check the canonical ran/failed state, `source show` and `source check` after
+carrying. Credentials, selected base, limits and grants stay under native
+replacement rules. The proposal takes no binding or answering flags.
+
+The aligned build discloses kept grants at the end of each replacement
+sentence. Plain upstream omits them, so replacing source/pack cards refuse
+before sending; new sources work. Apply replacements through the terminal
+fallback there. Loose declarations fit 8192 bytes; cards fit 40 Does lines.
+The trimmed `tgbridge.yaml` has the same YAML values as its commented version.
+
+The document ceiling is 50 MiB including framing. Oversize refuses before
+sending; no review is truncated. Unsent deliveries resume under their key;
+ambiguous sends need ledger reconciliation, including confirmed size.
+Preserve the state directory. Unsupported old card shapes retire on refresh
+and direct the operator to decide in the yard. See
 [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
 
 For an older core/bridge, a refusal, or an explicit terminal rollback, keep

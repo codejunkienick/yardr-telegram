@@ -258,22 +258,25 @@ terminal-only. See
 [the bundle scope](bridge/OPERATIONS.md#complete-review-bundles)
 and [skill copies](yardr/SETUP.md#skill-copies-shell).
 
-Native `source add <file>` reviews the complete declaration, relative command
-files, replacement diffs and inventory before controls appear (local core
-baseline `546e3fdd2127`, not a public install target). It uses the same
-`run_ask` grant, pairing and canonical carry settlement; core's weight rules
-determine whether approval needs Approve, then Confirm within 60 seconds. See
-[source review](bridge/OPERATIONS.md#source-add-declaration-and-command-review)
-and [setup](yardr/SETUP.md#source-declarations-and-command-files).
+Native `source add <file>` reviews complete declarations, relative programs,
+replacement diffs and inventory before controls. Loose declarations fit 8192
+bytes and cards fit 40 Does lines; `tgbridge.yaml` keeps its YAML values with
+its comments moved into [setup](yardr/SETUP.md#declaration-notes).
+The aligned yardr discloses kept grants at the end of the replacement sentence;
+plain upstream omits them, so replacements refuse before sending.
+New-source cards work on both. A source replacement always requires Approve,
+then Confirm within 60 seconds. See
+[source review](bridge/OPERATIONS.md#source-add-declaration-and-command-review).
 
-Source-kind `pack apply` bundles without parameter inputs are also supported.
-A directory proposal (`pack apply <absolute-directory> --sha256 <digest>`,
-local core baseline `ced24b0e849c`, not a public install target) delivers
-one document containing the complete review and every captured snapshot
-file before the compact weighted approval card. Embedded source-kind
-`pack apply <name>` uses one complete carried-source review document
-without inventing a directory snapshot. Both use the existing `run_ask` grant and
-operator checks; depot-kind and summary pack cards remain refused. See
+Source-kind `pack apply` cards without inputs support embedded names and
+`pack apply <absolute-directory> [--sha256 <digest>]`. A directory belongs
+inside a registered depot's main checkout; use the terminal for an installed
+release's pack. One document shows the carried sources/programs/diffs and
+native digest; upstream supplies no snapshot of setup or manifest files.
+New/changed programs require confirmation, while unchanged programs can make
+a replacement routine. Missing grants disclosure refuses replacements on
+plain upstream. Both forms use the existing `run_ask` grant and operator
+checks; depot/summary plans and old snapshot shapes refuse. See
 [source pack bundles](bridge/OPERATIONS.md#source-pack-bundles) and
 [the source upgrade procedure](yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback).
 

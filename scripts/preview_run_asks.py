@@ -19,7 +19,7 @@ def document_card(document):
 def bundle_cards(source=False, pack=False):
     # Drive the real bridge state machine with the existing offline transports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
-    from test_run_asks import NativeTests, source_proposal, pack_proposal, repack, n
+    from test_run_asks import NativeTests, source_proposal, pack_proposal, n
     case = NativeTests()
     case.setUp()
     cards = []
@@ -35,12 +35,7 @@ def bundle_cards(source=False, pack=False):
         case.native.ask = (pack_proposal('directory_replace') if pack else source_proposal())
         if pack and '--dense-bundle' in sys.argv:
             carried = case.native.ask['run']['carried'][0]
-            before = carried['text']
             carried['text'] += '# Synthetic dense declaration review <&>; file content only.\n' * 400
-            for file in case.native.ask['run']['pack']['directory']['files']:
-                if file['text'] == before:
-                    file['text'] = carried['text']
-            repack(case.native.ask)
         case.config['yard'] = 'example'
         if not case.create()['delivered']:
             raise RuntimeError('synthetic review document refused')

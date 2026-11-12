@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 from test_bridge import BridgeTestCase, write_settings  # noqa: E402
-from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, pack_proposal, repack, source_proposal, proposal  # noqa: E402
+from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, pack_proposal, source_proposal, proposal  # noqa: E402
 
 n = b.run_asks
 OPS = 7
@@ -264,11 +264,8 @@ class DecideTests(DecideCase):
                 pack=dict(name='starter', kind=kind, label='embedded in yardr test', depot='web',
                           plan={}, mappings=[], summary=[], files=[]))
             unsupported.append((kind, pending))
-        pending = dict(pack_proposal(), ask=13)
-        manifest = next(f for f in pending['run']['pack']['directory']['files'] if f['path'] == 'pack.yaml')
-        manifest['text'] += 'future: true\n'
-        repack(pending)
-        unsupported.append(('manifest', pending))
+        pending = dict(pack_proposal('directory_prealignment'), ask=13)
+        unsupported.append(('snapshot', pending))
         pending = dict(source_proposal(), ask=13)
         pending['run']['carried'][0]['future'] = True
         unsupported.append(('source', pending))

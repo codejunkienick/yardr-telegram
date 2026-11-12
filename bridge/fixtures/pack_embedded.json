@@ -3,9 +3,9 @@
   "to": "pat",
   "asker": "proposer",
   "since": "2026-01-01T00:00:00Z",
-  "question": "Review the synthetic pack?",
+  "question": "Review the embedded source pack?",
   "context": [
-    "Synthetic isolated pack review"
+    "Synthetic embedded source pack review"
   ],
   "options": [],
   "state": "open",
@@ -19,7 +19,7 @@
     "command": "yardr pack apply telegram",
     "description": "Import a pack into the yard: set the yard to what the pack says",
     "does": [
-      "pack telegram (embedded in yardr ced24b0e849c), of kind source, into the yard: it adds 1 source and copies 2 command files (6 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "pack telegram (embedded in yardr 11f81f3845e6), of kind source, into the yard: it adds 1 source and copies 2 command files (6 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
       "source telegram: its calls go to https://api.telegram.org. Its credential is the variable TELEGRAM_BOT_TOKEN (the name, never the value), sent in the request path wherever the declaration puts {credential} (credential.in_path: true): it stands in the logs of every server on the way. It has no second credential for updates, no mint, no header of its own.",
       "call message (update): POST /bot{credential}/sendMessage. It takes chat (string, required, pattern ^-?[0-9]+$), title (string, required, at most 250) and text (string, required, at most 3800), and sends no query.",
       "call message sends the body {\"chat_id\":\"{chat}\",\"text\":\"{title}\\n{text}\"}. Its answer is returned as it comes, at most 65536 bytes.",
@@ -65,7 +65,7 @@
     "pack": {
       "name": "telegram",
       "kind": "source",
-      "label": "embedded in yardr ced24b0e849c"
+      "label": "embedded in yardr 11f81f3845e6"
     }
   },
   "weight": [

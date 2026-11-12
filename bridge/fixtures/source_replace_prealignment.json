@@ -1,0 +1,91 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic source?",
+  "context": [
+    "Synthetic isolated source review"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "source",
+      "add",
+      "/synthetic/source-replace.yaml"
+    ],
+    "command": "yardr source add /synthetic/source-replace.yaml",
+    "description": "Add the source a file declares, or replace the one of its name",
+    "does": [
+      "it replaces one source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file: the source keeps its env_file, mint_command, region base, call limits and ignored senders, and every grant of it stands, now for this declaration.",
+      "source synthetic: it has no base and calls nothing. It names no credential.",
+      "it would replace the source synthetic the yard has under that name.",
+      "no grant of source synthetic stands.",
+      "the copy would remove extra.txt, which neither declaration names: sha256 670ac0987d6acba567e81e9faa48aca43d2c7d8d26241fc7b3fa6604453b3a51 (mode 0644, 24 bytes).",
+      "The source names no check call and no idempotency header.",
+      "it can tell no user.",
+      "it hears no deliveries.",
+      "its limits command [bin/report] says what the source itself carries, asked by the source's name.",
+      "it speaks in no threads.",
+      "its issues are no bead's link.",
+      "its identity keys keep their case.",
+      "it sends no hook deliveries into the yard.",
+      "it sends no pull-request or CI events.",
+      "command file bin/report: [bin/report] (limits.command, handed no credential): sha256 9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4 -> sha256 7a86d9a4f1870b6e5b8f14ef6a5ac27d8a9b51580d2390a9dad425ee8875af68, mode 0700 (1 insertions, 1 deletions)."
+    ],
+    "back": "yardr bead ask <bead> \"<question>\" --run \"source add <a file holding the declaration that stands now>\"",
+    "back_by": "only the operator",
+    "carried": [
+      {
+        "name": "synthetic",
+        "text": "name: synthetic\nlimits:\n  command: [bin/report]\n",
+        "files": [
+          {
+            "program": "bin/report",
+            "text": "#!/bin/sh\n# Synthetic <&> file; never executed.\nprintf \"new\\n\"\n",
+            "sha256": "7a86d9a4f1870b6e5b8f14ef6a5ac27d8a9b51580d2390a9dad425ee8875af68"
+          }
+        ],
+        "old": [
+          {
+            "program": "bin/report",
+            "old_sha256": "9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4",
+            "new_sha256": "7a86d9a4f1870b6e5b8f14ef6a5ac27d8a9b51580d2390a9dad425ee8875af68",
+            "diff": "--- was\n+++ is\n@@ -1,3 +1,3 @@\n #!/bin/sh\n # Synthetic <&> file; never executed.\n-printf \"old\\n\"\n+printf \"new\\n\"\n"
+          }
+        ],
+        "removed": [
+          {
+            "path": "extra.txt",
+            "sha256": "670ac0987d6acba567e81e9faa48aca43d2c7d8d26241fc7b3fa6604453b3a51",
+            "mode": "0644",
+            "size": 24,
+            "text": "Synthetic removed text\r\n"
+          }
+        ],
+        "inventory": [
+          {
+            "path": "bin/report",
+            "sha256": "9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4",
+            "mode": "0700",
+            "size": 63
+          },
+          {
+            "path": "extra.txt",
+            "sha256": "670ac0987d6acba567e81e9faa48aca43d2c7d8d26241fc7b3fa6604453b3a51",
+            "mode": "0644",
+            "size": 24
+          }
+        ]
+      }
+    ]
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the command file bin/report of synthetic (changed)"
+    }
+  ]
+}

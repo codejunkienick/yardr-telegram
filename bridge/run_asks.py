@@ -160,9 +160,11 @@ class YardSocketClient:
                         raise RPCUnsupported('ask_card_requires_guarded_core' + FALLBACK)
                     code = error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
                     if (method == 'ApproveAsk' and code == 'error'
-                            and error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (
+                            and (error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (
                                 ' was written when the source ', ' was written from another declaration of the source ',
-                                ' was carded under ', ' says ', ': the standing import record of pack ')))
+                                ' was carded under ', ' says ', ' was written from ', ': was written from ')))
+                                 or re.match(rf"ask {arguments.get('ask')}: pack .+: the pin is sha256:[0-9a-f]{{64}}, "
+                                             r'and the directory .+ as read has sha256:[0-9a-f]{64}:', error['message']))
                             and error['message'].endswith('Nothing ran. Decline it; it is asked again if it is still wanted.')):
                         raise RPCStale('native proposal is stale; nothing ran', code)
                     raise RPCRefused(f'native {method} refused ({code})', code)
@@ -1128,7 +1130,7 @@ def validate_carried(carried, pack=False):
     if (not isinstance(carried, dict) or set(carried) - {'name', 'text', 'files', 'old', 'inventory', 'removed'}
             or not isinstance(carried.get('name'), str) or not re.fullmatch('[a-z0-9][a-z0-9_-]*', carried['name'])):
         raise NativeError(fail)
-    declaration = source_text(carried.get('text'), 'source declaration', 262144 if pack else 32768)
+    declaration = source_text(carried.get('text'), 'source declaration', 262144 if pack else 8192)
     name, programs = source_declaration(declaration)
     if name != carried['name']:
         raise NativeError(fail)
@@ -1211,9 +1213,9 @@ def validate_source(ask):
         raise NativeError(fail)
     does = run['does']
     replacing = bool(does and does[0].startswith('it replaces one source and '))
-    expected_back = ('yardr bead ask <bead> "<question>" --run "source add <a file holding the declaration that stands now>"'
+    expected_back = ('yardr bead ask <bead> - with Q: <question> and R: source add <a file holding the declaration that stands now> on stdin'
                      if replacing else 'yardr source rm ' + name)
-    if (not 12 <= len(does) <= 80 or not does[0].startswith(('it adds one source and ', 'it replaces one source and '))
+    if (not 12 <= len(does) <= 40 or not does[0].startswith(('it adds one source and ', 'it replaces one source and '))
             or run['back'] != expected_back or run.get('back_by') != ('only the operator' if replacing else 'the operator')
             or any('\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does)
             or not does[1].startswith('source ' + name + ': ')):
@@ -1227,6 +1229,7 @@ def validate_source(ask):
     if (replacing or any(not inventory.get(p) or inventory[p]['sha256'] != f['sha256'] for p, f in files.items())):
         if 'code' not in [w['class'] for w in ask.get('weight', [])]:
             raise NativeError(fail)
+    source_plan(run)
 
 
 def source_review(carried):
@@ -1263,7 +1266,8 @@ def source_plan(run):
     rows = [run['does'][0]]
     for carried in run['carried']:
         name = carried['name']
-        replacing = any(line.startswith('it would replace the source ' + name + ' ') for line in run['does'])
+        replacing = (run['does'][0].startswith('it replaces one source and ')
+                     or any(line.startswith('it would replace the source ' + name + ' ') for line in run['does']))
         rows.append(('Change' if replacing else 'Create') + f" source {name}; declaration sha256 {file_hash(carried['text'])}")
         inventory = {entry['path']: entry for entry in carried.get('inventory', [])}
         for file in carried.get('files', []):
@@ -1277,20 +1281,16 @@ def source_plan(run):
         for change in carried.get('old', []):
             if change['program'] not in programs:
                 rows.append(f"Remove sources/{name}/{change['program']}; sha256 {change['old_sha256']}")
-        grants = [line for line in run['does'] if line.startswith(('grants kept for source ' + name + ':',
-                                                                  'no grant of source ' + name + ' stands.'))]
-        if replacing and not grants:
+        replacements = [line for line in run['does']
+                        if line.startswith('it would replace the source ' + name + ' ')]
+        grants = [line.partition('; ')[2] for line in replacements]
+        if replacing and (len(grants) != 1 or not (
+                grants[0] == 'no grant of source ' + name + ' stands.'
+                or (grants[0].startswith('grants kept for source ' + name + ': ')
+                    and grants[0].endswith('.')))):
             raise NativeError('run_ask_missing_source_grants_review' + FALLBACK)
         rows.extend(grants)
     return rows
-
-
-def pack_snapshot_digest(files):
-    value = hashlib.sha256()
-    for file in sorted(files, key=lambda f: f['path']):
-        raw = file['text'].encode('utf-8')
-        value.update(file['path'].encode('utf-8') + b'\0' + str(len(raw)).encode() + b'\0' + raw)
-    return value.hexdigest()
 
 
 def validate_pack(ask):
@@ -1299,7 +1299,7 @@ def validate_pack(ask):
     pack = run.get('pack')
     if (any(key in ask for key in ('secret', 'setup', 'identity', 'depot_push', 'concealed', 'given'))
             or set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack'}
-            or not isinstance(pack, dict) or set(pack) - {'name', 'kind', 'label', 'digest', 'directory'}
+            or not isinstance(pack, dict) or set(pack) - {'name', 'kind', 'label', 'digest'}
             or pack.get('kind') != 'source' or not isinstance(pack.get('name'), str)
             or not re.fullmatch(r'[A-Za-z0-9._-]+', pack['name'])
             or not isinstance(run.get('carried'), list) or not run['carried']
@@ -1309,11 +1309,30 @@ def validate_pack(ask):
         raise NativeError(fail)
     label = text(pack.get('label'), 'pack label')
     does = run['does']
-    if (not 1 <= len(does) <= 80 or not does[0].startswith('pack ' + pack['name'] + ' (' + label + '), of kind source, into the yard: ')
+    directory = len(argv) >= 3 and argv[2].startswith('/')
+    digest = pack.get('digest')
+    header = 'pack ' + pack['name'] + ' (' + label + ')'
+    if directory:
+        path = argv[2]
+        if (os.path.normpath(path) != path or '://' in path
+                or any(c.isspace() or c in HIDDEN or ord(c) < 32 for c in path)
+                or not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest)
+                or len(argv) not in (3, 5)
+                or (len(argv) == 5 and (argv[3] != '--sha256'
+                    or not re.fullmatch(r'(?i)(sha256:)?' + digest, argv[4])))
+                or not label.startswith('directory ' + path + ' in yardr ')
+                or not label.removeprefix('directory ' + path + ' in yardr ')):
+            raise NativeError(fail)
+        header += ', digest sha256:' + digest
+    elif (len(argv) != 3 or argv[2] != pack['name'] or 'digest' in pack
+            or not label.startswith('embedded in yardr ') or not label.removeprefix('embedded in yardr ')):
+        raise NativeError(fail)
+    if (not 1 <= len(does) <= 40
+            or not does[0].startswith(header + ', of kind source, into the yard: ')
             or any('\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does)):
         raise NativeError(fail)
     sources = {}
-    needs_code = 'directory' in pack
+    needs_code = False
     for carried in run['carried']:
         name, files, inventory, changes = validate_carried(carried, pack=True)
         if name in sources:
@@ -1324,7 +1343,12 @@ def validate_pack(ask):
             entry = inventory.get(program)
             if ((entry and entry['sha256'] != file['sha256']) or (replacing and not entry)) and program not in changes:
                 raise NativeError(fail)
-        needs_code |= bool(inventory or changes or files or any(line.startswith('it would replace the source ' + name + ' ') for line in does))
+        needs_code |= any(not inventory.get(p) or inventory[p].get('symlink')
+                          or inventory[p]['sha256'] != f['sha256'] for p, f in files.items())
+    replacing_count = re.search(r'\breplaces ([1-9][0-9]*) sources?\b', does[0])
+    if sum(line.startswith('it would replace the source ') for line in does) != (
+            int(replacing_count[1]) if replacing_count else 0):
+        raise NativeError(fail)
     declarations = sum(len(c['text'].encode('utf-8')) for c in sources.values())
     payload = sum(len(f['text'].encode('utf-8')) for c in sources.values() for f in c.get('files', []))
     payload += sum(len(f.get('diff', '').encode('utf-8')) for c in sources.values() for f in c.get('old', []))
@@ -1341,84 +1365,13 @@ def validate_pack(ask):
             or any(not w['line'].startswith(weight_lines[w['class']] + ': ') or '\r' in w['line']
                    or any(c in HIDDEN for c in w['line']) for w in ask.get('weight', []))):
         raise NativeError(fail)
-    if 'directory' not in pack:
-        if len(argv) != 3 or argv[2] != pack['name'] or 'digest' in pack:
-            raise NativeError(fail)
-        return
-    directory = pack['directory']
-    if (not isinstance(directory, dict) or set(directory) != {'path', 'files'}
-            or not isinstance(directory['path'], str) or not directory['path'].startswith('/')
-            or os.path.normpath(directory['path']) != directory['path'] or '://' in directory['path']
-            or any(c.isspace() or c in HIDDEN or ord(c) < 32 for c in directory['path'])
-            or not isinstance(pack.get('digest'), str) or not re.fullmatch('[0-9a-f]{64}', pack['digest'])
-            or argv != ['pack', 'apply', directory['path'], '--sha256', pack['digest']]
-            or label != directory['path'] + ' at sha256:' + pack['digest']
-            or not isinstance(directory['files'], list) or not 1 <= len(directory['files']) <= 64):
-        raise NativeError(fail)
-    snapshot, total = {}, 0
-    for file in directory['files']:
-        if not isinstance(file, dict) or set(file) != {'path', 'text', 'sha256'}:
-            raise NativeError(fail)
-        path = source_path(file['path'])
-        value = source_text(file['text'], 'pack snapshot file', 262144)
-        total += len(value.encode('utf-8'))
-        if '\\' in path or path in snapshot or file['sha256'] != file_hash(value) or total > 262144:
-            raise NativeError(fail)
-        snapshot[path] = value
-    if 'pack.yaml' not in snapshot or pack_snapshot_digest(directory['files']) != pack['digest']:
-        raise NativeError(fail)
-    manifest = source_yaml(snapshot['pack.yaml'])
-    if (not isinstance(manifest, dict) or set(manifest) - {'name', 'kind', 'api', 'setup', 'sources', 'presets'}
-            or manifest.get('name') != pack['name'] or manifest.get('kind') != 'source'
-            or ('api' in manifest and manifest['api'] != '1')
-            or not isinstance(manifest.get('sources'), dict) or set(manifest['sources']) != set(sources)):
-        raise NativeError(fail)
-    named = {'pack.yaml'}
-    if 'setup' in manifest:
-        named.add(source_path(manifest['setup']))
-    for name, entry in manifest['sources'].items():
-        if not isinstance(entry, dict) or set(entry) != {'declaration'}:
-            raise NativeError(fail)
-        path = source_path(entry['declaration'])
-        carried = sources[name]
-        if snapshot.get(path) != carried['text']:
-            raise NativeError(fail)
-        named.add(path)
-        for file in carried.get('files', []):
-            path = str(Path(entry['declaration']).parent / file['program'])
-            if snapshot.get(path) != file['text']:
-                raise NativeError(fail)
-            named.add(path)
-    presets = manifest.get('presets', {})
-    if not isinstance(presets, dict):
-        raise NativeError(fail)
-    for preset in presets.values():
-        if (not isinstance(preset, dict) or set(preset) - {'about', 'grants'}
-                or not isinstance(preset.get('grants'), dict) or not preset['grants']
-                or ('about' in preset and not isinstance(preset['about'], str))):
-            raise NativeError(fail)
-        for source, calls in preset['grants'].items():
-            if source not in sources or not isinstance(calls, list) or not calls or any(not isinstance(c, str) for c in calls):
-                raise NativeError(fail)
-    if named != set(snapshot):
-        raise NativeError(fail)
-
-
-def pack_document(pack):
-    files = pack['directory']['files']
-    rows = [f"UNTRUSTED SOURCE PACK SNAPSHOT\nPack: {pack['name']}\nPack digest: {pack['digest']}\nFiles: {len(files)}\n",
-            'Each section contains exactly size UTF-8 bytes after its header, then a separator newline.\n']
-    for file in files:
-        rows += [f"\nPath: {canonical(file['path'])}\nSize: {len(file['text'].encode('utf-8'))}\nSHA256: {file['sha256']}\n\n", file['text'], '\n']
-    value = ''.join(rows)
-    return value
+    source_plan(run)
 
 
 def pack_markdown(pack):
-    rows = ['## Pack snapshot', review_fact('Pack', pack['name']), review_fact('Pack digest', pack['digest']),
-            review_fact('Files', str(len(pack['directory']['files'])))]
-    for file in pack['directory']['files']:
-        rows += [review_fact('Path', file['path']), review_code(file['text'])]
+    rows = ['## Pack', review_fact('Pack', pack['name']), review_fact('Pack label', pack['label'])]
+    if 'digest' in pack:
+        rows.append(review_fact('Pack digest', pack['digest']))
     return '\n\n'.join(rows)
 
 
@@ -1430,11 +1383,10 @@ def pack_bundle(config, bead, ask, proposal):
         review.append('Source ' + canonical(carried['name']))
         review.extend(source_review(carried))
     summary = source_plan(run)
-    snapshot = ''
-    if 'directory' in pack:
-        snapshot = pack_markdown(pack)
+    if 'digest' in pack:
         summary += ['Pack digest ' + pack['digest']]
-    return review_bundle(config, bead, ask, proposal, 'pack apply ' + pack['name'], '\n'.join(review), summary, snapshot=snapshot)
+    return review_bundle(config, bead, ask, proposal, 'pack apply ' + pack['name'], '\n'.join(review), summary,
+                         snapshot=pack_markdown(pack))
 
 
 def group_bundle(config, bead, ask, proposal):

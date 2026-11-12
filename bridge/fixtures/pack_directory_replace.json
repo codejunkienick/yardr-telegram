@@ -14,18 +14,17 @@
     "argv": [
       "pack",
       "apply",
-      "/synthetic/pack",
+      "/synthetic/checkout/pack",
       "--sha256",
       "11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba"
     ],
-    "command": "yardr pack apply /synthetic/pack --sha256 11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba",
+    "command": "yardr pack apply /synthetic/checkout/pack --sha256 11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba",
     "description": "Import a pack into the yard: set the yard to what the pack says",
     "does": [
-      "pack synthetic (/synthetic/pack at sha256:11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba), of kind source, into the yard: it replaces 1 source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "pack synthetic (directory /synthetic/checkout/pack in yardr 11f81f3845e6), digest sha256:11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba, of kind source, into the yard: it replaces 1 source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
       "source synthetic: its calls go to https://example.invalid. It names no credential.",
-      "it would replace the source synthetic the yard has under that name.",
-      "grants kept for source synthetic: crew member reviewer: health (kept).",
-      "the copy would remove obsolete.txt, which neither declaration names: sha256 42414dd64ba54d3a2fc57501569ae71a82647a9afde26161dc0f80ffb3cfc4d3 (mode 0644, 24 bytes).",
+      "it would replace the source synthetic the yard has under that name; grants kept for source synthetic: crew member reviewer: health (kept).",
+      "the copy would remove obsolete.txt, which neither declaration names: sha256 cb661e202f86841379c4661a38b2233d72b39cbb9c4dbed27212744e62c10414 (mode 0644, 25 bytes).",
       "call health (read): GET /health. It takes no parameter, and sends no query.",
       "call health sends no body. Its answer is returned as it comes, at most 65536 bytes.",
       "The source names no check call and no idempotency header.",
@@ -63,10 +62,10 @@
         "removed": [
           {
             "path": "obsolete.txt",
-            "sha256": "42414dd64ba54d3a2fc57501569ae71a82647a9afde26161dc0f80ffb3cfc4d3",
+            "sha256": "cb661e202f86841379c4661a38b2233d72b39cbb9c4dbed27212744e62c10414",
             "mode": "0644",
-            "size": 24,
-            "text": "Synthetic removed copy\r\n"
+            "size": 25,
+            "text": "Synthetic obsolete copy\r\n"
           }
         ],
         "inventory": [
@@ -78,42 +77,17 @@
           },
           {
             "path": "obsolete.txt",
-            "sha256": "42414dd64ba54d3a2fc57501569ae71a82647a9afde26161dc0f80ffb3cfc4d3",
+            "sha256": "cb661e202f86841379c4661a38b2233d72b39cbb9c4dbed27212744e62c10414",
             "mode": "0644",
-            "size": 24
+            "size": 25
           }
         ]
       }
     ],
     "pack": {
-      "directory": {
-        "path": "/synthetic/pack",
-        "files": [
-          {
-            "path": "SETUP.md",
-            "text": "Synthetic setup notes\r\nNo live service.\n",
-            "sha256": "d9a518b454a270be14b223c715975927c5f55e94fe38f5c2f4a0d2191b8874d7"
-          },
-          {
-            "path": "bin/report",
-            "text": "#!/bin/sh\n# Synthetic replacement <&>; never executed.\nprintf \"new\\n\"\n",
-            "sha256": "9c267c43819600558578f9aeb903ac1a3570a462bf7e564d2a2feee67163ddaa"
-          },
-          {
-            "path": "pack.yaml",
-            "text": "name: synthetic\nkind: source\nsetup: SETUP.md\nsources:\n  synthetic:\n    declaration: source.yaml\n",
-            "sha256": "4745feb6c87c647e5a1a7355d151e75fc573b5a1507e5e90c2129224444e5b80"
-          },
-          {
-            "path": "source.yaml",
-            "text": "name: synthetic\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [bin/report]\nabout: Synthetic reviewed upgrade\n",
-            "sha256": "956d562987b3abc905eb31450f9a3b396e04988513e5e9a728d3cb3d795f45a0"
-          }
-        ]
-      },
       "name": "synthetic",
       "kind": "source",
-      "label": "/synthetic/pack at sha256:11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba",
+      "label": "directory /synthetic/checkout/pack in yardr 11f81f3845e6",
       "digest": "11dcd8f9f1728d40c50b803eda89bf5e1afd053260fed6190bbff5ffaa9004ba"
     }
   },

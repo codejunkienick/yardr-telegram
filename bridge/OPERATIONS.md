@@ -2294,7 +2294,7 @@ stay in the document. A complete compact card that exceeds 3500 visible
 UTF-16 units refuses before any send; plan identities and kept grants are
 never silently dropped to make it fit.
 
-The whole document, including framing and any directory snapshot, must fit
+The whole document, including framing and any saved legacy snapshot, must fit
 **52428800 bytes (50 MiB)**, the bridge's Telegram document ceiling. There
 is no 128-text-part cap on new document bundles. An oversized document
 refuses before delivery or buttons with
@@ -2343,9 +2343,9 @@ recovery belong entirely to the core server, never the bridge.
 
 `source add <file>` uses the same native `run_ask` call, pairing, receipt
 ledger, document delivery and approval gate as group bundles. This adds no
-RPC, grant or setting. Verified against isolated core `546e3fdd2127`; the
-actual carried contract is checked on every read rather than inferred from
-its version. The bridge never reads the declaration's provenance path or
+RPC, grant or setting. Checked against isolated aligned and plain upstream
+yardr builds; the carried contract is checked on every read.
+The bridge never reads the declaration's provenance path or
 writes source files itself.
 
 Before any send, the bridge checks exactly one carried source; known
@@ -2360,9 +2360,9 @@ pure-Python YAML reader ships in the release; no pip step is required.
 Core owns declaration semantics, native weights, authority and stale-state
 checks under its apply/carry locks.
 
-Limits match landed core: declaration 32768 bytes, each command file 8192 bytes,
+Limits match upstream: declaration 8192 bytes, each command file 8192 bytes,
 32768 bytes for those texts together, 65536 bytes for command texts, diffs
-and removed texts, and at most 80 native Does lines. Complete declaration,
+and removed texts, and at most 40 native Does lines. Complete declaration,
 each command file, each replacement diff, inventory, removed records/text
 and every native Does line arrive in the quoted untrusted review document. Each
 section names its exact UTF-8 hash and size; diff sections also retain the
@@ -2388,70 +2388,71 @@ stored declaration/files, stale refusal, cancellation, decline and replay.
 
 ### Source pack bundles
 
-`pack apply <absolute-directory> --sha256 <digest>` uses the same native
-`run_ask`, operator pairing, row, ledger and approval gate. It requires the
-core's **Directory source-pack proposal contract** in `docs/api.md`, landed
-at `ced24b0e849c`. The bridge checks the actual typed envelope on every
-read; an older or unknown directory shape refuses before any send with
-`use yardr pack apply <dir> in a terminal`. It adds no grant or setting.
+`pack apply <absolute-directory> [--sha256 <digest>]` and embedded
+`pack apply <name>` use the existing `run_ask` grant, operator pairing,
+ledger and native approval gate. A directory must be inside a registered
+depot's main checkout; a worktree or an installed release's `<root>/pack`
+cannot be proposed. Use a copy of `yardr/` in that checkout for a card,
+or apply the installed pack in a terminal. The native server reads the pack;
+the bridge never opens its provenance path.
 
-Only source-kind packs with no parameter inputs are supported. Before any
-send the bridge checks the manifest's known fields, exact named-file set,
-relative paths, all complete UTF-8 file hashes and the pack digest (sorted
-paths, NUL, decimal byte size, NUL, original bytes). Each declaration and
-command must agree with the carried source review. The existing strict
-source validator also verifies diffs, inventory and removals. Unknown
-payloads, secret/setup/identity/value fields, input flags and depot plans
-refuse whole. The provenance directory is never opened by the bridge.
+Only source-kind packs without inputs are supported. Before sending, the
+bridge checks the upstream pack name/kind/label/digest envelope, command and
+optional pin, first Does line, every carried declaration and program hash,
+replacement diffs, inventory and removals. Unknown fields, the old
+`pack.directory` snapshot, `pack.yes`, binding flags, inputs, URLs and
+depot/summary plans refuse whole with the terminal fallback. Upstream's
+source-kind cards refuse `--yes`: that flag is for overwriting hand-edited
+files of depot plans, which this bridge does not support.
 
-One review document contains every native Does line, each declaration and
-command file, full replacement diffs, old/new hashes, inventory and removed
-entries, followed by the complete directory snapshot. Thus the review
-includes declaration-key changes, grants kept and work still owed. Text is
-never shortened. The shared 50 MiB document ceiling includes all framing;
-core additionally bounds the snapshot to 64 files and 262144 text bytes,
-declarations to 262144 bytes together, command texts/diffs/removed text to
-65536 bytes and Does to 80 lines. Oversize refuses before any send or button.
-The repository's actual tgbridge upgrade from `7c0ce69` fits with headroom.
+One review document contains every native Does line, each carried declaration
+and command file, complete replacement diffs, old/new identities, inventory
+and removals, plus the native pack label and directory digest. Upstream carries
+no directory snapshot: `pack.yaml`, setup notes and other directory files
+are not supplied or invented. The digest identifies the whole native reading;
+the bridge cannot recompute it from the carried sources alone.
+Declarations are bounded to 262144 bytes together, command texts/diffs/removed
+texts to 65536 bytes and Does to 40 lines. The shared 50 MiB document ceiling
+includes framing and refuses before any send or control.
 
-The snapshot section retains its existing exact format: its header names
-the pack, pack digest and file count. Each file has a JSON-quoted `Path:`,
-decimal `Size:` and `SHA256:`, then a blank line, exactly Size original
-UTF-8 bytes and one separator newline. Read by lengths, not delimiters in
-untrusted contents. Every snapshot file, including `pack.yaml` and setup
-notes, appears whole in this same document; there is no second attachment.
+For source add and pack apply, an aligned replacement sentence ends with
+`grants kept for source <name>: ...` or `no grant of source <name> stands.`
+The full sentence appears in the document and its grants suffix on the compact
+card. Plain upstream omits that disclosure: replacing cards refuse before
+any send, while new-source cards work. A legacy card in an unsupported shape
+loses its controls on refresh and directs the operator to the yard.
 
-The compact card follows only after the document is confirmed. It replies
-to the document and names the create/change/remove paths and hashes, kept
-grants, bundle digest, size/counts, document SHA-256 and pack digest, with
-canonical weight lines first.
-Directory applies always require Approve, then Confirm **on the same
-card** within 60 seconds. Replies to parts, the document or the card cannot
-approve. Cancel or an expired confirmation requires another Approve.
-Only core records approval, carrying, ran or failed. Core refuses standing
-source/copy/grant drift; the bridge shows a stale card without controls.
+The compact card follows only after the document's delivery and size are
+confirmed. It replies to the document and names the create/change/remove paths
+and hashes, kept grants, bundle/document digests and counts, with native
+weight lines first. New or changed programs require Approve, then Confirm on
+the same card within 60 seconds. A pack replacement keeping its programs
+can be routine and approve on the first tap; a `source add` replacement
+always needs confirmation. Typed replies cannot approve weighted cards.
 
-Definitely unsent deliveries retry under the original key. Ambiguous ones
-stay blocked under the ledger's existing manual reconciliation, across
-restarts and caller keys. Confirmed parts/documents are retained; a crash
-after a ledger receipt resumes without another send or a second card.
-Keep the state directory, including its ledger and review documents.
-Decline, cancel, mismatched bindings, forwarded numbers and replay do not
-apply the pack. Changes to the proposal invalidate its generation.
+The native server re-reads a directory at approval. A moved digest or changed
+standing declaration, command copy or grant makes the proposal stale, with
+nothing run. Ask again from the current state; the bridge never substitutes
+a new directory reading for the one reviewed. Only the server records approval
+and carries out the operation; pending/ran/failed are read back canonically.
+Decline, Cancel and repeated taps do not apply again.
 
-Embedded source-kind `pack apply <name>` uses one complete carried-source
-review document and core's weight rules. Its core envelope has no directory
-snapshot, pack digest, `pack.yaml` or setup notes; those are not invented. Depot-kind/summary pack cards remain unsupported.
+Definitely unsent deliveries resume under the same key. Ambiguous sends need
+the existing ledger reconciliation, across restarts and caller keys.
+Keep the state directory, including review documents. A saved supported
+legacy generation retains its parts and keys; unsupported old shapes retire
+without breaking refresh.
 
-`python3 -B scripts/preview_run_asks.py --pack` produces labelled synthetic
-presentation evidence using real-core fixtures and fake Telegram. Native
-integration additionally upgrades this repository's pack from `7c0ce69`,
-checks captured-byte installation after edits, stale state and replay.
-Core must be installed first, then this bridge. The yard's operator owns
-installation and activation after reviewed source lands; the paired human
-approves the live card. Roll back code through the existing release rollback;
-review an older pack snapshot or use the terminal apply fallback for a pack
-rollback.
+`python3 -B scripts/preview_run_asks.py --source` and `--pack` produce labelled
+synthetic captures from real native fixtures with fake Telegram. The isolated
+source/pack integration runs on aligned and upstream builds, compares complete
+wire fixtures and resulting source/copy bytes, and covers approval once,
+routine and weighted packs, decline/cancel, stale state and replay.
+Source landed, release installed and live activation are separate states:
+the operator owns release installation, pack apply and restart. For rollback,
+use `install.sh --rollback` and apply a reviewed earlier pack in a terminal.
+After activation, check `source show` and `source check`, then propose a
+synthetic card and verify its canonical result before relying on it.
 
 ### Native group add and set review
 

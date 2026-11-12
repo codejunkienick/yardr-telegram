@@ -207,6 +207,11 @@ class RenderedPackTests(unittest.TestCase):
 
     def test_two_instances_differ_from_the_release_only_in_the_base_line(self):
         release = self.b['pack_tree'](PACK)
+        declaration = release['tgbridge.yaml'][0]
+        self.assertLessEqual(len(declaration), 8192)
+        before = (PACK.parent / 'bridge/fixtures/source_tgbridge_commented.yaml').read_text()
+        self.assertEqual(self.b['run_asks'].source_yaml(before),
+                         self.b['run_asks'].source_yaml(declaration.decode()))
         bases = b'bases:\n  odyssey: http://127.0.0.1:8941\n  imd: http://127.0.0.1:8942\n'
         self.assertIn(bases, release['tgbridge.yaml'][0])
         digests = set()

@@ -76,18 +76,6 @@ def pack_proposal(kind='directory'):
     return json.loads(Path(__file__).with_name('fixtures').joinpath('pack_' + kind + '.json').read_text())
 
 
-def repack(ask):
-    pack = ask['run']['pack']
-    label = pack['label']
-    for file in pack['directory']['files']:
-        file['sha256'] = n.file_hash(file['text'])
-    pack['digest'] = n.pack_snapshot_digest(pack['directory']['files'])
-    pack['label'] = pack['directory']['path'] + ' at sha256:' + pack['digest']
-    ask['run']['argv'][-1] = pack['digest']
-    ask['run']['command'] = 'yardr ' + ' '.join(ask['run']['argv'])
-    ask['run']['does'][0] = ask['run']['does'][0].replace(label, pack['label'])
-
-
 def group_proposal(name='group_add', extra=''):
     # Captured from Bead on isolated aligned and upstream builds; only the temp root, ask number and time stabilized.
     ask = json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
@@ -1588,7 +1576,7 @@ class NativeTests(NativeCase):
                 close = self.bridge.close_ask('forged', message_id=self.row()['message_id'])
                 self.assertEqual(close['metadata']['reason'], 'run_ask_message_binding_ambiguous')
 
-    def test_unsupported_and_malformed_payloads_never_send(self):
+    def test_unsupported_source_pack_and_malformed_payloads_never_send(self):
         base = proposal()
         cases = [{field: {}} for field in ('secret', 'setup', 'identity', 'depot_push')]
         cases += [{'run': dict(base['run'], **extra)} for extra in
@@ -1707,12 +1695,13 @@ class NativeTests(NativeCase):
         self.assert_source_review(ask, self.bundle_review(self.row()))
         for ask in (source_proposal(), pack_proposal('directory_replace')):
             with self.subTest(missing_kept_grants=ask['run']['argv'][:2]):
-                ask['run']['does'] = [line for line in ask['run']['does']
-                                     if not line.startswith(('grants kept for source ', 'no grant of source '))]
+                ask['run']['does'] = [line.split('; ', 1)[0] + '.' if line.startswith('it would replace the source ')
+                                     else line for line in ask['run']['does']]
                 self.reset_native(ask)
                 result = self.create()
                 self.assertFalse(result['delivered'])
-                self.assertIn('missing_source_grants_review', result['reason'])
+                self.assertIn('missing_source_grants_review' if ask['run']['argv'][0] == 'source'
+                              else 'invalid_source_pack', result['reason'])
                 self.assertEqual(self.sent_count, 0)
                 self.assertEqual(self.writes(), [])
         self.reset_native(source_proposal('new', extra='# ' + '<&>🙂\t\r\n'
@@ -1738,7 +1727,7 @@ class NativeTests(NativeCase):
                     self.reset_native(source_proposal('free' if field == 'declaration' else 'new'))
                     carried = self.native.ask['run']['carried'][0]
                     if field == 'declaration':
-                        carried['text'] += '#' + 'x'*(32768-len(carried['text'].encode())-1 + overflow)
+                        carried['text'] += '#' + 'x'*(8192-len(carried['text'].encode())-1 + overflow)
                     elif field == 'file':
                         file = carried['files'][0]
                         file['text'] = '🙂'*2048 + ('x' if overflow else '')
@@ -1759,23 +1748,17 @@ class NativeTests(NativeCase):
         mutations = [
             (('run', 'pack'), None), (('run', 'pack', 'kind'), 'git'),
             (('run', 'pack', 'future'), True), (('run', 'pack', 'plan'), {}),
-            (('run', 'pack', 'digest'), '0' * 64), (('run', 'pack', 'directory'), None),
-            (('run', 'pack', 'directory', 'future'), True),
-            (('run', 'pack', 'directory', 'path'), '../pack'),
-            (('run', 'pack', 'directory', 'files'), []),
-            (('run', 'pack', 'directory', 'files', 0, 'path'), '../setup'),
-            (('run', 'pack', 'directory', 'files', 0, 'path'), '\ud800'),
-            (('run', 'pack', 'directory', 'files', 0, 'text'), '\ud800'),
-            (('run', 'pack', 'directory', 'files', 0, 'sha256'), '0' * 64),
-            (('run', 'pack', 'directory', 'files', 0, 'future'), True),
+            (('run', 'pack', 'digest'), '0' * 64), (('run', 'pack', 'directory'), {}),
+            (('run', 'pack', 'yes'), False), (('run', 'pack', 'yes'), True),
+            (('run', 'pack', 'label'), 'directory /another/pack in yardr version'),
             (('run', 'carried', 0, 'future'), True), (('run', 'carried', 0, 'files'), []),
             (('run', 'carried', 0, 'files', 0, 'sha256'), '0' * 64),
             (('run', 'carried', 0, 'text'), 'name: other\n'),
-            (('run', 'ask'), []), (('run', 'value'), 'input'), (('secret',), {}),
+            (('run', 'ask'), ['region']), (('run', 'value'), 'input'), (('secret',), {}),
             (('setup',), {}), (('identity',), {}), (('given',), 'input'),
             (('weight',), []), (('weight', 0, 'class'), 'trust'),
             (('weight', 0, 'line'), 'invented warning'),
-            (('run', 'argv'), ['pack', 'apply', '/synthetic/pack']),
+            (('run', 'argv'), ['pack', 'apply', '/another/pack']),
         ]
         for path, value in mutations:
             with self.subTest(pack_path=path):
@@ -1788,78 +1771,81 @@ class NativeTests(NativeCase):
                 result = self.create()
                 self.assertFalse(result['delivered'], result)
                 self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
-                self.assertEqual(self.sent_count, 0)
+                self.assertEqual((self.sent_count, self.writes()), (0, []))
+        for factory in (source_proposal, pack_proposal):
+            for count in (40, 41):
+                with self.subTest(card_lines=count, factory=factory.__name__):
+                    ask = factory()
+                    ask['run']['does'] += ['Synthetic plan line'] * (count - len(ask['run']['does']))
+                    self.reset_native(ask)
+                    self.assertEqual(self.create()['delivered'], count == 40)
+                    if count == 41:
+                        self.assertEqual(self.sent_count, 0)
+        for ask in (source_proposal(), pack_proposal('directory_replace')):
+            ask['run']['does'] = [line for line in ask['run']['does']
+                                 if not line.startswith('it would replace the source ')]
+            self.reset_native(ask)
+            self.assertFalse(self.create()['delivered'])
+            self.assertEqual((self.sent_count, self.writes()), (0, []))
+        for pin in (None, 'sha256:', 'SHA256:'):
+            with self.subTest(optional_pin=pin):
+                ask = pack_proposal()
+                ask['run']['argv'] = ask['run']['argv'][:3] if pin is None else ask['run']['argv'][:4] + [pin + ask['run']['pack']['digest']]
+                ask['run']['command'] = 'yardr ' + ' '.join(ask['run']['argv'])
+                self.reset_native(ask)
+                self.assertTrue(self.create()['delivered'])
+                self.assert_pack_document(ask, self.documents[-1][2])
+        # A replacement that keeps its programs weighs nothing; changed programs still require code weight.
+        ask = pack_proposal('directory_replace')
+        carried = ask['run']['carried'][0]
+        for file in carried['files']:
+            file['text'] = n.source_diff(next(c for c in carried['old'] if c['program'] == file['program']), file['text'])
+            file['sha256'] = n.file_hash(file['text'])
+        carried['old'] = []
+        ask.pop('weight')
+        self.reset_native(ask)
+        self.assertTrue(self.create()['delivered'])
+        self.press()
+        self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='sample-1', ask=7, actor='pat', weighed=False, values={}))])
+        for legacy in ('source_replace_prealignment', 'source_replace_upstream',
+                       'pack_directory_prealignment', 'pack_directory_replace_prealignment',
+                       'pack_directory_replace_upstream'):
+            with self.subTest(unsupported_shape=legacy):
+                ask = json.loads(Path(__file__).with_name('fixtures').joinpath(legacy + '.json').read_text())
+                self.reset_native(ask)
+                self.assertFalse(self.create()['delivered'])
+                self.assertEqual((self.sent_count, self.writes()), (0, []))
+                self.reset_native(source_proposal() if legacy.startswith('source') else pack_proposal())
+                self.assertTrue(self.create()['delivered'])
+                row = self.row()
+                # The old generation's ledger fields and proposal are retained across an upgrade.
+                row['proposal'] = self.bridge.run_asks.proposal(self.native.bead, ask, row['conversation'])
+                self.bridge.run_asks.save(row)
+                self.native.ask = ask
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                self.assertEqual(self.row()['state'], 'stale')
+                self.assertEqual(self.edits()[-1]['reply_markup'], dict(inline_keyboard=[]))
+                self.assertIn('Proposal changed; use Footplate or the yard cards', b.html_visible_text(self.edits()[-1]['text'])[0])
+                self.press()
+                self.bridge.run_asks.refresh()
                 self.assertEqual(self.writes(), [])
-        for change in ('unknown', 'kind', 'ask', 'missing', 'extra', 'duplicate', 'file-count'):
-            with self.subTest(manifest=change):
-                ask = pack_proposal()
-                files = ask['run']['pack']['directory']['files']
-                manifest = next(f for f in files if f['path'] == 'pack.yaml')
-                if change in ('unknown', 'ask'):
-                    manifest['text'] += ('future: true\n' if change == 'unknown' else 'ask: [region]\n')
-                elif change == 'kind':
-                    manifest['text'] = manifest['text'].replace('kind: source', 'kind: git')
-                elif change == 'missing':
-                    files.pop(0)
-                elif change == 'extra':
-                    files.append(dict(path='extra.txt', text='extra'))
-                elif change == 'duplicate':
-                    files.append(dict(files[0]))
-                else:
-                    files.extend(dict(path=f'extra-{i}', text='') for i in range(65))
-                repack(ask)
-                self.reset_native(ask)
-                result = self.create()
-                self.assertFalse(result['delivered'], result)
-                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
-                self.assertEqual(self.sent_count, 0)
-        for overflow in (False, True):
-            with self.subTest(snapshot_bytes_overflow=overflow):
-                ask = pack_proposal()
-                files = ask['run']['pack']['directory']['files']
-                setup = next(f for f in files if f['path'] == 'SETUP.md')
-                setup['text'] = 'x' * (262144 - sum(len(f['text'].encode()) for f in files if f is not setup) + overflow)
-                repack(ask)
-                self.reset_native(ask)
-                self.assertEqual(self.create()['delivered'], not overflow)
-                if overflow:
-                    self.assertEqual(self.sent_count, 0)
-                else:
-                    self.assert_pack_document(ask, self.documents[-1][2])
-        self.reset_native(pack_proposal())
-        self.native.ask['run']['does'] += ['Synthetic complete plan line ' + 'x' * 10000] * 65
-        result = self.create()
-        self.assertTrue(result['delivered'], result)
+        ask = pack_proposal()
+        ask['run']['does'] += ['Synthetic complete plan line ' + 'x' * 20000] * 25
+        self.reset_native(ask)
+        self.assertTrue(self.create()['delivered'])
         self.assertGreater(self.row()['bundle']['text_parts'], n.PACK_PARTS)
         self.assertEqual(len(self.documents), 1)
         self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
-        ask = pack_proposal()
-        files = ask['run']['pack']['directory']['files']
-        setup = next(f for f in files if f['path'] == 'SETUP.md')
-        manifest = next(f for f in files if f['path'] == 'pack.yaml')
-        long_path = 's' * 90000
-        manifest['text'] = manifest['text'].replace('SETUP.md', long_path)
-        setup['path'] = long_path
-        setup['text'] = 'x' * (262144 - sum(len(f['text'].encode()) for f in files if f is not setup))
-        repack(ask)
-        self.reset_native(ask)
-        self.assertTrue(self.create()['delivered'])
         size = len(self.documents[-1][2])
-        self.assertGreater(size, 320 * 1024)
-        self.assertEqual(n.PACK_DOCUMENT_BYTES, self.bridge.ATTACHMENT_KINDS['document'][2])
         for ceiling in (size, size - 1):
             self.reset_native(ask)
             with patch.object(n, 'PACK_DOCUMENT_BYTES', ceiling):
                 result = self.create()
-            if ceiling == size:
-                self.assertTrue(result['delivered'], result)
-            else:
+            self.assertEqual(result['delivered'], ceiling == size)
+            if ceiling < size:
                 self.assertIn('document_too_large', result['reason'])
-                self.assertIn('explicit part-based review fallback', result['reason'])
-                self.assertEqual(self.sent_count, 0)
-                self.assertEqual(self.documents, [])
-                with self.store.connect() as db:
-                    self.assertEqual(db.execute('SELECT COUNT(*) FROM deliveries').fetchone()[0], 0)
+                self.assertEqual((self.sent_count, self.documents), (0, []))
 
 
     def test_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
@@ -1873,10 +1859,6 @@ class NativeTests(NativeCase):
             with self.subTest(case=case):
                 ask['question'] = '# Context heading\n[context link](https://example.invalid)'
                 ask['context'].append('[context link](https://example.invalid) *emphasis* `code` <b>HTML</b> &copy;')
-                if 'directory' in ask['run'].get('pack', {}):
-                    setup = next(f for f in ask['run']['pack']['directory']['files'] if f['path'] == 'SETUP.md')
-                    setup['text'] = hostile + 'no terminal LF'
-                    repack(ask)
                 self.bundle_delivery(case, ask)
         self.bundle_document_delivery()
         class Attachments(HTMLParser):
@@ -1915,8 +1897,8 @@ class NativeTests(NativeCase):
                 if factory is pack_proposal:
                     ask = pack_proposal('directory_replace')
                 at = next(i for i, line in enumerate(ask['run']['does'])
-                          if line.startswith(('grants kept for source ', 'no grant of source ')))
-                ask['run']['does'][at] = 'grants kept for source synthetic: ' + '<b>holder</b> ' * 500
+                          if line.startswith('it would replace the source '))
+                ask['run']['does'][at] = 'it would replace the source synthetic the yard has under that name; grants kept for source synthetic: ' + '<b>holder</b> ' * 500 + '.'
                 self.reset_native(ask)
                 self.assertFalse(self.create()['delivered'])
                 self.assertEqual(self.sent_count, 0)
@@ -1947,7 +1929,7 @@ class NativeTests(NativeCase):
         self.assertTrue(contents)
         headings = [tokens[i + 1].content for i, t in enumerate(tokens) if t.type == 'heading_open']
         self.assertEqual(headings[1:], ['Reading file content', 'Canonical review']
-                         + (['Pack snapshot'] if 'directory' in ask['run'].get('pack', {}) else []))
+                         + (['Pack'] if 'pack' in ask['run'] else []))
         self.assertEqual(review_content(review, 'Question:'), ask['question'])
         self.assertIn('Context: ' + ask['context'][-1], facts)
         self.assertIn('Command: ' + ask['run']['command'], facts)
@@ -1989,7 +1971,7 @@ class NativeTests(NativeCase):
             self.assertEqual([value for label, value in contents if label == 'Native Does (complete quoted lines):'], ask['run']['does'])
             for carried in ask['run']['carried']:
                 self.assert_source_review(dict(run=dict(carried=[carried])), review)
-            if 'directory' in ask['run']['pack']:
+            if 'digest' in ask['run']['pack']:
                 self.assert_pack_document(ask, raw)
                 self.assertIn(ask['run']['pack']['digest'], card)
             if case == 'pack_replace':
@@ -2163,8 +2145,7 @@ class NativeTests(NativeCase):
                 with self.store.connect() as db:
                     self.assertEqual(db.execute('SELECT * FROM deliveries ORDER BY key').fetchall(), ledger)
         ask = pack_proposal()
-        ask['run']['pack']['directory']['files'][0]['text'] += 'Synthetic atomic publication\n'
-        repack(ask)
+        ask['context'].append('Synthetic atomic publication')
         self.reset_native(ask)
         with patch.object(n.os, 'link', side_effect=RuntimeError('synthetic crash before document publication')):
             with self.assertRaises(RuntimeError):
@@ -2210,7 +2191,7 @@ class NativeTests(NativeCase):
                 row['bundle']['parts'] = parts
                 row['bundle'].pop('text_parts')
                 if snapshot:
-                    value = n.pack_document(self.native.ask['run']['pack'])
+                    value = 'UNTRUSTED SOURCE PACK SNAPSHOT\nPack: synthetic\nFiles: 1\n\nPath: \"SETUP.md\"\nSize: 0\nSHA256: ' + n.file_hash('') + '\n\n\n'
                     row['bundle']['document'] = dict(text=value, sha256=n.file_hash(value), size=len(value.encode()),
                         key=f"runask:{row['id']}:bundle:{row['proposal']}:document", message_id=None)
                 else:
@@ -2243,12 +2224,14 @@ class NativeTests(NativeCase):
 
     def assert_pack_document(self, ask, raw):
         pack = ask['run']['pack']
-        facts, contents, _ = review_parts(raw.decode())
+        review = raw.decode()
+        facts, contents, _ = review_parts(review)
         self.assertIn('Pack: ' + pack['name'], facts)
-        self.assertIn('Pack digest: ' + pack['digest'], facts)
-        self.assertIn('Files: ' + str(len(pack['directory']['files'])), facts)
-        self.assertEqual([(label.removeprefix('Path: '), value) for label, value in contents if label.startswith('Path: ')],
-                         [(file['path'], file['text']) for file in pack['directory']['files']])
+        self.assertIn('Pack label: ' + pack['label'], facts)
+        if 'digest' in pack:
+            self.assertIn('Pack digest: ' + pack['digest'], facts)
+        self.assertFalse(any(label.startswith('Path: ') for label, _ in contents))
+        self.assertNotIn('## Pack snapshot', review)
 
     def assert_source_review(self, ask, review):
         carried = ask['run']['carried'][0]
@@ -2558,8 +2541,7 @@ class NativeTests(NativeCase):
                                 if drift == 'proposal':
                                     self.native.ask['context'].append('new proposal')
                                 elif drift == 'pack-digest':
-                                    self.native.ask['run']['pack']['directory']['files'][0]['text'] += 'new proposal'
-                                    repack(self.native.ask)
+                                    self.native.ask['run']['pack']['digest'] = 'f' * 64
                                 elif drift == 'operator':
                                     self.native.user['role'] = 'member'
                                 else:
@@ -3485,6 +3467,21 @@ class RealNativeTests(BridgeTestCase):
         finally:
             testyardr.stop(server)
 
+    def test_real_native_source_and_pack_apply_once(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        server, home, command, env = testyardr.start(root, binary)
+        try:
+            if not testyardr.aligned(home):
+                self.skipTest('set TGBRIDGE_TEST_YARDR to an aligned or upstream yardr build')
+            client, cli, _ = self.exercise_source_limit_and_trust(binary, root, home, command, env)
+            self.exercise_source_adds(root, home, cli, client)
+            self.exercise_source_packs(root, home, cli, client, command, env)
+        finally:
+            testyardr.stop(server)
+
     def test_real_native_store_records_answer_and_applies_stored_operation_once(self):
         binary = testyardr.binary()
         if binary is None:
@@ -3958,8 +3955,6 @@ class RealNativeTests(BridgeTestCase):
             cli('reply', str(delivery), '--crew', 'writer', '--format', 'markdown', '**Photo**', '--file', str(file))
             self.assertEqual(captured, [({'chat_id': '123', 'caption': '<b>Photo</b>', 'parse_mode': 'HTML'}, evidence)])
             self.assertEqual(hashlib.sha256(file.read_bytes()).digest(), hashlib.sha256(evidence).digest())
-            self.exercise_source_packs(root, home, cli, client)
-            self.exercise_source_adds(root, home, cli, client)
             self.exercise_weighty_confirmations(cli, client)
             self.exercise_same_yard_bots(root, cli, client, 'http://' + match[1], env, markdown_bridge)
         finally:
@@ -4437,25 +4432,30 @@ class RealNativeTests(BridgeTestCase):
         self.assertEqual(len(events(row)), 1)
         print('RealNative confirm R1-R10: real isolated RPC/store, fake Telegram, no live state')
 
-    def exercise_source_packs(self, root, home, cli, client):
+    def exercise_source_packs(self, root, home, cli, client, native_command, native_env):
         cli('bead', 'create', 'Synthetic source pack review', '--id', 'pack-1')
-        repository = Path(__file__).resolve().parents[1]
-        old = root / 'old-tgbridge'
-        old.mkdir()
-        for name in ('pack.yaml', 'tgbridge.yaml', 'SETUP.md', 'tgbridge/normalize', 'tgbridge/thread'):
-            target = old / name
-            target.parent.mkdir(exist_ok=True)
-            result = subprocess.run(['git', 'show', '7c0ce69:yardr/' + name], cwd=repository, capture_output=True, check=True)
-            target.write_bytes(result.stdout)
-        cli('pack', 'apply', str(old), '--yes')
-        snapshot_dir = root / 'tgbridge-pack'
-        shutil.copytree(repository / 'yardr', snapshot_dir)
-        self.sent_count = 10000
-        self.documents = []
-        self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
-        updates = iter(range(20000, 21000))
+        cli('crew', 'add', 'reviewer', '--set', 'kind=codex')
+        cli('crew', 'add', 'writer', '--set', 'kind=codex')
+        checkout = root / 'checkout'
+        git_env = dict(HOME=str(root), PATH='/usr/local/bin:/usr/bin:/bin')
+        for words in (['init', '-q', str(checkout)],
+                      ['-C', str(checkout), '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid',
+                       'commit', '-q', '--allow-empty', '-m', 'Initial']):
+            subprocess.run(['git', *words], env=git_env, check=True, capture_output=True)
+        cli('depot', 'add', 'synthetic', str(checkout), '--base', 'HEAD')
+        pack = checkout / 'pack'
+        pack.mkdir()
+        legacy = pack_proposal('directory_prealignment')['run']['pack']['directory']['files']
+        for file in legacy:
+            path = pack / file['path']
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(file['text'].encode())
+        cli('source', 'rm', 'synthetic')
+        updates = iter(range(20000, 22000))
+
         def current(number):
             return next(a for a in client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'] if a['ask'] == number)
+
         def press(row, action='approve'):
             if action == 'confirm':
                 action += ':' + (self.bridge.run_asks.get(row['id']).get('pending') or {}).get('nonce', '0' * 16)
@@ -4463,45 +4463,162 @@ class RealNativeTests(BridgeTestCase):
                 data=f"runask:{row['id']}:{action}", message=dict(message_id=row['message_id'],
                     chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}),
                 **{'from': dict(id=123, is_bot=False)})))
-        def reply(row, value=None):
-            with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
-                self.bridge.inbound(dict(update_id=next(updates), message=dict(message_id=next(updates),
-                    text=str(row['ask']) if value is None else value, chat=dict(id=123, type='private'),
-                    reply_to_message=dict(message_id=row['message_id']), **{'from': dict(id=123, is_bot=False)})))
-        for scenario in ('upgrade', 'source-stale', 'copy-stale', 'grant-stale', 'decline', 'cancel'):
+
+        def propose(path, pin=False):
+            run = 'pack apply ' + str(path)
+            if pin:
+                digest = re.search(r'sha256:([0-9a-f]{64})', cli('pack', 'check', str(path)))[1]
+                run += ' --sha256 ' + digest
+            cli('--actor', 'proposer', 'bead', 'ask', 'pack-1', 'Review the synthetic pack?', '--to', 'pat',
+                '--context', 'Synthetic isolated pack review', '--run', run)
+            return client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'][-1]
+
+        def publish(ask):
+            before = len(self.calls), len(self.documents)
+            receipt = self.bridge.api_run_ask(dict(bead='pack-1', ask=ask['ask'], key='pack-' + str(ask['ask'])))
+            replacements = [line for line in ask['run']['does'] if line.startswith('it would replace the source ')]
+            if any('; ' not in line for line in replacements):
+                self.assertFalse(receipt['delivered'], receipt)
+                self.assertTrue(receipt['reason'].endswith(n.FALLBACK), receipt)
+                self.assertEqual((len(self.calls), len(self.documents)), before)
+                return None
+            self.assertTrue(receipt['delivered'], receipt)
+            row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
+            self.assertEqual(row['weighty'], bool(ask.get('weight')))
+            NativeTests.assert_pack_document(self, ask, self.documents[-1][2])
+            review = NativeTests.bundle_review(row)
+            for carried in ask['run']['carried']:
+                NativeTests.assert_source_review(self, dict(run=dict(carried=[carried])), review)
+            return row
+
+        def approve(row, ask):
+            press(row)
+            if ask.get('weight'):
+                self.assertEqual(current(ask['ask'])['state'], 'open')
+                press(row, 'confirm')
+
+        def stale(row, ask):
+            native = current(ask['ask'])
+            self.assertEqual(native['state'], 'open')
+            self.assertNotIn('ran', native)
+            saved = self.bridge.run_asks.get(row['id'])
+            self.assertEqual(saved['state'], 'stale')
+            self.assertIsNone(saved['pending'])
+            self.assertIn('Stale source pack proposal; nothing ran. Decline it in the yard and ask again.',
+                          saved['display']['footer'])
+            self.assertEqual(saved['display']['keyboard'], [])
+            edits = [body for url, body in self.calls if url.endswith('/editMessageText')
+                     and body['message_id'] == row['message_id']]
+            self.assertIn(saved['display']['footer'], edits[-1]['text'])
+            self.assertEqual(edits[-1]['reply_markup']['inline_keyboard'], [])
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+            self.bridge.run_asks.refresh()
+            press(row); press(row, 'confirm')
+            self.assertEqual(current(ask['ask']), native)
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['display']['keyboard'], [])
+            self.assertFalse(any(e['data'].get('approved', {}).get('ask') == ask['ask']
+                                 and e['data'].get('approved', {}).get('bead') == 'pack-1'
+                                 for e in (client.call('EventsOfKind', ['pack_applied', 100]) or [])))
+
+        def settled(row, ask):
+            deadline = time.monotonic() + 15
+            while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
+                self.assertLess(time.monotonic(), deadline, 'pack carry did not settle')
+                time.sleep(.02)
+            result = current(ask['ask'])
+            self.assertEqual(result['state'], 'answered', result)
+            self.assertFalse(result['ran'].get('failed'), result['ran'])
+            for carried in ask['run']['carried']:
+                self.assertEqual(client.call('GetSource', [carried['name']])['declaration'].encode(), carried['text'].encode())
+                expected = {file['program']: file['text'].encode() for file in carried.get('files', [])}
+                directory = home / 'sources' / carried['name']
+                actual = {p.relative_to(directory).as_posix(): p.read_bytes() for p in directory.rglob('*') if p.is_file()}
+                self.assertEqual(actual, expected)
+                self.assertTrue(all((directory / path).stat().st_mode & 0o777 == 0o700 for path in expected))
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+            self.bridge.run_asks.refresh()
+            press(row); press(row, 'confirm')
+            self.assertEqual(current(ask['ask']), result)
+            events = [e for e in client.call('EventsOfKind', ['pack_applied', 100])
+                      if e['data'].get('approved', {}).get('ask') == ask['ask']
+                      and e['data'].get('approved', {}).get('bead') == 'pack-1']
+            self.assertEqual(len(events), 1)
+
+        with self.subTest(real_pack='pinned-new-source-stale'):
+            ask = propose(pack, pin=True)
+            row = publish(ask)
+            declaration = pack / 'source.yaml'
+            declaration_bytes = declaration.read_bytes()
+            try:
+                declaration.write_bytes(declaration_bytes + b'# Synthetic input changed after pinned card\n')
+                approve(row, ask)
+            finally:
+                declaration.write_bytes(declaration_bytes)
+            stale(row, ask)
+            with self.assertRaises(n.RPCRefused):
+                client.call('GetSource', ['synthetic'])
+            self.assertFalse((home / 'sources/synthetic').exists())
+
+        for kind in ('directory', 'directory_replace'):
+            with self.subTest(captured_pack=kind):
+                if kind == 'directory_replace':
+                    c = pack_proposal(kind)['run']['carried'][0]
+                    (pack / 'source.yaml').write_bytes(c['text'].encode())
+                    (pack / 'bin/report').write_bytes(c['files'][0]['text'].encode())
+                    (home / 'sources/synthetic/obsolete.txt').write_bytes(b'Synthetic obsolete copy\r\n')
+                ask = propose(pack, pin=True)
+                self.assert_source_pack_fixture(ask, root, 'pack_' + kind)
+                row = publish(ask)
+                if row:
+                    approve(row, ask); settled(row, ask)
+                else:
+                    cli('pack', 'apply', str(pack), '--yes')
+                if kind == 'directory':
+                    cli('source', 'grant', 'synthetic', 'health', '--crew', 'reviewer')
+
+        full = checkout / 'tgbridge-pack'
+        shutil.copytree(Path(__file__).resolve().parents[1] / 'yardr', full)
+        cli('pack', 'apply', str(full), '--yes')
+        cli('source', 'grant', 'tgbridge', 'health', '--crew', 'reviewer')
+        outside = root / 'installed-pack'
+        shutil.copytree(full, outside)
+        refused = subprocess.run(native_command + ['--actor', 'proposer', 'bead', 'ask', 'pack-1',
+            'Review an installed pack?', '--to', 'pat', '--context', 'Synthetic outside-checkout refusal',
+            '--run', 'pack apply ' + str(outside)], env=native_env, cwd=root, text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('not inside a registered depot', refused.stderr)
+        self.exercise_tgbridge_source(root, home, cli, client, full)
+        for scenario in ('unchanged', 'pinned-routine-stale', 'pinned-weighted-stale', 'weighted', 'directory-stale', 'directory-content-stale', 'source-stale', 'copy-stale', 'grant-stale', 'decline', 'cancel'):
             with self.subTest(real_pack=scenario):
-                # Each fresh proposal has a changed command and immutable captured input.
-                command = snapshot_dir / 'tgbridge/normalize'
-                command.write_bytes(command.read_bytes() + b'\n# Synthetic captured revision\n')
-                cli('--actor', 'proposer', 'bead', 'ask', 'pack-1', 'Review the source pack?', '--to', 'pat',
-                    '--context', 'Synthetic repository pack upgrade', '--run', 'pack apply ' + str(snapshot_dir))
-                ask = client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'][-1]
+                program = full / 'tgbridge/normalize'
+                weighty = scenario not in ('unchanged', 'pinned-routine-stale')
+                if weighty:
+                    program.write_bytes(program.read_bytes() + b'\n# Synthetic captured revision\n')
+                ask = propose(full, pin=scenario.startswith('pinned-'))
+                self.assertEqual(bool(ask.get('weight')), weighty)
+                row = publish(ask)
+                if row is None:
+                    continue
+                if scenario == 'unchanged':
+                    self.assertIn('grants kept for source tgbridge: crew member reviewer: health (kept).', row['plain'])
                 before = client.call('GetSource', ['tgbridge'])
                 target = home / 'sources/tgbridge/tgbridge/normalize'
                 before_bytes = target.read_bytes()
-                receipt = self.bridge.api_run_ask(dict(bead='pack-1', ask=ask['ask'], key='pack-' + scenario))
-                self.assertTrue(receipt['delivered'], receipt)
-                row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
-                self.assertTrue(row['bundle']['document']['message_id'])
-                self.assertEqual(self.documents[-1][1].name, 'review-' + row['proposal'] + '.md')
-                self.assertEqual(row['bundle']['parts'], [])
-                sends = [body for url, body in self.calls if url.endswith('/sendMessage')
-                         and body.get('reply_parameters', {}).get('message_id') == row['bundle']['document']['message_id']]
-                self.assertEqual(len(sends), 1)
-                self.assertIn(hashlib.sha256(self.documents[-1][2]).hexdigest(), sends[0]['text'])
-                self.assertLess(row['bundle']['document']['size'], n.PACK_DOCUMENT_BYTES // 2)
-                if scenario == 'upgrade':
-                    print(f"Synthetic tgbridge upgrade: 1 document, 1 card, {row['bundle']['text_parts']} text parts contained; {row['bundle']['document']['size']}/{n.PACK_DOCUMENT_BYTES} document bytes")
-                NativeTests.assert_pack_document(self, ask, self.documents[-1][2])
-                command.write_bytes(b'Synthetic edited after capture; never executed.\n')
-                if scenario == 'source-stale':
+                manifest = full / 'pack.yaml'
+                manifest_bytes = manifest.read_bytes()
+                declaration = full / 'tgbridge.yaml'
+                declaration_bytes = declaration.read_bytes()
+                if scenario == 'directory-stale':
+                    manifest.unlink()
+                elif scenario == 'directory-content-stale' or scenario.startswith('pinned-'):
+                    declaration.write_bytes(declaration_bytes + b'# Synthetic input changed after card\n')
+                elif scenario == 'source-stale':
                     changed = root / 'changed-source.yaml'
                     changed.write_bytes(before['declaration'].encode() + b'\n# changed after capture\n')
-                    # Source text changes preserve every named command by copying its input beside the file.
                     for file in ask['run']['carried'][0].get('files', []):
-                        path = root / file['program']
-                        path.parent.mkdir(exist_ok=True)
-                        path.write_bytes(file['text'].encode())
+                        path = root / file['program']; path.parent.mkdir(exist_ok=True)
+                        path.write_bytes((home / 'sources/tgbridge' / file['program']).read_bytes())
                     cli('source', 'add', str(changed))
                 elif scenario == 'copy-stale':
                     target.write_bytes(b'Synthetic standing copy drift\n')
@@ -4512,69 +4629,89 @@ class RealNativeTests(BridgeTestCase):
                 if scenario == 'decline':
                     press(row, 'decline')
                     self.assertEqual(current(ask['ask'])['state'], 'declined')
+                elif scenario == 'cancel':
+                    press(row); press(row, 'cancel'); press(row, 'confirm')
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
                 else:
-                    press(row)
-                    self.assertEqual(current(ask['ask'])['state'], 'open')
-                    self.assertEqual(client.call('GetSource', ['tgbridge']), standing)
-                    self.assertEqual(target.read_bytes(), standing_bytes)
-                    reply(row, '999999')
-                    self.assertEqual(current(ask['ask'])['state'], 'open')
-                    if scenario == 'cancel':
-                        press(row, 'cancel')
-                        press(row, 'confirm')
-                        self.assertEqual(current(ask['ask'])['state'], 'open')
-                    else:
-                        press(row)
-                        press(row, 'confirm')
-                if scenario != 'upgrade':
+                    approve(row, ask)
+                manifest.write_bytes(manifest_bytes)
+                declaration.write_bytes(declaration_bytes)
+                if scenario in ('unchanged', 'weighted'):
+                    settled(row, ask)
+                else:
                     self.assertEqual(client.call('GetSource', ['tgbridge']), standing)
                     self.assertEqual(target.read_bytes(), standing_bytes)
                     if scenario.endswith('-stale'):
-                        self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
-                    # Restore standing copies for the next proposal.
-                    if scenario == 'copy-stale':
-                        target.write_bytes(before_bytes)
-                    continue
-                deadline = time.monotonic() + 15
-                while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
-                    self.assertLess(time.monotonic(), deadline, 'pack carry did not settle')
-                    time.sleep(.02)
-                settled = current(ask['ask'])
-                self.assertFalse(settled['ran'].get('failed'), settled['ran'])
-                for carried in ask['run']['carried']:
-                    self.assertEqual(client.call('GetSource', [carried['name']])['declaration'].encode(), carried['text'].encode())
-                    for file in carried.get('files', []):
-                        self.assertEqual((home / 'sources' / carried['name'] / file['program']).read_bytes(), file['text'].encode())
-                self.bridge.run_asks = n.RunAsks(self.bridge)
-                self.bridge.run_asks.refresh()
-                press(row); press(row, 'confirm')
-                self.assertEqual(current(ask['ask']), settled)
-                events = [e for e in client.call('EventsOfKind', ['pack_applied', 100])
-                          if e['data'].get('approved', {}).get('ask') == ask['ask']
-                          and e['data'].get('approved', {}).get('bead') == 'pack-1']
-                self.assertEqual(len(events), 1)
-
+                        stale(row, ask)
+                if scenario == 'copy-stale':
+                    target.write_bytes(before_bytes)
         cli('--actor', 'proposer', 'bead', 'ask', 'pack-1', 'Review the embedded source pack?', '--to', 'pat',
             '--context', 'Synthetic embedded source pack review', '--run', 'pack apply telegram')
         ask = client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'][-1]
-        self.assertEqual(ask['run']['carried'], pack_proposal('embedded')['run']['carried'])
-        receipt = self.bridge.api_run_ask(dict(bead='pack-1', ask=ask['ask'], key='pack-embedded'))
+        self.assert_source_pack_fixture(ask, root, 'pack_embedded')
+        row = publish(ask)
+        approve(row, ask); settled(row, ask)
+
+    def assert_source_pack_fixture(self, ask, root, name):
+        actual = json.loads(json.dumps(dict(ask, ask=7, since='2026-01-01T00:00:00Z')).replace(str(root), '/synthetic'))
+        # A build label is provenance; compare all remaining wire keys against one of the two captures.
+        for suffix in ('', '_upstream'):
+            path = Path(__file__).with_name('fixtures') / (name + suffix + '.json')
+            if not path.exists():
+                continue
+            fixture = json.loads(path.read_text())
+            trial = copy.deepcopy(actual)
+            if 'pack' in trial['run']:
+                label, expected = trial['run']['pack']['label'], fixture['run']['pack']['label']
+                trial['run']['pack']['label'] = expected
+                trial['run']['does'][0] = trial['run']['does'][0].replace(label, expected)
+            if trial == fixture:
+                return
+        self.assertEqual(actual, fixture)
+
+    def exercise_tgbridge_source(self, root, home, cli, client, full):
+        cli('--actor', 'proposer', 'bead', 'ask', 'pack-1', 'Review the trimmed bridge declaration?', '--to', 'pat',
+            '--context', 'Synthetic full source replacement', '--run', 'source add ' + str(full / 'tgbridge.yaml'))
+        ask = client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'][-1]
+        count = len(self.calls), len(self.documents)
+        receipt = self.bridge.api_run_ask(dict(bead='pack-1', ask=ask['ask'], key='tgbridge-replacing'))
+        if not any('; grants kept for source tgbridge:' in line for line in ask['run']['does']):
+            self.assertFalse(receipt['delivered'])
+            self.assertEqual((len(self.calls), len(self.documents)), count)
+            self.assertTrue(receipt['reason'].endswith(n.FALLBACK))
+            return
         self.assertTrue(receipt['delivered'], receipt)
         row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'pack-1' and r['ask'] == ask['ask'])
-        self.assertIsNotNone(row['bundle']['document']['message_id'])
-        press(row)
-        self.assertEqual(current(ask['ask'])['state'], 'open')
-        press(row, 'confirm')
+        self.assertIn('grants kept for source tgbridge: crew member reviewer: health (kept).', row['plain'])
+        NativeTests.assert_source_review(self, ask, NativeTests.bundle_review(row))
+        print(f"Synthetic tgbridge replacing card: {len(ask['run']['does'])} Does lines, {len(ask['run']['carried'][0]['text'].encode())} declaration bytes")
+        updates = iter(range(30000, 31000))
+        def press(action):
+            if action == 'confirm':
+                action += ':' + self.bridge.run_asks.get(row['id'])['pending']['nonce']
+            self.bridge.inbound(dict(update_id=next(updates), callback_query=dict(id='tgbridge-source',
+                data=f"runask:{row['id']}:{action}", message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                    **{'from': dict(id=999, is_bot=True)}), **{'from': dict(id=123, is_bot=False)})))
+        press('approve'); press('confirm')
         deadline = time.monotonic() + 15
-        while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
-            self.assertLess(time.monotonic(), deadline, 'embedded pack carry did not settle')
+        def current():
+            return next(a for a in client.call('Bead', dict(bead='pack-1', viewer='pat'))['asks'] if a['ask'] == ask['ask'])
+        while current().get('ran', {}).get('result') == n.PENDING:
+            self.assertLess(time.monotonic(), deadline)
             time.sleep(.02)
-        settled = current(ask['ask'])
-        self.assertFalse(settled['ran'].get('failed'), settled['ran'])
-        for carried in ask['run']['carried']:
-            self.assertEqual(client.call('GetSource', [carried['name']])['declaration'].encode(), carried['text'].encode())
-            for file in carried.get('files', []):
-                self.assertEqual((home / 'sources' / carried['name'] / file['program']).read_bytes(), file['text'].encode())
+        done = current()
+        self.assertEqual(done['state'], 'answered')
+        self.assertFalse(done['ran'].get('failed'), done['ran'])
+        self.assertEqual(client.call('GetSource', ['tgbridge'])['declaration'].encode(), (full / 'tgbridge.yaml').read_bytes())
+        for file in ask['run']['carried'][0]['files']:
+            self.assertEqual((home / 'sources/tgbridge' / file['program']).read_bytes(), file['text'].encode())
+        self.bridge.run_asks = n.RunAsks(self.bridge); self.bridge.run_asks.refresh()
+        press('approve')
+        self.assertEqual(current(), done)
+        events = [e for e in client.call('EventsOfKind', ['source_added', 100])
+                  if e['data'].get('approved', {}).get('ask') == ask['ask']
+                  and e['data'].get('approved', {}).get('bead') == 'pack-1']
+        self.assertEqual(len(events), 1)
 
     def exercise_source_adds(self, root, home, cli, client):
         cli('bead', 'create', 'Synthetic source review', '--id', 'source-1')
@@ -4600,7 +4737,7 @@ class RealNativeTests(BridgeTestCase):
                 return client.call('GetSource', [name])
             except n.RPCRefused:
                 return None
-        for scenario in ('new', 'replace', 'free', 'stale', 'decline', 'cancel'):
+        for scenario in ('new', 'replace', 'free', 'stale', 'declaration-stale', 'decline', 'cancel'):
             with self.subTest(real_source=scenario):
                 kind = scenario if scenario in ('new', 'replace', 'free') else 'replace'
                 fixture = source_proposal(kind)
@@ -4618,9 +4755,13 @@ class RealNativeTests(BridgeTestCase):
                     '--context', 'Synthetic isolated source review', '--run', 'source add ' + str(file))
                 ask = client.call('Bead', dict(bead='source-1', viewer='pat'))['asks'][-1]
                 if scenario in ('new', 'replace', 'free'):
-                    actual = json.loads(json.dumps(dict(ask, ask=7, since='2026-01-01T00:00:00Z')).replace(str(root), '/synthetic'))
-                    self.assertEqual(actual, fixture)
+                    self.assert_source_pack_fixture(ask, root, 'source_' + kind)
                 receipt = self.bridge.api_run_ask(dict(bead='source-1', ask=ask['ask'], key='source-' + scenario))
+                if any(line.startswith('it would replace the source ') and '; ' not in line for line in ask['run']['does']):
+                    self.assertFalse(receipt['delivered'], receipt)
+                    self.assertTrue(receipt['reason'].endswith(n.FALLBACK), receipt)
+                    self.assertFalse(any(r['bead'] == 'source-1' and r['ask'] == ask['ask'] for r in self.bridge.run_asks.rows()))
+                    continue
                 self.assertTrue(receipt['delivered'], receipt)
                 row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'source-1' and r['ask'] == ask['ask'])
                 review = NativeTests.bundle_review(row)
@@ -4642,6 +4783,12 @@ class RealNativeTests(BridgeTestCase):
                 press(row, message_id=row['message_id'] + 1000)
                 self.assertEqual(current(ask['ask'])['state'], 'open')
                 press(row)
+                if scenario == 'declaration-stale':
+                    file.write_bytes(before['declaration'].encode() + b'# Synthetic standing declaration drift\n')
+                    for f in carried.get('files', []):
+                        (root / f['program']).write_bytes((home / 'sources' / carried['name'] / f['program']).read_bytes())
+                    cli('source', 'add', str(file))
+                    before = source(carried['name'])
                 if scenario == 'stale':
                     target.write_bytes(b'Synthetic standing file changed after capture\n')
                 if ask.get('weight'):
@@ -4657,10 +4804,10 @@ class RealNativeTests(BridgeTestCase):
                         self.assertEqual(target.read_bytes(), before_bytes)
                         continue
                     press(row, 'confirm')
-                if scenario == 'stale':
+                if scenario in ('stale', 'declaration-stale'):
                     self.assertEqual(current(ask['ask'])['state'], 'open')
                     self.assertEqual(source(carried['name']), before)
-                    self.assertEqual(target.read_bytes(), b'Synthetic standing file changed after capture\n')
+                    self.assertEqual(target.read_bytes(), b'Synthetic standing file changed after capture\n' if scenario == 'stale' else before_bytes)
                     saved = self.bridge.run_asks.get(row['id'])
                     self.assertEqual(saved['state'], 'stale')
                     self.assertEqual(saved['display']['keyboard'], [])

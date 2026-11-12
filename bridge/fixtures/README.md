@@ -39,35 +39,35 @@ The real integration also defers through RPC, reopens through the asker's next
 note, refuses a queued reply to the original message through the production
 poll order, and records exactly one answer from the new message.
 
-`source_new.json`, `source_replace.json` and `source_free.json` were captured
-from isolated real core `546e3fdd2127`: a new limits source with one command
-file, its replacement changing that file and removing an extra textual
-copy, and a commands-free HTTPS declaration. Only temp root (`/synthetic`),
-ask number and timestamp are stabilized. The replacement fixture was refreshed
-and all three rechecked against isolated core `1918cc80cc75`. The replacement's
-Does line `no grant of source synthetic stands.` reflects the standing-grant
-disclosure introduced in core `8e1debc3567b`: replacement cards name every
-standing grant or explicitly state that none stand. The existing real_native_store
-integration compares all three complete wire responses before driving them
-through real native approval/carry and checking byte-equal declarations and
-installed files. It also exercises standing-file drift, decline, cancel,
-wrong bindings and replay. The offline `--source` preview uses the real
-replacement fixture with fake Telegram and labels its presentation synthetic.
-
-`source_replace.json` includes the no-standing-grants line verified against
-landed core `ced24b0e849c`; its captured files and diffs are unchanged.
-
+`source_new.json`, `source_replace.json`, `source_free.json`,
 `pack_directory.json`, `pack_directory_replace.json` and `pack_embedded.json`
-were captured from an isolated build of that landed core. They show a new
-directory source pack, an upgrade changing a declaration key and command,
-keeping a crew grant and removing an obsolete copy, and the embedded
-`telegram` source pack. Only ask number, timestamp and temporary root
-(`/synthetic`) are stabilized. The directory snapshots include CRLF setup
-notes and exact file hashes. The embedded contract carries source files
-without a directory snapshot. No live yard or Telegram data is used.
-The native integration also upgrades this repository's complete `yardr/`
-pack from `7c0ce69`, checks every installed byte after input edits, and
-exercises source/copy/grant drift, decline/cancel/replay and embedded carry.
-`scripts/preview_run_asks.py --pack` drives the replacement fixture through
-the bridge, including its document header, weight, gate and canonical result,
-plus an oversized refusal before any send; all captures are synthetic.
+were recaptured from isolated aligned `11f81f3845e6` and plain upstream
+`09fa95be03e5` builds. Only the temp root (`/synthetic`), ask number and time
+are stabilized; pack labels retain the build that produced them. The new and
+commands-free source captures are identical on both builds. The other four
+plain-upstream captures carry `_upstream` in their filenames. Replacing
+upstream cards omit grants disclosure and are deliberately refused. Aligned
+cards append it to the replacement sentence; their source undo uses stdin.
+
+Directory captures came from `checkout/pack` inside a registered synthetic
+depot with an initial commit and base HEAD. The new pack has CRLF setup notes,
+a source declaration and a command file. Its replacement changes the
+command and description, keeps a reviewer's health grant and removes an
+obsolete copy. The command pin is read from native `pack check`. Neither
+build carries directory snapshot files: the complete sources/programs,
+replacement evidence and native digest are what the bridge reviews.
+The embedded fixture is the binary's `telegram` pack, proposed on a free name.
+
+`source_replace_prealignment.json`, `pack_directory_prealignment.json` and
+`pack_directory_replace_prealignment.json` retain main's earlier local card
+shapes for refusal/refresh regressions. `source_tgbridge_commented.yaml` is
+main's declaration before comment removal: the pack test compares its parsed
+YAML with the compact declaration and checks the 8192-byte size bound.
+
+`RealNativeTests.test_real_native_source_and_pack_apply_once` compares complete
+live responses against these captures (normalizing only the build label when
+comparing another build), then exercises the rendered bridge, its ledger and
+real native approve/carry. It checks complete installed declarations and
+program trees, routine and weighted pack approvals, tgbridge's replacement
+grants and Does count, stale state, decline/cancel and replay. All data is
+synthetic. No live yard or Telegram account is used.

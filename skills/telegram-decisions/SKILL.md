@@ -150,6 +150,11 @@ The linked sections hold the human's review and confirmation procedure.
 
 ### Siding status and the plain fold
 
+Publish to show the operator the siding's waiting beads, or to propose a fold
+of the eligible ones. The publishing crew member needs the `siding_card`
+per-call grant; see
+[14. Optional native siding cards](../../yardr/SETUP.md#14-optional-native-siding-cards).
+
 ```sh
 yardr call <source> siding_card depot=<depot> key=<stable-key> --json
 ```
@@ -157,16 +162,16 @@ yardr call <source> siding_card depot=<depot> key=<stable-key> --json
 Add `flow=<flow> stage=<stage> group=<group>` to narrow discovery and
 `topic=<topic>` or `conversation=<id>` to route it. The card lists every bead
 waiting in the siding and proposes a fold of the eligible ones; over
-`fold_max` or with fewer than two eligible it is status only. Only the paired
-human's tap folds, exactly the beads shown. An oversized card refuses whole:
-do not invent a subset or another way to fold. The human may reply
-`fold <id> <id> …` for a card of a chosen subset, or `release <id>` for a
-card that moves that one bead on to the stage it enters; neither reply folds
-or releases anything, and only the human's tap on that card does. A release
-card's tap refuses a bead that changed since the card. See
+`fold_max`, with fewer than two eligible, or with no single next stage it is
+status only and carries no controls. Only the paired human's tap folds,
+exactly the beads shown. An oversized card refuses whole: do not invent a
+subset or another way to fold. The human may reply `fold <id> <id> …` for a
+card of a chosen subset, or `release <id>` for a card that moves that one bead
+on to the stage it enters; neither reply folds or releases anything, and only
+the human's tap on that card does. A release card's tap refuses a bead that
+changed since the card. Cards expire after 15 minutes. See
 [Siding status and the plain fold](../../bridge/OPERATIONS.md#siding-status-and-the-plain-fold)
-for subset replies, release cards, expiry, withdrawal, changed beads and the
-undo.
+for subset replies, release cards, withdrawal, changed beads and the undo.
 
 ### Refresh a native outcome
 

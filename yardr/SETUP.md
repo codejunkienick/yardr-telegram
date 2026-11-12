@@ -631,11 +631,12 @@ by [Move an existing bridge to its own installation](#move-an-existing-bridge-to
 Keep this instance's existing native home/operator/source identity and
 pairing. The cards use yardr's ordinary calls: `GetDepot`, `Groups`,
 `Routes`, `Settings`, `ListBeads`, `SidingBeads`, `NextStages` and `GetBead`
-to read, and the plain `FoldBeads` to fold. They exist on the aligned yardr
-(`11f81f38`), on plain upstream (`09fa95be`) and on the earlier local build
-(`10533b9e`); no siding guard in core is needed, and repository-backed flows
-are no different from store flows. Release of one siding bead is not on the
-card yet.
+to read, the plain `FoldBeads` to fold and the plain `Advance` to release one
+bead. They exist on the aligned yardr (`11f81f38`), on plain upstream
+(`09fa95be`) and on the earlier local build (`10533b9e`); no siding guard in
+core is needed, and repository-backed flows are no different from store
+flows. A release card moves one bead on its own tap, to the stage the card
+shows, and refuses a bead that changed since the card (`bridge/OPERATIONS.md`).
 
 After independent review, the operator owns installation into this
 instance's release root, supported source-pack planning/application, and
@@ -651,9 +652,9 @@ yardr call tgbridge siding_card depot=<depot> key=<stable-card-key>
 
 These commands are exercised on an isolated source and loopback bridge. No
 blanket grant is needed. The caller can publish status; only the paired
-human's tap folds, and only the exact beads shown. See `bridge/OPERATIONS.md`
-for subset replies, expiry, withdrawal, `fold_max`, changed beads and the
-undo. No siding, flow, route or group is created by enabling the feature.
+human's tap folds or releases, and only the exact beads shown. See
+`bridge/OPERATIONS.md` for subset replies, release cards, expiry, withdrawal,
+`fold_max`, changed beads and the undo. No siding, flow, route or group is created by enabling the feature.
 
 A source commit is not an installation or activation. Before activation,
 review offline previews and the isolated integration gate. After an

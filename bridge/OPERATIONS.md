@@ -2793,10 +2793,15 @@ asks for a **new card** for exactly those beads, in that order, and never
 folds; the old card is withdrawn. A hand fold has no points maximum, but the
 reply refuses a bead that is not open in the siding or that a fold would
 leave; a held or asked bead, which `FoldBeads` itself would take, is folded
-with `yardr bead fold` in a terminal. A reply `release <id>` answers that
-release is not offered on this card yet and runs nothing. `Leave waiting`
-withdraws the card. Cards expire after 15 minutes. Callback prefix
-`siding:` is reserved; generic sends cannot mint it.
+with `yardr bead fold` in a terminal. A reply `release <id>` asks for a
+**release card** for that one bead, which is sent and moves nothing. The
+bead must be one the fold would take (not held, claimed, blocked, asked,
+peer or train) and have a next stage; the card names it, its title, the
+stage it leaves and the stage it enters, and its button is `Release <id> →
+<stage>`. The siding card is left as it is: once the bead moves, that card
+refuses its own tap. `Leave waiting` withdraws the card. Cards expire after
+15 minutes. Callback prefix `siding:` is reserved; generic sends cannot
+mint it.
 
 A tap reads the shown beads again: each must still be open, in the siding's
 stage, routed to its group, not stuck, and bound for the shown carrier stage; any difference
@@ -2811,12 +2816,30 @@ whatever it answered, reads the beads (`GetBead`):
   nothing); the mark clears and the card stays open;
 - anything else: the current state, no button.
 
+A release card's tap re-reads its bead: it must still be open in the siding's
+stage, routed to its group, not stuck, bound for the card's stage, and at
+the `revision` the card read (`GetBead`). Any difference refuses with the
+bead's current state on the card and nothing written. Otherwise the bridge
+marks the card attempted and calls `Advance [id, <stage>, {"stage": <from>,
+"revision": <revision>}, operator]` once. The store refuses a stale stage or
+revision itself, and checks the operator against the siding group's members
+as it does for any move out of that stage. The move ends the siding's manual
+claim on the bead. Whatever the advance answered, the bridge reads the bead
+(`GetBead`): in the stage the card enters, the card settles with the footer
+`Released <id> from <from> into <stage>.`; still open in the stage it leaves
+at the same revision, nothing moved and the card stays open; anything else,
+the current state and no button. A repeated tap answers `Already released
+into <stage>` with no write. A release never folds, and it offers no undo:
+a move back is a person's move with `yardr bead advance`, where the flow
+allows it.
+
 A repeated tap cannot fold twice: the fold refuses closed beads, and a tap
 on a settled card answers `Already folded into C` with no write. A crash
 between the fold and the ledger write is settled the same way by the next
 refresh. Reads are retried when yardr answers 503 while it replaces itself;
-the fold never is. A yard home that stops validating while a reply or tap
-arrives is logged and nothing is written; the poll goes on.
+neither the fold nor the release advance is. A yard home that stops
+validating while a reply or tap arrives is logged and nothing is written;
+the poll goes on.
 
 Siding rows live in `siding_fold_cards`. The previous release's
 `siding_cards` rows (guarded `sp1` proposals) are retired once: their own

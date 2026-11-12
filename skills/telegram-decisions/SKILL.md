@@ -163,9 +163,13 @@ waiting in the siding and proposes a fold of the eligible ones; over
 `fold_max` or with fewer than two eligible it is status only. Only the paired
 human's tap folds, exactly the beads shown. An oversized card refuses whole:
 do not invent a subset or another way to fold. The human may reply
-`fold <id> <id> …` for a card of a chosen subset. See
+`fold <id> <id> …` for a card of a chosen subset, or `release <id>` for a
+card that moves that one bead on to the stage it enters; neither reply folds
+or releases anything, and only the human's tap on that card does. A release
+card's tap refuses a bead that changed since the card. See
 [Siding status and the plain fold](../../bridge/OPERATIONS.md#siding-status-and-the-plain-fold)
-for subset replies, expiry, withdrawal, changed beads and the undo.
+for subset replies, release cards, expiry, withdrawal, changed beads and the
+undo.
 
 ### Refresh a native outcome
 

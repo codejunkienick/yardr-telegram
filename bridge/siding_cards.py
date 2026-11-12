@@ -8,6 +8,7 @@ import run_asks as n
 
 TABLE = 'siding_fold_cards'
 LEGACY = 'siding_cards'
+RELEASE_KIND = 'siding_release'  # Not 'siding': the plain-fold release reads those rows of TABLE as folds.
 RETIRED = 'Card from an older bridge release; nothing runs from it. Request a new card.'
 STUCK = ('held', 'claimed', 'peer', 'train', 'blocked', 'asked')
 BY_HAND = ('held', 'asked')  # FoldBeads takes these too; the card leaves them to a person's terminal fold
@@ -15,14 +16,18 @@ FOLD_MAX = 6  # upstream store.SidingMax, for a siding whose group leaves fold_m
 BEAD = r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}'
 EXPIRY = 900
 ROUTE = {'id', 'stage', 'type', 'depot', 'label', 'and_labels', 'bead_priority', 'originator', 'group', 'note', 'when', 'else'}
-REPLY = 'Reply “fold <id> <id> …” for a card for exactly those beads; a reply never folds.'
-RELEASE = 'Release is not offered on this card yet; nothing ran.'
+REPLY = 'Reply “fold <id> <id> …” for a card for exactly those beads, or “release <id>” for one; a reply never folds or releases.'
+RELEASE_REPLY = 'Reply “release <id>” with one bead of this siding; nothing released.'
+RELEASE_CARD = 'A reply never releases; tap Release on this card.'
 CHANGED = 'Changed since the card; nothing folded. Request a new card.'
+RELEASE_CHANGED = 'Changed since the card; nothing released. Request a new card.'
 STATUS = {'next': 'no single stage for the carrier to start in',
           'few': 'fewer than two beads a fold would take',
           'ceiling': 'over fold_max'}
 CLOSED = {'stale': 'Changed since the card; nothing folded', 'withdrawn': 'Card withdrawn; nothing folded',
           'expired': 'Card expired; nothing folded', 'status': 'Status only; nothing folded'}
+RELEASE_CLOSED = {'stale': 'Changed since the card; nothing released', 'withdrawn': 'Card withdrawn; nothing released',
+                  'expired': 'Card expired; nothing released'}
 
 
 class InvalidSiding(n.NativeError):
@@ -67,7 +72,7 @@ def bead(value, ident=None):
         invalid('bead id')
     if type(value.get('priority')) is not int:
         invalid('bead priority')
-    return dict(id=value['id'], title=line(value.get('title'), 'bead title'),
+    return dict(id=value['id'], title=line(value.get('title'), 'bead title'), revision=n.text(value.get('revision'), 'siding bead revision'),
                 stage=n.text(value.get('stage'), 'siding bead stage'), status=n.text(value.get('status'), 'siding bead status'),
                 depot=optional(value, 'depot', 'bead depot'), created=n.text(value.get('created_at'), 'siding bead created_at'),
                 reason=optional(value, 'close_reason', 'bead close_reason'), type=n.text(value.get('type'), 'siding bead type'),
@@ -163,6 +168,30 @@ def render(config, selection, value):
     return plain, escape(plain)
 
 
+def render_release(config, selection, value):
+    flow = (value['flow'] or '(no flow)') + (f" ({value['path']})" if value['path'] else '')
+    rows = [f"{config['yard']} · siding · {selection['depot']}",
+            f"{flow} / {value['stage']} / {value['group']} → {value['to']}",
+            f"Release {value['bead']} · {value['title']}: from {value['stage']} into {value['to']}.",
+            'One advance moves this bead alone; nothing else moves. A tap refuses if it changed since this card.']
+    plain = '\n'.join(rows)
+    if n.units(plain) > n.CAP:
+        raise n.NativeError('siding_card_too_large; no controls published; narrow the selection or use the native client')
+    return plain, escape(plain)
+
+
+def release_lines(bead, found, note=''):
+    """The bead as it stands, for a refused release card; note says why a release would leave it."""
+    if found is None:
+        return 'Now:\n' + bead + ' · gone'
+    fields = [found['stage'], found['status']]
+    if found['reason']:
+        fields.append(line(found['reason'], 'close_reason'))
+    if note:
+        fields.append(note)
+    return 'Now:\n' + bead + ' · ' + ' · '.join(fields)
+
+
 class Retired(n.RunAsks):
     """The previous release's siding rows: retired once, never acted on."""
     table = LEGACY
@@ -183,7 +212,7 @@ class SidingCards(n.RunAsks):
         self.retired = Retired(self.bridge, self.client, self.now) if self.store is not None else None
 
     def owns(self, row):
-        return row.get('kind') == 'siding'
+        return row.get('kind') in ('siding', RELEASE_KIND)
 
     def binding(self):
         binding = super().binding()
@@ -324,18 +353,113 @@ class SidingCards(n.RunAsks):
         return dict(current[0], to=tos.pop(), members=list(ids), points=sum(waiting[i]['points'] for i in ids),
                     reasons=[], explicit=True)
 
+    def release_value(self, siding, ident):
+        """A release card for one bead the siding's fold would take, read now, or a refusal saying why not."""
+        current = [v for v in self.read_siding(siding['depot'], siding['stage'], siding['group'], siding['fold_max'])
+                   if (v['flow'], v['path']) == (siding['flow'], siding['path'])]
+        waiting = {w['bead']: w for v in current[:1] for w in v['waiting']}
+        if ident not in waiting:
+            raise n.NativeError('Not open in this siding: ' + ident + '. Nothing released.')
+        if waiting[ident]['stuck']:
+            raise n.NativeError(f"{ident} is {waiting[ident]['stuck']}. Nothing released.")
+        found, to = self.get_bead(ident), self.next_stage(ident)['to']
+        if found is None or to is None:
+            raise n.NativeError(f"{ident} has no next stage. Nothing released.")
+        return dict(depot=siding['depot'], stage=siding['stage'], group=siding['group'], flow=siding['flow'], path=siding['path'],
+                    bead=ident, title=found['title'], to=to, bead_revision=found['revision'])
+
+    def release_now(self, value):
+        """The bead as a release card shows it, read again: its record, why a release would leave it (if so), and whether the card still holds."""
+        found = self.get_bead(value['bead'])
+        if found is None or found['status'] != 'open' or found['stage'] != value['stage'] or found['depot'] != value['depot']:
+            return found, '', False
+        routing = self.routing(value['depot'])
+        routed = worker(routing['routes'], found, routing['operator'])
+        stuck = self.siding_beads([value['bead']])[value['bead']]['stuck']
+        nxt = self.next_stage(value['bead'])
+        note = stuck or ('' if routed == value['group'] else 'routed to ' + (routed or 'no group'))
+        ok = (not note and found['revision'] == value['bead_revision']
+              and (nxt['flow'], nxt['path'], nxt['to']) == (value['flow'], value['path'], value['to']))
+        return found, note, ok
+
+    def release_unchanged(self, row):
+        value = row['release']
+        found, note, ok = self.release_now(value)
+        if ok:
+            return True
+        self.refuse(row, RELEASE_CHANGED + '\n' + release_lines(value['bead'], found, note))
+        return False
+
+    def release_reconcile(self, row):
+        """Settle an attempted release from the bead as it stands, whatever Advance answered."""
+        value = row['release']
+        found = self.get_bead(value['bead'])
+        if found is not None and found['stage'] == value['to']:
+            row.update(attempted=False, outcome=dict(to=value['to'], stage=found['stage'], footer=(
+                f"Released {value['bead']} from {value['stage']} into {found['stage']}.")))
+            self.save(row)
+        elif (found is not None and found['status'] == 'open' and found['stage'] == value['stage']
+              and found['revision'] == value['bead_revision']):
+            # Nothing moved: the card stays open.
+            row['attempted'] = False
+            self.save(row)
+        else:
+            self.refuse(row, 'Not released as shown; nothing more runs from this card.\n' + release_lines(value['bead'], found))
+
+    def release(self, row):
+        """The tap on a release card: one plain advance, from the stage and revision the card read."""
+        self.check_binding(row)
+        n.verify_operator(self.client, self.config)
+        if row['attempted']:
+            self.reconcile(row)
+        state = self.state(row)
+        if state == 'settled':
+            self.display(row)
+            return 'Already released into ' + row['outcome']['to']
+        if state != 'open':
+            self.display(row)
+            return RELEASE_CLOSED[state]
+        if not self.unchanged(row):
+            self.display(row)
+            return RELEASE_CLOSED['stale']
+        row['attempted'] = True
+        self.save(row)
+        value = row['release']
+        refusal = None
+        try:
+            self.client.call('Advance', [value['bead'], value['to'], dict(stage=value['stage'], revision=value['bead_revision']),
+                                         self.config['yardr_operator']])
+        except n.NativeError as error:
+            refusal = error  # Any answer may follow a commit; only the bead settles it.
+        try:
+            self.reconcile(row)
+        finally:
+            self.display(row)
+        state = self.state(row)
+        if state == 'settled':
+            return 'Released into ' + row['outcome']['to']
+        if state == 'stale':
+            return 'Not released as shown; see the card'
+        if isinstance(refusal, n.RPCRefused):
+            return 'The yard refused the release; nothing released'
+        return 'Nothing released; the card stays open'
+
     # ---- rows and presentation ----
 
     def keyboard(self, row):
         if self.state(row) != 'open':
             return []
-        value = row['siding']
-        label = f"Fold {', '.join(value['members'])} → {value['to']}"
-        if n.units(label) > 64:
-            label = f"Fold the {len(value['members'])} beads shown → {value['to']}"
-        if n.units(label) > 64:
-            label = 'Fold the beads shown above'
-        return [[dict(text=label, callback_data=f"siding:{row['id']}:fold")],
+        if row.get('action') == 'release':
+            value = row['release']
+            labels, action = [f"Release {value['bead']} → {value['to']}", f"Release the bead shown → {value['to']}",
+                              'Release the bead shown above'], 'release'
+        else:
+            value = row['siding']
+            labels, action = [f"Fold {', '.join(value['members'])} → {value['to']}",
+                              f"Fold the {len(value['members'])} beads shown → {value['to']}",
+                              'Fold the beads shown above'], 'fold'
+        label = next((text for text in labels if n.units(text) <= 64), labels[-1])
+        return [[dict(text=label, callback_data=f"siding:{row['id']}:{action}")],
                 [dict(text='Leave waiting', callback_data=f"siding:{row['id']}:leave")]]
 
     def state(self, row):
@@ -358,6 +482,8 @@ class SidingCards(n.RunAsks):
         if state == 'stale':
             return row['refused'], []
         if state == 'attempted':
+            if row.get('action') == 'release':
+                return 'Release sent; the card reads its bead again before anything else.', []
             return 'Fold sent; the card reads its beads again before anything else.', []
         if state == 'withdrawn':
             return row['withdrawn'], []
@@ -443,10 +569,20 @@ class SidingCards(n.RunAsks):
     def new_row(self, selection, value, key, conversation, silent):
         plain, html = render(self.config, selection, value)
         ident = n.digest(dict(binding=self.binding(), key=key, conversation=conversation, siding=value))[:24]
-        row = dict(id=ident, kind='siding', binding=self.binding(), selection=selection, siding=value,
+        row = dict(id=ident, kind='siding', action='fold', binding=self.binding(), selection=selection, siding=value,
                    conversation=conversation, plain=plain, html=html, message_id=None, silent=silent, revision=0,
                    expires=self.now() + EXPIRY, attempted=False, outcome=None, refused=None, withdrawn=None,
                    actionable=bool(value and not value['reasons']))
+        row['publish_keyboard'] = self.keyboard(row)
+        return row
+
+    def new_release(self, selection, release, key, conversation, silent):
+        plain, html = render_release(self.config, selection, release)
+        ident = n.digest(dict(binding=self.binding(), key=key, conversation=conversation, release=release))[:24]
+        row = dict(id=ident, kind=RELEASE_KIND, action='release', binding=self.binding(), selection=selection, siding=None,
+                   release=release, conversation=conversation, plain=plain, html=html, message_id=None, silent=silent, revision=0,
+                   expires=self.now() + EXPIRY, attempted=False, outcome=None, refused=None, withdrawn=None, actionable=True,
+                   batch=[ident])
         row['publish_keyboard'] = self.keyboard(row)
         return row
 
@@ -522,6 +658,8 @@ class SidingCards(n.RunAsks):
 
     def unchanged(self, row):
         """Re-read the shown beads; refuse the card when any is no longer open in the siding, eligible and bound for the shown stage."""
+        if row.get('action') == 'release':
+            return self.release_unchanged(row)
         value = row['siding']
         beads = [self.get_bead(ident) for ident in value['members']]
         routing = self.routing(value['depot'])
@@ -540,6 +678,8 @@ class SidingCards(n.RunAsks):
 
     def reconcile(self, row):
         """Settle an attempted fold from the members as they stand, whatever FoldBeads answered."""
+        if row.get('action') == 'release':
+            return self.release_reconcile(row)
         value = row['siding']
         beads = [self.get_bead(ident) for ident in value['members']]
         carriers = {carrier_of(b) if b else None for b in beads}
@@ -595,7 +735,7 @@ class SidingCards(n.RunAsks):
         return 'Nothing folded; the card stays open'
 
     def callback(self, update_id, query):
-        match = re.fullmatch(r'siding:([0-9a-f]{24}):(fold|approve|leave)', query.get('data', ''))
+        match = re.fullmatch(r'siding:([0-9a-f]{24}):(fold|release|approve|leave)', query.get('data', ''))
         notice = 'Siding card not authorized'
         try:
             with self.lock():
@@ -610,7 +750,8 @@ class SidingCards(n.RunAsks):
                 except n.NativeError as error:
                     self.bridge._log(f'siding callback not bound (update {update_id}): {error}')
                     raise
-                if (row or legacy)['binding'] != binding or (row and match[2] == 'approve'):
+                if ((row or legacy)['binding'] != binding or (row and match[2] == 'approve')
+                        or (row and match[2] in ('fold', 'release') and (match[2] == 'release') != (row.get('action') == 'release'))):
                     return
                 n.verify_operator(self.client, self.config)
                 if legacy:
@@ -628,6 +769,8 @@ class SidingCards(n.RunAsks):
                     notice = 'Left waiting; nothing folded' if self.state(row) == 'withdrawn' else 'Card closed; see it'
                 elif match[2] == 'fold':
                     notice = self.decide(row)
+                elif match[2] == 'release':
+                    notice = self.release(row)
         except n.NativeError as error:
             notice = str(error)
         finally:
@@ -660,26 +803,39 @@ class SidingCards(n.RunAsks):
                     self.retire(row)
                     raise n.NativeError(RETIRED)
                 words = n.text(message.get('text'), 'siding reply').split()
-                if words[:1] == ['release']:
-                    raise n.NativeError(RELEASE)
+                if row.get('action') == 'release':
+                    raise n.NativeError(RELEASE_CARD)
+                verb = 'released' if words[:1] == ['release'] else 'folded'
                 if not row['siding']:
-                    raise n.NativeError('No siding on this card; nothing folded.')
+                    raise n.NativeError(f'No siding on this card; nothing {verb}.')
                 if self.state(row) not in ('open', 'status'):
-                    raise n.NativeError('This card is closed; request a new card. Nothing folded.')
-                if (len(words) < 3 or words[0] != 'fold' or len(set(words[1:])) != len(words) - 1
-                        or any(not re.fullmatch(BEAD, word) for word in words[1:])):
-                    raise n.NativeError(REPLY)
-                value = self.subset(row['siding'], words[1:])
-                fresh = self.new_row(row['selection'], value, f"reply:{row['id']}:{update_id}", row['conversation'], row['silent'])
-                fresh['batch'] = [fresh['id']]
-                self.save(fresh)
-                row['withdrawn'] = 'Replaced by a card for the subset; nothing folds from this card.'
-                self.save(row)
-                self.display(row)
-                receipt = self.send_card(fresh)
-                if receipt.get('delivered') is not True:
-                    raise n.NativeError('siding_card_delivery_unconfirmed; request a new card')
-                notice = 'Review the new card; the reply folded nothing.'
+                    raise n.NativeError(f'This card is closed; request a new card. Nothing {verb}.')
+                if verb == 'released':
+                    # The card for one bead is made and sent; the bead moves only on its card's tap.
+                    if len(words) != 2 or not re.fullmatch(BEAD, words[1]):
+                        raise n.NativeError(RELEASE_REPLY)
+                    value = self.release_value(row['siding'], words[1])
+                    fresh = self.new_release(row['selection'], value, f"release:{row['id']}:{update_id}", row['conversation'], row['silent'])
+                    self.save(fresh)
+                    receipt = self.send_card(fresh)
+                    if receipt.get('delivered') is not True:
+                        raise n.NativeError('siding_card_delivery_unconfirmed; request a new card')
+                    notice = 'Review the release card; the reply released nothing.'
+                else:
+                    if (len(words) < 3 or words[0] != 'fold' or len(set(words[1:])) != len(words) - 1
+                            or any(not re.fullmatch(BEAD, word) for word in words[1:])):
+                        raise n.NativeError(REPLY)
+                    value = self.subset(row['siding'], words[1:])
+                    fresh = self.new_row(row['selection'], value, f"reply:{row['id']}:{update_id}", row['conversation'], row['silent'])
+                    fresh['batch'] = [fresh['id']]
+                    self.save(fresh)
+                    row['withdrawn'] = 'Replaced by a card for the subset; nothing folds from this card.'
+                    self.save(row)
+                    self.display(row)
+                    receipt = self.send_card(fresh)
+                    if receipt.get('delivered') is not True:
+                        raise n.NativeError('siding_card_delivery_unconfirmed; request a new card')
+                    notice = 'Review the new card; the reply folded nothing.'
             except n.NativeError as error:
                 notice = str(error)
             self.bridge._command_message(f'siding:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))

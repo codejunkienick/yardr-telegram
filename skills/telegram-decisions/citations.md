@@ -55,7 +55,7 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/OPERATIONS.md | ### Source pack bundles | source-kind directory and embedded pack proposals; terminal fallback |
 | pack | bridge/OPERATIONS.md | ## Ordinary native ask cards | canonical ordinary decisions, recipient, refusals, input and recovery |
 | pack | bridge/OPERATIONS.md | ## Delivery recovery | definitely unsent same-key retry and ambiguous-delivery reconciliation |
-| pack | bridge/OPERATIONS.md | ## Siding status and the plain fold | filters, the exact proposal, status-only cards, subset replies and the undo |
+| pack | bridge/OPERATIONS.md | ## Siding status and the plain fold | filters, the exact proposal, status-only cards, subset replies, release cards and the undo |
 | pack | bridge/bridge.py | def api_siding_card(self, request, key_header=None): | siding call selection, routing, stable key and receipt |
 | pack | bridge/OPERATIONS.md | Native selectors ignore decision and refuse open/put-aside asks | native close reads canonical state rather than using caller decision text |
 | pack | yardr/tgbridge.yaml | decision:   { type: string, max: 200 } | native ask_close still requires the decision field; use decision=refresh |

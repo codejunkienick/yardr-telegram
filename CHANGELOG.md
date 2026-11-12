@@ -65,8 +65,10 @@ sees and does, not how the code is organised.
   exactly the shown beads and carrier stage. A repeated tap cannot fold
   twice, the card names the carrier and the `yardr bead unfold` undo, and
   repository-backed flows are no longer status only. A reply `release <id>`
-  says release is not offered yet. Cards from the previous release are
-  retired once with their buttons removed; request a new card.
+  makes a card for that one bead; its tap advances the bead alone to the
+  stage the card shows, refused if the bead changed since the card was
+  read. Cards from the previous release are retired once with their buttons
+  removed; request a new card.
 - Group-set cards accept both the earlier skills wording and core
   `58e93b7f`'s wording; a delivered card whose canonical text changes still
   refuses approval. From that core, the yardmaster, other crew members and

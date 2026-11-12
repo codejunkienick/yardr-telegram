@@ -51,6 +51,11 @@ class PublicReadinessTests(unittest.TestCase):
         executable = self.repo / 'helper'
         executable.write_bytes(b'#!/bin/sh\nprintf usable\\n\n')
         executable.chmod(0o755)
+        # The reviewed synthetic captures pass only as these exact bytes at their pinned paths.
+        images = Path(__file__).resolve().parents[2] / 'docs/images'
+        (self.repo / 'docs/images').mkdir(parents=True)
+        for name in ('native-card-confirmation.png', 'review-bundle.png'):
+            (self.repo / 'docs/images' / name).write_bytes((images / name).read_bytes())
         self.commit()
         target = self.root / 'review'
         result = self.scan('--export', target)
@@ -60,12 +65,14 @@ class PublicReadinessTests(unittest.TestCase):
         manifest = json.loads((target / 'manifest.json').read_text())
         self.assertEqual(manifest['commit'], self.git('rev-parse', 'HEAD'))
         self.assertEqual(manifest['tree'], self.git('rev-parse', 'HEAD^{tree}'))
-        self.assertEqual(summary['files'], 5)
+        self.assertEqual(summary['files'], 7)
         archive = target / manifest['archive']
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), manifest['archive_sha256'])
         with tarfile.open(archive) as tar:
             self.assertEqual(sorted(tar.getnames()), ['LICENSE', 'README.md', 'bridge', 'bridge/test_bridge.py',
-                                                     'bridge/test_settings.py', 'helper'])
+                                                     'bridge/test_settings.py', 'docs', 'docs/images',
+                                                     'docs/images/native-card-confirmation.png',
+                                                     'docs/images/review-bundle.png', 'helper'])
             for entry in manifest['files']:
                 content = (self.repo / entry['path']).read_bytes()
                 self.assertEqual(tar.extractfile(entry['path']).read(), content)
@@ -78,6 +85,18 @@ class PublicReadinessTests(unittest.TestCase):
         self.assertEqual(archive.read_bytes(), before)
         self.assertEqual(self.scan('--export', self.repo / 'export').returncode, 1)
         self.assertFalse((self.repo / 'export').exists())
+        # Changed bytes, or reviewed bytes at another path, are unknown binaries again.
+        image = self.repo / 'docs/images/review-bundle.png'
+        image.write_bytes(image.read_bytes() + b'\0')
+        (self.repo / 'docs/images/copy.png').write_bytes((images / 'native-card-confirmation.png').read_bytes())
+        self.commit()
+        changed = self.root / 'changed'
+        result = self.scan('--export', changed)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(changed.exists())
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(records[:-1], [dict(path='docs/images/copy.png', line=0, category='binary-needs-review', count=1),
+                                        dict(path='docs/images/review-bundle.png', line=0, category='binary-needs-review', count=1)])
 
     def test_sensitive_values_are_counted_by_location_and_never_exported_or_echoed(self):
         token = '123456789:' + 'Z' * 35

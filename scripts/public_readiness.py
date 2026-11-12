@@ -26,11 +26,14 @@ COMPATIBILITY_NAMES = {b'GC_RECEIPT', b'_print_gc_receipt', b'GC_SETTINGS',
                        b'gc_base_url', b'gc_api_token_file'}
 LOOKUP_FIXTURES = {b'.g' + b'c', b'G' + b'C_CITY', b'G' + b'C_CITY_PATH', b'G' + b'C_'}
 GARBAGE_COLLECTION = {b'import g' + b'c', b'g' + b'c.collect()'}
-# Reviewed offline wheelhouse, not a general exemption for binary attachments.
-WHEELS = {
+# Reviewed binaries, each accepted only at its path with its exact SHA-256: the offline
+# wheelhouse and the two synthetic README captures. Any other binary, or changed bytes, refuse.
+REVIEWED_BINARIES = {
     'vendor/wheels/pyyaml-6.0.3.tar.gz': 'd76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f',
     'vendor/wheels/markdown_it_py-4.2.0-py3-none-any.whl': '9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a',
     'vendor/wheels/mdurl-0.1.2-py3-none-any.whl': '84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8',
+    'docs/images/native-card-confirmation.png': '57ba182adcaf3b324587763823e2d6c597b0dcba3db52c19b291a9698ea127e8',
+    'docs/images/review-bundle.png': '55fae6e155178a8af861ff5b877017fcdcddea44c078d1bfdac0683aa98dfec4',
 }
 
 
@@ -92,7 +95,7 @@ def scan(files):
                 findings.append(dict(path=name, line=number, category='relationship-reference', count=count))
         if path.name in RUNTIME_NAMES or path.suffix in ('.db', '.sqlite', '.sqlite3', '.env'):
             findings.append(dict(path=name, line=0, category='runtime-file', count=1))
-        if b'\0' in content and WHEELS.get(name) != hashlib.sha256(content).hexdigest():
+        if b'\0' in content and REVIEWED_BINARIES.get(name) != hashlib.sha256(content).hexdigest():
             findings.append(dict(path=name, line=0, category='binary-needs-review', count=1))
     return findings
 

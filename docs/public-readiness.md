@@ -226,7 +226,9 @@ The scan reads committed blobs only and refuses a dirty/untracked tree. It
 reports category, path, line and counts, never matched bytes. It checks bot-token
 syntax, private-key markers, known former operator absolute paths in product
 files, accidentally tracked runtime secret/DB names and unreviewed NUL-bearing
-binaries. Only hash-pinned offline archives are approved binary inputs.
+binaries. Only hash-pinned offline archives and the two synthetic README captures
+under `docs/images/` are approved binary inputs, each only at its path and exact
+SHA-256.
 It also rejects former backend relationship/provenance references, including
 case/separator variants, split-line names, the former fork revision and API
 name, and unknown prefixed identifiers. The exact compatibility tokens and

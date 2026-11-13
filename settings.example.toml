@@ -45,6 +45,7 @@ hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints
 # timeout = 30             # seconds the reads may take in all, 5-120
 # groups = ["builders"]    # up to 16 group names, read under each group's env
 # machine_login = true     # also show the providers read on the machine's login
+# machine = false          # also show the machine's load, swap, disk and mem
 
 # The native /mayor_model (bridge/OPERATIONS.md, "/mayor_model"): its presence
 # turns /mayor_model on. A tap by the operator sets the crew member to a pick

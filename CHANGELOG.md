@@ -78,8 +78,11 @@ sees and does, not how the code is organised.
 - `/decide` lists the operator's open decisions and opens a supported one as
   its native card; closed asks report their canonical outcome.
 - A native `/quota` built on `yardr limits`: the providers the yard burns,
-  its self-reporting sources and the configured groups as one table, with
-  the time left until each reset. `[yardr.quota]` turns it on (with `[yardr]`
+  each under its name alone in the order Claude, Codex, Muse, Antigravity,
+  Grok, its self-reporting sources and the configured groups as one table,
+  with the time left until each reset. The machine's load, swap, disk and mem
+  show only with `[yardr.quota] machine = true`. `[yardr.quota]` turns it on
+  (with `[yardr]`
   `bin`, `home` and `operator`); a `[[command]]` or `[[menu]]` quota beside
   it refuses the settings with the migration message, and the add-on keeps
   `/resets`.

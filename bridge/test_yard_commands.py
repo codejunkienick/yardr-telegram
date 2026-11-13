@@ -43,6 +43,8 @@ def plain_report():
                             'resets_at': FUTURE},
                            {'label': 'Weekly Fable', 'model': 'Fable', 'used_percent': 67.0,
                             'resets_at': FUTURE_MODEL},
+                           {'label': 'Weekly k3', 'model': 'k3', 'used_percent': 30.0,
+                            'resets_at': FUTURE},
                            {'label': 'Daily', 'used_percent': 10.0, 'used': 1, 'limit': 10,
                             'resets_at': '0001-01-01T00:00:00Z'},
                            {'label': 'Odd span', 'used_percent': 95.0,
@@ -190,7 +192,7 @@ class QuotaCase(unittest.TestCase):
         self.bridge = self.make_bridge()
 
     def quota(self, **fields):
-        entry = dict(timeout=30, groups=(), machine_login=True)
+        entry = dict(timeout=30, groups=(), machine_login=True, machine=False)
         entry.update(fields)
         return entry
 
@@ -229,13 +231,18 @@ class RenderTests(QuotaCase):
         self.drain(self.message('/quota'))
         text = self.answer_text()
         self.assertTrue(text.startswith('<pre>') and text.endswith('</pre>'))
-        # The provider with who burns it, the yellow dot ahead of target, the
-        # Ddd HH:MM reset in the bridge's timezone and the time left.
-        self.assertIn('Codex · burned by group builders, crew member quota-bot', text)
-        self.assertIn('🟡 5h       24%  ' + tokyo_stamp(FUTURE), text)
-        # A per-model window shows its model; a used figure with a year-1
-        # reset shows its figure and 'no reset'; a past reset shows no left.
-        self.assertIn('model Fable', text)
+        # The provider under its display name alone, the yellow dot ahead of
+        # target, the Ddd HH:MM reset in the bridge's timezone and the time left.
+        self.assertTrue(text.startswith('<pre>Codex\n🟡 5h       24%  ' + tokyo_stamp(FUTURE)))
+        self.assertNotIn('burned by', text)
+        # A per-model window shows its model unless its label names it: 'Weekly
+        # Fable' reads 'Fable wk'; a used figure with a year-1 reset shows its
+        # figure and 'no reset'; a past reset shows no left.
+        self.assertIn('Fable wk', text)
+        self.assertNotIn('model Fable', text)
+        # Shortening can remove a model name, so keep the suffix in that case.
+        self.assertIn('Weekly k', text)
+        self.assertIn('model k3', text)
         self.assertIn('no reset', text)
         self.assertIn('Odd span', text)
         # An unparseable reset is unknown, not dropped.
@@ -244,16 +251,21 @@ class RenderTests(QuotaCase):
         # unavailable row each, with the reason scrubbed of nothing here.
         self.assertIn('DeepSeek\n⚪ limits unknown for deepseek', text)
         self.assertIn('selfy\n⚪ limits unknown for selfy', text)
-        # The machine source shows its figure with no reset; unmapped is one line.
-        self.assertIn('🟢 load     43%  no reset', text)
-        self.assertIn('🟡 swap     88%  no reset', text)
-        self.assertIn('🟢 disk     58%  no reset', text)
-        self.assertIn('🟢 mem      13%  no reset', text)
+        # The machine source is left out by default; unmapped is one line.
+        self.assertNotIn('load', text)
         self.assertIn('not asked: claude', text)
         # One message of at most 4096 UTF-16 units, html, a send.
         self.assertLessEqual(y.utf16_units(text), 4096)
         self.assertEqual(self.sends()[0].get('parse_mode'), 'HTML')
         self.assertNotIn('reply_parameters', self.sends()[0])
+
+    def test_machine_block_shows_figures_only_when_asked(self):
+        self.bridge = self.make_bridge(quota=self.quota(machine=True))
+        self.drain(self.message('/quota'))
+        text = self.answer_text()
+        # The machine source's rows show the figure alone, never 'no reset'.
+        self.assertIn('machine\n🟢 load     43%\n🟡 swap     88%\n🟢 disk     58%\n🟢 mem      13%\n', text)
+        self.assertEqual(text.count('no reset'), 1)  # the codex Daily window only
 
     def test_text_arguments_are_ignored(self):
         self.drain(self.message('/quota extra words here'))
@@ -294,6 +306,25 @@ class RenderTests(QuotaCase):
         self.assertEqual(self.sends(), [])
 
 
+class ProviderOrderTests(QuotaCase):
+    def test_providers_lead_in_the_pinned_order_then_the_yards(self):
+        """Claude, Codex, Muse, Antigravity (agy) and Grok lead, each under its
+        display name alone; the other providers follow in the yard's order."""
+        yard_order = ['deepseek', 'grok', 'agy', 'zeta', 'codex', 'claude', 'muse']
+        answer = dict(limits=[dict(provider=name, kinds=[name], burned_by=['group ops'],
+                                   limits=dict(source='synthetic', provider=name, windows=[
+                                       dict(label='5h', used_percent=10.0, resets_at=FUTURE)]))
+                              for name in yard_order], sources=[], unmapped=[])
+        with patch.object(y, 'run_yardr', return_value=(0, json.dumps(answer).encode(), b'', None)):
+            self.drain(self.message('/quota'))
+        text = self.answer_text()
+        headers = ['Claude', 'Codex', 'Muse', 'Antigravity', 'Grok', 'DeepSeek', 'zeta']
+        positions = [text.index(header + '\n') for header in headers]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn('agy', text)
+        self.assertNotIn('burned by', text)
+
+
 class ExitStatusTests(QuotaCase):
     MODE = 'exit1'
 
@@ -302,7 +333,7 @@ class ExitStatusTests(QuotaCase):
         stdout still parses, whatever the exit status."""
         self.drain(self.message('/quota'))
         text = self.answer_text()
-        self.assertIn('Codex · burned by group builders, crew member quota-bot', text)
+        self.assertTrue(text.startswith('<pre>Codex\n'))
         self.assertIn('not asked: claude', text)
 
     def test_unknown_entries_render_a_fixed_row(self):
@@ -521,7 +552,7 @@ class GroupTests(QuotaCase):
         self.drain(self.message('/quota'))
         text = self.answer_text()
         # The plain read first, then the group read under '<provider> · <group>'.
-        self.assertLess(text.index('Codex · burned by'), text.index('codex · ops'))
+        self.assertLess(text.index('Codex\n'), text.index('codex · ops'))
         self.assertIn('codex · ops', text)
         self.assertIn('5h ops', text)
         self.assertIn('model Muse', text)
@@ -536,10 +567,11 @@ class GroupTests(QuotaCase):
         self.bridge = self.make_bridge(quota=self.quota(groups=('ops',), machine_login=False))
         self.drain(self.message('/quota'))
         text = self.answer_text()
-        self.assertNotIn('Codex · burned by', text)
+        self.assertNotIn('Codex\n', text)
         self.assertNotIn('DeepSeek', text)
-        # The self-reporting sources are shown either way.
-        self.assertIn('machine', text)
+        # The self-reporting sources are shown either way; the machine's
+        # figures wait for [yardr.quota] machine.
+        self.assertNotIn('machine', text)
         self.assertIn('selfy', text)
         self.assertIn('not asked: claude', text)
         self.assertIn('codex · ops', text)
@@ -756,7 +788,7 @@ class SettingsQuotaCase(unittest.TestCase):
         settings = b.load_settings(self.settings(quota='', menu=False))
         self.assertEqual(settings.config['yardr_bin'], str(self.stub))
         self.assertEqual(settings.config['yardr_quota'],
-                         dict(timeout=30, groups=(), machine_login=True))
+                         dict(timeout=30, groups=(), machine_login=True, machine=False))
         (entry,) = [command for command in settings.config['commands']
                      if command.get('native')]
         self.assertEqual(entry, dict(name='quota', description='Usage limits and time to each reset',
@@ -764,9 +796,10 @@ class SettingsQuotaCase(unittest.TestCase):
 
     def test_table_with_explicit_keys(self):
         settings = b.load_settings(self.settings(
-            quota='timeout = 45\ngroups = ["nightly", "builders"]\nmachine_login = false\n', menu=False))
+            quota='timeout = 45\ngroups = ["nightly", "builders"]\nmachine_login = false\nmachine = true\n',
+            menu=False))
         self.assertEqual(settings.config['yardr_quota'],
-                         dict(timeout=45, groups=('nightly', 'builders'), machine_login=False))
+                         dict(timeout=45, groups=('nightly', 'builders'), machine_login=False, machine=True))
 
     def test_default_bin_comes_from_path(self):
         bindir = self.root / 'bin'
@@ -806,7 +839,7 @@ class SettingsQuotaCase(unittest.TestCase):
     def test_table_with_bad_values_is_refused(self):
         for quota in ('timeout = 4\n', 'timeout = 121\n', 'timeout = "30"\n',
                       'groups = ["ok", "ok"]\n', 'groups = ["Has Space"]\n',
-                      'groups = ["' + 'g' * 65 + '"]\n', 'machine_login = "yes"\n',
+                      'groups = ["' + 'g' * 65 + '"]\n', 'machine_login = "yes"\n', 'machine = "yes"\n',
                       'unknown_key = true\n', 'bin = 1\n'):
             with self.subTest(quota=quota):
                 if 'bin' in quota:
@@ -890,21 +923,22 @@ class RealNativeTests(QuotaCase):
             self.cli(home, command, env, 'group', 'set', self.GROUP,
                      'env_file=%s' % group_env)
             bridge = self.make_bridge(
-                quota=self.quota(timeout=30, groups=(self.GROUP,)),
+                quota=self.quota(timeout=30, groups=(self.GROUP,), machine=True),
                 yardr_home=str(home), yardr_bin=self.binary)
             with patch('sys.stderr', new_callable=io.StringIO):
                 bridge.drain([self.message('/quota')])
             (send,) = self.telegram.of('sendMessage')
             text = send['text']
-            # The provider the crew member and group burn, the group read
-            # under '<provider> · <group>' with the label the group's env
-            # produced, the unknown self source, the machine and unmapped.
-            self.assertIn('Codex · burned by', text)
+            # The provider under its name, the group read under '<provider> · <group>'
+            # with the label the group's env produced, the unknown self source,
+            # the machine's figures with no 'no reset' text, and unmapped.
+            self.assertTrue(text.startswith('<pre>Codex\n'))
             self.assertIn('codex · %s' % self.GROUP, text)
             self.assertIn('5h night', text)
             self.assertIn('selfy\n⚪ limits unknown for selfy', text)
-            self.assertIn('machine', text)
-            self.assertIn('no reset', text)
+            # The machine's figures are live, so any dot; the row shows no reset.
+            self.assertRegex(text, r'machine\n[🟢🟡🔴⚪] load ')
+            self.assertNotIn('no reset', text)
             self.assertIn('not asked: ', text)
             self.assertLessEqual(y.utf16_units(text), 4096)
         finally:

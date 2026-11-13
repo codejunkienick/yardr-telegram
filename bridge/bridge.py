@@ -5019,7 +5019,7 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
 # The yard this bridge relays to (YARDR.md, "Settings").
 YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota', 'mayor_model'}
 # The native /quota table ([yardr.quota]): its presence turns /quota on.
-YARDR_QUOTA_KEYS = {'timeout', 'groups', 'machine_login'}
+YARDR_QUOTA_KEYS = {'timeout', 'groups', 'machine_login', 'machine'}
 # The native /mayor_model table ([yardr.mayor_model]) and each of its picks:
 # the telegram-quota add-on's [mayor_model] yardr target, without target,
 # yardr and yardr_home ([yardr] bin and home take their place).
@@ -5490,7 +5490,8 @@ def load_settings(path, home=None):
         quota = dict(timeout=_int_setting(quota_table.get('timeout', 30), '[yardr.quota] timeout', 5, 120),
                      groups=_quota_groups(quota_table.get('groups', [])),
                      machine_login=_bool_setting(quota_table.get('machine_login', True),
-                                                '[yardr.quota] machine_login'))
+                                                '[yardr.quota] machine_login'),
+                     machine=_bool_setting(quota_table.get('machine', False), '[yardr.quota] machine'))
         _native_clash(data, menu_entries, 'quota', 'quota:', '[yardr.quota]')
 
     # The native /mayor_model ([yardr.mayor_model] turns it on), with the

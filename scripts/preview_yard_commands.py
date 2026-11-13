@@ -107,8 +107,9 @@ def main():
     now = datetime.datetime.now(datetime.timezone.utc)
     plain = y.parse_limits_answer((FIXTURES / 'limits_plain.json').read_bytes())
     grouped = y.parse_limits_answer((FIXTURES / 'limits_group.json').read_bytes())
-    show('plain', y.fit(y.render_quota(plain, [], True, tz, now)))
-    show('groups', y.fit(y.render_quota(plain, [('quota-builders', grouped)], True, tz, now)))
+    show('plain', y.fit(y.render_quota(plain, [], True, False, tz, now)))
+    show('plain with machine', y.fit(y.render_quota(plain, [], True, True, tz, now)))
+    show('groups', y.fit(y.render_quota(plain, [('quota-builders', grouped)], True, False, tz, now)))
     selfy = [entry for entry in plain[1] if entry['source'] == 'selfy'][0]
     show('unknown entry', y.source_block(selfy, tz, now))
     show('timeout', y.unavailable('timed out')['actions'][0]['text']

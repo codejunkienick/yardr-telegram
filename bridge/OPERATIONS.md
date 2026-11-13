@@ -658,12 +658,16 @@ presence turns the command on, and each needs native `[yardr]` `home` and
 `limits --group <g> --json` per configured group, all within `timeout`,
 and renders the yard's providers, its self-reporting sources and the
 groups as one monospace table: the dot, the short label, the used share,
-the reset as Ddd HH:MM in the bridge's timezone and the time left. A
-per-model window shows its model; a window with a used figure and no
-reset (the machine's load, swap, disk and mem) shows its figure and `no
-reset`; an entry the yard does not know renders one `limits unknown
-for <name>` row naming only the provider, source or group, and kinds no
-source lists render one `not asked` line. The answer is one
+the reset as Ddd HH:MM in the bridge's timezone and the time left. Each
+provider's block is headed by its display name alone, the providers in the
+order Claude, Codex, Muse, Antigravity (`agy`), Grok and then the rest in
+the yard's order. A per-model window shows its model, unless its label
+already names it (`Weekly Fable` shows as `Fable wk`). A window with a used
+figure and no reset shows its figure and `no reset`. The machine's own
+source (load, swap, disk and mem) is left out unless `machine = true`, and
+its rows then show the figure only. An entry the yard does not know renders
+one `limits unknown for <name>` row naming only the provider, source or
+group, and kinds no source lists render one `not asked` line. The answer is one
 `html <pre>` message of at most 4096 units; longer tables drop whole
 trailing blocks with a last `…` line. Text after /quota is ignored, and
 there are no buttons.
@@ -678,6 +682,7 @@ operator = "alex"
 timeout = 30           # seconds the reads may take in all, 5-120
 groups = ["builders"]  # up to 16 group names, read under each group's env
 machine_login = true   # also show the providers read on the machine's login
+machine = false        # also show the machine's load, swap, disk and mem
 ```
 
 `bin` is the yardr executable the bridge runs: no shell, stdin closed, in

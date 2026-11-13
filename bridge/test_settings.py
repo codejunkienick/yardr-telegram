@@ -547,7 +547,7 @@ class ExampleSettingsTests(unittest.TestCase):
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
         'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota', 'mayor_model'},
-        'quota': {'timeout', 'groups', 'machine_login'},
+        'quota': {'timeout', 'groups', 'machine_login', 'machine'},
         'mayor_model': {'crew', 'timeout', 'picks'},
         'picks': {'id', 'label', 'kind', 'model', 'args', 'env_file'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},

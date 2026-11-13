@@ -344,7 +344,11 @@ SHORT_GROUPS = {'Gemini Models': 'Gem', 'Claude and GPT models': 'C+GPT', 'Gemin
 SHORT_SPANS = {'Weekly': 'wk', '5h': '5h'}
 LABEL_SUFFIXES = (' Remaining', ' Limit')
 DISPLAY_NAMES = {'claude': 'Claude', 'codex': 'Codex', 'muse': 'Muse', 'antigravity': 'Antigravity',
-                 'grok': 'Grok', 'deepseek': 'DeepSeek', 'kimi': 'Kimi'}
+                 'agy': 'Antigravity', 'grok': 'Grok', 'deepseek': 'DeepSeek', 'kimi': 'Kimi'}
+# The plain read's providers lead in this order; any other follows in the yard's order.
+PROVIDER_ORDER = ('Claude', 'Codex', 'Muse', 'Antigravity', 'Grok')
+# yardr's own source of this host's load, swap, disk and mem: shown only with [yardr.quota] machine.
+MACHINE_SOURCE = 'machine'
 
 
 def clean(text, limit):
@@ -446,12 +450,23 @@ def time_left(seconds):
     return f'{minutes // (24 * 60)}d{minutes // 60 % 24}h'
 
 
-def window_row(window, tz, now, label=None):
+def _model_suffix(window, label):
+    """The model suffix when its displayed label does not name the model."""
+    if not window['model']:
+        return ''
+    model = clean(window['model'], NAME_MAX)
+    if model and re.search(r'(?<!\w)' + re.escape(model) + r'(?!\w)', label.strip(), re.IGNORECASE):
+        return ''
+    return f'  model {model}'
+
+
+def window_row(window, tz, now, label=None, figure=False):
     """One table row: the dot, the label, the used share, the reset as Ddd
     HH:MM in the bridge's timezone and the time left. A per-model window
-    shows its model. A window with a used figure and no reset (the machine's
-    load, swap, disk and mem) shows its figure and 'no reset'. The dot is
-    yellow when the window is ahead of its target share."""
+    shows its model unless its label names it. A window with a used figure
+    and no reset shows its figure and 'no reset', or the figure alone when
+    `figure` is set (the machine source). The dot is yellow when the window
+    is ahead of its target share."""
     label = short_label(window['label']).ljust(LABEL_WIDTH) if label is None else label
     resets = window['resets_at']
     used = window['used_percent']
@@ -470,8 +485,10 @@ def window_row(window, tz, now, label=None):
     else:
         dot = GREEN
     shown = DASH if percent is None else f'{percent}%'
-    model = f'  model {clean(window["model"], NAME_MAX)}' if window['model'] else ''
+    model = _model_suffix(window, label)
     if resets is None or resets.startswith('0001-01-01'):
+        if figure:
+            return f'{dot} {label}{shown:>{PERCENT_WIDTH}}'
         if percent is None:
             return f'{WHITE} {label}{DASH:>{PERCENT_WIDTH}}  no window{model}'
         return f'{dot} {label}{shown:>{PERCENT_WIDTH}}  no reset{model}'
@@ -488,11 +505,10 @@ def _block_header(name, extra=''):
 
 
 def provider_block(entry, tz, now):
-    """One block of the plain read: the provider with who burns it, then its
+    """One block of the plain read: the provider's display name, then its
     windows, or the one unavailable row."""
     name = DISPLAY_NAMES.get(entry['provider'], clean(entry['provider'], NAME_MAX) or entry['provider'])
-    burned = ', '.join(burn for burn in entry['burned_by'] if isinstance(burn, str) and burn.strip())
-    header = _block_header(name + (SEPARATOR + 'burned by ' + clean(burned, HEADER_MAX) if burned else ''))
+    header = _block_header(name)
     if entry['limits'] is None:
         return [header, f'{WHITE} limits unknown for {_safe_name(entry["provider"], "provider")}']
     windows = entry['limits']['windows']
@@ -515,7 +531,8 @@ def source_block(entry, tz, now):
     if not windows:
         return [header, f'{WHITE} unavailable: no windows']
     labels = row_labels(windows)
-    return [header] + [window_row(window, tz, now, label) for window, label in zip(windows, labels)]
+    figure = entry['source'] == MACHINE_SOURCE
+    return [header] + [window_row(window, tz, now, label, figure) for window, label in zip(windows, labels)]
 
 
 def group_block(entry, tz, now):
@@ -562,15 +579,22 @@ def unavailable(why=None):
     return send([f'{WHITE} quota unavailable' + (f': {why}' if why else '')])
 
 
-def render_quota(plain, groups, machine_login, tz, now):
+def _provider_rank(entry):
+    name = DISPLAY_NAMES.get(entry['provider'])
+    return PROVIDER_ORDER.index(name) if name in PROVIDER_ORDER else len(PROVIDER_ORDER)
+
+
+def render_quota(plain, groups, machine_login, machine, tz, now):
     """Every block of the answer, in order: the plain read's providers
-    (unless machine_login is false), its self sources, its unmapped line,
-    then each group read. Text arguments are ignored; there are no buttons."""
+    (unless machine_login is false) in PROVIDER_ORDER, its self sources (the
+    machine source only when machine is true), its unmapped line, then each
+    group read. Text arguments are ignored; there are no buttons."""
     providers, sources, unmapped = plain
     blocks = []
     if machine_login:
-        blocks.extend(provider_block(entry, tz, now) for entry in providers)
-    blocks.extend(source_block(entry, tz, now) for entry in sources)
+        blocks.extend(provider_block(entry, tz, now) for entry in sorted(providers, key=_provider_rank))
+    blocks.extend(source_block(entry, tz, now) for entry in sources
+                  if machine or entry['source'] != MACHINE_SOURCE)
     if unmapped:
         kinds = ', '.join(clean(kind, NAME_MAX) or '?' for kind in unmapped)
         blocks.append([f'not asked: {kinds}'])
@@ -639,7 +663,7 @@ def _quota(bridge, payload):
     tz = zone(config.get('timezone') or 'UTC')
     now = datetime.datetime.now(datetime.timezone.utc)
     try:
-        blocks = render_quota(plain_answer, group_answers, quota['machine_login'], tz, now)
+        blocks = render_quota(plain_answer, group_answers, quota['machine_login'], quota['machine'], tz, now)
     except Unreadable:
         return unavailable('answer not valid JSON')
     if not blocks:

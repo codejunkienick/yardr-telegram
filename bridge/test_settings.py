@@ -351,7 +351,8 @@ class ExampleSettingsTests(unittest.TestCase):
     EXPECTED = {
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
-        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator'},
+        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota'},
+        'quota': {'timeout', 'groups', 'machine_login'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},
         'menu': {'command', 'description'},
         'command': {'name', 'description', 'handler', 'menu', 'callback_prefix', 'timeout'},
@@ -373,6 +374,11 @@ class ExampleSettingsTests(unittest.TestCase):
         for line in text.splitlines():
             stripped = line.strip()
             content = stripped.lstrip('#').strip() if stripped.startswith('#') else stripped
+            if content == '[yardr.quota]':
+                section = 'quota'
+                keys.setdefault('yardr', set()).add('quota')
+                keys.setdefault(section, set())
+                continue
             header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(yardr|bot|transcribe|reactions|typing|auto_topics)\]',
                                   content)
             if header:
@@ -389,12 +395,13 @@ class ExampleSettingsTests(unittest.TestCase):
         private = self.root / 'private'
         private.mkdir(mode=0o700, exist_ok=True)
         for name, mode in (('telegram-bot-token', 0o600), ('callback-secret', 0o600), ('hook-secret', 0o600),
-                           ('telegram-deploy', 0o700), ('gpu-check', 0o700)):
+                           ('telegram-deploy', 0o700), ('gpu-check', 0o700), ('yardr', 0o700)):
             path = private / name
             path.write_text('TEST\n' if mode == 0o600 else '#!/bin/sh\n')
             path.chmod(mode)
         text = (PACK / 'settings.example.toml').read_text()
         for old, new in sorted({
+                '/home/alex/.local/bin/yardr': str(private / 'yardr'),
                 '~/.local/state/example-telegram': str(self.root / 'state'),
                 '~/.config/example-telegram': str(private),
                 '~/.yardr': str(self.root / 'yard'),
@@ -410,6 +417,10 @@ class ExampleSettingsTests(unittest.TestCase):
             stripped = line.strip()
             commented = stripped.startswith('#')
             content = stripped.lstrip('#').strip() if commented else stripped
+            if content == '[yardr.quota]':
+                section = 'quota'
+                lines.append(content)
+                continue
             header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(yardr|bot|transcribe|reactions|typing|auto_topics)\]',
                                   content)
             if header:
@@ -450,6 +461,7 @@ class ExampleSettingsTests(unittest.TestCase):
                 loaded[''] |= set(data) - {'yardr', 'bot', 'menu', 'command', 'transcribe', 'reactions', 'typing',
                                            'topic', 'auto_topics'}
                 loaded['yardr'] |= set(data['yardr'])
+                loaded['quota'] |= set(data['yardr']['quota'])
                 loaded['bot'] |= set(data['bot'])
                 loaded['menu'] |= set(data['menu'][0])
                 loaded['command'] |= set(data['command'][0])

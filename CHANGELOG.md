@@ -64,6 +64,12 @@ sees and does, not how the code is organised.
   which the bridge puts first on its import path.
 - `/decide` lists the operator's open decisions and opens a supported one as
   its native card; closed asks report their canonical outcome.
+- A native `/quota` built on `yardr limits`: the providers the yard burns,
+  its self-reporting sources and the configured groups as one table, with
+  the time left until each reset. `[yardr.quota]` turns it on (with `[yardr]`
+  `bin`, `home` and `operator`); a `[[command]]` or `[[menu]]` quota beside
+  it refuses the settings with the migration message, and the add-on keeps
+  `/resets`.
 
 ### Changed
 

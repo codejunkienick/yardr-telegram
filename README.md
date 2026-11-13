@@ -268,8 +268,9 @@ prefix are the bridge's own (open decisions as native cards, YARDR.md), so no
 add-on may use them.
 Three ready add-ons are
 [telegram-quota](https://github.com/codejunkienick/telegram-quota), which adds
-a `/quota` command that shows how much of each AI subscription's usage
-windows is spent, with the time left until each reset,
+a `/resets` command that spends a Codex reset credit (`/quota` is native
+with `[yardr.quota]`, bridge/OPERATIONS.md, "Native yard commands"; the
+add-on keeps `/resets`),
 [telegram-secret-drop](https://github.com/codejunkienick/telegram-secret-drop),
 which adds a one-time form on the local network for handing a secret to
 an agent without it passing through the chat, and

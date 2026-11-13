@@ -645,6 +645,73 @@ description = "Deploy a branch"
 handler = "/home/alex/example/bin/telegram-deploy"
 ```
 
+## Native yard commands
+
+Besides `[[command]]` handlers, the bridge answers some commands itself,
+from the yard it serves. Each is a table under `[yardr]`; the table's
+presence turns the command on, and each needs native `[yardr]` `home` and
+`operator`.
+
+### /quota
+
+`/quota` runs `yardr limits --json` in the yard, and in parallel one
+`limits --group <g> --json` per configured group, all within `timeout`,
+and renders the yard's providers, its self-reporting sources and the
+groups as one monospace table: the dot, the short label, the used share,
+the reset as Ddd HH:MM in the bridge's timezone and the time left. A
+per-model window shows its model; a window with a used figure and no
+reset (the machine's load, swap, disk and mem) shows its figure and `no
+reset`; an entry the yard does not know renders one `limits unknown
+for <name>` row naming only the provider, source or group, and kinds no
+source lists render one `not asked` line. The answer is one
+`html <pre>` message of at most 4096 units; longer tables drop whole
+trailing blocks with a last `…` line. Text after /quota is ignored, and
+there are no buttons.
+
+```toml
+[yardr]
+bin = "/home/alex/.local/bin/yardr"  # default: the first yardr on PATH
+home = "~/.yardr"
+operator = "alex"
+
+[yardr.quota]
+timeout = 30           # seconds the reads may take in all, 5-120
+groups = ["builders"]  # up to 16 group names, read under each group's env
+machine_login = true   # also show the providers read on the machine's login
+```
+
+`bin` is the yardr executable the bridge runs: no shell, stdin closed, in
+the yard's home, its own process group, killed at the deadline or past
+4 MiB of output. It is validated as a `[[command]]` handler path is, and
+is required only with a native yard command table. The child's
+environment is built fresh — the bridge's own `PATH` (so the yard's
+limits source finds `aiquokka` and the CLIs it reads), `HOME`, `LANG`,
+`TZ` from the settings and `USER`/`LOGNAME`, and no `YARDR_*` variable.
+Stdout is parsed as JSON whatever the exit status (`limits` exits 1 with
+the full JSON when an entry is not known); anything else answers
+`quota unavailable`: a run still alive at the deadline is killed and the
+answer says `timed out`; an unreachable yard says `yardr not reachable`;
+stdout past 4 MiB says `answer too large`; stdout that does not parse
+says `yardr exited <code>` when yardr left a plain small exit code, else
+`answer not valid JSON`. The reply and the log never carry free text
+yardr or a limits source wrote: no stderr line, no `limits_unknown` or
+other diagnostic string reaches either. The bridge logs only the
+structured outcome of an off-course read (status, problem, byte sizes).
+
+With `[yardr.quota]`, a `[[command]]` or `[[menu]]` named `quota`, or a
+`[[command]]` `callback_prefix` overlapping `quota:`, refuses the
+settings with the migration message: delete the `[[command]]` quota
+table. Without the table a `[[command]]` quota keeps working as before.
+To switch back, restore the table, remove the native table, restart the
+unit and run `set-commands`.
+
+The yard writes the login back when its limits source renews one, and the
+bridge's unit mounts home read-only: before /quota goes live, the operator
+gives the yard's aiquokka source a copy whose limits command ends in
+`--no-refresh`. As any handler, /quota holds the poll loop up to
+`timeout`; its answer goes out once per update through the delivery
+ledger.
+
 ## Asks
 
 An ask is a message with tap-to-answer buttons: the paired user taps

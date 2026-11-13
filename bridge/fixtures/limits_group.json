@@ -1,0 +1,36 @@
+{
+  "limits": [
+    {
+      "kind": "codex",
+      "group": "quota-builders",
+      "limits": {
+        "source": "synthetic",
+        "provider": "codex",
+        "asked_at": "2026-11-12T20:24:38.580400571+05:00",
+        "plan": "Test",
+        "windows": [
+          {
+            "label": "5h night",
+            "target_percent": 20,
+            "used_percent": 24,
+            "resets_at": "2031-06-05T02:00:00Z"
+          },
+          {
+            "label": "Weekly Fable",
+            "model": "Fable",
+            "used_percent": 67,
+            "resets_at": "2031-06-12T02:00:00Z"
+          },
+          {
+            "label": "Daily",
+            "used_percent": 10,
+            "used": 1,
+            "limit": 10
+          }
+        ]
+      }
+    }
+  ],
+  "sources": [],
+  "unmapped": []
+}

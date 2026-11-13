@@ -1,0 +1,75 @@
+{
+  "limits": [
+    {
+      "provider": "codex",
+      "kinds": [
+        "codex"
+      ],
+      "burned_by": [
+        "crew member quota-bot",
+        "group quota-builders"
+      ],
+      "limits": {
+        "source": "synthetic",
+        "provider": "codex",
+        "asked_at": "2026-11-12T20:24:38.5587709+05:00",
+        "plan": "Test",
+        "windows": [
+          {
+            "label": "5h ",
+            "target_percent": 20,
+            "used_percent": 24,
+            "resets_at": "2031-06-05T02:00:00Z"
+          },
+          {
+            "label": "Weekly Fable",
+            "model": "Fable",
+            "used_percent": 67,
+            "resets_at": "2031-06-12T02:00:00Z"
+          },
+          {
+            "label": "Daily",
+            "used_percent": 10,
+            "used": 1,
+            "limit": 10
+          }
+        ]
+      }
+    }
+  ],
+  "sources": [
+    {
+      "source": "machine",
+      "limits": {
+        "source": "machine",
+        "provider": "machine",
+        "asked_at": "2026-11-12T20:24:38.560568358+05:00",
+        "windows": [
+          {
+            "label": "load",
+            "used_percent": 50.9
+          },
+          {
+            "label": "swap",
+            "used_percent": 88.1
+          },
+          {
+            "label": "disk",
+            "used_percent": 62
+          },
+          {
+            "label": "mem",
+            "used_percent": 44.1
+          }
+        ]
+      }
+    },
+    {
+      "source": "selfy",
+      "limits_unknown": "source selfy: limits command selfy-limits: exit status 1"
+    }
+  ],
+  "unmapped": [
+    "claude"
+  ]
+}

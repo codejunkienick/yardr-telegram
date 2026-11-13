@@ -111,6 +111,10 @@ _native_spec = importlib.util.spec_from_file_location('run_asks', Path(__file__)
 run_asks = importlib.util.module_from_spec(_native_spec)
 _native_spec.loader.exec_module(run_asks)
 sys.modules['run_asks'] = run_asks
+_yard_spec = importlib.util.spec_from_file_location('yard_commands', Path(__file__).resolve().with_name('yard_commands.py'))
+yard_commands = importlib.util.module_from_spec(_yard_spec)
+_yard_spec.loader.exec_module(yard_commands)
+sys.modules['yard_commands'] = yard_commands
 _siding_spec = importlib.util.spec_from_file_location('siding_cards', Path(__file__).resolve().with_name('siding_cards.py'))
 siding_cards = importlib.util.module_from_spec(_siding_spec)
 _siding_spec.loader.exec_module(siding_cards)
@@ -2547,6 +2551,23 @@ class Bridge:
             raise self._HandlerFailure('exit_status')
         return bytes(out)
 
+    def _run_native_handler(self, command, data):
+        """The answer bytes of a native command: its in-process handler takes
+        the command path's JSON payload and returns the same {"actions": [...]}
+        JSON, which goes through parse_handler_output like any handler's."""
+        try:
+            payload = json.loads(data.decode('utf-8'))
+        except (UnicodeError, ValueError):
+            raise self._HandlerFailure('malformed_json') from None
+        try:
+            answer = yard_commands.handle_native(self, command['native'], payload)
+        except yard_commands.NativeUnknown:
+            raise self._HandlerFailure('unknown_action_type') from None
+        try:
+            return json.dumps(answer, ensure_ascii=False).encode('utf-8')
+        except (TypeError, ValueError):
+            raise self._HandlerFailure('invalid_text') from None
+
     def _post_url_handler(self, command, data, connection=None):
         """The body of one POST of the JSON to a loopback handler URL, through
         http.client: no proxy from the environment, no redirect followed, the
@@ -2829,8 +2850,12 @@ class Bridge:
         name = command['name']
         data = json.dumps(payload).encode()  # ASCII: a lone surrogate in chat text cannot break it
         try:
-            raw = (self._post_url_handler(command, data) if command.get('url')
-                   else self._run_executable_handler(command, data))
+            if command.get('url'):
+                raw = self._post_url_handler(command, data)
+            elif 'native' in command:
+                raw = self._run_native_handler(command, data)
+            else:
+                raw = self._run_executable_handler(command, data)
             actions = self.parse_handler_output(raw, payload['kind'])
         except self._HandlerFailure as failure:
             self._log(f'command {name} failed (update {update_id}): {failure.args[0]}')
@@ -4945,7 +4970,9 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
                  'pairing_update_id', 'bot', 'menu', 'transcribe', 'crew', 'command',
                  'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
 # The yard this bridge relays to (YARDR.md, "Settings").
-YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator'}
+YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota'}
+# The native /quota table ([yardr.quota]): its presence turns /quota on.
+YARDR_QUOTA_KEYS = {'timeout', 'groups', 'machine_login'}
 # Legacy keys refused by name, each with its replacement.
 GC_SETTINGS = {'city': 'yard', 'agent': 'crew', 'gc_base_url': '[yardr] hook_url',
                'gc_api_token_file': '[yardr] hook_secret_file'}
@@ -5127,6 +5154,30 @@ def _handler_url_setting(value, what):
     return value
 
 
+def _quota_groups(value):
+    """The [yardr.quota] groups: up to 16 distinct group names, else []."""
+    if not isinstance(value, list) or len(value) > 16:
+        raise SettingsError('settings: [yardr.quota] groups must be a list of at most 16 distinct group names')
+    for name in value:
+        if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+            raise SettingsError('settings: [yardr.quota] groups must be a list of at most 16 distinct group names')
+    if len(set(value)) != len(value):
+        raise SettingsError('settings: [yardr.quota] groups must be a list of at most 16 distinct group names')
+    return tuple(value)
+
+
+def _native_bin(value):
+    """The [yardr] bin: an explicit yardr executable, else the first yardr
+    on the bridge's own PATH at load, each validated as a [[command]]
+    handler path is."""
+    if value is not None:
+        return _handler_setting(value, '[yardr] bin')
+    found = shutil.which('yardr', path=(os.environ.get('PATH') or Bridge.COMMAND_PATH))
+    if found is None:
+        raise SettingsError('settings: [yardr] bin must name the yardr executable: no yardr on PATH')
+    return _handler_setting(found, '[yardr] bin')
+
+
 def _command_settings(data, menu, native=False):
     """The validated [[command]] entries, in file order, each with its
     defaults filled in. `start` and every [[menu]] command always clash;
@@ -5284,11 +5335,59 @@ def load_settings(path, home=None):
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
     if native and any(name == 'decide' for name, _ in menu_entries):
         raise SettingsError('settings: [[menu]] /decide clashes with the native /decide the bridge owns with [yardr] home and operator')
+
+    # The native /quota ([yardr.quota] turns it on): it needs native [yardr]
+    # home and operator. A [[menu]] or [[command]] quota, or a [[command]]
+    # callback_prefix overlapping quota:, beside it is the add-on switch
+    # left undone, refused here with the migration message before
+    # _command_settings names the same clash its own way.
+    quota_table = yardr.get('quota')
+    if quota_table is not None and not isinstance(quota_table, dict):
+        raise SettingsError('settings: [yardr.quota] must be a table')
+    quota, yardr_bin = None, None
+    if quota_table is not None:
+        if not native:
+            raise SettingsError('settings: [yardr.quota] needs [yardr] home and operator together')
+        unknown = sorted(set(quota_table) - YARDR_QUOTA_KEYS)
+        if unknown:
+            raise SettingsError(f'settings: unknown key yardr.quota.{unknown[0]}')
+        quota = dict(timeout=_int_setting(quota_table.get('timeout', 30), '[yardr.quota] timeout', 5, 120),
+                     groups=_quota_groups(quota_table.get('groups', [])),
+                     machine_login=_bool_setting(quota_table.get('machine_login', True),
+                                                '[yardr.quota] machine_login'))
+        if any(name == 'quota' for name, _ in menu_entries):
+            raise SettingsError('settings: [[menu]] quota clashes with the native /quota ([yardr.quota]); '
+                                'delete the [[command]] quota table')
+        entries = data.get('command', [])
+        if isinstance(entries, list):
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('name') == 'quota':
+                    raise SettingsError('settings: [[command]] quota clashes with the native /quota '
+                                        '([yardr.quota]); delete the [[command]] quota table')
+                prefix = item.get('callback_prefix')
+                if prefix is None and isinstance(item.get('name'), str):
+                    prefix = item['name'] + ':'
+                if isinstance(prefix, str) and (prefix.startswith('quota:') or 'quota:'.startswith(prefix)):
+                    raise SettingsError(f"settings: [[command]] {item.get('name')} callback_prefix overlaps "
+                                        'the native quota: prefix ([yardr.quota]); delete the [[command]] quota table')
+        yardr_bin = _native_bin(yardr.get('bin'))
     city_commands = _command_settings(data, menu_entries, bool(native))
+
+    if quota is not None:
+        shown = len(menu_entries) + sum(1 for command in city_commands if command['menu']) + bool(native) + 1
+        if shown > MENU_MAX:
+            raise SettingsError(f'settings: {shown} menu entries ([[menu]] and [[command]] with menu = true); '
+                                f'Telegram takes at most {MENU_MAX} (with the native /quota)')
+        city_commands = city_commands + (dict(yard_commands.QUOTA_COMMAND, timeout=quota['timeout']),)
 
     config = dict(yard=yard, account_id=account, hook_url=hook_url, yardr_source=source,
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),
                   timezone=timezone, menu=tuple(menu_entries), **ids, **native)
+    if quota is not None:
+        config['yardr_bin'] = yardr_bin
+        config['yardr_quota'] = quota
     # The crew member: internally the bridge's agent, as the ledger names it.
     agent = _text_setting(data.get('crew', 'yardmaster'), 'crew')
     config['agent'] = agent
@@ -5682,6 +5781,8 @@ def source_dependencies(source, settings=None, root=None):
             entries.append(('health_file', config['health_file'], 'move'))
         if config.get('yardr_home'):
             entries.append(('yardr.home', config['yardr_home'], 'move'))
+        if config.get('yardr_bin'):
+            entries.append(('yardr.bin', config['yardr_bin'], 'copy'))
         entries += [(f"[[command]] {command['name']} handler", command['handler'], 'copy')
                     for command in config.get('commands', ()) if command.get('handler')]
         entries += [(f'handler_write_paths entry {index}', path, 'move')
@@ -5975,6 +6076,8 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
     check(settings.state_dir.is_dir() or settings.state_dir.parent.is_dir(), f'state directory {settings.state_dir}')
     check(settings.lock_dir.is_dir(), f'lock directory {settings.lock_dir}')
     for command in settings.config.get('commands', ()):
+        if 'native' in command:
+            continue  # the yardr binary below covers the native command
         if command.get('handler'):
             try:
                 _handler_setting(command['handler'], 'handler')
@@ -5986,6 +6089,15 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
             check(ok, f"command /{command['name']} handler {command['handler']} {suffix}")
         else:
             check(True, f"command /{command['name']} handler {command['url']} (loopback; outside the unit's sandbox)")
+    if settings.config.get('yardr_bin'):
+        try:
+            _handler_setting(settings.config['yardr_bin'], 'yardr.bin')
+            ok = True
+        except SettingsError:
+            ok = False
+        suffix = ("(runs with your user's full rights: no sandbox on macOS)" if plat == 'darwin'
+                  else "(runs in the unit's sandbox)")
+        check(ok, f"native /quota yardr {settings.config['yardr_bin']} {suffix}")
     for path in getattr(settings, 'handler_write_paths', ()):
         check(path.is_dir(), f'handler write path {path}')
         if plat == 'darwin':

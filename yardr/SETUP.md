@@ -589,6 +589,15 @@ the menu. A `[[command]]` or `[[menu]]` named `decide`, or a `callback_prefix`
 overlapping `decide:`, refuses to load with native keys: rename it first.
 See [the operations guide](../bridge/OPERATIONS.md#decide-the-operators-open-decisions).
 
+### /quota (optional)
+
+With the native keys set, `[yardr.quota]` in the bridge's settings turns on
+the native `/quota`: the yard's providers, self-reporting sources and
+configured groups as one table, read from `yardr limits` with no login of
+its own. Run `set-commands` again after switching; a `[[command]]` or
+`[[menu]]` named `quota` must go first. See [the operations
+guide](../bridge/OPERATIONS.md#native-yard-commands).
+
 ### Source update and independent runtime handoff
 
 The ordinary-card code adds no installer or restart interface of its own.
@@ -607,9 +616,9 @@ restart, set-commands). To go back, run
 `<root>/current/install.sh --settings <settings> --rollback` and the `next:`
 line it prints; after the first migration from a checkout unit there is no
 previous release, so restore `<root>/service.previous` over the service file
-instead. The release carries bridge/bridge.py, adjacent run_asks.py, the
-runtime assets and scripts/native_settings.py. No other instance needs to be
-available, and none is changed.
+instead. The release carries bridge/bridge.py, adjacent run_asks.py and
+yard_commands.py, the runtime assets and scripts/native_settings.py. No
+other instance needs to be available, and none is changed.
 
 For source-pack preparation use `yardr pack check <root>/pack`
 (the check is the plan; there is no `pack plan` command). Check uses the

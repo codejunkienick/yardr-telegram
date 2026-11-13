@@ -15,6 +15,27 @@ made with `settings set default_kind` (no yardmaster). Only the temp root
 asks each card in turn, compares the live response to its fixture after the
 same rewrite, and approves it through the bridge.
 
+# Native quota fixtures
+
+`limits_plain.json` and `limits_group.json` are `limits --json` answers
+captured from an isolated yard of the aligned build (`11f81f38`), with a
+declared limits source whose command is a stub script printing a fixed
+report (kinds `{codex: codex}`), a crew member of kind codex, a group of
+that kind whose env_file sets a variable the stub echoes into a window
+label, a second self-answering source that exits 1, and the built-in
+machine source. The plain read exits 1 with the full JSON; the group read
+exits 0. Recapture with that yard:
+
+```sh
+yardr --home <yard> --actor <operator> limits --json > bridge/fixtures/limits_plain.json
+yardr --home <yard> --actor <operator> limits --group quota-builders --json > bridge/fixtures/limits_group.json
+```
+
+The machine windows carry live values and move between captures; the stub
+reports are fixed except the group's label, which reads the group's env.
+`scripts/preview_yard_commands.py` renders both fixtures, the unknown
+entry and the timeout line. No live yard or login is used.
+
 `group_add_prealignment.json`, `group_set_prealignment.json` and
 `group_set_no_prompt_prealignment.json` are the earlier local core's shapes
 (captured at `fc7375cf5ad4`), kept to prove the bridge refuses them.

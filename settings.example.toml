@@ -36,6 +36,15 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
 hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints it
 # source = "tgbridge"                       # the rendered pack/source name; unique per bridge in a yard
+# bin = "/home/alex/.local/bin/yardr"      # default: the first yardr on the bridge's own PATH
+
+# The native /quota (bridge/OPERATIONS.md, "Native yard commands"): its
+# presence turns /quota on. It needs [yardr] home and operator above, and no
+# [[command]] or [[menu]] quota beside it.
+# [yardr.quota]
+# timeout = 30             # seconds the reads may take in all, 5-120
+# groups = ["builders"]    # up to 16 group names, read under each group's env
+# machine_login = true     # also show the providers read on the machine's login
 
 [bot]
 bot_id = 1000000001                         # numeric: getMe's id

@@ -195,7 +195,10 @@ requirements are:
   Inbound delivery IDs additionally include the **bot id**. Each bridge's
   ledger, delivery keys, pins, message log, offsets and transcript jobs live
   under its own **state_dir**; never share or copy a first bot's state into
-  a second bot's installation.
+  a second bot's installation. The one move of state is the same bot's,
+  from its stopped previous owner to its new installation and back, by
+  `scripts/handover_state.py` (`yardr/SETUP.md`, "Hand a bot's state to a
+  new installation").
 - Menus are set through each bot's token with Telegram's chat scope. Quota
   notices watch `crew` (or the topic's crew), using each bridge's ledger.
   `[[command]]` registrations and their handler settings belong to one

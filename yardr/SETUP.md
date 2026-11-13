@@ -814,6 +814,13 @@ yardr crew show secretary
    yardr crew restart secretary
    ```
 
+   For a crew member that does not exist yet, add it with `yardr crew add`
+   (its own `env_file` from the start) and subscribe it before its bot or
+   anything else delivers to it: a new crew member's inbox starts at the
+   yard's current event head, so nothing delivered before the add reaches
+   it. With no daemon running the add only records the definition; the
+   session starts when the daemon does.
+
    A `yardr reply` uses its caller's environment. A crew process carries
    the credential for its own bot; a shell operator testing replies must
    likewise supply that bot's credential. Do not reuse the yardmaster's
@@ -857,6 +864,104 @@ and credentials for recovery. The primary keeps running throughout.
 Landing source code, installing a release and activating it are separate
 steps. Activation, BotFather changes, credentials, grants and subscriptions
 remain the operator's; builders prove this procedure in temporary homes.
+
+## Hand a bot's state to a new installation
+
+For a bot another bridge installation polls today (its previous owner, whose
+state directory may hold other programs' files too) that moves to a crew
+member's own installation from the previous section: the same bot, token and
+paired chat. Its ledger (offset, delivery keys and receipts, asks, pins,
+accepted messages), heartbeat and inbound files, queued transcript jobs
+included, move once, coherently, and nothing else of that directory does.
+`<previous settings>` and `<previous state_dir>` are the previous owner's,
+`<settings>` and `<root>` the new installation's; `$H` is
+`python3 <root>/current/scripts/handover_state.py`.
+
+1. Before the freeze: install the new instance, apply its pack, key its
+   source, add its hook and identity, add the crew member and subscribe it
+   (previous section, steps 1-5), but do not enable its unit. In step 3
+   make only the state directory's parent (`install -d -m 700 <parent of
+   state_dir>`), not the state directory: capture makes that and refuses
+   one that exists. Everything the crew member must see arrives after its
+   add and subscription.
+
+2. Freeze the previous owner. Its poller may not take this host's bot lock,
+   so stop and disable it by name; the lock and Telegram's 409 are fences,
+   not the switch:
+
+   ```sh
+   systemctl --user disable --now <previous unit>
+   ```
+
+3. Capture, with the new unit still stopped:
+
+   ```sh
+   $H capture --settings <settings> --from-settings <previous settings> --from <previous state_dir>
+   ```
+
+   It refuses, changing nothing, when the two settings name another bot or
+   paired chat, the previous owner's heartbeat names a running bridge, a
+   bridge of this bot holds the host lock, the ledger has a hot journal
+   (start and stop the previous owner once), the ledger holds a table or
+   column it does not know or native card rows, the ledger, the heartbeat
+   or anything in the inbound tree, its root included, is a link or special
+   file, the
+   new state directory exists, even empty or as a link, or an ask is still
+   open. Answer or close open asks with the previous owner first; only when
+   that cannot be done, `--close-pending "<decision>"` archives
+   them as decided in the new copy, so a late tap relays nothing. Nothing
+   is approved for anyone. The SQLite backup reads the previous ledger
+   read-only and leaves it as it was; `<state_dir>/handover.json` records
+   its SHA-256, schema, row counts, offset, archived asks and copied files.
+   It writes only after every check has passed, into a sibling directory of
+   its own that it renames into place last; if the state directory appeared
+   meanwhile it refuses, and a run that does not finish removes only what it
+   made. Start the new bridge only after capture reports success.
+
+   A key the previous owner saved replays under the same request only where
+   the yard name and `account_id` are the same; under new names the request
+   is another payload and fails closed as `idempotency_key_conflict`. An
+   ambiguous or reserved send stays ambiguous: reconcile it in the chat, never
+   by sending again.
+
+4. Start the new unit and check it (previous section, step 6). The previous
+   owner's late button taps reach the new bridge only as callbacks on its
+   ledger's asks: archived and answered asks relay nothing again, and native
+   card data it never published is refused.
+
+To hand the bot back after the new installation has had traffic, never
+restore the copy the capture started from, nor `<previous state_dir>/
+telegram-bridge.sqlite3.before-handback`: both lack every send and update
+since. Stop the new unit and the crew member (`yardr crew stop <crew>`,
+which keeps its inbox), then write the latest state forward:
+
+```sh
+systemctl --user disable --now <unit>
+$H handback --settings <settings> --to <previous state_dir>
+systemctl --user enable --now <previous unit>
+```
+
+It refuses, changing nothing, while either bridge runs, when `<settings>`
+now name another bot or paired chat than the one captured, when the
+previous ledger, the new heartbeat or anything in either inbound tree, its
+root included, is a link or special file, when the previous ledger changed since the capture (both
+owners ran: stop both and reconcile by hand; there is no tool for that), or
+when the new ledger holds a table or column it does not know or native
+card rows, or lacks a table of the previous one. It replaces the previous
+ledger's rows with the new ledger's cursor, receipts, asks, pins and
+accepted rows, in the previous schema and one transaction, keeps the
+replaced file as `.before-handback`, copies new inbound files and leaves
+exactly the new owner's queued transcript jobs. The message log stays in the
+new state directory. After a failure run it again: it records what it writes
+before its transaction, so a run that died before, inside or after that
+transaction or while copying files is finished by the next, and one that
+finds either ledger changed since, or put back as it was at capture,
+refuses. A finished handback refuses a
+second. Updates Telegram still holds go to the previous owner from the
+handed-back offset.
+
+Source tests drive both commands in temporary homes against synthetic
+ledgers; the capture, start, handback and restart above are the operator's.
 
 ## Move an existing bridge to its own installation
 

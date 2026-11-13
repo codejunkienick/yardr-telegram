@@ -598,6 +598,19 @@ its own. Run `set-commands` again after switching; a `[[command]]` or
 `[[menu]]` named `quota` must go first. See [the operations
 guide](../bridge/OPERATIONS.md#native-yard-commands).
 
+### /mayor_model (optional)
+
+With the native keys set, `[yardr.mayor_model]` and its
+`[[yardr.mayor_model.picks]]` turn on the native `/mayor_model`: the crew
+member's kind, model and effort, with one button per pick. A tap by the
+operator sets the crew member to the pick with `yardr crew set ...
+--revision` and restarts it, once per tap. Coming from the telegram-quota
+add-on, copy its `[mayor_model]` picks as they are and delete the
+`[[command]]` mayor_model table in the same edit. Check with
+`<root>/bin/telegram-bridge mayor-model --dry-run <pick>`, which changes
+nothing, then restart and run `set-commands` again. See [the operations
+guide](../bridge/OPERATIONS.md#mayor_model).
+
 ### Source update and independent runtime handoff
 
 The ordinary-card code adds no installer or restart interface of its own.

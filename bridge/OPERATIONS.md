@@ -712,6 +712,103 @@ gives the yard's aiquokka source a copy whose limits command ends in
 `timeout`; its answer goes out once per update through the delivery
 ledger.
 
+### /mayor_model
+
+`/mayor_model` shows a crew member's model and lets the paired user, as
+the yard's operator, switch it with a tap. It is the telegram-quota
+add-on's `[mayor_model]` yardr target moved into the bridge: the same
+picks, the same tap rules and the same texts, with `[yardr] bin` and
+`home` in place of the add-on's `yardr` and `yardr_home`.
+
+```toml
+[yardr.mayor_model]
+crew = "yardmaster"   # the crew member a tap switches, [A-Za-z0-9][A-Za-z0-9_-]{0,31}
+timeout = 60          # seconds a view or a tap may take in all, 10-120
+
+[[yardr.mayor_model.picks]]
+id = "sol"            # [a-z0-9][a-z0-9_-]{0,31}, distinct; the button is mayor-model:<id>
+label = "GPT-6.1 Sol high"   # the button, 1-32 printable characters
+kind = "codex"        # the yardr harness kind
+model = "gpt-6.1-sol" # the model id the kind's --model takes
+args = ["--dangerously-bypass-approvals-and-sandbox", "-c", "model_reasoning_effort=\"high\""]
+env_file = "/home/alex/.yardr/crew-yardmaster.env"   # optional, absolute, passed as written
+```
+
+`picks` is required, 1-8 tables, with no defaults. `args` is the whole
+list the crew member runs with (permission flags, other config and the
+harness's effort flag), at most 64 printable args of 1-1024 characters.
+The effort is read from it as the add-on reads it: `--reasoning-effort`
+or `--effort` (Muse, Grok), or a `-c`/`--config` override of
+`model_reasoning_effort` (Codex). Picks must differ in kind, model or
+effort, so at most one is current. `env_file` is passed to yardr and
+never opened by the bridge; without it the crew member keeps the env
+file it has.
+
+The view runs `yardr crew show <crew> --json` and shows the crew
+member's kind, model and effort (`default` when its args name none), its
+session's state and status, and the kind a running session keeps until
+it restarts, with one button per pick; the pick whose kind, model and
+effort the crew member has carries a ✓. It never shows the env file or
+anything in it. Text after `/mayor_model` is ignored: only a tap
+switches.
+
+A tap, within `timeout`:
+
+1. on a pick id the settings no longer have answers `That model button
+   is out of date.` and runs nothing;
+2. on an update already recorded answers from its record and runs no
+   set or restart again;
+3. checks the operator: the yard's `GetUser` must name `[yardr] operator`
+   with the operator role and its `[yardr] source` identity must be the
+   paired user. Otherwise it is refused before anything is reserved;
+4. reads the crew member; on the pick it already has, it says so and
+   changes nothing;
+5. reserves the tap in the bridge's store (`mayor_model_taps`, one row
+   per update), committed before anything is set;
+6. runs `yardr --home <home> --actor <operator> crew set <crew>
+   kind=<kind> model=<model> args=<args as one JSON list>
+   [env_file=<env_file>] --revision <the revision read in 4>`, which yardr
+   refuses when the crew member changed since;
+7. reads the crew member back: a set that exited non-zero with the
+   settings as before is refused; settings that read as the pick are
+   done; anything else (killed at the deadline, an unreadable re-read,
+   settings that are neither) is unknown and never retried;
+8. once done, runs `yardr --home <home> --actor <operator> crew restart
+   <crew>`: its next session, once the current one is idle, starts on
+   the pick. A restart that is not confirmed leaves the switch done, and
+   the answer says its next session starts on it;
+9. answers the press and edits the tapped message to the state read
+   again, with fresh buttons.
+
+A row reserved without an outcome (the bridge stopped mid-tap) reads as
+unknown on any later delivery of that update. No yardr stdout or stderr
+reaches the chat or the log; the log names the step, exit status and
+byte sizes of an off-course run.
+
+With `[yardr.mayor_model]` the `mayor-model:` prefix is the bridge's own,
+as `decide:` is: a `[[command]]` or `[[menu]]` named `mayor_model`, or a
+`[[command]]` `callback_prefix` overlapping `mayor-model:`, refuses the
+settings with the migration message (delete the `[[command]]`
+mayor_model table), and a `publish()` keyboard or another command's
+answer naming the prefix is `foreign_callback_data`. Buttons the add-on sent keep working: they carry
+the same `mayor-model:<id>`.
+
+To switch from the add-on: copy the picks from its config's
+`[mayor_model]` as they are, add `[yardr.mayor_model]` and delete the
+`[[command]]` mayor_model table in the same edit, run the dry run below,
+then `check-install`, restart the unit and run `set-commands`. To switch
+back, restore the `[[command]]` table, remove the native table, restart
+and run `set-commands`. Before a release rollback, restore the
+pre-switch settings: an older release refuses the unknown `[yardr]` key.
+
+The dry run prints the crew member's assignment and the two commands a
+tap on a pick would run, shlex-joined. It runs `crew show` alone and
+writes nothing: no tap row, no set, no restart.
+
+```sh
+<root>/bin/telegram-bridge mayor-model --dry-run sol
+```
+
 ## Asks
 
 An ask is a message with tap-to-answer buttons: the paired user taps

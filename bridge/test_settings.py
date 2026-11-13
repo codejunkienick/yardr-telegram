@@ -344,6 +344,201 @@ class AutoTopicsSettingsTests(unittest.TestCase):
                 self.assertEqual(str(raised.exception), 'settings: ' + message)
 
 
+class MayorModelSettingsTests(unittest.TestCase):
+    """[yardr.mayor_model]: without it a settings file loads as before and a
+    [[command]] mayor_model keeps its handler; with it /mayor_model is
+    native, the add-on's pick rules hold, and a [[command]] or [[menu]]
+    mayor_model or an overlapping prefix is refused with the migration
+    message."""
+
+    PICKS = ('\n[[yardr.mayor_model.picks]]\nid = "sol"\nlabel = "GPT-6.1 Sol high"\nkind = "codex"\n'
+             'model = "gpt-6.1-sol"\nargs = ["-c", "model_reasoning_effort=\\"high\\""]\n'
+             '\n[[yardr.mayor_model.picks]]\nid = "opus"\nlabel = "Opus high"\nkind = "claude"\n'
+             'model = "opus"\nargs = ["--effort", "high"]\nenv_file = "/srv/yard/crew-yardmaster.env"\n')
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.home = self.root / 'yard'
+        self.home.mkdir(mode=0o700)
+        self.stub = self.root / 'yardr-stub'
+        self.stub.write_text('#!/bin/sh\nexit 0\n')
+        self.stub.chmod(0o700)
+
+    def settings(self, table=None, extra='', native=True, menu=True):
+        """A settings file with native [yardr] keys and bin; `table` is the
+        [yardr.mayor_model] text (None: no table), `extra` more tables."""
+        path = write_settings(self.root)
+        text = path.read_text()
+        if not menu:
+            text = re.sub(r'\n\[\[menu\]\]\ncommand = "[a-z_]+"\ndescription = [^\n]*\n', '\n', text)
+        lines = 'bin = "%s"\n' % self.stub
+        if native:
+            lines += 'home = "%s"\noperator = "pat"\n' % self.home
+        marker = '\n[yardr]\n'
+        start = text.index(marker)
+        text = text[:start] + marker + lines + text[start + len(marker):]
+        if table is not None:
+            text += '\n[yardr.mayor_model]\n' + table
+        path.write_text(text + extra)
+        return path
+
+    def command(self, name='mayor_model', **fields):
+        fields.setdefault('description', 'Mayor model via add-on')
+        fields.setdefault('handler', str(self.stub))
+        return '\n[[command]]\nname = "%s"\n' % name + ''.join(
+            '%s = %s\n' % (key, json.dumps(value)) for key, value in fields.items())
+
+    def test_no_table_keeps_a_command_mayor_model(self):
+        settings = b.load_settings(self.settings(extra=self.command(callback_prefix='mayor-model:')))
+        (entry,) = settings.config['commands']
+        self.assertEqual((entry['name'], entry['handler'], entry['callback_prefix']),
+                         ('mayor_model', str(self.stub), 'mayor-model:'))
+        self.assertNotIn('native', entry)
+        self.assertNotIn('yardr_mayor_model', settings.config)
+        self.assertNotIn('yardr_bin', settings.config)
+        bridge = b.Bridge(settings.config, None, 'T', None, state_dir=self.root)
+        self.assertIs(bridge._callback_command('mayor-model:sol'), bridge.commands['mayor_model'])
+        self.assertEqual(bridge._publish_keyboard([[dict(text='x', callback_data='mayor-model:sol')]])[1], None)
+
+    def test_no_table_runs_the_command_handler_on_a_tap(self):
+        handler = self.root / 'addon'
+        handler.write_text('#!/bin/sh\ncat > "%s"\n'
+                           'echo \'{"actions":[{"type":"answer_callback","text":"add-on"}]}\'\n' % (self.root / 'seen'))
+        handler.chmod(0o700)
+        settings = b.load_settings(self.settings(extra=self.command(handler=str(handler),
+                                                                    callback_prefix='mayor-model:')))
+        calls = []
+
+        def telegram(url, body, *args, **kwargs):
+            calls.append((url.rsplit('/', 1)[1], body))
+            return 200, dict(ok=True, result=True)
+        bridge = b.Bridge(settings.config, b.Store(self.root / 'state.sqlite3', 10), 'T', 'C',
+                          request=telegram, state_dir=self.root)
+        with patch('sys.stderr'):
+            bridge.drain([dict(update_id=60, callback_query=dict(
+                id='q', data='mayor-model:sol', **{'from': dict(id=123, is_bot=False)},
+                message=dict(message_id=7, chat=dict(id=123, type='private'))))])
+        self.assertEqual(json.loads((self.root / 'seen').read_text())['callback_data'], 'mayor-model:sol')
+        self.assertEqual(calls, [('answerCallbackQuery', dict(callback_query_id='q', text='add-on'))])
+
+    def test_table_registers_the_native_command(self):
+        settings = b.load_settings(self.settings('crew = "mayor"\ntimeout = 45\n' + self.PICKS))
+        mayor = settings.config['yardr_mayor_model']
+        self.assertEqual((mayor['crew'], mayor['timeout']), ('mayor', 45))
+        self.assertEqual(mayor['picks'], (
+            dict(id='sol', label='GPT-6.1 Sol high', kind='codex', model='gpt-6.1-sol',
+                 args=('-c', 'model_reasoning_effort="high"'), env_file=None, effort='high'),
+            dict(id='opus', label='Opus high', kind='claude', model='opus', args=('--effort', 'high'),
+                 env_file='/srv/yard/crew-yardmaster.env', effort='high')))
+        self.assertEqual(settings.config['yardr_bin'], str(self.stub))
+        (entry,) = settings.config['commands']
+        self.assertEqual(entry, dict(name='mayor_model', description='Show the mayor model, tap to switch it',
+                                     menu=True, callback_prefix='mayor-model:', native='mayor_model', timeout=45))
+
+    def test_defaults(self):
+        mayor = b.load_settings(self.settings(self.PICKS)).config['yardr_mayor_model']
+        self.assertEqual((mayor['crew'], mayor['timeout']), ('yardmaster', 60))
+
+    def test_the_env_file_is_never_opened(self):
+        # A path that does not exist loads: the bridge only passes it on.
+        settings = b.load_settings(self.settings(self.PICKS.replace('/srv/yard', str(self.root / 'nowhere'))))
+        self.assertEqual(settings.config['yardr_mayor_model']['picks'][1]['env_file'],
+                         str(self.root / 'nowhere' / 'crew-yardmaster.env'))
+
+    def test_an_env_file_is_passed_on_as_written(self):
+        # The add-on's rule: any absolute path, spaces and Unicode included.
+        for path in ('/tmp/crew keys.env', '/srv/ярд/crew.env', '/srv/yard/../crew.env'):
+            settings = b.load_settings(self.settings(self.PICKS.replace('/srv/yard/crew-yardmaster.env', path)))
+            self.assertEqual(settings.config['yardr_mayor_model']['picks'][1]['env_file'], path)
+
+    def test_beside_quota_both_are_native(self):
+        path = self.settings(self.PICKS, menu=False)
+        path.write_text(path.read_text() + '\n[yardr.quota]\n')
+        settings = b.load_settings(path)
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'mayor_model'])
+
+    def test_migration_clashes_are_refused(self):
+        fix = r'delete the \[\[command\]\] mayor_model table'
+        cases = [
+            (self.command(), r'\[\[command\]\] mayor_model clashes with the native /mayor_model'),
+            (self.command('other', callback_prefix='mayor-model:x'), 'callback_prefix overlaps the native mayor-model: prefix'),
+            (self.command('other', callback_prefix='mayor-'), 'callback_prefix overlaps the native mayor-model: prefix'),
+            ('\n[[menu]]\ncommand = "mayor_model"\ndescription = "x"\n', r'\[\[menu\]\] mayor_model clashes'),
+        ]
+        for extra, pattern in cases:
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(b.SettingsError, pattern + '.*' + fix):
+                    b.load_settings(self.settings(self.PICKS, extra=extra))
+        # A prefix that no mayor-model: press starts with is no clash.
+        settings = b.load_settings(self.settings(self.PICKS, extra=self.command('mayor', callback_prefix='mayor:')))
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['mayor', 'mayor_model'])
+
+    def test_command_settings_reserve_the_prefix(self):
+        data = dict(command=[dict(name='other', description='x', handler=str(self.stub), callback_prefix='mayor-model:')])
+        with self.assertRaisesRegex(b.SettingsError, 'bridge-owned mayor-model: prefix'):
+            b._command_settings(data, (), True, mayor_model=True)
+        data = dict(command=[dict(name='mayor_model', description='x', handler=str(self.stub), callback_prefix='mm:')])
+        with self.assertRaisesRegex(b.SettingsError, 'clashes with /mayor_model'):
+            b._command_settings(data, (), True, mayor_model=True)
+        self.assertEqual(len(b._command_settings(data, (), True)), 1)
+
+    def test_bad_tables_are_refused(self):
+        pick = ('\n[[yardr.mayor_model.picks]]\nid = "x"\nlabel = "X"\nkind = "codex"\nmodel = "m"\n'
+                'args = []\n')
+        cases = [
+            ('', r'needs \[\[yardr\.mayor_model\.picks\]\]'),
+            ('picks = []\n', '1-8 tables'),
+            ('crew = "bad name"\n' + pick, 'crew is missing or malformed'),
+            ('crew = "' + 'c' * 33 + '"\n' + pick, 'crew is missing or malformed'),
+            ('timeout = 9\n' + pick, 'timeout'),
+            ('timeout = 121\n' + pick, 'timeout'),
+            ('target = "yardr"\n' + pick, 'unknown key yardr.mayor_model.target'),
+            ('yardr_home = "/x"\n' + pick, 'unknown key yardr.mayor_model.yardr_home'),
+            (pick * 2, 'id must be a distinct'),
+            (pick.replace('"x"', '"X"', 1), 'id must be a distinct'),
+            (pick.replace('label = "X"', 'label = "' + 'L' * 33 + '"'), 'label must be 1-32'),
+            (pick.replace('label = "X"', 'label = "a\\tb"'), 'label must be 1-32 printable'),
+            (pick.replace('kind = "codex"', 'kind = "Codex"'), 'kind must be a harness kind'),
+            (pick.replace('model = "m"', 'model = "m m"'), 'model must be a model id'),
+            (pick.replace('args = []', 'args = ["' + 'a' * 1025 + '"]'), 'args must be a list'),
+            (pick.replace('args = []', 'args = ["a\\nb"]'), 'args must be a list'),
+            (pick.replace('args = []', 'args = [""]'), 'args must be a list'),
+            (pick.replace('args = []', 'args = ' + json.dumps(['a'] * 65)), 'args must be a list'),
+            (pick.replace('args = []', 'args = "--effort high"'), 'args must be a list'),
+            (pick + 'env_file = "relative.env"\n', 'env_file must be an absolute path'),
+            (pick + 'env_file = "~/crew.env"\n', 'env_file must be an absolute path'),
+            (pick + 'env_file = ""\n', 'env_file must be an absolute path'),
+            (pick + 'env_file = "/a\\u0000b"\n', 'env_file must be an absolute path'),
+            (pick + 'env_file = 1\n', 'env_file must be an absolute path'),
+            (pick + 'secret = "x"\n', 'unknown key secret'),
+            (pick.replace('args = []\n', ''), 'needs args'),
+            (pick + pick.replace('"x"', '"y"').replace('args = []', 'args = ["--effort", "low"]')
+             + pick.replace('"x"', '"z"').replace('args = []', 'args = ["--reasoning-effort=low"]'),
+             'must differ in kind, model or effort'),
+            (''.join(pick.replace('"x"', '"p%d"' % i).replace('args = []', 'args = ["--effort", "e%d"]' % i)
+                     for i in range(9)), '1-8 tables'),
+        ]
+        for table, pattern in cases:
+            with self.subTest(table=table[:80]):
+                with self.assertRaisesRegex(b.SettingsError, pattern):
+                    b.load_settings(self.settings(table))
+        with self.assertRaisesRegex(b.SettingsError, r'\[yardr\.mayor_model\] needs \[yardr\] home and operator'):
+            b.load_settings(self.settings(self.PICKS, native=False))
+
+    def test_effort_of_reads_each_harness_flag(self):
+        effort_of = b.yard_commands.effort_of
+        self.assertEqual(effort_of(['--yolo', '--reasoning-effort', 'high']), 'high')
+        self.assertEqual(effort_of(['--effort=low']), 'low')
+        self.assertEqual(effort_of(['-c', 'model_reasoning_effort="xhigh"']), 'xhigh')
+        self.assertEqual(effort_of(['--config=model_reasoning_effort=\'low\'', '--effort', 'max']), 'max')
+        self.assertIsNone(effort_of(['-c', 'model="x"', '--effort']))
+
+
+# The example's tables under another: its header, then (parent, section).
+NESTED_TABLES = {'[yardr.quota]': ('yardr', 'quota'), '[yardr.mayor_model]': ('yardr', 'mayor_model'),
+                 '[[yardr.mayor_model.picks]]': ('mayor_model', 'picks')}
+
+
 class ExampleSettingsTests(unittest.TestCase):
     """Pin settings.example.toml against load_settings: every key the
     example sets, commented or not, is a key the loader accepts."""
@@ -351,8 +546,10 @@ class ExampleSettingsTests(unittest.TestCase):
     EXPECTED = {
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
-        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota'},
+        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota', 'mayor_model'},
         'quota': {'timeout', 'groups', 'machine_login'},
+        'mayor_model': {'crew', 'timeout', 'picks'},
+        'picks': {'id', 'label', 'kind', 'model', 'args', 'env_file'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},
         'menu': {'command', 'description'},
         'command': {'name', 'description', 'handler', 'menu', 'callback_prefix', 'timeout'},
@@ -374,9 +571,10 @@ class ExampleSettingsTests(unittest.TestCase):
         for line in text.splitlines():
             stripped = line.strip()
             content = stripped.lstrip('#').strip() if stripped.startswith('#') else stripped
-            if content == '[yardr.quota]':
-                section = 'quota'
-                keys.setdefault('yardr', set()).add('quota')
+            nested = NESTED_TABLES.get(content)
+            if nested:
+                parent, section = nested
+                keys.setdefault(parent, set()).add(section)
                 keys.setdefault(section, set())
                 continue
             header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(yardr|bot|transcribe|reactions|typing|auto_topics)\]',
@@ -417,8 +615,8 @@ class ExampleSettingsTests(unittest.TestCase):
             stripped = line.strip()
             commented = stripped.startswith('#')
             content = stripped.lstrip('#').strip() if commented else stripped
-            if content == '[yardr.quota]':
-                section = 'quota'
+            if content in NESTED_TABLES:
+                section = NESTED_TABLES[content][1]
                 lines.append(content)
                 continue
             header = re.fullmatch(r'\[\[(menu|command|topic)\]\]|\[(yardr|bot|transcribe|reactions|typing|auto_topics)\]',
@@ -462,6 +660,10 @@ class ExampleSettingsTests(unittest.TestCase):
                                            'topic', 'auto_topics'}
                 loaded['yardr'] |= set(data['yardr'])
                 loaded['quota'] |= set(data['yardr']['quota'])
+                loaded['mayor_model'] |= set(data['yardr']['mayor_model'])
+                loaded['picks'] |= set(data['yardr']['mayor_model']['picks'][0])
+                self.assertEqual([command['name'] for command in settings.config['commands'] if 'native' in command],
+                                 ['quota', 'mayor_model'])
                 loaded['bot'] |= set(data['bot'])
                 loaded['menu'] |= set(data['menu'][0])
                 loaded['command'] |= set(data['command'][0])

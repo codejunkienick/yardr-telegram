@@ -201,7 +201,7 @@ class TopicLedgerTests(unittest.TestCase):
         tables['asks'] = tables['asks'][:-1] + ', conversation_id TEXT)'
         rows['asks'] = [row + (None,) for row in rows['asks']]
         added = ('topics', 'topic_attempts', 'accepted_conversations', 'auto_topics', 'messages', 'sqlite_sequence',
-                 'run_ask_keys')
+                 'run_ask_keys', 'mayor_model_taps')
         self.assertEqual({k: v for k, v in after_tables.items() if k not in added}, tables)
         self.assertEqual({k: v for k, v in after_rows.items() if k not in added}, rows)
         self.assertEqual([after_rows[k] for k in added], [[] for _ in added])

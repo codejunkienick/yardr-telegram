@@ -70,6 +70,14 @@ sees and does, not how the code is organised.
   `bin`, `home` and `operator`); a `[[command]]` or `[[menu]]` quota beside
   it refuses the settings with the migration message, and the add-on keeps
   `/resets`.
+- A native `/mayor_model`: the crew member's kind, model and effort with
+  one button per configured pick; a tap by the verified operator runs
+  `yardr crew set ... --revision` and `yardr crew restart` once, recorded
+  in the bridge's store, and edits the message to the state read again.
+  `[yardr.mayor_model]` turns it on with the add-on's picks copied as they
+  are; a `[[command]]` or `[[menu]]` mayor_model beside it refuses the
+  settings with the migration message. `telegram-bridge mayor-model
+  --dry-run <pick>` prints the two commands a tap would run.
 
 ### Changed
 

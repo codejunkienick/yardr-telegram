@@ -177,7 +177,7 @@ requirements are:
 
 | add-on | change |
 |---|---|
-| telegram-quota | `/quota` is native with `[yardr.quota]` (bridge/OPERATIONS.md, "Native yard commands"); `/resets` stays on the external handler. A handler that changes a crew member's model uses `yardr crew set <crew> kind=… model=…` and `yardr crew restart <crew>`; the bridge does not edit crew configuration |
+| telegram-quota | `/quota` is native with `[yardr.quota]` and `/mayor_model` with `[yardr.mayor_model]` (bridge/OPERATIONS.md, "Native yard commands"); `/resets` stays on the external handler. The native `/mayor_model` changes a crew member's model only on a tap by the verified operator, through `yardr crew set <crew> … --revision` and `yardr crew restart <crew>` |
 | telegram-waiting | the external snapshot producer must target the configured yard; the bridge does not supply or migrate it |
 | telegram-sysmon | settings only: `bridge_py` and `settings_file` point at this bridge |
 | telegram-pricewatch | settings only, as sysmon |

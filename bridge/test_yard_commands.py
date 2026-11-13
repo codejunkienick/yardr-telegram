@@ -909,3 +909,636 @@ class RealNativeTests(QuotaCase):
             self.assertLessEqual(y.utf16_units(text), 4096)
         finally:
             testyardr.stop(server)
+
+
+# --- /mayor_model -----------------------------------------------------------
+
+CREW_STUB = """#!{python}
+import json, os, sys, time
+argv = sys.argv[1:]
+state_path, control_path, record = {state!r}, {control!r}, {record!r}
+expected_home = {home!r}
+with open(record, 'a') as stream:
+    stream.write(json.dumps(dict(argv=argv, env=dict(os.environ), cwd=os.getcwd())) + '\\n')
+control = json.load(open(control_path)) if os.path.exists(control_path) else {{}}
+state = json.load(open(state_path))
+if argv[:2] != ['--home', expected_home]:
+    sys.stdout.write('wrong home')
+    sys.exit(9)
+rest = argv[2:]
+actor = None
+if rest[:1] == ['--actor']:
+    actor, rest = rest[1], rest[2:]
+def save():
+    state['revision'] += 1
+    json.dump(state, open(state_path, 'w'))
+if rest[:2] == ['crew', 'show'] and rest[3:] == ['--json'] and actor is None:
+    if rest[2] != state['name']:
+        sys.stdout.write(json.dumps(dict(error='crew member %s: not found' % rest[2])))
+        sys.exit(3)
+    if control.get('show') == 'fail' or (control.get('show') == 'fail-after-set' and state.get('was_set')):
+        sys.stderr.write('yardr: secret=hunter2 broke\\n')
+        sys.exit(1)
+    config = dict(kind=state['kind'])
+    if state['model']:
+        config['model'] = state['model']
+    if state['args']:
+        config['args'] = state['args']
+    if state['env_file']:
+        config['env_file'] = state['env_file']
+    crew = dict(name=state['name'], runner='herdr', config=config, revision='R%d' % state['revision'],
+                kind=state['kind'], state=state['session_state'], journal='j')
+    if state['model']:
+        crew['model'] = state['model']
+    if state.get('session_status'):
+        crew['status'] = state['session_status']
+    if state.get('session_kind'):
+        crew['handle'] = dict(kind=state['session_kind'])
+    sys.stdout.write(json.dumps(dict(crew=crew, inbox=0, journal=[], timers=[])))
+    sys.exit(0)
+if rest[:2] == ['crew', 'set'] and actor == {operator!r}:
+    words = rest[3:]
+    revision = words[words.index('--revision') + 1]
+    if control.get('set') == 'sleep':
+        time.sleep(30)
+    if control.get('set') == 'fail':
+        sys.stderr.write('yardr: refused, token=abc123\\n')
+        sys.exit(1)
+    if revision != 'R%d' % state['revision']:
+        sys.stderr.write('yardr: stale: read it again\\n')
+        sys.exit(1)
+    for word in words[:words.index('--revision')]:
+        key, _, value = word.partition('=')
+        state[key] = json.loads(value) if key == 'args' else value
+    if control.get('set') == 'half':
+        state['model'] = 'half-written'
+    state['was_set'] = True
+    save()
+    sys.stdout.write('crew member %s saved\\nOUT-SECRET\\n' % state['name'])
+    sys.exit(1 if control.get('set') == 'nonzero-after-write' else 0)
+if rest[:2] == ['crew', 'restart'] and actor == {operator!r}:
+    if control.get('restart') == 'fail':
+        sys.stderr.write('yardr: restart failed\\n')
+        sys.exit(1)
+    sys.stdout.write('%s: restart\\n' % rest[2])
+    sys.exit(0)
+sys.stdout.write('unexpected argv')
+sys.exit(8)
+"""
+
+SOL_ARGS = ('--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="high"')
+OPUS_ARGS = ('--permission-mode', 'auto', '--effort', 'high')
+WONDER_ARGS = ('--yolo', '--reasoning-effort', 'high')
+
+
+def mayor_picks(env_file=None):
+    return (dict(id='sol', label='GPT-6.1 Sol high', kind='codex', model='gpt-6.1-sol', args=SOL_ARGS,
+                 env_file=None, effort='high'),
+            dict(id='opus', label='Opus high', kind='claude', model='opus', args=OPUS_ARGS,
+                 env_file=env_file, effort='high'),
+            dict(id='wonder', label='Muse Wonder high', kind='muse', model='muse-wonder-1.0', args=WONDER_ARGS,
+                 env_file=None, effort='high'))
+
+
+class Crash(BaseException):
+    """The bridge process dying mid-handler: no except Exception catches it."""
+
+
+class FakeYard:
+    """GetUser as the native socket answers it: `mapped` is the Telegram id
+    the operator's tgbridge identity names."""
+
+    def __init__(self, mapped='123', role='operator'):
+        self.mapped, self.role, self.calls = mapped, role, []
+
+    def call(self, method, arguments):
+        self.calls.append((method, arguments))
+        if method != 'GetUser':
+            raise AssertionError('unexpected native call ' + method)
+        return dict(name=arguments['name'], role=self.role, identities=dict(tgbridge=dict(id=self.mapped)))
+
+
+class MayorCase(unittest.TestCase):
+    """A bridge with native /mayor_model on a stub yardr that keeps one crew
+    member's settings in a file, refuses a stale --revision and records
+    every argv; carries no tests."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.home = self.root / 'yard'
+        self.home.mkdir(mode=0o700)
+        self.state = self.root / 'crew.json'
+        self.control = self.root / 'control.json'
+        self.record = self.root / 'record.jsonl'
+        self.set_crew(kind='codex', model='gpt-6.1-sol', args=list(SOL_ARGS))
+        self.stub = self.root / 'stub-yardr'
+        self.stub.write_text(CREW_STUB.format(python=sys.executable, state=str(self.state),
+                                              control=str(self.control), record=str(self.record),
+                                              home=str(self.home), operator='pat'))
+        self.stub.chmod(0o700)
+        self.store = b.Store(self.root / 'state.sqlite3', 10)
+        self.telegram = FakeTelegram()
+        self.yard = FakeYard()
+        self.enterContext(patch.dict(os.environ, {'LANG': 'C.UTF-8'}))
+        self.log = io.StringIO()
+        self.bridge = self.make_bridge()
+
+    def set_crew(self, **fields):
+        state = json.loads(self.state.read_text()) if self.state.exists() else dict(
+            name='yardmaster', kind='codex', model='', args=[], env_file='', revision=1,
+            session_state='running', session_status='idle', session_kind='codex')
+        state.update(fields)
+        self.state.write_text(json.dumps(state))
+
+    def crew(self):
+        return json.loads(self.state.read_text())
+
+    def mayor(self, **fields):
+        entry = dict(crew='yardmaster', timeout=30, picks=mayor_picks(env_file=str(self.root / 'crew.env')))
+        entry.update(fields)
+        return entry
+
+    def make_bridge(self, mayor=None, **config):
+        mayor = self.mayor() if mayor is None else mayor
+        full = dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
+                    hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
+                    user_display_name='Pat', timezone='Asia/Tokyo', menu=(), agent='yardmaster',
+                    yardr_home=str(self.home), yardr_operator='pat', yardr_bin=str(self.stub),
+                    yardr_mayor_model=mayor, commands=(y.mayor_model_command(mayor),))
+        full.update(config)
+        bridge = b.Bridge(full, self.store, 'SECRET', 'CAPABILITY', request=self.telegram,
+                          state_dir=self.root)
+        bridge.run_asks.client = self.yard
+        return bridge
+
+    def control_with(self, **modes):
+        self.control.write_text(json.dumps(modes))
+
+    def calls(self, verb):
+        if not self.record.exists():
+            return []
+        return [entry for entry in map(json.loads, self.record.read_text().splitlines())
+                if verb in entry['argv'][2:6]]
+
+    def tap(self, pick, uid=60, message_id=777):
+        return dict(update_id=uid, callback_query=dict(
+            id='query-%d' % uid, data='mayor-model:' + pick, **{'from': dict(id=123, is_bot=False)},
+            message=dict(message_id=message_id, chat=dict(id=123, type='private'))))
+
+    def text(self, value, uid=40):
+        return dict(update_id=uid, message=dict(message_id=uid + 1000, text=value,
+                                                chat=dict(id=123, type='private'),
+                                                **{'from': dict(id=123, is_bot=False)}))
+
+    def drain(self, *updates, bridge=None):
+        with patch('sys.stderr', self.log):
+            (bridge or self.bridge).drain(list(updates))
+
+    def answers(self):
+        return self.telegram.of('answerCallbackQuery')
+
+    def edits(self):
+        return self.telegram.of('editMessageText')
+
+    def rows(self):
+        with self.store.connect() as db:
+            return db.execute('SELECT update_id, pick, crew, state FROM mayor_model_taps ORDER BY update_id').fetchall()
+
+
+class MayorViewTests(MayorCase):
+    def test_view_shows_the_assignment_and_marks_the_current_pick(self):
+        self.set_crew(session_kind='claude', env_file='/secret/crew.env')
+        self.drain(self.text('/mayor_model'))
+        (send,) = self.telegram.of('sendMessage')
+        self.assertEqual(send['text'], '<pre>yardmaster model: GPT-6.1 Sol high\n'
+                                       'codex · gpt-6.1-sol · effort high\n'
+                                       'session: running · idle · on claude until it restarts</pre>')
+        self.assertEqual(send['reply_markup'], {'inline_keyboard': [
+            [dict(text='✓ GPT-6.1 Sol high', callback_data='mayor-model:sol')],
+            [dict(text='Opus high', callback_data='mayor-model:opus')],
+            [dict(text='Muse Wonder high', callback_data='mayor-model:wonder')]]})
+        self.assertNotIn('crew.env', send['text'])
+        (show,) = self.calls('show')
+        self.assertEqual(show['argv'], ['--home', str(self.home), 'crew', 'show', 'yardmaster', '--json'])
+        self.assertEqual(show['cwd'], str(self.home))
+        self.assertFalse(any(key.startswith('YARDR_') for key in show['env']))
+
+    def test_view_of_an_assignment_no_pick_has(self):
+        self.set_crew(kind='grok', model='', args=[], session_kind='grok', session_status='')
+        self.drain(self.text('/mayor_model'))
+        (send,) = self.telegram.of('sendMessage')
+        self.assertEqual(send['text'], '<pre>yardmaster model: default model (grok, effort default)\n'
+                                       'grok · default model · effort default\nsession: running</pre>')
+        self.assertFalse(any(button['text'].startswith('✓') for row in send['reply_markup']['inline_keyboard']
+                             for button in row))
+
+    def test_text_arguments_run_nothing_but_the_view(self):
+        self.drain(self.text('/mayor_model sol'), self.text('/mayor_model opus', uid=41))
+        self.assertEqual(len(self.calls('show')), 2)
+        self.assertEqual(self.calls('set'), [])
+        self.assertEqual(self.calls('restart'), [])
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.yard.calls, [])
+
+    def test_missing_crew_member_is_unavailable(self):
+        self.set_crew(name='someone-else')
+        self.drain(self.text('/mayor_model'))
+        (send,) = self.telegram.of('sendMessage')
+        self.assertEqual(send['text'], '<pre>⚪ mayor model unavailable: the crew member does not exist</pre>')
+        self.assertNotIn('reply_markup', send)
+
+    def test_set_commands_lists_mayor_model(self):
+        self.assertEqual(self.bridge.set_commands(),
+                         [dict(command='mayor_model', description='Show the yardmaster model, tap to switch it'),
+                          dict(command='decide', description='Open decisions waiting on you')])
+
+    def test_publish_keyboard_refuses_the_bridge_owned_prefix(self):
+        keyboard = [[dict(text='switch', callback_data='mayor-model:opus')]]
+        self.assertEqual(self.bridge._publish_keyboard(keyboard), (None, 'foreign_callback_data'))
+        # Without the table the prefix is nobody's: a publish naming it has no command.
+        bare = b.Bridge(dict(self.bridge.config, commands=()), self.store, 'SECRET', 'CAPABILITY',
+                        request=self.telegram, state_dir=self.root)
+        del bare.config['yardr_mayor_model']
+        self.assertEqual(bare._publish_keyboard(keyboard), (None, 'foreign_callback_data'))
+
+
+class MayorOwnedPrefixTests(MayorCase):
+    def test_another_handler_cannot_send_mayor_model_buttons(self):
+        handler = self.root / 'other'
+        handler.write_text('#!/bin/sh\ncat >/dev/null\necho \'{"actions":[{"type":"send","text":"x",'
+                           '"keyboard":[[{"text":"OK","callback_data":"mayor-model:opus"}]]}]}\'\n')
+        handler.chmod(0o700)
+        other = dict(name='other', description='x', menu=True, timeout=10, handler=str(handler),
+                     callback_prefix='other:')
+        mayor = self.mayor()
+        self.bridge = self.make_bridge(commands=(other, y.mayor_model_command(mayor)))
+        self.drain(self.text('/other'))
+        (send,) = self.telegram.of('sendMessage')
+        self.assertEqual(send['text'], 'command other failed')
+        self.assertIn('command other failed (update 40): foreign_callback_data', self.log.getvalue())
+
+
+class MayorTapTests(MayorCase):
+    def test_tap_switches_once_restarts_and_edits_the_message(self):
+        self.drain(self.tap('opus'))
+        crew = self.crew()
+        self.assertEqual((crew['kind'], crew['model'], crew['args'], crew['env_file']),
+                         ('claude', 'opus', list(OPUS_ARGS), str(self.root / 'crew.env')))
+        (set_call,) = self.calls('set')
+        self.assertEqual(set_call['argv'], [
+            '--home', str(self.home), '--actor', 'pat', 'crew', 'set', 'yardmaster',
+            'kind=claude', 'model=opus', 'args=["--permission-mode","auto","--effort","high"]',
+            'env_file=%s' % (self.root / 'crew.env'), '--revision', 'R1'])
+        (restart,) = self.calls('restart')
+        self.assertEqual(restart['argv'], ['--home', str(self.home), '--actor', 'pat',
+                                           'crew', 'restart', 'yardmaster'])
+        self.assertEqual(self.answers(), [dict(callback_query_id='query-60', text='Model set')])
+        (edit,) = self.edits()
+        self.assertEqual(edit['message_id'], 777)
+        self.assertEqual(edit['text'], '<pre>✅ yardmaster set to Opus high; it restarts on it once idle.\n'
+                                       'yardmaster model: Opus high\nclaude · opus · effort high\n'
+                                       'session: running · idle · on codex until it restarts</pre>')
+        self.assertEqual(edit['reply_markup']['inline_keyboard'][1],
+                         [dict(text='✓ Opus high', callback_data='mayor-model:opus')])
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'done')])
+        self.assertEqual(self.yard.calls, [('GetUser', {'name': 'pat'})])
+
+    def test_redelivered_tap_after_done_never_sets_twice(self):
+        update = self.tap('opus')
+        self.drain(update)
+        self.store.advance(0)  # Telegram hands the same update over again
+        self.drain(update, bridge=self.make_bridge())
+        self.assertEqual(len(self.calls('set')), 1)
+        self.assertEqual(len(self.calls('restart')), 1)
+        self.assertEqual(len(self.answers()), 1)
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'done')])
+
+    def test_redelivered_tap_after_the_reservation_only_reads_unknown(self):
+        update = self.tap('opus')
+        real = y.run_yardr
+
+        def crash_before_set(argv, *args, **kwargs):
+            if 'set' in argv:
+                raise Crash()
+            return real(argv, *args, **kwargs)
+        with patch.object(y, 'run_yardr', crash_before_set), self.assertRaises(Crash):
+            self.drain(update)
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'reserved')])
+        self.assertEqual(self.answers(), [])
+        self.drain(update, bridge=self.make_bridge())
+        self.assertEqual(self.calls('set'), [])
+        self.assertEqual(self.calls('restart'), [])
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'unknown')])
+        self.assertEqual(self.answers(), [dict(callback_query_id='query-60', text='Switch outcome unknown',
+                                               show_alert=True)])
+        self.assertTrue(self.edits()[0]['text'].startswith(
+            '<pre>⚪ That switch outcome is unknown; not retried. The state below is re-read.\n'))
+
+    def test_redelivered_tap_after_the_set_before_the_record_reads_unknown(self):
+        update = self.tap('opus')
+        with patch.object(b.Store, 'record_mayor_tap', side_effect=Crash()), self.assertRaises(Crash):
+            self.drain(update)
+        self.assertEqual(len(self.calls('set')), 1)
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'reserved')])
+        self.assertEqual(self.answers(), [])
+        self.drain(update, bridge=self.make_bridge())
+        self.assertEqual(len(self.calls('set')), 1)
+        self.assertEqual(self.calls('restart'), [])
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'unknown')])
+        self.assertEqual(len(self.answers()), 1)
+        self.assertEqual(self.answers()[0]['text'], 'Switch outcome unknown')
+
+    def test_set_killed_at_the_deadline_is_unknown(self):
+        self.bridge = self.make_bridge(mayor=self.mayor(timeout=2))
+        self.control_with(set='sleep')
+        started = time.monotonic()
+        self.drain(self.tap('opus'))
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'unknown')])
+        self.assertEqual(self.calls('restart'), [])
+        self.assertEqual(self.answers()[0]['text'], 'Switch outcome unknown')
+        self.assertTrue(self.edits()[0]['text'].startswith('<pre>⚪ Switch outcome unknown; not retried.'))
+
+    def test_restart_failure_is_done_and_says_restart_not_confirmed(self):
+        self.control_with(restart='fail')
+        self.drain(self.tap('opus'))
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'done')])
+        self.assertEqual(self.answers(), [dict(callback_query_id='query-60',
+                                               text='Model set; restart not confirmed', show_alert=True)])
+        self.assertTrue(self.edits()[0]['text'].startswith(
+            '<pre>✅ yardmaster set to Opus high; the restart was not confirmed, so its next session starts on it.\n'))
+
+    def test_stale_revision_is_refused_with_nothing_changed(self):
+        real = y.run_yardr
+
+        def move_between(argv, *args, **kwargs):
+            if 'set' in argv:
+                self.set_crew(revision=self.crew()['revision'] + 1)  # another writer, same settings
+            return real(argv, *args, **kwargs)
+        with patch.object(y, 'run_yardr', move_between):
+            self.drain(self.tap('opus'))
+        crew = self.crew()
+        self.assertEqual((crew['kind'], crew['model']), ('codex', 'gpt-6.1-sol'))
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'refused')])
+        self.assertEqual(self.calls('restart'), [])
+        self.assertEqual(self.answers()[0]['text'], 'Switch refused')
+        self.assertTrue(self.edits()[0]['text'].startswith(
+            '<pre>⚪ Switch refused: yardr refused the change; nothing was changed.\n'))
+
+    def test_nonzero_set_that_wrote_the_pick_is_done(self):
+        # The re-read decides: the pick read back is done and restarted.
+        self.control_with(set='nonzero-after-write')
+        self.drain(self.tap('opus'))
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'done')])
+        self.assertEqual(len(self.calls('restart')), 1)
+        self.assertEqual([a['text'] for a in self.answers()], ['Model set'])
+
+    def test_set_that_reads_as_neither_is_unknown(self):
+        self.control_with(set='half')
+        self.drain(self.tap('opus'))
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'unknown')])
+        self.assertEqual(self.calls('restart'), [])
+
+    def test_failed_reread_after_set_is_unknown(self):
+        self.control_with(show='fail-after-set')
+        self.drain(self.tap('opus'))
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'unknown')])
+        self.assertEqual(self.calls('restart'), [])
+        self.assertEqual(self.edits()[0]['text'],
+                         '<pre>⚪ Switch outcome unknown; not retried. The state below is re-read.\n'
+                         '⚪ mayor model unavailable: yardr exited 1</pre>')
+        self.assertNotIn('reply_markup', self.edits()[0])
+
+    def test_out_of_date_pick_runs_nothing(self):
+        self.drain(self.tap('grok'))
+        self.assertEqual(self.answers(), [dict(callback_query_id='query-60',
+                                               text='That model button is out of date.', show_alert=True)])
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.yard.calls, [])
+        self.assertEqual(self.edits(), [])
+
+    def test_tap_on_the_current_pick_changes_nothing(self):
+        self.drain(self.tap('sol'))
+        self.assertEqual(self.calls('set'), [])
+        self.assertEqual(self.calls('restart'), [])
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.answers()[0]['text'], 'Already on that model')
+        self.assertTrue(self.edits()[0]['text'].startswith(
+            '<pre>⚪ yardmaster already runs GPT-6.1 Sol high; nothing was changed.\n'))
+
+    def test_two_taps_on_two_picks_in_a_row(self):
+        self.drain(self.tap('opus', uid=60), self.tap('wonder', uid=61))
+        crew = self.crew()
+        self.assertEqual((crew['kind'], crew['model'], crew['args']), ('muse', 'muse-wonder-1.0', list(WONDER_ARGS)))
+        # The opus env_file stays: a pick without one keeps the crew member's.
+        self.assertEqual(crew['env_file'], str(self.root / 'crew.env'))
+        self.assertEqual([call['argv'][-1] for call in self.calls('set')], ['R1', 'R2'])
+        self.assertEqual(len(self.calls('restart')), 2)
+        self.assertEqual(self.rows(), [(60, 'opus', 'yardmaster', 'done'), (61, 'wonder', 'yardmaster', 'done')])
+        self.assertEqual([answer['text'] for answer in self.answers()], ['Model set', 'Model set'])
+
+    def test_refused_operator_mapping_reserves_and_runs_nothing(self):
+        for uid, yard in ((70, FakeYard(mapped='456')), (71, FakeYard(role='member'))):
+            with self.subTest(mapped=yard.mapped, role=yard.role):
+                self.telegram.calls.clear()
+                self.yard = yard
+                self.drain(self.tap('opus', uid=uid), bridge=self.make_bridge())
+                self.assertEqual(self.answers(), [dict(
+                    callback_query_id='query-%d' % uid, show_alert=True,
+                    text="Switch refused: you are not this yard's operator; nothing was changed.")])
+                self.assertEqual(yard.calls, [('GetUser', {'name': 'pat'})])
+                self.assertFalse(self.record.exists())
+                self.assertEqual(self.rows(), [])
+                self.assertEqual(self.edits(), [])
+
+    def test_unreachable_yard_refuses_before_any_reservation(self):
+        class Down:
+            def call(self, method, arguments):
+                raise run_asks_module().RPCUnavailable('native GetUser unavailable before send')
+        self.yard = Down()
+        self.drain(self.tap('opus'), bridge=self.make_bridge())
+        self.assertEqual(self.answers()[0]['text'],
+                         'Switch refused: the yard did not confirm the operator; nothing was changed.')
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.rows(), [])
+
+    def test_unreadable_crew_refuses_before_any_reservation(self):
+        self.control_with(show='fail')
+        self.drain(self.tap('opus'))
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.calls('set'), [])
+        self.assertEqual(self.answers()[0]['text'], 'Switch refused')
+
+    def test_no_yardr_output_reaches_the_chat_or_the_log(self):
+        self.control_with(set='fail')
+        self.drain(self.tap('opus', uid=60))
+        self.control_with(show='fail')
+        self.drain(self.text('/mayor_model', uid=61))
+        shown = json.dumps(self.telegram.calls) + self.log.getvalue()
+        for secret in ('hunter2', 'abc123', 'OUT-SECRET', 'refused, token', 'crew.env'):
+            self.assertNotIn(secret, shown)
+        self.assertIn('command mayor_model yardr crew set: status=1 problem=None', self.log.getvalue())
+
+    def test_tap_without_a_message_sends_the_state(self):
+        update = self.tap('opus')
+        del update['callback_query']['message']['message_id']
+        self.drain(update)
+        self.assertEqual(self.edits(), [])
+        (send,) = self.telegram.of('sendMessage')
+        self.assertTrue(send['text'].startswith('<pre>✅ yardmaster set to Opus high;'))
+
+
+def run_asks_module():
+    """The run_asks the bridge loaded, whose classes yard_commands catches."""
+    return b.run_asks
+
+
+class MayorDryRunTests(MayorCase):
+    def settings(self):
+        path = write_settings(self.root)
+        text = path.read_text()
+        text = re.sub(r'\n\[\[menu\]\]\ncommand = "quota"\ndescription = [^\n]*\n', '\n', text)
+        marker = '\n[yardr]\n'
+        start = text.index(marker)
+        text = (text[:start] + marker + 'bin = "%s"\nhome = "%s"\noperator = "pat"\n' % (self.stub, self.home)
+                + text[start + len(marker):])
+        text += ('\n[yardr.mayor_model]\n'
+                 '\n[[yardr.mayor_model.picks]]\nid = "sol"\nlabel = "GPT-6.1 Sol high"\nkind = "codex"\n'
+                 'model = "gpt-6.1-sol"\nargs = ["--dangerously-bypass-approvals-and-sandbox", "-c", '
+                 '"model_reasoning_effort=\\"high\\""]\n'
+                 '\n[[yardr.mayor_model.picks]]\nid = "opus"\nlabel = "Opus high"\nkind = "claude"\n'
+                 'model = "opus"\nargs = ["--permission-mode", "auto", "--effort", "high"]\n'
+                 'env_file = "%s"\n' % (self.root / 'crew.env'))
+        path.write_text(text)
+        return path
+
+    def run_cli(self, *argv):
+        from test_bridge import run_main
+        out, err = io.StringIO(), io.StringIO()
+        with patch('sys.stdout', out), patch('sys.stderr', err):
+            run_main(self, 'telegram-bridge', '--settings', str(self.settings()), *argv)
+        return out.getvalue()
+
+    def test_dry_run_prints_the_two_commands_and_writes_nothing(self):
+        before = self.state.read_text()
+        out = self.run_cli('mayor-model', '--dry-run', 'opus')
+        self.assertEqual(out, (
+            'yardmaster model: GPT-6.1 Sol high\ncodex · gpt-6.1-sol · effort high\n'
+            'session: running · idle\na tap on opus runs:\n'
+            "  %s --home %s --actor pat crew set yardmaster kind=claude model=opus "
+            "'args=[\"--permission-mode\",\"auto\",\"--effort\",\"high\"]' env_file=%s --revision R1\n"
+            '  %s --home %s --actor pat crew restart yardmaster\n'
+            % (self.stub, self.home, self.root / 'crew.env', self.stub, self.home)))
+        self.assertEqual(self.state.read_text(), before)
+        self.assertEqual([entry['argv'][2:4] for entry in map(json.loads, self.record.read_text().splitlines())],
+                         [['crew', 'show']])
+        self.assertFalse((self.root / 'state').exists())
+
+    def test_dry_run_on_the_current_pick_says_it_changes_nothing(self):
+        out = self.run_cli('mayor-model', '--dry-run', 'sol')
+        self.assertTrue(out.endswith('a tap on sol changes nothing: yardmaster already runs it\n'))
+
+    def test_dry_run_of_an_unknown_pick_fails(self):
+        with self.assertRaisesRegex(b.TransportError, r"mayor model unavailable: no pick 'grok'"):
+            self.run_cli('mayor-model', '--dry-run', 'grok')
+        self.assertFalse(self.record.exists())
+
+    def test_mayor_model_needs_dry_run(self):
+        with self.assertRaises(SystemExit):
+            self.run_cli('mayor-model')
+
+
+class MayorRealNativeTests(MayorCase):
+    """/mayor_model on an isolated server of the real build: a codex crew
+    member, the view, a tap to a claude pick that crew show then holds with
+    the restart accepted, a revision moved by the test between the bridge's
+    read and its set, and an operator identity that does not map to the
+    paired user. The operator check is the real GetUser on the socket."""
+
+    def setUp(self):
+        super().setUp()
+        self.binary = testyardr.binary()
+        if self.binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+
+    def test_real_native_mayor_model(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        server, home, command, env = testyardr.start(root, self.binary)
+        self.addCleanup(testyardr.stop, server)
+        # The bridge's yardr children get the isolated HOME and PATH too.
+        self.enterContext(patch.dict(os.environ, {'HOME': env['HOME'], 'PATH': env['PATH']}))
+
+        def cli(*args):
+            result = subprocess.run(command + list(args), env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+        def show():
+            config = json.loads(cli('crew', 'show', 'mayor', '--json'))['crew']['config']
+            return config.get('kind'), config.get('model'), config.get('args'), config.get('env_file')
+
+        cli('init', '--harness', 'claude')
+        source = root / 'tgbridge.yaml'
+        source.write_text('name: tgbridge\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n'
+                          '    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n'
+                          '    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [/bin/false]\n')
+        cli('source', 'add', str(source))
+        cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+        cli('crew', 'add', 'mayor', '--set', 'kind=codex')
+        env_file = root / 'mayor.env'
+        env_file.write_text('')
+        env_file.chmod(0o600)
+        picks = (dict(id='sol', label='GPT-6.1 Sol high', kind='codex', model='gpt-6.1-sol', args=SOL_ARGS,
+                      env_file=None, effort='high'),
+                 dict(id='opus', label='Opus high', kind='claude', model='opus', args=OPUS_ARGS,
+                      env_file=str(env_file), effort='high'))
+        mayor = dict(crew='mayor', timeout=60, picks=picks)
+
+        def bridge():
+            made = self.make_bridge(mayor=mayor, yardr_home=str(home), yardr_bin=self.binary)
+            made.run_asks.client = run_asks_module().YardSocketClient(home, 'tgbridge')
+            return made
+
+        self.drain(self.text('/mayor_model', uid=50), bridge=bridge())
+        (view,) = self.telegram.of('sendMessage')
+        self.assertTrue(view['text'].startswith('<pre>mayor model: default model (codex, effort default)\n'
+                                                'codex · default model · effort default\n'), view['text'])
+        self.assertEqual([row[0]['callback_data'] for row in view['reply_markup']['inline_keyboard']],
+                         ['mayor-model:sol', 'mayor-model:opus'])
+
+        # A tap switches it once; crew show holds the pick; the restart is accepted.
+        self.drain(self.tap('opus', uid=51), bridge=bridge())
+        self.assertEqual(show(), ('claude', 'opus', list(OPUS_ARGS), str(env_file)))
+        self.assertEqual(self.answers()[-1], dict(callback_query_id='query-51', text='Model set'))
+        self.assertTrue(self.edits()[-1]['text'].startswith(
+            '<pre>✅ mayor set to Opus high; it restarts on it once idle.\nmayor model: Opus high\n'))
+        self.assertEqual(self.rows(), [(51, 'opus', 'mayor', 'done')])
+        self.store.advance(0)
+        self.drain(self.tap('opus', uid=51), bridge=bridge())
+        self.assertEqual(show(), ('claude', 'opus', list(OPUS_ARGS), str(env_file)))
+        self.assertEqual(len(self.answers()), 1)
+
+        # The revision moves between the bridge's read and its set: refused.
+        real = y.run_yardr
+
+        def move_between(argv, *args, **kwargs):
+            if 'set' in argv:
+                cli('crew', 'set', 'mayor', '--max-age', '12h')
+            return real(argv, *args, **kwargs)
+        with patch.object(y, 'run_yardr', move_between):
+            self.drain(self.tap('sol', uid=52), bridge=bridge())
+        self.assertEqual(show(), ('claude', 'opus', list(OPUS_ARGS), str(env_file)))
+        self.assertEqual(self.answers()[-1]['text'], 'Switch refused')
+        self.assertTrue(self.edits()[-1]['text'].startswith(
+            '<pre>⚪ Switch refused: yardr refused the change; nothing was changed.\n'))
+        self.assertEqual(self.rows()[-1], (52, 'sol', 'mayor', 'refused'))
+
+        # The operator's identity no longer maps to the paired user: refused
+        # before any reservation, with nothing run.
+        cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '456')
+        self.drain(self.tap('sol', uid=53), bridge=bridge())
+        self.assertEqual(self.answers()[-1]['text'],
+                         "Switch refused: you are not this yard's operator; nothing was changed.")
+        self.assertEqual([row[0] for row in self.rows()], [51, 52])
+        self.assertEqual(show(), ('claude', 'opus', list(OPUS_ARGS), str(env_file)))

@@ -3,16 +3,22 @@
 
 /quota runs `yardr limits --json` in the yard this bridge serves and renders
 the providers it burns, the yard's self-reporting sources and the configured
-groups as one monospace table. The yardr child runner below is shared: the
-sibling /mayor_model command reuses it for its own reads and writes.
+groups as one monospace table. /mayor_model shows a crew member's kind,
+model and effort with one button per configured pick; a tap by the yard's
+operator runs `yardr crew set ... --revision` and then `yardr crew restart`,
+once per tap, through a durable reservation in the bridge's store. Both run
+yardr through the child runner below.
 
 The table rendering ports window_row, short_label, row_labels, fit, reason
 and clean from the telegram-quota add-on's quota_command.py (MIT, same
-author), reshaped from aiquokka's answers to yardr limits' reports.
+author), reshaped from aiquokka's answers to yardr limits' reports; the
+/mayor_model view, tap and dry run port its yardr target (read_crew,
+effort_of, apply_yardr_pick, yardr_dry_run).
 
 Nothing here reads a credential, a login directory, an env file or a reading
 file, and nothing runs aiquokka. The only writes are the delivery ledger
-rows the command path already writes.
+rows the command path already writes and a /mayor_model tap's row in the
+store's mayor_model_taps table.
 """
 import concurrent.futures
 import datetime
@@ -22,12 +28,15 @@ import math
 import os
 import re
 import selectors
+import shlex
 import signal
 import subprocess
 import time
 import zoneinfo
 from html import escape as html_escape
 from pathlib import Path
+
+import run_asks
 
 # The registry entry load_settings registers for /quota: `native` in place
 # of `handler`/`url`, so _match_command, set_commands, _callback_command and
@@ -36,6 +45,17 @@ NATIVE_QUOTA = 'quota'
 QUOTA_COMMAND = dict(name='quota', description='Usage limits and time to each reset',
                      menu=True, callback_prefix='quota:', native=NATIVE_QUOTA)
 QUOTA_MENU_TEXT = QUOTA_COMMAND['description']
+# /mayor_model's entry: the mayor-model: prefix is the bridge's own while
+# [yardr.mayor_model] is set, as decide: is with native home and operator.
+NATIVE_MAYOR_MODEL = 'mayor_model'
+MAYOR_MODEL_PREFIX = 'mayor-model:'
+
+
+def mayor_model_command(mayor):
+    """The registry entry of /mayor_model for the [yardr.mayor_model] settings."""
+    return dict(name=NATIVE_MAYOR_MODEL, description=f'Show the {mayor["crew"]} model, tap to switch it',
+                menu=True, callback_prefix=MAYOR_MODEL_PREFIX, native=NATIVE_MAYOR_MODEL,
+                timeout=mayor['timeout'])
 
 # The yardr child may print this much stdout before its group is killed; its
 # reports are small, and anything past it is unreadable, never truncated.
@@ -158,6 +178,8 @@ def handle_native(bridge, name, payload):
     command path's JSON payload. Never raises for a known command."""
     if name == NATIVE_QUOTA:
         return handle_quota(bridge, payload)
+    if name == NATIVE_MAYOR_MODEL:
+        return handle_mayor_model(bridge, payload)
     raise NativeUnknown(name)
 
 
@@ -623,3 +645,371 @@ def _quota(bridge, payload):
     if not blocks:
         return unavailable('no sources configured')
     return send(fit(blocks))
+
+
+# --- /mayor_model: switch a crew member's kind, model and effort ----------
+# The view reads `crew show <crew> --json` and offers one button per pick of
+# [yardr.mayor_model]. A tap by the yard's operator that finds the crew
+# member on another pick reserves the tap in the store's mayor_model_taps
+# table, runs `crew set ... --revision <the revision it read>`, reads the
+# crew member back and, only when it reads as the pick, runs `crew restart`.
+# A re-delivered tap answers from its row and never acts again; a row left
+# reserved reads as unknown. No yardr stdout or stderr byte reaches the
+# answer or the log: answers carry fixed texts and structured fields.
+
+# Each harness's own reasoning-effort flag (the add-on's effort_of): Muse
+# and Grok take --reasoning-effort (alias --effort), Codex a -c/--config
+# override whose key ends in reasoning_effort.
+EFFORT_FLAGS = ('--reasoning-effort', '--effort')
+CONFIG_FLAGS = ('-c', '--config')
+REVISION_RE = re.compile(r'[A-Za-z0-9]{1,64}')
+# yardr answers a crew member it does not have with this exit status.
+CREW_NOT_FOUND_STATUS = 3
+MODEL_SHOWN_MAX = 128
+FIELD_SHOWN_MAX = 32
+TAP_STATES = ('reserved', 'done', 'refused', 'unknown')
+
+
+def effort_of(args):
+    """The reasoning effort a harness's args give, else None: the value of
+    `--reasoning-effort` or `--effort` (Muse, Grok), or of a `-c`/`--config`
+    override whose key ends in `reasoning_effort` (Codex's
+    model_reasoning_effort, a TOML value, quotes dropped). The last one
+    given wins, as the harnesses read them."""
+    effort, index = None, 0
+    while index < len(args):
+        flag, sep, inline = args[index].partition('=')
+        if flag in EFFORT_FLAGS or flag in CONFIG_FLAGS:
+            value = inline if sep else (args[index + 1] if index + 1 < len(args) else None)
+            index += 1 if sep else 2
+            if value is None:
+                continue
+            if flag in EFFORT_FLAGS:
+                effort = value.strip() or None
+                continue
+            key, sep, setting = value.partition('=')
+            if sep and key.strip().endswith('reasoning_effort'):
+                setting = setting.strip()
+                if len(setting) >= 2 and setting[0] == setting[-1] and setting[0] in '"\'':
+                    setting = setting[1:-1]
+                effort = setting.strip() or None
+            continue
+        index += 1
+    return effort
+
+
+class MayorUnavailable(Exception):
+    """A fixed reason the crew member could not be read or set; never
+    yardr's own text."""
+
+
+def _crew_argv(config, *args, actor=False):
+    argv = [config['yardr_bin'], '--home', config['yardr_home']]
+    if actor:
+        argv += ['--actor', config['yardr_operator']]
+    return argv + list(args)
+
+
+def set_argv(config, pick, revision):
+    """The `crew set` a tap runs, as the operator: the pick's kind, model,
+    args (one JSON list) and env_file when it names one. `--revision` makes
+    yardr refuse when the crew member changed since it was read."""
+    mayor = config['yardr_mayor_model']
+    args = ['crew', 'set', mayor['crew'], f'kind={pick["kind"]}', f'model={pick["model"]}',
+            'args=' + json.dumps(list(pick['args']), ensure_ascii=False, separators=(',', ':'))]
+    if pick['env_file']:
+        args.append(f'env_file={pick["env_file"]}')
+    return _crew_argv(config, *args, '--revision', revision, actor=True)
+
+
+def restart_argv(config):
+    """The `crew restart` a tap runs once the set reads back, as the
+    operator: the crew member's next session, once the current one is idle,
+    starts on the pick."""
+    return _crew_argv(config, 'crew', 'restart', config['yardr_mayor_model']['crew'], actor=True)
+
+
+def _run_logged(config, argv, deadline, step, log):
+    status, out, err, problem = run_yardr(argv, config['yardr_home'], child_env(config), deadline)
+    if problem is not None or status != 0:
+        log(f'command mayor_model yardr {step}: status={status} problem={problem} '
+            f'stdout={len(out)}B stderr={len(err)}B')
+    return status, out, problem
+
+
+def _optional_text(value, what):
+    if value is not None and not isinstance(value, str):
+        raise MayorUnavailable(what)
+    return value or ''
+
+
+def parse_crew(raw):
+    """The crew member of `crew show --json` stdout: {'kind', 'model',
+    'args', 'env_file', 'effort', 'revision', 'state', 'status',
+    'session_kind'}. MayorUnavailable for any other shape."""
+    try:
+        payload = _strict_json(raw)
+    except Unreadable:
+        raise MayorUnavailable('answer not valid JSON') from None
+    crew = payload.get('crew') if isinstance(payload, dict) else None
+    settings = crew.get('config') if isinstance(crew, dict) else None
+    if not isinstance(settings, dict):
+        raise MayorUnavailable('yardr answered no crew member')
+    unexpected = 'yardr answered an unexpected crew member'
+    kind = settings.get('kind') or crew.get('kind')
+    model = settings.get('model') or crew.get('model') or ''
+    args = settings.get('args', [])
+    if isinstance(args, str):
+        try:
+            args = _strict_json(args.encode('utf-8'))
+        except (Unreadable, UnicodeError):
+            raise MayorUnavailable(unexpected) from None
+    env_file = settings.get('env_file') or None
+    revision = crew.get('revision')
+    handle = crew.get('handle', {})
+    if (not isinstance(kind, str) or not kind or not isinstance(model, str) or not isinstance(args, list)
+            or not all(isinstance(arg, str) for arg in args)
+            or not (env_file is None or isinstance(env_file, str))
+            or not isinstance(revision, str) or not REVISION_RE.fullmatch(revision)
+            or not isinstance(handle, dict)):
+        raise MayorUnavailable(unexpected)
+    return {'kind': kind, 'model': model, 'args': list(args), 'env_file': env_file,
+            'effort': effort_of(args), 'revision': revision,
+            'state': _optional_text(crew.get('state'), unexpected),
+            'status': _optional_text(crew.get('status'), unexpected),
+            'session_kind': _optional_text(handle.get('kind'), unexpected)}
+
+
+def read_crew(config, deadline, log):
+    """The crew member as `crew show <crew> --json` reads it now (parse_crew).
+    MayorUnavailable with a fixed reason otherwise."""
+    status, out, problem = _run_logged(
+        config, _crew_argv(config, 'crew', 'show', config['yardr_mayor_model']['crew'], '--json'),
+        deadline, 'crew show', log)
+    if problem == 'not_started':
+        raise MayorUnavailable('yardr not reachable')
+    if problem == 'timeout':
+        raise MayorUnavailable('timed out')
+    if problem is not None:
+        raise MayorUnavailable('answer too large')
+    if status == CREW_NOT_FOUND_STATUS:
+        raise MayorUnavailable('the crew member does not exist')
+    if status != 0:
+        raise MayorUnavailable(_exit_reason(status))
+    return parse_crew(out)
+
+
+def pick_of(mayor, current):
+    """The configured pick whose kind, model and effort the crew member has,
+    else None (picks differ in those, so at most one matches)."""
+    for pick in mayor['picks']:
+        if (pick['kind'], pick['model'], pick['effort']) == (current['kind'], current['model'], current['effort']):
+            return pick
+    return None
+
+
+def has_pick(pick, current):
+    """True when the crew member's settings are the pick's: kind, model and
+    args exactly, and the env_file when the pick names one."""
+    return ((current['kind'], current['model'], current['args']) == (pick['kind'], pick['model'], list(pick['args']))
+            and (pick['env_file'] is None or current['env_file'] == pick['env_file']))
+
+
+def unchanged(before, after):
+    """True when the settings a tap sets read as they did before it (the
+    revision moves with the crew member's runtime state, so it is not
+    compared)."""
+    return all(before[key] == after[key] for key in ('kind', 'model', 'args', 'env_file'))
+
+
+def model_lines(mayor, current, status=None):
+    """The view: the pick or the plain assignment, kind · model · effort, and
+    the session's state, status and the kind it keeps until it restarts.
+    Never the env file or anything of the env."""
+    pick = pick_of(mayor, current)
+    kind = clean(current['kind'], FIELD_SHOWN_MAX)
+    model = clean(current['model'], MODEL_SHOWN_MAX) or 'default model'
+    effort = clean(current['effort'] or '', FIELD_SHOWN_MAX) or 'default'
+    lines = [f'{mayor["crew"]} model: {pick["label"] if pick else f"{model} ({kind}, effort {effort})"}',
+             f'{kind} · {model} · effort {effort}']
+    session = [clean(part, FIELD_SHOWN_MAX) for part in (current['state'], current['status'])
+               if clean(part, FIELD_SHOWN_MAX)]
+    session_kind = clean(current['session_kind'], FIELD_SHOWN_MAX)
+    if session_kind and session_kind != current['kind']:
+        session.append(f'on {session_kind} until it restarts')
+    if session:
+        lines.append('session: ' + ' · '.join(session))
+    return ([status] if status else []) + lines
+
+
+def model_keyboard(mayor, current):
+    chosen = pick_of(mayor, current)
+    return [[{'text': f'{"✓ " if pick is chosen else ""}{pick["label"]}',
+              'callback_data': MAYOR_MODEL_PREFIX + pick['id']}]
+            for pick in mayor['picks']]
+
+
+def view_action(config, deadline, log, status=None):
+    """The /mayor_model message: the crew member's state and one button per
+    pick, or the unavailable line (after `status`) without buttons."""
+    mayor = config['yardr_mayor_model']
+    try:
+        current = read_crew(config, deadline, log)
+    except MayorUnavailable as error:
+        lines = ([status] if status else []) + [f'{WHITE} mayor model unavailable: {error}']
+        return send(lines)['actions'][0]
+    action = send(model_lines(mayor, current, status))['actions'][0]
+    action['keyboard'] = model_keyboard(mayor, current)
+    return action
+
+
+def dry_run(config, pick_id, log):
+    """What a tap on `pick_id` would run: the crew member's current
+    assignment and the two commands, shlex-joined. Runs `crew show` alone;
+    nothing is set, restarted or reserved. MayorUnavailable otherwise."""
+    mayor = config['yardr_mayor_model']
+    pick = next((item for item in mayor['picks'] if item['id'] == pick_id), None)
+    if pick is None:
+        raise MayorUnavailable(f'no pick {pick_id!r} in [yardr.mayor_model]'
+                               if isinstance(pick_id, str) and pick_id.isprintable() else 'unknown pick')
+    current = read_crew(config, time.monotonic() + mayor['timeout'], log)
+    lines = model_lines(mayor, current)
+    if pick_of(mayor, current) is pick:
+        return '\n'.join(lines + [f'a tap on {pick_id} changes nothing: {mayor["crew"]} already runs it'])
+    return '\n'.join(lines + [f'a tap on {pick_id} runs:',
+                              '  ' + shlex.join(set_argv(config, pick, current['revision'])),
+                              '  ' + shlex.join(restart_argv(config))])
+
+
+def handle_mayor_model(bridge, payload):
+    """The {"actions": [...]} answer of /mayor_model or a mayor-model: tap.
+    Text after /mayor_model is ignored: only a tap switches. Never raises."""
+    callback = isinstance(payload, dict) and payload.get('kind') == 'callback'
+    try:
+        if callback:
+            return {'actions': _tap(bridge, payload)}
+        config = bridge.config
+        deadline = time.monotonic() + config['yardr_mayor_model']['timeout']
+        return {'actions': [view_action(config, deadline, bridge._log)]}
+    except Exception:
+        if callback:
+            return {'actions': [_answer(f'{WHITE} mayor model unavailable: internal error', True)]}
+        return send([f'{WHITE} mayor model unavailable: internal error'])
+
+
+def _answer(text, alert=False):
+    return {'type': 'answer_callback', 'text': text, 'alert': alert}
+
+
+def _tap(bridge, payload):
+    config, store, log = bridge.config, bridge.store, bridge._log
+    mayor = config['yardr_mayor_model']
+    data = payload.get('callback_data')
+    pick_id = data[len(MAYOR_MODEL_PREFIX):] if isinstance(data, str) and data.startswith(MAYOR_MODEL_PREFIX) else None
+    pick = next((item for item in mayor['picks'] if item['id'] == pick_id), None)
+    if pick is None:
+        # 1. A button of a pick the settings no longer have runs nothing.
+        return [_answer('That model button is out of date.', True)]
+    update_id = payload.get('update_id')
+    if type(update_id) is not int:
+        raise ValueError('update id')
+    message_id = payload.get('callback_message_id')
+    deadline = time.monotonic() + mayor['timeout']
+    crew, label = mayor['crew'], pick['label']
+
+    def finish(status, answer_text, alert=False, outcome=None):
+        if outcome:
+            log(f'command mayor_model tap (update {update_id}): pick {pick_id} {outcome}')
+        action = view_action(config, deadline, log, status=status)
+        if type(message_id) is int and message_id > 0:
+            action = dict(action, type='edit', message_id=message_id)
+        return [_answer(answer_text, alert), action]
+
+    def unknown():
+        return finish(f'{WHITE} Switch outcome unknown; not retried. The state below is re-read.',
+                      'Switch outcome unknown', True, 'unknown')
+
+    def refused(why):
+        return finish(f'{WHITE} Switch refused: {why}; nothing was changed.', 'Switch refused', False, 'refused')
+
+    def replay(row):
+        if row['pick'] != pick_id:
+            return [_answer('That tap is already recorded.', True)]
+        state = row['state']
+        if state == 'reserved':
+            # A reservation without an outcome: the handler stopped after it,
+            # so the set may have run. Unknown, and never retried.
+            store.record_mayor_tap(update_id, 'unknown')
+            state = 'unknown'
+        log(f'command mayor_model tap (update {update_id}): pick {pick_id} replayed {state}')
+        if state == 'done':
+            return finish(f'✅ {crew} set to {label}.', 'Model set')
+        if state == 'refused':
+            return finish(f'{WHITE} That switch was refused; nothing was changed.', 'Switch refused')
+        return finish(f'{WHITE} That switch outcome is unknown; not retried. The state below is re-read.',
+                      'Switch outcome unknown', True)
+
+    # 2. A re-delivered tap answers from its row and never acts again.
+    recorded = store.mayor_tap(update_id)
+    if recorded is not None:
+        return replay(recorded)
+    # 3. Only the yard's operator, as the yard maps the paired user, switches.
+    try:
+        run_asks.verify_operator(bridge.run_asks.client, config)
+    except run_asks.NativeError as error:
+        not_operator = str(error) == 'operator_not_authorized'
+        log(f'command mayor_model tap (update {update_id}): pick {pick_id} refused: '
+            + ('operator not authorized' if not_operator else 'operator not confirmed'))
+        return [_answer('Switch refused: you are not this yard\'s operator; nothing was changed.' if not_operator
+                        else 'Switch refused: the yard did not confirm the operator; nothing was changed.', True)]
+    # 4. The crew member as it is now; its revision guards the set.
+    try:
+        before = read_crew(config, deadline, log)
+    except MayorUnavailable as error:
+        return refused(str(error))
+    if pick_of(mayor, before) is pick:
+        return finish(f'{WHITE} {crew} already runs {label}; nothing was changed.', 'Already on that model',
+                      outcome='already current')
+    # 5. The reservation is committed before anything is set.
+    other = store.reserve_mayor_tap(update_id, pick_id, crew)
+    if other is not None:
+        return replay(other)
+    try:
+        # 6. The set, refused by yardr when the crew member moved since step 4.
+        status, _out, problem = _run_logged(config, set_argv(config, pick, before['revision']),
+                                            deadline, 'crew set', log)
+        if problem == 'not_started':
+            store.record_mayor_tap(update_id, 'refused')
+            return refused('yardr not reachable')
+        if problem is not None:
+            # Killed at the deadline or for its output: the set may have
+            # landed, and there is no time left to tell.
+            store.record_mayor_tap(update_id, 'unknown')
+            return unknown()
+        # 7. The crew member read back decides the outcome.
+        try:
+            after = read_crew(config, deadline, log)
+        except MayorUnavailable:
+            after = None
+        # The pick read back is done, whatever the set exited with.
+        if after is None or not has_pick(pick, after):
+            if status != 0 and after is not None and unchanged(before, after):
+                store.record_mayor_tap(update_id, 'refused')
+                return refused('yardr refused the change')
+            store.record_mayor_tap(update_id, 'unknown')
+            return unknown()
+        store.record_mayor_tap(update_id, 'done')
+    except Exception:
+        # Something failed after the reservation without an outcome: the set
+        # may have run, so the tap is unknown and never retried.
+        try:
+            store.record_mayor_tap(update_id, 'unknown')
+        except Exception:
+            pass  # the row stays reserved, which reads as unknown
+        return unknown()
+    # 8. The restart; the switch is done whether or not it is confirmed.
+    status, _out, problem = _run_logged(config, restart_argv(config), deadline, 'crew restart', log)
+    if problem is None and status == 0:
+        return finish(f'✅ {crew} set to {label}; it restarts on it once idle.', 'Model set', outcome='done')
+    return finish(f'✅ {crew} set to {label}; the restart was not confirmed, so its next session starts on it.',
+                  'Model set; restart not confirmed', True, 'done, restart not confirmed')

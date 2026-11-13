@@ -3,7 +3,6 @@ same native cards, over fake Telegram and a fake or real isolated core."""
 import copy
 import hashlib
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time
@@ -12,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
+import testyardr  # noqa: E402
 from test_bridge import BridgeTestCase, write_settings  # noqa: E402
 from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, pack_proposal, source_proposal, proposal  # noqa: E402
 
@@ -702,7 +702,7 @@ class DecideNamespaceTests(BridgeTestCase):
 
 class RealDecideTests(BridgeTestCase):
     def test_real_core_lists_opens_answers_and_reports_outcomes(self):
-        binary = shutil.which('yardr')
+        binary = testyardr.binary()
         if binary is None:
             self.skipTest('yardr binary required for isolated native integration')
         root = Path(self.tmp.name)

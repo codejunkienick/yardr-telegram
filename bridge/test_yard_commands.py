@@ -3,6 +3,7 @@
 settings matrix and one real-native run on an isolated yard. Fake Telegram
 and stub yardr binaries; temp files only; no live yard, login or network
 beyond the isolated server the real-native test starts itself."""
+import datetime
 import io
 import json
 import os
@@ -128,14 +129,15 @@ else:
 """
 
 
-def write_stub(directory, home, mode='plain'):
+def write_stub(directory, home, mode='plain', plain=None):
     """An executable stub yardr in `directory`: answers only the argv shapes
     the bridge runs ([bin, --home, home, limits, --json] and one --group
     read each) and only its temp home, records argv, env, cwd and timing per
-    call, and behaves as `mode` says."""
+    call, and behaves as `mode` says. `plain` can supply a fixture answer."""
     path = directory / ('stub-yardr-' + mode)
     text = STUB.format(python=sys.executable, record=str(directory / ('record-' + mode + '.jsonl')),
-                       home=str(home), mode=mode, plain=json.dumps(plain_report()), future=FUTURE)
+                       home=str(home), mode=mode,
+                       plain=json.dumps(plain_report() if plain is None else plain), future=FUTURE)
     path.write_text(text)
     path.chmod(0o700)
     return path
@@ -258,6 +260,38 @@ class RenderTests(QuotaCase):
         self.assertLessEqual(y.utf16_units(text), 4096)
         self.assertEqual(self.sends()[0].get('parse_mode'), 'HTML')
         self.assertNotIn('reply_parameters', self.sends()[0])
+
+    def test_antigravity_rows_render_as_compact_shared_quotas(self):
+        fixtures = Path(__file__).parent / 'fixtures'
+        plain = json.loads((fixtures / 'limits_antigravity.json').read_text(encoding='utf-8'))
+
+        class FixedDateTime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(2026, 11, 13, 8, 8, tzinfo=datetime.timezone.utc)
+                return value if tz is None else value.astimezone(tz)
+
+        def render(report, uid):
+            self.stub = write_stub(self.root, self.home, plain=report)
+            self.bridge = self.make_bridge(timezone='Asia/Yekaterinburg')
+            with patch.object(y.datetime, 'datetime', FixedDateTime):
+                self.drain(self.message('/quota', uid=uid))
+            text = self.sends()[-1]['text']
+            return text.removeprefix('<pre>').removesuffix('</pre>')
+
+        rendered = render(plain, 40)
+        expected = (fixtures / 'limits_antigravity.rendered.txt').read_text(encoding='utf-8').rstrip('\n')
+        self.assertEqual(rendered, expected)
+        for index, (field, value) in enumerate((('used_percent', 99),
+                                                ('resets_at', '2026-11-15T13:03:00Z'))):
+            variant = json.loads(json.dumps(plain))
+            variant['limits'][0]['limits']['windows'][5][field] = value
+            lines = render(variant, 41 + index).splitlines()
+            self.assertEqual(sum('Argon' in line for line in lines), 2, field)
+            quota_rows = [line for line in lines if line.startswith(('🟢 ', '🟡 ', '🔴 ', '⚪ '))]
+            self.assertEqual([line[2:10] for line in quota_rows], [
+                'Gem wk  ', 'Gem 5h  ', 'C+GPT wk', 'C+GPT 5h', 'Argon wk', 'Argon wk',
+            ], field)
 
     def test_machine_block_shows_figures_only_when_asked(self):
         self.bridge = self.make_bridge(quota=self.quota(machine=True))

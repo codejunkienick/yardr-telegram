@@ -402,17 +402,50 @@ def short_label(label):
     if dash and group and span:
         span = _ascii(SHORT_SPANS.get(span, span)).strip()[:LABEL_WIDTH].rstrip()
         room = LABEL_WIDTH - len(span) - 1
-        group = _ascii(SHORT_GROUPS.get(group, (group.split() or [''])[0])).strip()[:max(room, 0)]
+        family = next((name for name in SHORT_GROUPS
+                       if group == name or (group.startswith(name + ' (') and group.endswith(')'))), None)
+        group = _ascii(SHORT_GROUPS[family] if family else (group.split() or [''])[0]).strip()[:max(room, 0)]
         return f'{group} {span}' if group else span
     return _ascii(SHORT_LABELS.get(text, text)).strip()[:LABEL_WIDTH].rstrip()
 
 
+def _usage(window):
+    raw = window['used_percent']
+    if raw is None and window['used'] is not None and window['limit']:
+        raw = window['used'] * 100 / window['limit']
+    return (None if raw is None else math.floor(raw + 0.5)), raw
+
+
+def distinct_windows(windows):
+    """Collapse windows that would show the same label, percent and reset."""
+    seen, unique = set(), []
+    for window in windows:
+        key = (short_label(window['label']), _usage(window)[0], window['resets_at'])
+        if key not in seen:
+            seen.add(key)
+            unique.append(window)
+    return unique
+
+
+def _label_family(label):
+    """The configured window family named by a label, including its variants."""
+    text = _strip(label)
+    group, dash, _ = text.rpartition(' - ')
+    if not dash or not group:
+        return text
+    return next((family for family in SHORT_GROUPS
+                 if group == family or (group.startswith(family + ' (') and group.endswith(')'))), group)
+
+
 def row_labels(windows):
-    """The label column of one block: the short labels padded to 8, or, when
-    two short labels would read the same, the whole labels (32 characters at
-    most) padded to the longest of them, so no two rows read the same."""
+    """The label column of one block: short labels padded to 8. Distinct
+    windows in one family can share a label; collisions across families use
+    whole labels (32 characters at most) so no two rows read the same."""
     labels = [short_label(window['label']) for window in windows]
-    if len(set(labels)) < len(labels):
+    families = {}
+    for label, window in zip(labels, windows):
+        families.setdefault(label, set()).add(_label_family(window['label']))
+    if any(len(label_families) > 1 for label_families in families.values()):
         labels = [_ascii(_strip(window['label'])).strip()[:WHOLE_LABEL_MAX] for window in windows]
     width = max([LABEL_WIDTH] + [len(label) for label in labels])
     return [label.ljust(width) for label in labels]
@@ -451,11 +484,17 @@ def time_left(seconds):
 
 
 def _model_suffix(window, label):
-    """The model suffix when its displayed label does not name the model."""
+    """The model suffix when its displayed label does not name the model family."""
     if not window['model']:
         return ''
     model = clean(window['model'], NAME_MAX)
-    if model and re.search(r'(?<!\w)' + re.escape(model) + r'(?!\w)', label.strip(), re.IGNORECASE):
+    label_words = set(re.findall(r'[a-z0-9]+', label.casefold()))
+    model_words = re.findall(r'[a-z0-9]+', model.casefold())
+    families = (word for alias in SHORT_GROUPS.values()
+                for word in re.findall(r'[a-z0-9]+', alias.casefold()) if len(word) >= 3)
+    if model and (re.search(r'(?<!\w)' + re.escape(model) + r'(?!\w)', label.strip(), re.IGNORECASE)
+                  or any(family in label_words and any(word.startswith(family) for word in model_words)
+                         for family in families)):
         return ''
     return f'  model {model}'
 
@@ -463,18 +502,13 @@ def _model_suffix(window, label):
 def window_row(window, tz, now, label=None, figure=False):
     """One table row: the dot, the label, the used share, the reset as Ddd
     HH:MM in the bridge's timezone and the time left. A per-model window
-    shows its model unless its label names it. A window with a used figure
-    and no reset shows its figure and 'no reset', or the figure alone when
-    `figure` is set (the machine source). The dot is yellow when the window
-    is ahead of its target share."""
+    shows its model unless its label names its model family. A window with a
+    used figure and no reset shows its figure and 'no reset', or the figure
+    alone when `figure` is set (the machine source). The dot is yellow when
+    the window is ahead of its target share."""
     label = short_label(window['label']).ljust(LABEL_WIDTH) if label is None else label
     resets = window['resets_at']
-    used = window['used_percent']
-    percent = None if used is None else math.floor(used + 0.5)
-    raw = used
-    if used is None and window['used'] is not None and window['limit']:
-        percent = math.floor(window['used'] * 100 / window['limit'] + 0.5)
-        raw = window['used'] * 100 / window['limit']
+    percent, raw = _usage(window)
     target = window['target_percent']
     if percent is None:
         dot = WHITE
@@ -511,7 +545,7 @@ def provider_block(entry, tz, now):
     header = _block_header(name)
     if entry['limits'] is None:
         return [header, f'{WHITE} limits unknown for {_safe_name(entry["provider"], "provider")}']
-    windows = entry['limits']['windows']
+    windows = distinct_windows(entry['limits']['windows'])
     if not windows:
         return [header, f'{WHITE} unavailable: no windows']
     labels = row_labels(windows)
@@ -527,7 +561,7 @@ def source_block(entry, tz, now):
         return [header, f'{WHITE} limits unknown for {_safe_name(entry["source"], "source")}']
     provider = entry['limits']['provider']
     header = _block_header(name if provider == name else name + SEPARATOR + clean(provider, NAME_MAX))
-    windows = entry['limits']['windows']
+    windows = distinct_windows(entry['limits']['windows'])
     if not windows:
         return [header, f'{WHITE} unavailable: no windows']
     labels = row_labels(windows)
@@ -545,8 +579,9 @@ def group_block(entry, tz, now):
         return [header, f'{WHITE} limits unknown for {_safe_name(entry["group"], "group")}']
     if not report['windows']:
         return [header, f'{WHITE} unavailable: no windows']
-    labels = row_labels(report['windows'])
-    return [header] + [window_row(window, tz, now, label) for window, label in zip(report['windows'], labels)]
+    windows = distinct_windows(report['windows'])
+    labels = row_labels(windows)
+    return [header] + [window_row(window, tz, now, label) for window, label in zip(windows, labels)]
 
 
 def _fits(lines):

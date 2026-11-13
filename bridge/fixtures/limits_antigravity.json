@@ -1,0 +1,56 @@
+{
+  "limits": [
+    {
+      "provider": "antigravity",
+      "kinds": ["antigravity"],
+      "burned_by": [],
+      "limits": {
+        "source": "aiquokka",
+        "provider": "antigravity",
+        "windows": [
+          {
+            "label": "Gemini Models - Weekly",
+            "used_percent": 29,
+            "target_percent": 20,
+            "resets_at": "2026-11-19T18:29:00Z"
+          },
+          {
+            "label": "Gemini Models - 5h",
+            "used_percent": 96,
+            "resets_at": "2026-11-13T09:06:00Z"
+          },
+          {
+            "label": "Claude and GPT models - Weekly",
+            "used_percent": 0,
+            "resets_at": "2026-11-20T08:07:00Z"
+          },
+          {
+            "label": "Claude and GPT models - 5h",
+            "used_percent": 0,
+            "resets_at": "2026-11-13T13:07:00Z"
+          },
+          {
+            "label": "Gemini 4 Argon (low) - Weekly",
+            "model": "gemini-4-argon-low",
+            "used_percent": 100,
+            "resets_at": "2026-11-14T13:03:00Z"
+          },
+          {
+            "label": "Gemini 4 Argon (medium) - Weekly",
+            "model": "gemini-4-argon-medium",
+            "used_percent": 100,
+            "resets_at": "2026-11-14T13:03:00Z"
+          },
+          {
+            "label": "Gemini 4 Argon (high) - Weekly",
+            "model": "gemini-4-argon-high",
+            "used_percent": 100,
+            "resets_at": "2026-11-14T13:03:00Z"
+          }
+        ]
+      }
+    }
+  ],
+  "sources": [],
+  "unmapped": []
+}

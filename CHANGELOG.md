@@ -8,6 +8,10 @@ sees and does, not how the code is organised.
 
 ### Changed
 
+- Native `/quota` keeps compact Antigravity labels for distinct windows and
+  collapses shared model windows with the same displayed percentage and
+  reset. Model ids are omitted when the row label already names the family.
+
 - Source and source-pack cards read upstream's replacement and directory
   shapes. Kept grants appear on aligned replacement cards; plain upstream
   replacement cards direct the operator to the yard before sending. Directory

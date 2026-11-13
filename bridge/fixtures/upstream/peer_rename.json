@@ -1,0 +1,28 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic peer_rename?",
+  "run": {
+    "argv": [
+      "peer",
+      "rename",
+      "beta",
+      "gamma"
+    ],
+    "back": "yardr peer rename gamma beta",
+    "back_by": "only the operator",
+    "command": "yardr peer rename beta gamma",
+    "description": "Change the name this yard has for a peer",
+    "does": [
+      "the link with beta (it calls itself yard, key dgAPuSi-\u2026) becomes gamma: its key, its address and what it carries stay the same."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

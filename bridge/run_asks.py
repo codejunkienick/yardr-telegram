@@ -306,6 +306,11 @@ def run_scope(run):
         raise NativeError('invalid native run.argv')
     if argv[:2] == ["skill", "add"]:
         raise NativeError('run_ask_skill_add_removed; decide it in the yard' + FALLBACK)
+    if argv[:3] == ['user', 'device', 'pair']:
+        # The pairing code is answered once to the approver alone and kept
+        # nowhere; this bridge shows only the approval's safe sentence, so
+        # approving here would strand the code and the pairing would lapse.
+        raise NativeError('run_ask_device_pair_code_unseen; pair it in the yard' + FALLBACK)
     if ((run.get('carried') and argv[:2] not in (['source', 'add'], ['pack', 'apply'])) or (run.get('pack') is not None and argv[:2] != ['pack', 'apply'])
             or (argv[:2] == ['source', 'add'] and not run.get('carried'))
             or argv[:2] == ['crew', 'add']):
@@ -313,6 +318,7 @@ def run_scope(run):
     return argv
 
 
+RUN_KNOWN = {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack', 'ask'}
 GROUP_ROWS = (['group', 'add'], ['group', 'set'])
 # Upstream's stored forms: group add's --set keys and group set's words, each in the order the yard writes them.
 GROUP_KEYS = {'add': ('cmd', 'dir', 'kind', 'args', 'prompt', 'worktrees'), 'set': ('prompt', 'cmd', 'preset', 'model', 'effort')}
@@ -614,34 +620,30 @@ def group_set_card(card, name, sets):
     return whole[0]
 
 
-def validate(ask, operator):
-    known = {'ask', 'to', 'asker', 'since', 'question', 'context', 'options', 'recommend', 'why', 'about',
-             'state', 'option', 'words', 'by', 'return_at', 'picks_before', 'secret', 'concealed', 'given',
-             'run', 'ran', 'setup', 'identity', 'depot_push', 'weight', 'turn'}
-    if set(ask) - known:
-        raise NativeError('run_ask_unknown_payload' + FALLBACK)
-    if ask.get('options') not in (None, []) or ask.get('about') or ask.get('recommend') or ask.get('why'):
+def validate_run_card(ask):
+    """The run acceptance both the send path and /decide's listing share.
+
+    Unknown run keys, run_scope's argv refusals, the run text and weight
+    shape, and the source/pack/group review each refuse with the fallback
+    suffix, exactly as validate() reports them; anything without that suffix
+    is a malformed card and propagates. validate() passes its own ask, and
+    queue_kind() a queue row's run beside the ask-level payload the row
+    carries, so both read the same card the same way and neither keeps its
+    own copy of these rules.
+    """
+    if any(ask.get(key) is not None for key in ('secret', 'setup', 'identity', 'depot_push')):
         raise NativeError('ask_not_run_proposal' + FALLBACK)
-    if ask.get('to') != operator:
-        raise NativeError('run_ask_wrong_recipient')
-    if (not isinstance(ask.get('run'), dict)
-            or any(ask.get(key) is not None for key in ('secret', 'setup', 'identity', 'depot_push'))):
-        raise NativeError('ask_not_run_proposal' + FALLBACK)
-    run = ask['run']
+    run, weight = ask['run'], ask.get('weight', [])
     # A group card's prompt text may ride beside it; parse_group holds it to the text the card shows.
     group = isinstance(run.get('argv'), list) and run['argv'][:2] in GROUP_ROWS
-    if set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack', 'ask', *(['role'] if group else [])}:
+    if set(run) - (RUN_KNOWN | ({'role'} if group else set())):
         raise NativeError('run_ask_unknown_payload' + FALLBACK)
     argv = run_scope(run)
-    for key in ('question', 'asker', 'to', 'state'):
-        text(ask.get(key), key)
-    lines(ask.get('context'), 'context')
     for key in ('command', 'back'):
         text(run.get(key), 'run.' + key)
     for key in ('description', 'back_by'):
         text(run.get(key, ''), 'run.' + key)
     lines(run.get('does'), 'run.does')
-    weight = ask.get('weight', [])
     if not isinstance(weight, list):
         raise NativeError('invalid native weight')
     for item in weight:
@@ -660,6 +662,26 @@ def validate(ask, operator):
             raise NativeError('run_ask_invalid_source_pack_use_terminal; use yardr pack apply <dir> in a terminal' + FALLBACK) from None
     elif argv[:2] in GROUP_ROWS:
         parse_group(ask)
+    return argv
+
+
+def validate(ask, operator):
+    known = {'ask', 'to', 'asker', 'since', 'question', 'context', 'options', 'recommend', 'why', 'about',
+             'state', 'option', 'words', 'by', 'return_at', 'picks_before', 'secret', 'concealed', 'given',
+             'run', 'ran', 'setup', 'identity', 'depot_push', 'weight', 'turn'}
+    if set(ask) - known:
+        raise NativeError('run_ask_unknown_payload' + FALLBACK)
+    if ask.get('options') not in (None, []) or ask.get('about') or ask.get('recommend') or ask.get('why'):
+        raise NativeError('ask_not_run_proposal' + FALLBACK)
+    if ask.get('to') != operator:
+        raise NativeError('run_ask_wrong_recipient')
+    if (not isinstance(ask.get('run'), dict)
+            or any(ask.get(key) is not None for key in ('secret', 'setup', 'identity', 'depot_push'))):
+        raise NativeError('ask_not_run_proposal' + FALLBACK)
+    for key in ('question', 'asker', 'to', 'state'):
+        text(ask.get(key), key)
+    lines(ask.get('context'), 'context')
+    validate_run_card(ask)
 
 
 def card_text(value, kind, *, headline=False):
@@ -1468,19 +1490,28 @@ def queue(value):
 def queue_kind(row):
     if '@' in row['bead']:
         return 'linked yard', False
-    for key, kind in UNSHOWN:
-        if row.get(key) is not None:
-            return kind, False
     if row.get('run') is not None:
         if not isinstance(row['run'], dict):
             raise NativeError('invalid native UserAsks run')
+        # The listing names the kind; acceptance is the send path's own:
+        # any fallback refusal of the shared run card is terminal-only here.
+        # A run row validates before the non-run kind shortcuts below, so a
+        # row the send path refuses never lists under a non-run kind. The row
+        # carries the run the way the core serves it, beside the ask-level
+        # payload (secret, setup, identity, depot push, concealed, given),
+        # so the shared check reads both, as the send path does.
         try:
-            argv = run_scope(row['run'])
+            validate_run_card({key: row[key] for key in
+                               ('run', 'weight', 'secret', 'setup', 'identity',
+                                'depot_push', 'concealed', 'given') if key in row})
         except NativeError as error:
             if not str(error).endswith(FALLBACK):
                 raise
             return 'terminal-only run', False
         return 'run', True
+    for key, kind in UNSHOWN:
+        if row.get(key) is not None:
+            return kind, False
     if row.get('weight'):
         return 'weighted decision', False
     return 'decision', True

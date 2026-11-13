@@ -1,0 +1,29 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic user_set_tell?",
+  "run": {
+    "argv": [
+      "user",
+      "set",
+      "ada",
+      "tell=mail"
+    ],
+    "back": "yardr user set ada tell=",
+    "back_by": "ada or the operator",
+    "command": "yardr user set ada tell=mail",
+    "description": "Set where, how and what a source tells a user, or their role",
+    "does": [
+      "ada has no notify source, so nothing tells them outside the yard, and the change tells them nothing until one is set (yardr user set ada notify=<source>). A source would then tell them of mail; it would tell them of notifications, mail and asks as things stand.",
+      "What still waited to be told of notifications and asks is dropped, and is not told later. Their inbox and their queue of decisions in the yard are filled as before."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

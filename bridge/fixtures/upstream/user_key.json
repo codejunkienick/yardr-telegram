@@ -1,0 +1,34 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Its chat is 123456789, which no user's env file sets as CHIME_CHAT; the delivery was dropped and is recorded nowhere."
+  ],
+  "options": [],
+  "question": "A message reached chime from chat 123456789 (first words: 'hello from a stranger'). Is this you?",
+  "run": {
+    "argv": [
+      "user",
+      "key",
+      "mckean",
+      "chime"
+    ],
+    "back": "yardr user key mckean chime",
+    "back_by": "only the operator, by giving another address with",
+    "command": "yardr user key mckean chime",
+    "description": "Give a user's own address in a source: typed without echo, or a NAME=value line on standard input",
+    "does": [
+      "writes CHIME_CHAT=123456789 into mckean's env file (/synthetic/yard/users/mckean.env), exactly where yardr user key mckean chime writes it: the file is mode 0600, its other lines are kept, and none is set now."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "credential",
+      "line": "gives a credential or an address to the yard: mckean's own address in the source chime"
+    }
+  ]
+}

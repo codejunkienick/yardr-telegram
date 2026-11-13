@@ -1,0 +1,34 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic user_role?",
+  "run": {
+    "argv": [
+      "user",
+      "set",
+      "ada",
+      "role=operator"
+    ],
+    "back": "yardr user set ada role=member",
+    "back_by": "only the operator",
+    "command": "yardr user set ada role=operator",
+    "description": "Set where, how and what a source tells a user, or their role",
+    "does": [
+      "makes the user ada an operator (now: a member). An operator approves run asks, setup asks and secrets through a door (a device, the web view) and administers the yard at the shell: whoever speaks as ada does so from then on. Their 1 device speak with it from then on."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: the user ada, and whoever speaks as them, will approve what the yard runs and administer it"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic user_add?",
+  "run": {
+    "argv": [
+      "user",
+      "add",
+      "newcomer"
+    ],
+    "back": "yardr user rm newcomer",
+    "back_by": "only the operator",
+    "command": "yardr user add newcomer",
+    "description": "Add a user",
+    "does": [
+      "adds the user newcomer: they read mail from now on, and are told nothing from before."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: a new user, newcomer, whose answers and approvals the yard takes"
+    }
+  ]
+}

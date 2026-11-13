@@ -1,0 +1,31 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic link_move?",
+  "run": {
+    "argv": [
+      "link",
+      "move",
+      "--from-source",
+      "linear",
+      "--to-source",
+      "lin-new"
+    ],
+    "back": "yardr link move --from-source lin-new --to-source linear",
+    "back_by": "only the operator",
+    "command": "yardr link move --from-source linear --to-source lin-new",
+    "description": "Make another bead the issue's tracker, or move the yard's links from one source to another",
+    "does": [
+      "moves 1 link of the source linear to the source lin-new, on 1 bead (rows-1).",
+      "The URLs stay as they are: both sources are on linear.app. Each bead's history logs its link as unlinked and linked again, and the bead is re-minted."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

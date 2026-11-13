@@ -1,0 +1,29 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic bead_update?",
+  "run": {
+    "argv": [
+      "bead",
+      "update",
+      "sample-1",
+      "--originator",
+      "proposer"
+    ],
+    "back": "yardr bead update sample-1 --originator pat",
+    "back_by": "only the operator",
+    "command": "yardr bead update sample-1 --originator proposer",
+    "description": "Change a bead's fields (use advance to change stage)",
+    "does": [
+      "bead sample-1 is for proposer now (was: pat)."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

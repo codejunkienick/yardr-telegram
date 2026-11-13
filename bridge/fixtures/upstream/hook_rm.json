@@ -1,0 +1,34 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic hook_rm?",
+  "run": {
+    "argv": [
+      "hook",
+      "rm",
+      "linear"
+    ],
+    "back": "no card brings it back: a secret file of the operator's is typed by the operator in a terminal (yardr hook add)",
+    "back_by": "nobody",
+    "command": "yardr hook rm linear",
+    "description": "Delete a hook (events it accepted are kept)",
+    "does": [
+      "removes the hook linear: POST /hooks/linear takes no more deliveries from the source linear, and the yard hears nothing from the source through it. What it accepted before stays.",
+      "Its signing secret stays in /synthetic/linear.secret: no card removes a file."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: the hook linear decides whose deliveries the yard hears at /hooks/linear and as whom it speaks, and removing it changes that"
+    }
+  ]
+}

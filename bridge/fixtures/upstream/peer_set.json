@@ -1,0 +1,36 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic peer_set?",
+  "run": {
+    "argv": [
+      "peer",
+      "set",
+      "beta",
+      "--url",
+      "http://127.0.0.1:9"
+    ],
+    "back": "yardr peer set beta --url \"\"",
+    "back_by": "only the operator",
+    "command": "yardr peer set beta --url http://127.0.0.1:9",
+    "description": "Change where this yard calls a peer, or make it one that is never called",
+    "does": [
+      "the link with beta (it calls itself yard, key dgAPuSi-\u2026) will be called at http://127.0.0.1:9. It is never called now: it calls this yard and asks for what waits here.",
+      "The link stays what it is: its key, what it carries and what waits for it, which is posted to the new address at its next try. The other yard hears nothing of the move."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: the calls and mail for the peer beta then go to http://127.0.0.1:9"
+    }
+  ]
+}

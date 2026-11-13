@@ -1,0 +1,27 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic timer_rm?",
+  "run": {
+    "argv": [
+      "timer",
+      "rm",
+      "t1"
+    ],
+    "back": "yardr timer add --to pat --at 2026-01-01T00:40:00Z 'Synthetic timer reason'",
+    "back_by": "pat or a crew member",
+    "command": "yardr timer rm t1",
+    "description": "Remove a timer: one you set or that tells you, or as the operator any",
+    "does": [
+      "removes the timer t1 set by pat for pat: \"Synthetic timer reason\" (once)."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

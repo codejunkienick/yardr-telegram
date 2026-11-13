@@ -1,0 +1,25 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic up?",
+  "run": {
+    "argv": [
+      "up"
+    ],
+    "back": "yardr down",
+    "command": "yardr up",
+    "description": "Start everything the yard needs that is not running",
+    "does": [
+      "starts what the yard needs and is not running: herdr's server, the yard's server and the daemon, with the web view and the BDP server where their addresses are set.",
+      "what runs already is left alone."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

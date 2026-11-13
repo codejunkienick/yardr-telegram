@@ -1,0 +1,33 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic depot_test?",
+  "run": {
+    "argv": [
+      "depot",
+      "test",
+      "web"
+    ],
+    "back": "clear the depot's test command in a terminal",
+    "back_by": "only the operator",
+    "command": "yardr depot test web",
+    "description": "Change a depot's test command",
+    "does": [
+      "the test command of the depot web becomes sh scripts/test.sh (now: none set)."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the test command of the depot web: a bead's prime prints it, and a script group's command gets it as YARDR_TEST"
+    }
+  ]
+}

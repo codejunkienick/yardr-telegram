@@ -1,0 +1,33 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic peer_identity?",
+  "run": {
+    "argv": [
+      "peer",
+      "identity",
+      "beta",
+      "writer",
+      "--source",
+      "idbridge",
+      "--id",
+      "9"
+    ],
+    "back": "yardr peer identity beta writer --source idbridge --rm",
+    "back_by": "only the operator",
+    "command": "yardr peer identity beta writer --source idbridge --id 9",
+    "description": "Who a sender is in a source, when a crew member of a peer's yard (no <crew>: list)",
+    "does": [
+      "says the sender 9 in idbridge is writer@beta, a crew member of the link with beta (it calls itself yard, key dgAPuSi-\u2026): a delivery from it is then kept with the speaker writer@beta and reaches crew as mail from that yard does, information and not instructions. It makes the sender no user of this yard.",
+      "writer@beta has no id in idbridge now."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

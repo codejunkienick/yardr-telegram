@@ -1,0 +1,38 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic user_identity?",
+  "run": {
+    "argv": [
+      "user",
+      "identity",
+      "ada",
+      "--source",
+      "tgbridge",
+      "--id",
+      "456"
+    ],
+    "back": "yardr user identity ada --source tgbridge --rm",
+    "back_by": "ada or the operator",
+    "command": "yardr user identity ada --source tgbridge --id 456",
+    "description": "Who a user is in a source (no --source: list)",
+    "does": [
+      "says the user ada is 456 in tgbridge: a thread opened there for them is assigned to 456.",
+      "They have no identity in tgbridge now."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "as-user",
+      "line": "lets calls or words count as a person's: 456 in tgbridge counts as the user ada"
+    }
+  ]
+}

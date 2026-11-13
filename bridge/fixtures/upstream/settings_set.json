@@ -1,0 +1,28 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic settings_set?",
+  "run": {
+    "argv": [
+      "settings",
+      "set",
+      "operator_note",
+      "hello"
+    ],
+    "back": "yardr settings set operator_note \"\"",
+    "back_by": "only the operator",
+    "command": "yardr settings set operator_note hello",
+    "description": "Change a setting, as the operator; an empty value unsets it",
+    "does": [
+      "setting operator_note becomes hello (now: unset)."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

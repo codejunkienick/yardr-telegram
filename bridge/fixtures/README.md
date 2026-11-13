@@ -92,3 +92,46 @@ real native approve/carry. It checks complete installed declarations and
 program trees, routine and weighted pack approvals, tgbridge's replacement
 grants and Does count, stale state, decline/cancel and replay. All data is
 synthetic. No live yard or Telegram account is used.
+
+`upstream/*.json` are the upstream run rows the bridge neither renders
+anew nor refuses by shape: a user role, a device pairing and removal, a hook
+addition (safe, table and register-ask shapes) and removal, a link move, a
+depot test command and a user key claim, plus every remaining operator row
+outside the group, source, pack, skill and crew siblings: a depot base, all
+seven peer rows, a subscription, user add and removal, invite and uninvite,
+identity and tell, a settings set, a bead originator change, a timer removal
+and `up`. Each is one ask as the Bead call serves it on a real isolated
+yard, captured off the aligned build (`11f81f38`) and the plain upstream
+build (`09fa95be`), which write them byte for byte alike, so one file
+covers both. Only the temp root (`/synthetic`), the ask number, the
+timestamp, the device date and the `to`/`asker` envelope are stabilized;
+the run card itself is the yard's bytes. The offline table test
+(`test_upstream_run_rows_show_whole_or_refuse_before_send`) drives each
+through validation, the card, the two-tap approve gate and `/decide`'s
+listing; the pairing and register-ask cards refuse with the fallback
+before anything is sent.
+
+To recapture: build both binaries in a scratchpad (never in a working
+checkout, never against a live yard home), start each isolated (own `--home`
+under a temp dir, `init --harness claude`, operator `pat`), declare the
+crm/linear/lin-new/pushover/chime sources, add a device, register a depot
+(`web`, git, base `master` plus a branch `other`) and a flow (`main`), a
+crew member, an identity-hearing source, a hook and a link, then raise one
+`bead ask --run` per row
+(`--run-test` for the depot test, `--run-says`/`--run-makes` for the hook
+table) and dump the last ask of `Bead`. The user key card is raised only
+by a dropped delivery, so it is captured from the yard's own claim path
+instead of the terminal. The group, source, pack and crew rows live with
+their own children and are not captured here. Peer cards need a linked
+peer: invite once from a second isolated yard and reuse that invite for
+both builds, so the key the cards quote stays identical; the `peer add`
+card proposes a second such invite. The invite card needs the edge
+setting, which the store's own teammate test writes as JSON in isolation;
+approve it at a terminal (a weighty card) and the server carries the user
+out locally, after which the uninvite card has someone to name. The timer
+removal's take-back re-arms the timer at its fire time, so pin that one
+timestamp beside the pinned `since`. Cards with a `run` key beyond
+`argv`, `command`, `description`, `does`, `back` and `back_by` (a depot
+test with `--run-test`, a user key with a value, a hook table, a group
+prompt in `role`) are not captured: the bridge keeps refusing them with
+the fallback, as the unknown-key cases of the table test pin.

@@ -1,0 +1,28 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic peer_rm?",
+  "run": {
+    "argv": [
+      "peer",
+      "rm",
+      "beta"
+    ],
+    "back": "yardr peer add beta <invite>",
+    "back_by": "only the operator",
+    "command": "yardr peer rm beta",
+    "description": "Remove a peer: nothing more is taken from it or sent to it",
+    "does": [
+      "removes the link with beta (it calls itself yard, key dgAPuSi-\u2026): its 0 intakes, its 0 identitys and 0 messages queued for it go.",
+      "Adding it again starts a new link, from a fresh invite the other yard makes: with no intakes, no identities and nothing queued."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

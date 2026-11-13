@@ -110,6 +110,47 @@ GROUP_FIXTURES = ('group_add', 'group_add_exec', 'group_set_prompt', 'group_set_
                   'group_set_effort', 'group_set_effort_default')
 GROUP_PREALIGNMENT = ('group_add_prealignment', 'group_set_prealignment', 'group_set_no_prompt_prealignment')
 
+# Upstream run rows this child owns, by fixture: cards the aligned and upstream
+# builds write byte for byte alike. The whole ones show through the generic run
+# card; the fallback ones refuse with the fallback suffix before anything is sent.
+UPSTREAM_WHOLE = ('user_role', 'device_rm', 'hook_add', 'hook_add_table', 'hook_rm',
+                  'link_move', 'depot_test', 'user_key',
+                  'bead_update', 'depot_base', 'peer_add', 'peer_allow', 'peer_identity',
+                  'peer_intake', 'peer_rename', 'peer_rm', 'peer_set', 'settings_set',
+                  'subscribe', 'timer_rm', 'up', 'user_add', 'user_identity',
+                  'user_invite', 'user_rm', 'user_set_tell', 'user_uninvite')
+UPSTREAM_FALLBACK = ('device_pair', 'hook_add_ask')
+
+
+def upstream_proposal(name):
+    # Captured from Bead on isolated aligned and upstream builds; only the temp
+    # root (/synthetic), ask number, timestamp and device date are stabilized.
+    return json.loads(Path(__file__).with_name('fixtures').joinpath('upstream', name + '.json').read_text())
+
+
+def queue_entry(ask):
+    # One UserAsks open row for a Bead ask, as the core serves it: the queue
+    # carries the run beside the ask-level payload (when the ask has one)
+    # but no context.
+    entry = dict(bead='sample-1', bead_title='Synthetic rows', ask=7, question=ask['question'],
+                 asker=ask.get('asker', 'proposer'), turn=ask.get('turn', 0), run=ask['run'])
+    for key in ('secret', 'setup', 'identity', 'depot_push', 'weight'):
+        if ask.get(key):
+            entry[key] = ask[key]
+    return entry
+
+
+def validate_accepts(ask):
+    # Whether the send path would show the card whole: acceptance, or a
+    # fallback refusal. Anything else is a malformed fixture and fails loud.
+    try:
+        n.validate(ask, ask.get('to', 'pat'))
+    except n.NativeError as error:
+        if not str(error).endswith(n.FALLBACK):
+            raise
+        return False
+    return True
+
 
 def review_parts(review):
     """Read rendered facts and recover each raw payload independently of the serializer."""
@@ -2525,6 +2566,145 @@ class NativeTests(NativeCase):
         self.assertFalse(self.create()['delivered'])
         self.assertEqual(self.sent_count, 0)
 
+    def test_upstream_run_rows_show_whole_or_refuse_before_send(self):
+        for name in UPSTREAM_WHOLE:
+            with self.subTest(row=name):
+                ask = upstream_proposal(name)
+                self.reset_native(ask)
+                self.assertTrue(self.create()['delivered'])
+                card = b.html_visible_text(self.calls[-1][1]['text'])[0]
+                self.assertIn(ask['run']['command'], card)
+                self.assertNotIn(n.FALLBACK, card)
+                for item in ask.get('weight', []):
+                    self.assertIn('WEIGHTY · ' + item['class'] + ': ' + item['line'], card)
+                self.assertEqual(n.queue_kind(queue_entry(ask)), ('run', True))
+                weight = ask.get('weight', [])
+                self.press()
+                if weight:
+                    self.assertEqual(self.writes(), [])
+                    self.press('confirm', uid=41)
+                self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='sample-1', ask=7, actor='pat',
+                                                                      weighed=bool(weight), values={}))])
+                self.assertEqual(self.row()['state'], 'approved')
+
+        for name, marker in (('device_pair', 'pair it in the yard'), ('hook_add_ask', 'requires_input')):
+            with self.subTest(row=name):
+                ask = upstream_proposal(name)
+                self.reset_native(ask)
+                result = self.create()
+                self.assertFalse(result['delivered'], result)
+                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+                self.assertIn(marker, result['reason'])
+                self.assertEqual((self.sent_count, self.writes()), (0, []))
+                self.assertEqual(self.bridge.run_asks.rows(), [])
+                self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
+
+        # A run key no generic card carries refuses whole: the yard's stored
+        # shape (seen, value, test, role, hook_table) never reaches this
+        # bridge through Bead, and a build that started sending one refuses
+        # instead of showing the card partly.
+        base = upstream_proposal('depot_test')
+        for key, value in (('seen', {'depot web': '0' * 64}), ('value', 'user@example.invalid'),
+                           ('test', 'sh scripts/test.sh'), ('role', 'role text'),
+                           ('hook_table', {'says': [], 'makes': []})):
+            with self.subTest(key=key):
+                ask = copy.deepcopy(base)
+                ask['run'][key] = value
+                self.reset_native(ask)
+                result = self.create()
+                self.assertFalse(result['delivered'])
+                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+                self.assertIn('run_ask_unknown_payload', result['reason'])
+                self.assertEqual((self.sent_count, self.writes()), (0, []))
+                self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
+
+        # The declaration schema keeps refusing the new optional keys: a call's
+        # run names a program the review would not count, and a signature body
+        # changes webhook verification, so either would show the card partly.
+        import yaml
+        clean = n.source_declaration('name: s\nbase: https://example.invalid\n')
+        self.assertEqual(clean, ('s', []))
+        run_decl = ('name: s\nbase: https://example.invalid\ncalls:\n'
+                    '  ping: { kind: read, run: [bin/report], request: { method: GET, path: /me },'
+                    ' answer: { select: [], max: "1" } }\n')
+        with self.assertRaises(n.NativeError) as caught:
+            n.source_declaration(run_decl)
+        self.assertNotIn(n.FALLBACK, str(caught.exception))
+        body_decl = ('name: s\nbase: https://example.invalid\nhook:\n'
+                     '  verify: { scheme: secret, signature: { header: X-Secret, body: token } }\n')
+        with self.assertRaises(n.NativeError):
+            n.source_declaration(body_decl)
+        ask = source_proposal('replace_upstream')
+        carried = ask['run']['carried'][0]
+        decl = yaml.safe_load(carried['text'])
+        decl['calls'] = {'ping': {'kind': 'read', 'run': ['bin/report'],
+                                  'request': {'method': 'GET', 'path': '/me'},
+                                  'answer': {'select': [], 'max': '1'}}}
+        carried['text'] = yaml.safe_dump(decl)
+        self.reset_native(ask)
+        result = self.create()
+        self.assertFalse(result['delivered'])
+        self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+        self.assertIn('invalid native source declaration', result['reason'])
+        self.assertEqual((self.sent_count, self.writes()), (0, []))
+        self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
+
+        # The same for a signature body: webhook verification would change,
+        # so the card refuses before send and lists as terminal-only too.
+        ask = source_proposal('replace_upstream')
+        carried = ask['run']['carried'][0]
+        decl = yaml.safe_load(carried['text'])
+        decl.setdefault('hook', {}).setdefault('verify', {}).setdefault('signature', {})['body'] = 'token'
+        carried['text'] = yaml.safe_dump(decl)
+        self.reset_native(ask)
+        result = self.create()
+        self.assertFalse(result['delivered'])
+        self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+        self.assertIn('invalid native source declaration', result['reason'])
+        self.assertEqual((self.sent_count, self.writes()), (0, []))
+        self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
+
+    def test_queue_kind_matches_send_path_on_every_captured_run_card(self):
+        # queue_kind() shares the send path's run validation, so /decide's
+        # kind must equal whether validate() accepts the card, on every
+        # captured run fixture. A new fixture is covered by discovery; the
+        # two mutated declaration rows pin 1b9ea8e.1's drift class.
+        base = Path(__file__).with_name('fixtures')
+        names = sorted(p.stem for p in base.glob('*.json')
+                       if isinstance(json.loads(p.read_text()).get('run'), dict))
+        names += sorted('upstream/' + p.stem for p in (base / 'upstream').glob('*.json'))
+        self.assertTrue(names)
+        for name in names:
+            with self.subTest(fixture=name):
+                ask = json.loads((base / (name + '.json')).read_text())
+                shown = n.queue_kind(queue_entry(ask))[1]
+                self.assertEqual(shown, validate_accepts(ask), name)
+
+        import yaml
+        for label, mutate in (
+                ('calls.<c>.run',
+                 lambda decl: decl.update(calls={'ping': {'kind': 'read', 'run': ['bin/report'],
+                                                          'request': {'method': 'GET', 'path': '/me'},
+                                                          'answer': {'select': [], 'max': '1'}}})),
+                ('signature.body',
+                 lambda decl: decl.setdefault('hook', {}).setdefault('verify', {}).setdefault('signature', {}).__setitem__('body', 'token'))):
+            with self.subTest(row=label):
+                ask = source_proposal('replace_upstream')
+                decl = yaml.safe_load(ask['run']['carried'][0]['text'])
+                mutate(decl)
+                ask['run']['carried'][0]['text'] = yaml.safe_dump(decl)
+                self.assertFalse(validate_accepts(ask))
+                self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
+
+        # A run row carrying ask-level payload refuses on the send path, so it
+        # lists as terminal-only run, never under the non-run kind.
+        for key in ('secret', 'setup', 'identity', 'depot_push'):
+            with self.subTest(row='run+' + key):
+                ask = upstream_proposal('depot_test')
+                ask[key] = {'cipher': 'x'}
+                self.assertFalse(validate_accepts(ask))
+                self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
+
     def test_bundle_drift_rechecks_during_transport_retry_and_repost(self):
         for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
@@ -3464,6 +3644,75 @@ class RealNativeTests(BridgeTestCase):
         try:
             # No skill add card here, so every build runs it.
             self.exercise_source_limit_and_trust(binary, root, home, command, env)
+        finally:
+            testyardr.stop(server)
+
+    def test_real_native_decision_decline_without_held_works(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        server, home, command, env = testyardr.start(root, binary)
+        try:
+            client = n.YardSocketClient(home, 'tgbridge')
+
+            def cli(*args, actor='pat'):
+                result = subprocess.run(command + list(args), env=env, cwd=root,
+                                        text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout
+
+            # init completes the yard deterministically (the running server adopts
+            # it); settings alone leaves a home later commands refuse.
+            cli('init', '--harness', 'claude')
+            cli('settings', 'set', 'operator', 'pat')
+            source = root / 'synthetic.yaml'
+            source.write_text('name: tgbridge\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [/bin/false]\n')
+            cli('source', 'add', str(source))
+            cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+            cli('user', 'add', 'proposer')
+            cli('bead', 'create', 'Synthetic decline', '--id', 'decline-1')
+            cli('bead', 'ask', 'decline-1', 'Which option?', '--to', 'pat', '--context', 'Synthetic decline',
+                '--option', 'First: Choose first.', '--option', 'Second: Choose second.', actor='proposer')
+            original = client.call('Bead', dict(bead='decline-1', viewer='pat'))['asks'][0]
+            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+            ids = iter(range(77, 300))
+
+            def telegram(url, body, *args, **kwargs):
+                status, response = self.transport(url, body, *args, **kwargs)
+                if url.endswith('/sendMessage'):
+                    response['result']['message_id'] = next(ids)
+                elif url.endswith('/editMessageText'):
+                    response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
+                return status, response
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+            self.bridge.hook_secret = None
+            self.documents = []
+            self.sent_count = 10000
+            self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
+            receipt = self.bridge.api_ask_card(dict(bead='decline-1', ask=original['ask'], key='decline-real'))
+            self.assertTrue(receipt['delivered'], receipt)
+            row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'decline-1')
+            query = dict(id='decline-query', data=f"askcard:{row['id']}:decline:{original['turn']}",
+                         message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                                      **{'from': dict(id=999, is_bot=True)}),
+                         **{'from': dict(id=123, is_bot=False)})
+            calls = []
+            actual_call = self.bridge.run_asks.client.call
+
+            def record(name, args):
+                calls.append((name, copy.deepcopy(args)))
+                return actual_call(name, args)
+            with patch.object(self.bridge.run_asks.client, 'call', side_effect=record):
+                self.bridge.inbound(dict(update_id=500, callback_query=query))
+            declined = [args for name, args in calls if name == 'DeclineAskExpected']
+            self.assertEqual(len(declined), 1)
+            # The bridge sends no held: the yard defaults it to 0.
+            self.assertNotIn('held', declined[0])
+            self.assertEqual(declined[0]['turn'], original['turn'])
+            stored = client.call('Bead', dict(bead='decline-1', viewer='pat'))['asks'][0]
+            self.assertEqual((stored['state'], stored['words']), ('declined', 'Declined in Telegram'))
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'declined')
         finally:
             testyardr.stop(server)
 

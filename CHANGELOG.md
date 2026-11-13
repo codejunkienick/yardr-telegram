@@ -27,6 +27,19 @@ sees and does, not how the code is organised.
   with the fallback, and one already sent says "Proposal changed" and is
   decided in the yard.
 
+- Run cards for upstream's user, device, hook, link and depot rows each
+  either show whole through the generic card or refuse with the fallback
+  before anything is sent. User role, device removal, hook, link move,
+  depot test and user key cards show whole, as do depot base, all seven
+  peer rows, subscriptions, user add and removal, invite and uninvite,
+  identity and tell, settings, bead originator, timer removal and `up`;
+  trust and identity cards take the two-tap gate. A device pairing refuses
+  and is paired in the yard, since its code is answered to the approver
+  alone and the bridge could not deliver it. Declarations naming a call's
+  `run` program or a signature body keep refusing, and `/decide` lists
+  refused rows as terminal-only: its kind shares the send path's run
+  validation, so the two cannot drift apart.
+
 ### Added
 
 - Native source-kind `pack apply` review through the existing `run_ask`

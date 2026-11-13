@@ -1,0 +1,28 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic user_rm?",
+  "run": {
+    "argv": [
+      "user",
+      "rm",
+      "subject"
+    ],
+    "back": "yardr user add subject",
+    "back_by": "only the operator",
+    "command": "yardr user rm subject",
+    "description": "Remove a user (the mail stays in the log)",
+    "does": [
+      "removes the user subject: their 0 subscriptions and 0 devices go, and what waited to be told them; the mail stays in the log.",
+      "Adding them again starts them fresh: no earlier mail, no subscriptions, no devices."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

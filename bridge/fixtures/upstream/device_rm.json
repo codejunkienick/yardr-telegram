@@ -1,0 +1,31 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic device_rm?",
+  "run": {
+    "argv": [
+      "user",
+      "device",
+      "rm",
+      "ada",
+      "phone"
+    ],
+    "back": "a device is paired again with a new token (yardr user device pair ada phone): the old token is not brought back",
+    "back_by": "only the operator",
+    "command": "yardr user device rm ada phone",
+    "description": "Remove a device: its token is refused from now on, and its streams are closed",
+    "does": [
+      "removes the device phone of ada (added 2 Jan 2006 by pat): its token is refused from now on, the streams it held are closed, and what was queued to tell it is dropped.",
+      "What it did stands: the mail it wrote and the asks it approved are not undone.",
+      "It is the last device ada has: they have none left."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

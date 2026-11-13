@@ -1,0 +1,30 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic subscribe?",
+  "run": {
+    "argv": [
+      "subscribe",
+      "pat",
+      "yardr",
+      "--where",
+      "kind=held"
+    ],
+    "back": "yardr unsubscribe pat yardr --where kind=held",
+    "back_by": "pat or the operator",
+    "command": "yardr subscribe pat yardr --where kind=held",
+    "description": "Deliver a source's events to a crew member's inbox, or a user's as notifications (no arguments: who is told what)",
+    "does": [
+      "pat gets a line among the notifications of their inbox for every event of a bead where kind is held (the subscription yardr all kind=held). They have no such subscription now.",
+      "Nothing sends it on outside the yard: no source tells pat of notifications there."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

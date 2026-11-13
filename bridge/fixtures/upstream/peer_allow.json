@@ -1,0 +1,37 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic peer_allow?",
+  "run": {
+    "argv": [
+      "peer",
+      "allow",
+      "beta",
+      "--send",
+      "ping",
+      "--receive",
+      "mail"
+    ],
+    "back": "yardr peer allow beta --no-receive mail",
+    "command": "yardr peer allow beta --send ping --receive mail",
+    "description": "Set which messages a peer link carries and its mail limit",
+    "does": [
+      "the link with beta (it calls itself yard, key dgAPuSi-\u2026) will carry ping to it and take bead, mail, ping from it. It carries ping to it and takes bead, ping from it now.",
+      "That adds mail to what it takes from it."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: the link with beta takes mail from it"
+    }
+  ]
+}

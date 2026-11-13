@@ -1,0 +1,37 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic user_invite?",
+  "run": {
+    "argv": [
+      "user",
+      "invite",
+      "zoe",
+      "--email",
+      "zoe@example.invalid"
+    ],
+    "back": "yardr user uninvite zoe",
+    "back_by": "only the operator",
+    "command": "yardr user invite zoe --email zoe@example.invalid",
+    "description": "Invite a teammate by email",
+    "does": [
+      "adds the user zoe with the role member, and maps zoe@example.invalid to zoe in web_jwt_users: signed in at the edge as zoe@example.invalid, they act as zoe.",
+      "reports the invite to the edge for the yard synthetic/edgeyard (member add): until the report lands the card reads as not yet at the edge, and nobody is admitted meanwhile.",
+      "they set a password from the mail the edge sends to this email, then sign in; nothing the operator holds admits them."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: a new user, zoe, whose answers and approvals the yard takes"
+    }
+  ]
+}

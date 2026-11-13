@@ -1,0 +1,30 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic user_uninvite?",
+  "run": {
+    "argv": [
+      "user",
+      "uninvite",
+      "zoe"
+    ],
+    "back": "yardr user invite zoe --email zoe@example.invalid",
+    "back_by": "only the operator",
+    "command": "yardr user uninvite zoe",
+    "description": "Remove a teammate from the yard",
+    "does": [
+      "reports the removal to the edge first (member remove for zoe@example.invalid): from then on that sign-in is admitted to this yard no more.",
+      "removes the user zoe: their 0 subscriptions and 0 devices go, and what waited to be told them; the mail stays in the log.",
+      "removes zoe@example.invalid from web_jwt_users, so the address maps to nobody from then on.",
+      "if the edge cannot be reached the user and the mapping still go, and the report is retried until it lands: meanwhile they act as nobody here."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

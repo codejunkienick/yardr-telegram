@@ -1,0 +1,47 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic hook_add_table?",
+  "run": {
+    "argv": [
+      "hook",
+      "add",
+      "h3",
+      "--source",
+      "linear"
+    ],
+    "back": "yardr hook rm h3",
+    "back_by": "only the operator",
+    "command": "yardr hook add h3 --source linear",
+    "description": "Create a webhook endpoint POST /hooks/<name>",
+    "does": [
+      "it adds the hook h3: POST /hooks/h3 takes deliveries from the source linear (https://api.linear.app).",
+      "its says table changes from 0 lines to 1 line (1 insertion, 0 deletions):",
+      "--- was",
+      "+++ is",
+      "@@ -0,0 +1,1 @@",
+      "+action=closed event=issues -> done",
+      "its makes table changes from 0 lines to 1 line (1 insertion, 0 deletions):",
+      "--- was",
+      "+++ is",
+      "@@ -0,0 +1,1 @@",
+      "+action=opened event=issues -> task:new@web",
+      "what it sends in: deliveries are verified by HMAC-SHA256 over the body (scheme hmac-sha256, signed: body), the signature in the header Linear-Signature as hex past the prefix none; a delivery is named by the header Linear-Delivery; its time arrives at webhookTimestamp, in ms within 1m of the yard's clock; bodies are unique; the command [/bin/false] turns a verified body into the envelope, handed no credential; its events may carry the fields team, project, label.",
+      "the signing secret is given on the hook's own secret card for h3 and kept in /synthetic/yard/hooks/h3.secret (mode 0600); the hook names that file, and the value is in no note, event or answer."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: POST /hooks/h3 takes deliveries from outside the yard for the source linear"
+    }
+  ]
+}

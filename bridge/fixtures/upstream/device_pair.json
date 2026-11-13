@@ -1,0 +1,40 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic device_pair?",
+  "run": {
+    "argv": [
+      "user",
+      "device",
+      "pair",
+      "ada",
+      "tablet",
+      "--url",
+      "https://mac.example.net"
+    ],
+    "back": "yardr user device pair --end ends it while it stands; once the code is used, yardr user device rm ada tablet removes the device",
+    "command": "yardr user device pair ada tablet --url https://mac.example.net",
+    "description": "Enrol a device by a short code, or a QR code, with no token to copy",
+    "does": [
+      "opens a pairing for the device tablet of ada, reached at https://mac.example.net.",
+      "ada has 1 device: phone (never used).",
+      "Approval opens the pairing for that device alone: its code is good for ten minutes and for one device, and whoever has the code within those minutes is answered with that device's token.",
+      "Nothing in the yard keeps the code after it is used or runs out.",
+      "The new device then calls as ada until yardr user device rm ada tablet, and ada will then have 2 devices."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: a new device tablet of ada speaks as them: whoever holds its token calls as ada until the device is removed"
+    }
+  ]
+}

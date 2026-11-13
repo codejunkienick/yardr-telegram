@@ -1,0 +1,42 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic hook_add_ask?",
+  "run": {
+    "argv": [
+      "hook",
+      "add",
+      "h9",
+      "--source",
+      "chime"
+    ],
+    "ask": [
+      "project"
+    ],
+    "back": "yardr hook rm h9",
+    "back_by": "only the operator",
+    "command": "yardr hook add h9 --source chime",
+    "description": "Create a webhook endpoint POST /hooks/<name>",
+    "does": [
+      "it adds the hook h9: POST /hooks/h9 takes deliveries from the source chime (https://chime.example.invalid).",
+      "what it sends in: deliveries are verified by the header Chime-Secret holding the hook's secret itself (scheme secret); it sends no delivery id; it sends no timestamp; bodies are unique; the command [/bin/false] turns a verified body into the envelope, handed no credential; its events carry no field of their own; the yard registers its webhook with setwebhook (POST /setWebhook), filling url with the public URL and secret_token with the hook's secret.",
+      "the yard makes the signing secret for h9 and keeps it in /synthetic/yard/hooks/h9.secret (mode 0600); the hook names that file, and the value is in no note, event, answer or card. No secret is typed.",
+      "the approval gives project in the clear, which the yard sends to the register call with the URL and the secret.",
+      "it will call POST /setWebhook at https://chime.example.invalid to register https://hooks.example.invalid/h9."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0,
+  "weight": [
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: POST /hooks/h9 takes deliveries from outside the yard for the source chime"
+    }
+  ]
+}

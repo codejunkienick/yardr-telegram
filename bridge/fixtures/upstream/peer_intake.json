@@ -1,0 +1,33 @@
+{
+  "ask": 7,
+  "asker": "proposer",
+  "context": [
+    "Synthetic upstream capture"
+  ],
+  "options": [],
+  "question": "Synthetic peer_intake?",
+  "run": {
+    "argv": [
+      "peer",
+      "intake",
+      "beta",
+      "--depot",
+      "web",
+      "--flow",
+      "main"
+    ],
+    "back": "yardr peer intake beta --depot web --none",
+    "command": "yardr peer intake beta --depot web --flow main",
+    "description": "Say where the beads a peer sends go: the depot and the flow",
+    "does": [
+      "the link with beta (it calls itself yard, key dgAPuSi-\u2026) takes its beads for the depot web as beads of this yard there, pinned to the flow main and labelled from-beta: at most 10 of them are open at once.",
+      "Its beads arrive in the stage backlog, which no route leads anywhere from: they wait until one does (yardr route add --stage backlog --group <group> --label from-beta).",
+      "A bead of it that names no remote goes to this intake.",
+      "It has no intake for the depot web now."
+    ]
+  },
+  "since": "2026-01-01T00:00:00Z",
+  "state": "open",
+  "to": "pat",
+  "turn": 0
+}

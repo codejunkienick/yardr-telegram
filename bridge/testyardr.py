@@ -4,12 +4,15 @@ TGBRIDGE_TEST_YARDR names the build by absolute path; unset, the yardr on PATH.
 Whether a build predates the alignment is read from its running server: the
 probe is a wire-level request, not a version string.
 """
+import ctypes
 import http.client
 import json
 import os
+from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import time
 
 NAMED = 'TGBRIDGE_TEST_YARDR'
@@ -26,6 +29,36 @@ def binary():
             raise AssertionError(f'{NAMED} must name an executable yardr by absolute path')
         return named
     return shutil.which('yardr')
+
+
+class _ProcBsdInfo(ctypes.Structure):
+    # Apple's sys/proc_info.h: PROC_PIDTBSDINFO (3), including microsecond start identity.
+    _fields_ = [(name, ctypes.c_uint32) for name in
+                'flags status xstatus pid ppid uid gid ruid rgid svuid svgid reserved'.split()] + [
+        ('comm', ctypes.c_char * 16), ('name', ctypes.c_char * 32),
+        ('nfiles', ctypes.c_uint32), ('pgid', ctypes.c_uint32), ('pjobc', ctypes.c_uint32),
+        ('tdev', ctypes.c_uint32), ('tpgid', ctypes.c_uint32), ('nice', ctypes.c_int32),
+        ('start_seconds', ctypes.c_uint64), ('start_microseconds', ctypes.c_uint64)]
+
+
+def process_start(pid):
+    """Match the core's kernel process identity without starting its real dispatcher."""
+    if sys.platform == 'linux':
+        start = int(Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19])
+    elif sys.platform == 'darwin':
+        info = _ProcBsdInfo()
+        query = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True).proc_pidinfo
+        query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        query.restype = ctypes.c_int
+        if (query(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info)
+                or info.pid != pid or info.start_microseconds >= 1000000):
+            raise AssertionError('native test process identity unavailable')
+        start = info.start_seconds * 1000000 + info.start_microseconds
+    else:
+        raise AssertionError('native test process identity unsupported on this platform')
+    if start <= 0:
+        raise AssertionError('native test process identity unavailable')
+    return start
 
 
 def start(root, binary):

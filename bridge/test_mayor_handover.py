@@ -1147,14 +1147,18 @@ class HandoverTests(unittest.TestCase):
             db.execute('UPDATE cursor SET offset=offset+1')
 
         @contextmanager
-        def native_row():
+        def native_row(table='run_asks'):
             with closing(sqlite3.connect(state / 'telegram-bridge.sqlite3')) as db, db:
-                db.execute("INSERT INTO run_asks VALUES ('native', '{}')")
+                inserts = dict(run_asks="INSERT INTO run_asks VALUES ('native', '{}')",
+                               model_selectors="INSERT INTO model_selectors VALUES ('native', 1, '{}')",
+                               model_operations="INSERT INTO model_operations VALUES ('native', 'owner', 1, '{}')",
+                               model_actions="INSERT INTO model_actions VALUES (1, 'native', '{}')")
+                db.execute(inserts[table])
             try:
                 yield
             finally:
                 with closing(sqlite3.connect(state / 'telegram-bridge.sqlite3')) as db, db:
-                    db.execute('DELETE FROM run_asks')
+                    db.execute('DELETE FROM ' + table)
         @contextmanager
         def piped_ledger():
             aside = previous.parent / 'ledger-aside'
@@ -1199,6 +1203,9 @@ class HandoverTests(unittest.TestCase):
         handback = ['handback', '--settings', str(new), '--to', str(previous)]
         handbacks = [
             ('native card rows', native_row),
+            ('native card rows', lambda: native_row('model_selectors')),
+            ('native card rows', lambda: native_row('model_operations')),
+            ('native card rows', lambda: native_row('model_actions')),
             ('another bot or paired chat than the one captured',
              lambda: replaced(new, settings_text.replace(b'bot_id = 999', b'bot_id = 998', 1))),
             ('another bot or paired chat than the one captured',

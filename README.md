@@ -96,6 +96,30 @@ Release history: `CHANGELOG.md`.
 | `transcriber/` | `voice_transcribe.py` (whisper.cpp, configured language), `adapter.py` (the bridge's contract), `models.sha256` |
 | `skills/` | the shared skills: `telegram-formatting`, `telegram-attachments`, `telegram-voice-transcripts`; `telegram-decisions` for coordinators with the relevant call grants |
 
+## Testing
+
+Run `sh scripts/test.sh -v` for the offline bridge and pack suites. The
+public CI matrix runs without a core: isolated native tests skip explicitly
+when neither `TGBRIDGE_TEST_YARDR` nor a `yardr` executable on PATH is
+available. The model-switch skip reason names `crew_handoff_switch v1`.
+A supplied or discovered core without that capability fails the native
+switch fixture after isolated home initialization; it does not skip or use
+an older switch path.
+
+The depot gate and model-switch evidence runs require a compatible core,
+currently the landed source commit `bd7f54b4484321ce618c5224a9e419f3c9b94b55`:
+
+```sh
+TGBRIDGE_TEST_YARDR=/absolute/path/to/yardr nice -n10 sh scripts/test.sh -v
+```
+
+The path must name an executable build with `crew_handoff_switch v1`.
+Check the verbose results show every `NativeSwitchTests` case ran rather
+than skipped. These cases use an isolated core server/store, SQLite and
+fake Telegram through production polling; they do not use a live yard or
+account. Public CI without that core does not supply the required native
+feature evidence.
+
 ## Native cards and review bundles
 
 Native run cards bind the proposed command to its ask and bead. For a

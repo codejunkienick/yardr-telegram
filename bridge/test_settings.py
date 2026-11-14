@@ -431,8 +431,10 @@ class MayorModelSettingsTests(unittest.TestCase):
             dict(id='opus', label='Opus high', kind='claude', model='opus', args=('--effort', 'high'),
                  env_file='/srv/yard/crew-yardmaster.env', effort='high')))
         self.assertEqual(settings.config['yardr_bin'], str(self.stub))
-        (entry,) = settings.config['commands']
-        self.assertEqual(entry, dict(name='mayor_model', description='Show the mayor model, tap to switch it',
+        entry, alias = settings.config['commands']
+        self.assertFalse(alias['menu'])
+        self.assertEqual(alias['name'], 'mayor_model')
+        self.assertEqual(entry, dict(name='switch_model', description='Show the mayor model, tap to switch it',
                                      menu=True, callback_prefix='mayor-model:', native='mayor_model', timeout=45))
 
     def test_defaults(self):
@@ -455,12 +457,14 @@ class MayorModelSettingsTests(unittest.TestCase):
         path = self.settings(self.PICKS, menu=False)
         path.write_text(path.read_text() + '\n[yardr.quota]\n')
         settings = b.load_settings(path)
-        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'mayor_model'])
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'switch_model', 'mayor_model'])
 
     def test_migration_clashes_are_refused(self):
-        fix = r'delete the \[\[command\]\] mayor_model table'
+        fix = r'delete the \[\[(command|menu)\]\] .+ table'
         cases = [
             (self.command(), r'\[\[command\]\] mayor_model clashes with the native /mayor_model'),
+            (self.command('switch_model'), r'\[\[command\]\] switch_model clashes with the native /switch_model'),
+            ('\n[[menu]]\ncommand = "switch_model"\ndescription = "x"\n', r'\[\[menu\]\] switch_model clashes'),
             (self.command('other', callback_prefix='mayor-model:x'), 'callback_prefix overlaps the native mayor-model: prefix'),
             (self.command('other', callback_prefix='mayor-'), 'callback_prefix overlaps the native mayor-model: prefix'),
             ('\n[[menu]]\ncommand = "mayor_model"\ndescription = "x"\n', r'\[\[menu\]\] mayor_model clashes'),
@@ -471,7 +475,7 @@ class MayorModelSettingsTests(unittest.TestCase):
                     b.load_settings(self.settings(self.PICKS, extra=extra))
         # A prefix that no mayor-model: press starts with is no clash.
         settings = b.load_settings(self.settings(self.PICKS, extra=self.command('mayor', callback_prefix='mayor:')))
-        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['mayor', 'mayor_model'])
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['mayor', 'switch_model', 'mayor_model'])
 
     def test_command_settings_reserve_the_prefix(self):
         data = dict(command=[dict(name='other', description='x', handler=str(self.stub), callback_prefix='mayor-model:')])
@@ -663,7 +667,7 @@ class ExampleSettingsTests(unittest.TestCase):
                 loaded['mayor_model'] |= set(data['yardr']['mayor_model'])
                 loaded['picks'] |= set(data['yardr']['mayor_model']['picks'][0])
                 self.assertEqual([command['name'] for command in settings.config['commands'] if 'native' in command],
-                                 ['quota', 'mayor_model'])
+                                 ['quota', 'switch_model', 'mayor_model'])
                 loaded['bot'] |= set(data['bot'])
                 loaded['menu'] |= set(data['menu'][0])
                 loaded['command'] |= set(data['command'][0])

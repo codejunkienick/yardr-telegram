@@ -115,6 +115,10 @@ _yard_spec = importlib.util.spec_from_file_location('yard_commands', Path(__file
 yard_commands = importlib.util.module_from_spec(_yard_spec)
 _yard_spec.loader.exec_module(yard_commands)
 sys.modules['yard_commands'] = yard_commands
+_switch_spec = importlib.util.spec_from_file_location('model_switch', Path(__file__).resolve().with_name('model_switch.py'))
+model_switch = importlib.util.module_from_spec(_switch_spec)
+_switch_spec.loader.exec_module(model_switch)
+sys.modules['model_switch'] = model_switch
 _siding_spec = importlib.util.spec_from_file_location('siding_cards', Path(__file__).resolve().with_name('siding_cards.py'))
 siding_cards = importlib.util.module_from_spec(_siding_spec)
 _siding_spec.loader.exec_module(siding_cards)
@@ -607,6 +611,7 @@ class Store:
             # refused or unknown. A row left reserved reads as unknown.
             db.execute('CREATE TABLE IF NOT EXISTS mayor_model_taps (update_id INTEGER PRIMARY KEY, '
                        'pick TEXT NOT NULL, crew TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL)')
+            model_switch.initialize(db)
 
     @contextlib.contextmanager
     def connect(self):
@@ -1165,6 +1170,7 @@ class Bridge:
         self.publish_lock = threading.Lock()
         self.run_asks = run_asks.RunAsks(self)
         self.siding_cards = siding_cards.SidingCards(self)
+        self.model_switch = model_switch.ModelSwitch(self)
         self.stop = threading.Event()
         self.last_heartbeat = None
         # The bot as the start probe's getMe described it; None until then.
@@ -2883,6 +2889,8 @@ class Bridge:
         always answered (the handler's answer, else empty) before returning.
         Sends and the notice go to `thread_id`, the topic thread the update
         came from, when there is one."""
+        if command.get('native') == yard_commands.NATIVE_MAYOR_MODEL:
+            return self.model_switch.command(update_id, payload, query_id, thread_id)
         name = command['name']
         data = json.dumps(payload).encode()  # ASCII: a lone surrogate in chat text cannot break it
         try:
@@ -2941,6 +2949,12 @@ class Bridge:
             reason = 'not_authorized'
         elif not isinstance(data, str) or not data:
             reason = 'no_registered_prefix'
+        elif (self.config.get('yardr_mayor_model') and data.startswith(yard_commands.MAYOR_MODEL_PREFIX)
+              and (chat.get('type') != 'private' or not isinstance(message.get('from'), dict)
+                   or type(message['from'].get('id')) is not int or message['from']['id'] != self.config['bot_id']
+                   or message['from'].get('is_bot') is not True
+                   or message.get('is_topic_message') is True and self._topic_thread(message) is None)):
+            reason = 'not_authorized'
         elif data.startswith('siding:'):
             self.siding_cards.callback(update_id, query)
             return
@@ -4645,6 +4659,7 @@ class Bridge:
         self.run_asks.refresh()
         self.siding_cards.refresh()
         self.drain(data['result'])
+        self.model_switch.refresh()
 
     def run(self):
         if not self.probe_with_retry():
@@ -4712,7 +4727,7 @@ def _build_parser():
     parser.add_argument('--port', type=int, help='overrides the settings\' port')
     parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'ask-close', 'run-ask', 'ask-card', 'siding-card', 'react', 'pin',
                                             'topics', 'set-commands', 'render-unit', 'check-install',
-                                            'mayor-model'))
+                                            'mayor-model', 'switch-model'))
     parser.add_argument('--body-file', type=Path,
                         help='file holding the message text (send, reply-current)')
     parser.add_argument('--idempotency-key',
@@ -4766,8 +4781,7 @@ def _build_parser():
     parser.add_argument('--retry', metavar='NAME',
                         help='topics: create a topic again after an unconfirmed or rejected create')
     parser.add_argument('--dry-run', metavar='PICK',
-                        help='mayor-model: print the crew member\'s assignment and the two yardr commands a tap '
-                             'on this [[yardr.mayor_model.picks]] id would run; runs crew show alone')
+                        help='switch-model (mayor-model alias): describe guarded handoff admission and Force for this pick; read-only')
     parser.add_argument('--gpu-probe', action='store_true',
                         help='check-install: also transcribe a clip on the GPU inside the bridge unit\'s sandbox')
     parser.add_argument('--clip', type=Path,
@@ -4780,8 +4794,8 @@ def _build_parser():
 
 
 def _validate_attachment_flags(parser, args):
-    if args.dry_run is not None and args.command != 'mayor-model':
-        parser.error('--dry-run is a mayor-model flag')
+    if args.dry_run is not None and args.command not in ('mayor-model', 'switch-model'):
+        parser.error('--dry-run is a switch-model flag (mayor-model is an alias)')
     if args.command == 'siding-card':
         if not args.depot or not args.idempotency_key:
             parser.error('siding-card requires --depot and --idempotency-key')
@@ -5282,7 +5296,7 @@ def _native_clash(data, menu_entries, name, prefix, table):
     add-on switch left undone, with the migration message."""
     fix = f'delete the [[command]] {name} table'
     if any(entry == name for entry, _ in menu_entries):
-        raise SettingsError(f'settings: [[menu]] {name} clashes with the native /{name} ({table}); {fix}')
+        raise SettingsError(f'settings: [[menu]] {name} clashes with the native /{name} ({table}); delete the [[menu]] {name} table')
     entries = data.get('command', [])
     if not isinstance(entries, list):
         return
@@ -5296,7 +5310,8 @@ def _native_clash(data, menu_entries, name, prefix, table):
             other = item['name'] + ':'
         if isinstance(other, str) and (other.startswith(prefix) or prefix.startswith(other)):
             raise SettingsError(f"settings: [[command]] {item.get('name')} callback_prefix overlaps "
-                                f'the native {prefix} prefix ({table}); {fix}')
+                                f'the native {prefix} prefix ({table}); delete the [[command]] {item.get("name")} table '
+                                'or change its callback_prefix to a non-overlapping prefix')
 
 
 def _native_bin(value):
@@ -5321,7 +5336,7 @@ def _command_settings(data, menu, native=False, mayor_model=False):
         raise SettingsError(f'settings: command must be a list of at most {MENU_MAX} [[command]] tables')
     menu_names = {name for name, _ in menu}
     reserved = (RESERVED_COMMANDS + (('decide',) if native else ())
-                + ((yard_commands.NATIVE_MAYOR_MODEL,) if mayor_model else ()))
+                + (('mayor_model', 'switch_model') if mayor_model else ()))
     prefixes = (Bridge.RESERVED_CALLBACK_PREFIXES + ((Bridge.DECIDE_CALLBACK_PREFIX,) if native else ())
                 + ((yard_commands.MAYOR_MODEL_PREFIX,) if mayor_model else ()))
     commands = []
@@ -5514,15 +5529,16 @@ def load_settings(path, home=None):
                      timeout=_int_setting(mayor_table.get('timeout', 60), '[yardr.mayor_model] timeout', 10, 120),
                      picks=_mayor_picks(mayor_table['picks']))
         _native_clash(data, menu_entries, 'mayor_model', yard_commands.MAYOR_MODEL_PREFIX, '[yardr.mayor_model]')
+        _native_clash(data, menu_entries, 'switch_model', yard_commands.MAYOR_MODEL_PREFIX, '[yardr.mayor_model]')
     if quota is not None or mayor is not None:
         yardr_bin = _native_bin(yardr.get('bin'))
     city_commands = _command_settings(data, menu_entries, bool(native), mayor_model=mayor is not None)
 
     natives = (((dict(yard_commands.QUOTA_COMMAND, timeout=quota['timeout']),) if quota is not None else ())
-               + ((yard_commands.mayor_model_command(mayor),) if mayor is not None else ()))
+               + ((yard_commands.mayor_model_command(mayor), yard_commands.mayor_model_alias(mayor)) if mayor is not None else ()))
     if natives:
         shown = (len(menu_entries) + sum(1 for command in city_commands if command['menu']) + bool(native)
-                 + len(natives))
+                 + sum(command['menu'] for command in natives))
         if shown > MENU_MAX:
             names = ', '.join('/' + command['name'] for command in natives)
             raise SettingsError(f'settings: {shown} menu entries ([[menu]] and [[command]] with menu = true); '
@@ -6498,17 +6514,17 @@ def main():
         if failed:
             raise TransportError(f'{failed} install check(s) failed')
         return
-    if args.command == 'mayor-model':
+    if args.command in ('mayor-model', 'switch-model'):
         # Settings and yardr alone: no token, store or Telegram call, and
         # nothing written: no tap row, no crew set, no restart.
         if args.dry_run is None:
-            parser.error('mayor-model requires --dry-run <pick>')
+            parser.error(args.command + ' requires --dry-run <pick>')
         if not settings.config.get('yardr_mayor_model'):
-            raise TransportError('mayor-model needs [yardr.mayor_model] in the settings')
+            raise TransportError(args.command + ' needs [yardr.mayor_model] in the settings')
         try:
-            print(yard_commands.dry_run(settings.config, args.dry_run, Bridge._log))
+            print(model_switch.dry_run(settings.config, args.dry_run, Bridge._log))
         except yard_commands.MayorUnavailable as error:
-            raise TransportError(f'mayor model unavailable: {error}') from None
+            raise TransportError(f'model switch unavailable: {error}') from None
         return
     port = args.port if args.port is not None else settings.port
     token = private_text(settings.token_file)

@@ -2656,19 +2656,21 @@ old/new field, runs/env/keeps/shadows and flow/governs consequence; full
 created/changed file text and diffs with old/new SHA-256; carried source
 declarations, programs, inventory, removals and standing grants. Dropped
 objects retain the native explanation of what stays standing. The compact
-card names the depot, operation, plan counts, native weight, bundle/document
-identities and undo limits. A review receipt proves delivery only; core
-approval and canonical execution outcome remain separate.
+card names the depot, operation, plan counts, kept replacement grants, native
+weight, bundle/document/pack-digest identities and undo limits. A review receipt
+proves delivery only; core approval and canonical execution outcome remain separate.
 
 Native Does prose is server-owned disclosure, not a second executable
 grammar in the bridge. Unknown or reworded prose remains visible and bound
 to the proposal. The narrow source-section/grants framing check remains:
 typed source create/change/unchanged actions must match carried sources,
 and replacement disclosure must account for every standing grant. Aligned
-core supplies that disclosure; public-main replacements omitting it refuse.
-No manifest/setup snapshot is invented, no provenance path is read by the
-bridge and the whole-pack digest is trusted to core's capture/stale check.
-Individual supplied file hashes and complete inverse diffs are validated.
+core supplies that disclosure; public-main replacements omitting it refuse
+as `run_ask_invalid_depot_pack_use_terminal` before send and list as
+terminal-only in `/decide`. No manifest/setup snapshot is invented, no
+provenance path is read by the bridge and the whole-pack digest is trusted to
+core's capture/stale check. Individual supplied file hashes and complete
+inverse diffs are validated.
 
 Bounds remain 40 Does lines, 256 KiB carried declarations and 64 KiB aggregate
 carried texts/diffs/removals plus depot file texts/diffs, with existing source
@@ -2719,9 +2721,12 @@ PY
 
 It prints only the global event floor and makes no Telegram call. Repeating
 this helper retains or advances that floor: it belongs to an intentional
-activation, never ordinary startup or check-install. The downstream instance handoff owns the exact
-landed refs, installation/restart/identity-check packet and rollback. No
-installer, CLI or settings change automatically records the marker.
+activation, never ordinary startup or check-install. See the
+[depot-pack approval design](../docs/design/depot-pack-approvals.md) for
+the full contract, bounds, routine vs. Confirm rules and rollback guarantees;
+the downstream instance handoff owns the exact landed refs,
+installation/restart/identity-check packet and rollback. No installer, CLI or
+settings change automatically records the marker.
 
 Create the fresh native proposal after capture, using the pin from native
 `pack check` and retaining the same proposed mappings:

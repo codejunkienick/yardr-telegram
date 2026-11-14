@@ -382,10 +382,10 @@ controls; missing creation evidence refuses. Old ask-number markers require
 explicit recapture at activation. All earlier asks stay blocked across keys
 and `/decide`; withdraw them and propose fresh. Retain
 ledger/documents/watermark on rollback. No new setting/grant is needed.
-See [operations](../bridge/OPERATIONS.md#depot-pack-bundles) for the capture
-command, proposal, native stale checks, one-tap/Confirm gates and exact
-activation/rollback authority. Inspect `preview_run_asks.py --depot` first;
-local source tests do not activate a service or establish public compatibility.
+See [operations](../bridge/OPERATIONS.md#depot-pack-bundles) and
+[design](../docs/design/depot-pack-approvals.md) for capture, stale checks,
+one-tap/Confirm and activation/rollback. Run `preview_run_asks.py --depot`
+first; source tests do not activate a service or prove public compatibility.
 
 ### Declaration notes
 

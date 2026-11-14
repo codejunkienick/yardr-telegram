@@ -86,6 +86,7 @@ Release history: `CHANGELOG.md`.
 | `bridge/bridge.py` | the bridge: `run`, `probe`, `send`, `reply-current`, `ask-close`, `run-ask`, `ask-card`, `siding-card`, `react`, `pin`, `topics`, `set-commands`, `render-unit`, `check-install`, and the yard API on its loopback port |
 | `bridge/OPERATIONS.md` | the operations guide: settings, launch, delivery recovery, transcription |
 | `docs/design/tap-confirmation.md` | the two-tap gate for weighty Telegram cards |
+| `docs/design/depot-pack-approvals.md` | the depot-pack approval contract, activation watermark and rollback |
 | `docs/design/upstream-alignment.md` | the aligned and plain-upstream call contract, rollout and rollback |
 | `bridge/test_*.py` | `sh scripts/test.sh` (fake Telegram and whisper-cli, an optional isolated real yardr store, and the pack tests; no external network). Set `TEST_PORT_RANGE=LOW-HIGH` to bind test servers inside that range. Pick a range that excludes ports the host's own services use. |
 | `settings.example.toml` | every settings key, with example values |

@@ -75,10 +75,15 @@ its fallback instead of presenting a card it cannot apply.
 Replacing-source cards also depend on the grants text that says whether grants
 will remain or none will remain. The aligned build provides that text. Plain
 upstream omits it, so the bridge refuses the replacement card with its
-fallback before sending it. These are historical differences, not an
+fallback before sending it. Public main condenses absent-capability
+disclosure into one ordered `it has ...` sentence, which the bridge shows
+whole; its replacement cards omit the grants text like plain upstream, so
+they refuse the same way. These are historical differences, not an
 exhaustive compatibility list: skill installation/assignment and complete
 directory setup/manifest snapshots also remain fork-only. Other capabilities
-retain the revision-specific limits in the public re-proof above.
+retain the revision-specific limits in the public re-proof above. The
+full trust contract for these cards is recorded in
+[native source cards](native-source-cards.md).
 
 ## Siding cards on plain calls
 

@@ -1,0 +1,52 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic contract?",
+  "context": [
+    "Synthetic isolated contract capture"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "source",
+      "add",
+      "/synthetic/source_address_public_main.yaml"
+    ],
+    "command": "yardr source add /synthetic/source_address_public_main.yaml",
+    "description": "Add the source a file declares, or replace the one of its name",
+    "does": [
+      "it adds one source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "source address: its calls go to the URL in ADDRESS. Its credential is the variable ADDRESS (the name, never the value), sent as the address every call goes to (credential.url: true): whoever sets the variable chooses where the calls go, over https or plain http to this machine alone. It has no second credential for updates, no mint, no header of its own.",
+      "call create (update): POST /. It takes q (string, optional), and sends no query.",
+      "call create builds its body with the command [bin/report], run with no credential at each call and free to make its own requests without one while it builds. Its answer is returned as it comes, at most 65536 bytes.",
+      "it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.",
+      "command file bin/report: [bin/report] (call.create.build, handed no credential): sha256 852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274, mode 0700",
+      "still owed after it: the credential, by a secret ask for address."
+    ],
+    "back": "yardr source rm address",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "address",
+        "text": "name: address\ncredential: {env: ADDRESS, url: true}\ncalls:\n  create:\n    kind: update\n    build: [bin/report]\n    params:\n      q: {type: string, default: open}\n    request: {method: POST}\n",
+        "files": [
+          {
+            "program": "bin/report",
+            "text": "#!/bin/sh\nprintf \"synthetic contract\\n\"\n",
+            "sha256": "852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274"
+          }
+        ]
+      }
+    ]
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the command file bin/report of address (new)"
+    }
+  ]
+}

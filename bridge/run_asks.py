@@ -1076,20 +1076,7 @@ def source_declaration(value):
             raise ValueError()
         check(decl, schema)
         programs = []
-        sections = {'credential': ('mint_command',), 'limits': ('command',),
-                    'thread': ('reply', 'posted', 'read', 'file', 'open', 'opened', 'state'),
-                    'notify': ('image',), 'hook': ('normalize',), 'events': ('pr', 'ci'), 'git': ('credential',)}
-        commands = []
-        for section, keys in sections.items():
-            data = decl.get(section, {})
-            if not isinstance(data, dict):
-                raise ValueError()
-            commands += [data[key] for key in keys if key in data]
-        calls = decl.get('calls', {})
-        if not isinstance(calls, dict) or any(not isinstance(call, dict) for call in calls.values()):
-            raise ValueError()
-        commands += [call['build'] for call in calls.values() if 'build' in call]
-        for command in commands:
+        for command in _source_commands(decl):
             if not isinstance(command, list) or not command or not all(isinstance(arg, str) and arg for arg in command):
                 raise ValueError()
             program = source_path(command[0])
@@ -1098,6 +1085,40 @@ def source_declaration(value):
         return decl.get('name'), programs
     except (ValueError, RecursionError):
         raise NativeError('invalid native source declaration') from None
+
+
+_SOURCE_COMMAND_SECTIONS = (
+    ('credential', ('mint_command',)),
+    ('limits', ('command',)),
+    ('thread', ('reply', 'posted', 'read', 'file', 'open', 'opened', 'state')),
+    ('notify', ('image',)),
+    ('hook', ('normalize',)),
+    ('events', ('pr', 'ci')),
+    ('git', ('credential',)),
+)
+
+
+def _source_command_slots(decl):
+    """Yield (slot_name, argv) pairs in canonical declaration section order."""
+    for section, keys in _SOURCE_COMMAND_SECTIONS:
+        data = decl.get(section, {})
+        if not isinstance(data, dict):
+            raise ValueError()
+        for key in keys:
+            if key in data:
+                yield f'{section}.{key}', data[key]
+    calls = decl.get('calls', {})
+    if not isinstance(calls, dict) or any(not isinstance(call, dict) for call in calls.values()):
+        raise ValueError()
+    for call_name, call in calls.items():
+        if 'run' in call:
+            yield f'call.{call_name}.run', call['run']
+        if 'build' in call:
+            yield f'call.{call_name}.build', call['build']
+
+
+def _source_commands(decl):
+    return [argv for _, argv in _source_command_slots(decl)]
 
 
 def source_diff(change, new):
@@ -1216,13 +1237,149 @@ def validate_carried(carried, pack=False):
         removed[path] = entry
     if payload > 65536 or set(inventory) - files.keys() - changes.keys() - removed.keys():
         raise NativeError(fail)
+    for path, entry in inventory.items():
+        if (path in files and path not in changes and not entry.get('symlink')
+                and entry['sha256'] == files[path]['sha256']
+                and entry['size'] != len(files[path]['text'].encode('utf-8'))):
+            raise NativeError(fail)
     return name, files, inventory, changes
+
+
+SOURCE_NAME = r'[a-z0-9][a-z0-9_-]{0,63}'
+CALL_NAME = r'[a-z0-9][a-z0-9_-]{0,63}'
+HOLDER_NAME = r'[A-Za-z0-9][A-Za-z0-9._-]*'
+HOLDER_PATTERN = rf'(?:crew member {HOLDER_NAME}|group {GROUP_NAME.pattern})(?: as {HOLDER_NAME})?'
+PLURAL_COUNT = r'(?:[2-9]|[1-9][0-9]+)'
+COPIES_SOME = (
+    rf'copies (?:1 command file|{PLURAL_COUNT} command files) '
+    rf'\((?:1 command|{PLURAL_COUNT} commands)\)'
+)
+COUNT_COMMAND_COPIES = rf'(?:copies no command files|{COPIES_SOME})'
+COUNT_REPLACE_COPIES = (
+    rf'(?:copies no command files(?:, and removes the command copies that stand)?|{COPIES_SOME})'
+)
+
+SOURCE_ADD_LEAD_RE = re.compile(
+    rf'^it adds one source and {COUNT_COMMAND_COPIES}, and changes nothing else\. '
+    r"It grants no call, makes no hook, and sets no credential's file\.$"
+)
+SOURCE_REPLACE_LEAD_RE = re.compile(
+    rf'^it replaces one source and {COUNT_REPLACE_COPIES}, and changes nothing else\. '
+    r"It grants no call, makes no hook, and sets no credential's file: "
+    r'the source keeps its env_file, mint_command, (?:region base|base or host), '
+    r'call limits and ignored senders, and every grant of it stands, now for this declaration\.$'
+)
+
+
+def _grants_kept_pattern(name):
+    call_state = rf'(?:read|{CALL_NAME}) \((?:kept|changed|absent from the new declaration)\)'
+    holder_entry = rf'{HOLDER_PATTERN}: {call_state}(?:, {call_state})*'
+    return re.compile(rf'^grants kept for source {re.escape(name)}: {holder_entry}(?:; {holder_entry})*\.$')
+
+
+def _replace_header_pattern(name):
+    return re.compile(rf'^it would replace the source {re.escape(name)} the yard has under that name(?:\.|; (?P<grants>.+))$')
+
+
+def _source_framing(run, fail):
+    """Classify only source identity, replacement grants and orphan-copy framing."""
+    does, carried = run['does'], run['carried']
+    pack = run['argv'][:2] == ['pack', 'apply']
+    if pack:
+        info = run['pack']
+        header = 'pack ' + info['name'] + ' (' + info['label'] + ')'
+        if 'digest' in info:
+            header += ', digest sha256:' + info['digest']
+        lead = _pack_lead_pattern(header).fullmatch(does[0])
+        if not lead:
+            raise NativeError(fail)
+        adds = int(lead['adds'].split(' ', 1)[0]) if lead['adds'] else 0
+        rep = lead['replaces1'] or lead['replaces2']
+        replaces = int(rep.split(' ', 1)[0]) if rep else 0
+        if adds + replaces != len(carried):
+            raise NativeError(fail)
+    else:
+        replacing = bool(SOURCE_REPLACE_LEAD_RE.fullmatch(does[0]))
+        if not replacing and not SOURCE_ADD_LEAD_RE.fullmatch(does[0]):
+            raise NativeError(fail)
+        replaces = int(replacing)
+        name = carried[0]['name']
+        back = ('yardr bead ask <bead> - with Q: <question> and R: source add <a file holding the declaration that stands now> on stdin'
+                if replacing else 'yardr source rm ' + name)
+        if run['back'] != back or run.get('back_by') != ('only the operator' if replacing else 'the operator'):
+            raise NativeError(fail)
+    anchors = [(i, m['name']) for i, line in enumerate(does)
+               if (m := re.fullmatch(rf'source (?P<name>{SOURCE_NAME}): .+', line))]
+    names = [c['name'] for c in carried]
+    if (not anchors or anchors[0][0] != 1 or [name for _, name in anchors] != names
+            or len(set(names)) != len(names)):
+        raise NativeError(fail)
+    modes = {}
+    for pos, (start, name) in enumerate(anchors):
+        stop = anchors[pos + 1][0] if pos + 1 < len(anchors) else len(does)
+        section = does[start + 1:stop]
+        headers, orphans = [], []
+        orphan_headers = (
+            f'the source {name} is not in the yard, but its command copy directory has entries this pack would replace or remove.',
+            f'the source {name} is not in the yard, but its command copy directory has entries it would replace or remove.',
+        )
+        for line in section:
+            if line.startswith('it would replace the source '):
+                match = _replace_header_pattern(name).fullmatch(line)
+                if not match:
+                    raise NativeError(fail)
+                grants = match['grants']
+                if grants is None or not (grants == f'no grant of source {name} stands.'
+                                           or _grants_kept_pattern(name).fullmatch(grants)):
+                    raise NativeError('run_ask_missing_source_grants_review' + FALLBACK)
+                headers.append(grants)
+            elif line.startswith(('grants kept for source ', 'no grant of source ')):
+                raise NativeError(fail)
+            elif line.startswith('the source ') and 'is not in the yard' in line:
+                if line not in orphan_headers:
+                    raise NativeError(fail)
+                orphans.append(line)
+        c = carried[pos]
+        standing = bool(c.get('inventory') or c.get('removed')
+                        or any(old.get('old_sha256') for old in c.get('old', [])))
+        if (len(headers) > 1 or len(orphans) > 1 or (headers and orphans)
+                or (standing and not headers and len(orphans) != 1)
+                or (orphans and not standing)):
+            raise NativeError(fail)
+        is_replace = bool(headers)
+        if not pack and is_replace != replacing:
+            raise NativeError(fail)
+        modes[name] = (is_replace, headers)
+    if sum(int(mode[0]) for mode in modes.values()) != replaces:
+        raise NativeError(fail)
+    return modes
+
+
+def _validate_source_weight(ask, carried_list, modes, fail, *, pack):
+    weights = ask.get('weight', [])
+    classes = [w['class'] for w in weights]
+    if len(set(classes)) != len(classes) or set(classes) - {'code', 'reads'}:
+        raise NativeError(fail)
+    for weight in weights:
+        line = weight['line']
+        if not line.strip() or units(line) > CAP or any(c in HIDDEN for c in line):
+            raise NativeError(fail)
+    needs_code = not pack and modes[carried_list[0]['name']][0]
+    for c in carried_list:
+        inventory = {entry['path']: entry for entry in c.get('inventory', [])}
+        for file in c.get('files', []):
+            entry = inventory.get(file['program'])
+            if not entry or entry.get('symlink') or entry['sha256'] != file['sha256']:
+                needs_code = True
+    if needs_code and 'code' not in classes:
+        raise NativeError(fail)
 
 
 def validate_source(ask):
     run, argv = ask['run'], ask['run']['argv']
     fail = 'invalid native source bundle'
-    if (len(argv) != 3 or run['command'] != 'yardr ' + ' '.join(argv)
+    if (any(key in ask for key in ('secret', 'setup', 'identity', 'depot_push', 'concealed', 'given'))
+            or len(argv) != 3 or run['command'] != 'yardr ' + ' '.join(argv)
             or any(c.isspace() or c in HIDDEN for c in argv[2])
             or run.get('description') != 'Add the source a file declares, or replace the one of its name'
             or set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried'}
@@ -1230,27 +1387,18 @@ def validate_source(ask):
         raise NativeError(fail)
     carried = run['carried'][0]
     name, files, inventory, changes = validate_carried(carried)
-    classes = [w['class'] for w in ask.get('weight', [])]
-    if len(set(classes)) != len(classes) or set(classes) - {'code', 'reads', 'outside'}:
-        raise NativeError(fail)
     does = run['does']
-    replacing = bool(does and does[0].startswith('it replaces one source and '))
-    expected_back = ('yardr bead ask <bead> - with Q: <question> and R: source add <a file holding the declaration that stands now> on stdin'
-                     if replacing else 'yardr source rm ' + name)
-    if (not 12 <= len(does) <= 40 or not does[0].startswith(('it adds one source and ', 'it replaces one source and '))
-            or run['back'] != expected_back or run.get('back_by') != ('only the operator' if replacing else 'the operator')
-            or any('\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does)
-            or not does[1].startswith('source ' + name + ': ')):
+    if not 4 <= len(does) <= 40 or any(not line.strip() or '\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does):
         raise NativeError(fail)
+    modes = _source_framing(run, fail)
+    replacing = modes[name][0]
     for program, file in files.items():
         entry = inventory.get(program)
         if entry and entry['sha256'] != file['sha256'] and program not in changes:
             raise NativeError(fail)
         if replacing and not entry and program not in changes:
             raise NativeError(fail)
-    if (replacing or any(not inventory.get(p) or inventory[p]['sha256'] != f['sha256'] for p, f in files.items())):
-        if 'code' not in [w['class'] for w in ask.get('weight', [])]:
-            raise NativeError(fail)
+    _validate_source_weight(ask, [carried], modes, fail, pack=False)
     source_plan(run)
 
 
@@ -1286,10 +1434,10 @@ def source_bundle(config, bead, ask, proposal):
 
 def source_plan(run):
     rows = [run['does'][0]]
+    modes = _source_framing(run, 'invalid native source framing')
     for carried in run['carried']:
         name = carried['name']
-        replacing = (run['does'][0].startswith('it replaces one source and ')
-                     or any(line.startswith('it would replace the source ' + name + ' ') for line in run['does']))
+        replacing, grants = modes[name]
         rows.append(('Change' if replacing else 'Create') + f" source {name}; declaration sha256 {file_hash(carried['text'])}")
         inventory = {entry['path']: entry for entry in carried.get('inventory', [])}
         for file in carried.get('files', []):
@@ -1303,16 +1451,19 @@ def source_plan(run):
         for change in carried.get('old', []):
             if change['program'] not in programs:
                 rows.append(f"Remove sources/{name}/{change['program']}; sha256 {change['old_sha256']}")
-        replacements = [line for line in run['does']
-                        if line.startswith('it would replace the source ' + name + ' ')]
-        grants = [line.partition('; ')[2] for line in replacements]
-        if replacing and (len(grants) != 1 or not (
-                grants[0] == 'no grant of source ' + name + ' stands.'
-                or (grants[0].startswith('grants kept for source ' + name + ': ')
-                    and grants[0].endswith('.')))):
-            raise NativeError('run_ask_missing_source_grants_review' + FALLBACK)
         rows.extend(grants)
     return rows
+
+
+def _pack_lead_pattern(header):
+    source_count = rf'(?:1 source|{PLURAL_COUNT} sources)'
+    return re.compile(
+        rf'^{re.escape(header)}, of kind source, into the yard: it '
+        rf'(?:adds (?P<adds>{source_count})(?: and replaces (?P<replaces1>{source_count}))?'
+        rf'|replaces (?P<replaces2>{source_count})) '
+        rf'and {COUNT_COMMAND_COPIES}, and changes nothing else\. '
+        r"It grants no call, makes no hook, and sets no credential's file\.$"
+    )
 
 
 def validate_pack(ask):
@@ -1331,7 +1482,7 @@ def validate_pack(ask):
         raise NativeError(fail)
     label = text(pack.get('label'), 'pack label')
     does = run['does']
-    directory = len(argv) >= 3 and argv[2].startswith('/')
+    directory = len(argv) >= 3 and os.path.isabs(argv[2])
     digest = pack.get('digest')
     header = 'pack ' + pack['name'] + ' (' + label + ')'
     if directory:
@@ -1342,35 +1493,29 @@ def validate_pack(ask):
                 or len(argv) not in (3, 5)
                 or (len(argv) == 5 and (argv[3] != '--sha256'
                     or not re.fullmatch(r'(?i)(sha256:)?' + digest, argv[4])))
-                or not label.startswith('directory ' + path + ' in yardr ')
-                or not label.removeprefix('directory ' + path + ' in yardr ')):
+                or not re.fullmatch(rf'directory {re.escape(path)} in yardr [^\s()]+', label)):
             raise NativeError(fail)
         header += ', digest sha256:' + digest
     elif (len(argv) != 3 or argv[2] != pack['name'] or 'digest' in pack
-            or not label.startswith('embedded in yardr ') or not label.removeprefix('embedded in yardr ')):
+            or not re.fullmatch(r'embedded in yardr [^\s()]+', label)):
         raise NativeError(fail)
     if (not 1 <= len(does) <= 40
-            or not does[0].startswith(header + ', of kind source, into the yard: ')
-            or any('\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does)):
+            or any(not line.strip() or '\n' in line or '\r' in line or any(c in HIDDEN for c in line) for line in does)):
         raise NativeError(fail)
     sources = {}
-    needs_code = False
+    facts = []
     for carried in run['carried']:
         name, files, inventory, changes = validate_carried(carried, pack=True)
         if name in sources:
             raise NativeError(fail)
         sources[name] = carried
-        replacing = any(line.startswith('it would replace the source ' + name + ' ') for line in does)
+        facts.append((name, files, inventory, changes))
+    modes = _source_framing(run, fail)
+    for name, files, inventory, changes in facts:
         for program, file in files.items():
             entry = inventory.get(program)
-            if ((entry and entry['sha256'] != file['sha256']) or (replacing and not entry)) and program not in changes:
+            if ((entry and entry['sha256'] != file['sha256']) or (modes[name][0] and not entry)) and program not in changes:
                 raise NativeError(fail)
-        needs_code |= any(not inventory.get(p) or inventory[p].get('symlink')
-                          or inventory[p]['sha256'] != f['sha256'] for p, f in files.items())
-    replacing_count = re.search(r'\breplaces ([1-9][0-9]*) sources?\b', does[0])
-    if sum(line.startswith('it would replace the source ') for line in does) != (
-            int(replacing_count[1]) if replacing_count else 0):
-        raise NativeError(fail)
     declarations = sum(len(c['text'].encode('utf-8')) for c in sources.values())
     payload = sum(len(f['text'].encode('utf-8')) for c in sources.values() for f in c.get('files', []))
     payload += sum(len(f.get('diff', '').encode('utf-8')) for c in sources.values() for f in c.get('old', []))
@@ -1379,14 +1524,7 @@ def validate_pack(ask):
         raise NativeError(fail)
     if run['back'] != 'yardr source rm ' + run['carried'][0]['name']:
         raise NativeError(fail)
-    classes = [w['class'] for w in ask.get('weight', [])]
-    weight_lines = {'code': 'brings a program the yard will run', 'reads': 'widens what a standing grant of read reaches',
-                    'outside': 'lets the yard change something outside it'}
-    if (len(set(classes)) != len(classes) or set(classes) - {'code', 'reads', 'outside'}
-            or (needs_code and 'code' not in classes)
-            or any(not w['line'].startswith(weight_lines[w['class']] + ': ') or '\r' in w['line']
-                   or any(c in HIDDEN for c in w['line']) for w in ask.get('weight', []))):
-        raise NativeError(fail)
+    _validate_source_weight(ask, run['carried'], modes, fail, pack=True)
     source_plan(run)
 
 

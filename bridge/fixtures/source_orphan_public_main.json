@@ -1,0 +1,67 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic contract?",
+  "context": [
+    "Synthetic isolated contract capture"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "source",
+      "add",
+      "/synthetic/source_orphan_public_main.yaml"
+    ],
+    "command": "yardr source add /synthetic/source_orphan_public_main.yaml",
+    "description": "Add the source a file declares, or replace the one of its name",
+    "does": [
+      "it adds one source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "source orphan: it has no base and calls nothing. It names no credential.",
+      "the source orphan is not in the yard, but its command copy directory has entries it would replace or remove.",
+      "its limits command [bin/report] says what the source itself carries, asked by the source's name.",
+      "it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.",
+      "command file bin/report: [bin/report] (limits.command, handed no credential): sha256 9e3319eb38574ce7336721183037fd93e1b69717c996fbc44e60a59761b9b896 -> sha256 852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274, mode 0700 (1 insertions, 1 deletions)."
+    ],
+    "back": "yardr source rm orphan",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "orphan",
+        "text": "name: orphan\nlimits:\n  command: [bin/report]\n",
+        "files": [
+          {
+            "program": "bin/report",
+            "text": "#!/bin/sh\nprintf \"synthetic contract\\n\"\n",
+            "sha256": "852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274"
+          }
+        ],
+        "old": [
+          {
+            "program": "bin/report",
+            "old_sha256": "9e3319eb38574ce7336721183037fd93e1b69717c996fbc44e60a59761b9b896",
+            "new_sha256": "852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274",
+            "diff": "--- was\n+++ is\n@@ -1,2 +1,2 @@\n #!/bin/sh\n-printf \"old synthetic contract\\n\"\n+printf \"synthetic contract\\n\"\n"
+          }
+        ],
+        "inventory": [
+          {
+            "path": "bin/report",
+            "sha256": "9e3319eb38574ce7336721183037fd93e1b69717c996fbc44e60a59761b9b896",
+            "mode": "0600",
+            "size": 44
+          }
+        ]
+      }
+    ]
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the command file bin/report of orphan (changed)"
+    }
+  ]
+}

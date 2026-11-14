@@ -1,0 +1,45 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic contract?",
+  "context": [
+    "Synthetic isolated contract capture"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "pack",
+      "apply",
+      "/synthetic/checkout/pack_empty_replace_public_main"
+    ],
+    "command": "yardr pack apply /synthetic/checkout/pack_empty_replace_public_main",
+    "description": "Import a pack into the yard: set the yard to what the pack says",
+    "does": [
+      "pack empty (directory /synthetic/checkout/pack_empty_replace_public_main in yardr unknown), digest sha256:64e4e37a9c8f65fae126351735b4b2afeab83857fa81a8942897d427c48a0261, of kind source, into the yard: it replaces 1 source and copies no command files, and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "source empty: its calls go to https://example.invalid. It names no credential.",
+      "it would replace the source empty the yard has under that name.",
+      "call health (read): GET /health. It takes no parameter, and sends no query.",
+      "call health sends no body. Its answer is returned as it comes, at most 65536 bytes.",
+      "it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.",
+      "it names no command."
+    ],
+    "back": "yardr source rm empty",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "empty",
+        "text": "name: empty\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\n"
+      }
+    ],
+    "pack": {
+      "name": "empty",
+      "kind": "source",
+      "label": "directory /synthetic/checkout/pack_empty_replace_public_main in yardr unknown",
+      "digest": "64e4e37a9c8f65fae126351735b4b2afeab83857fa81a8942897d427c48a0261"
+    }
+  }
+}

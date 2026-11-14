@@ -63,12 +63,16 @@ poll order, and records exactly one answer from the new message.
 `source_new.json`, `source_replace.json`, `source_free.json`,
 `pack_directory.json`, `pack_directory_replace.json` and `pack_embedded.json`
 were recaptured from isolated aligned `11f81f3845e6` and plain upstream
-`09fa95be03e5` builds. Only the temp root (`/synthetic`), ask number and time
-are stabilized; pack labels retain the build that produced them. The new and
-commands-free source captures are identical on both builds. The other four
-plain-upstream captures carry `_upstream` in their filenames. Replacing
-upstream cards omit grants disclosure and are deliberately refused. Aligned
-cards append it to the replacement sentence; their source undo uses stdin.
+`09fa95be03e5` builds, with six additional `*_public_main.json` captures from
+public main `52e22d570cfff58bae725e6df53c047bd63ff4a6` (`it has ...` condensed
+absent-capability disclosures and `base or host` replacement wording). Only the
+temp root (`/synthetic`), ask number and time are stabilized; pack labels retain
+the build that produced them. The aligned and `09fa95be03e5` new and
+commands-free source captures are identical; the remaining captures carry
+`_upstream` (`09fa95be03e5`) or `_public_main` (`52e22d570cfff58bae725e6df53c047bd63ff4a6`)
+in their filenames. Replacing upstream and public-main cards omit grants
+disclosure and are deliberately refused. Aligned cards append it to the
+replacement sentence; their source undo uses stdin.
 
 Directory captures came from `checkout/pack` inside a registered synthetic
 depot with an initial commit and base HEAD. The new pack has CRLF setup notes,
@@ -135,3 +139,35 @@ timestamp beside the pinned `since`. Cards with a `run` key beyond
 test with `--run-test`, a user key with a value, a hook table, a group
 prompt in `role`) are not captured: the bridge keeps refusing them with
 the fallback, as the unknown-key cases of the table test pin.
+
+`source_rich_public_main.json`, `source_address_public_main.json`,
+`source_numeric_public_main.json`, `source_orphan_public_main.json`,
+`source_empty_replace_public_main.json`, `pack_orphan_public_main.json` and
+`pack_empty_replace_public_main.json` are additional actual Bead responses
+from the same isolated public revision `52e22d570cfff58bae725e6df53c047bd63ff4a6`.
+The archived binary SHA-256 is
+`e2b090fcb9f86ff4dd2d9e70933a52bee3d6eeca1e8a07b65ad11adfb23c4009`;
+its build used `go build -buildvcs=false`, so its version label is `unknown`.
+Only the temp root (`/synthetic`), ask number and timestamp are stabilized.
+All earlier captures above remain intact.
+
+The rich source has four mint inputs, HMAC verification and multiple command
+slots. The address source uses `credential.url: true`, a body builder and a
+defaulted parameter. The numeric body writes YAML `0x10`, which the native
+Does row renders as JSON `16`. Orphan creates have an unregistered source's
+standing command copy at mode `0600`, replaced at native install mode `0700`.
+The empty replacements have a registered declaration, no copied programs and
+no inventory; public main omits their grants review, so they remain explicit
+whole-card refusals. Tests that add a no-grant section are synthetic policy
+mutations, not claims about the public renderer.
+
+`RealNativeTests.test_real_native_source_contract_and_authority` recreates
+these source proposals and compares complete public-main responses before
+driving review, bound approval/decline, installation and replay. It also
+submits caller-supplied Does, Seen, rollback and weight through real AddAsk
+RPC and proves that native creation regenerates them. Pack captures come
+from a registered synthetic git depot, with a source-only manifest and the
+same orphan/empty standing state; their declarations and copied bytes are
+carried in full. The source/pack boundary tests cover both authentic captures
+and explicitly labelled framing/grants mutations. No live yard or account is
+used.

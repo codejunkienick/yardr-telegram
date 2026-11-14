@@ -1,0 +1,75 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic contract?",
+  "context": [
+    "Synthetic isolated contract capture"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "source",
+      "add",
+      "/synthetic/source_rich_public_main.yaml"
+    ],
+    "command": "yardr source add /synthetic/source_rich_public_main.yaml",
+    "description": "Add the source a file declares, or replace the one of its name",
+    "does": [
+      "it adds one source and copies 3 command files (7 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "source synthetic: its calls go to https://api.example.invalid. Its credential is the variable SRC_TOK (the name, never the value), with SRC_UPD for updates, minted from MINT_A and MINT_B and MINT_C and MINT_D by the declaration's own mint command [bin/mint, --v1] (command file bin/mint, copied to <home>/sources/synthetic/bin/mint: sha256 852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274, mode 0700), run with the mint's inputs and the operator's local logins where the source's mint_command is unset: one the operator sets wins over it, sent in the header \"Authorization: Bearer {credential}\" on every call.",
+      "call fetch (read): GET /items. It takes q (enum, optional, one of open, closed, its value is kept in the record of each call) and pat (string, optional, pattern ^[a-z]+$, at most 20), and sends the query q={q}, empty=\"\".",
+      "call fetch sends no body. Its answer keeps id, title, at most 4096 bytes.",
+      "call mk (update): POST /items. It takes p (string, required), and sends no query.",
+      "call mk builds its body with the command [bin/builder, --json], run with the credential at each call and free to make its own requests with it while it builds. Its answer is returned as it comes, at most 65536 bytes.",
+      "call tellcall (update): POST /tell. It takes to (string, required), t (string, required), x (string, required) and l (string, optional), and sends no query.",
+      "call tellcall sends the body {\"link\":\"{l}\",\"text\":\"{x}\",\"title\":\"{t}\",\"to\":\"{to}\"}. Its answer is returned as it comes, at most 65536 bytes.",
+      "Its check call is fetch, and updates carry their key in the header X-Req-Id.",
+      "it can tell a user: the call tellcall, whose to takes the person's address, read as HEAR_ADDR from the person's own env file; the title fills t and the text fills x and the link fills l.",
+      "it hears deliveries: only one whose sender is the address of a user told through it, read as , and every told user's: another's, and a stranger's, is dropped after verification.",
+      "its limits command [bin/report, limits, {provider}] says what the subscription of claude as pro still carries.",
+      "it speaks in threads: a place to open one is called issue; the words state takes are started, review, done; it takes labels (label:<name> adds one, never removes); an assignee is a person's key in the source.",
+      "its issues are a bead's link: host example.invalid, the expression ^/(org/repo)/i/([0-9]+)$ reads an issue, the one fixed form https://example.invalid/{1}/i/{2} and the thread id {2}; the groups fold lower. Its pull requests read ^/(org/repo)/pr/([0-9]+)$, with the fixed form https://example.invalid/{1}/pr/{2} and the thread id {2}. A repository's path matches ^(org/repo)$.",
+      "its identity keys fold to lowercase (identity fold: lower), so one spelling is stored however it was typed.",
+      "what it sends in: deliveries are verified by HMAC-SHA512 over v0:{timestamp}:{body} (scheme hmac-sha256, algorithm: sha512, signed: v0:{timestamp}:{body}), the signature in the header X-Sig as hex, one or more separated by \",\", each past the prefix \"sha512=\", any one of them passing; the HMAC key is what follows the prefix \"whsec_\" in the secret, read as hex (not the secret's own bytes); a delivery is named by deliv.id in its body; its time arrives at ts, in ms within 5m of the yard's clock; bodies are unique; the command [bin/report, norm] turns a verified body into the envelope, handed no credential; its events may carry the fields sender, repo.",
+      "what it sends of pull requests and CI: the envelope types ci are runs; push tell a head; the command [bin/report, pr] reads the pull request, handed the credential; the command [bin/report, ci] reads CI, handed the credential.",
+      "command file bin/report: [bin/report, limits, {provider}] (limits.command, handed no credential), [bin/report, open] (thread.open, handed the credential), [bin/report, norm] (hook.normalize, handed no credential), [bin/report, pr] (events.pr, handed the credential) and [bin/report, ci] (events.ci, handed the credential): sha256 852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274, mode 0700",
+      "command file bin/builder: [bin/builder, --json] (call.mk.build, handed the credential): sha256 852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274, mode 0700",
+      "still owed after it: the credential, by a secret ask for synthetic; and which user it tells, by yardr user set <user> notify=synthetic."
+    ],
+    "back": "yardr source rm synthetic",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "synthetic",
+        "text": "name: synthetic\nbase: https://api.example.invalid\nbases:\n  eu: https://eu.example.invalid\ncredential:\n  env: SRC_TOK\n  update_env: SRC_UPD\n  header: \"Authorization: Bearer {credential}\"\n  mint:\n    - name: MINT_A\n      secret: true\n    - MINT_B\n    - MINT_C\n    - MINT_D\n  mint_command: [bin/mint, --v1]\ncalls:\n  fetch:\n    kind: read\n    params:\n      q: {type: enum, values: [open, closed], optional: true, log: true}\n      pat: {type: string, pattern: \"^[a-z]+$\", max: 20, optional: true}\n    request:\n      method: GET\n      path: /items\n      query: {q: \"{q}\", empty: \"\"}\n    answer:\n      select: [id, title]\n      max: 4096\n  mk:\n    kind: update\n    request: {method: POST, path: /items}\n    build: [bin/builder, --json]\n    params:\n      p: {type: string}\n  tellcall:\n    kind: update\n    params:\n      to: {type: string}\n      t: {type: string}\n      x: {type: string}\n      l: {type: string, optional: true}\n    request:\n      method: POST\n      path: /tell\n      body: {to: \"{to}\", title: \"{t}\", text: \"{x}\", link: \"{l}\"}\ncheck: fetch\nidempotency: X-Req-Id\nnotify:\n  call: tellcall\n  address: {param: to, env: HEAR_ADDR}\n  title: t\n  text: x\n  link: l\nhear:\n  field: sender\n  by: identity\nlimits:\n  command: [bin/report, limits, \"{provider}\"]\n  kinds: {claude: pro}\nthread:\n  open: [bin/report, open]\n  place: issue\n  states: [started, review, done]\n  labels: true\n  assignee: key\nlink:\n  host: example.invalid\n  issue: \"^/(org/repo)/i/([0-9]+)$\"\n  fixed: \"https://example.invalid/{1}/i/{2}\"\n  thread: \"{2}\"\n  fold: lower\n  pull:\n    issue: \"^/(org/repo)/pr/([0-9]+)$\"\n    fixed: \"https://example.invalid/{1}/pr/{2}\"\n    thread: \"{2}\"\n  repos: \"^(org/repo)$\"\nidentity:\n  fold: lower\nevents:\n  runs: [ci]\n  head_from: [push]\n  pr: [bin/report, pr]\n  ci: [bin/report, ci]\nhook:\n  verify:\n    scheme: hmac-sha256\n    algorithm: sha512\n    signed: \"v0:{timestamp}:{body}\"\n    signature: {header: X-Sig, encoding: hex, list: \",\", prefix: \"sha512=\"}\n    key: {encoding: hex, prefix: \"whsec_\"}\n    delivery: {body: deliv.id}\n    timestamp: {body: ts, unit: ms, window: 5m}\n  bodies: unique\n  normalize: [bin/report, norm]\n  keys: [sender, repo]\n",
+        "files": [
+          {
+            "program": "bin/mint",
+            "text": "#!/bin/sh\nprintf \"synthetic contract\\n\"\n",
+            "sha256": "852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274"
+          },
+          {
+            "program": "bin/report",
+            "text": "#!/bin/sh\nprintf \"synthetic contract\\n\"\n",
+            "sha256": "852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274"
+          },
+          {
+            "program": "bin/builder",
+            "text": "#!/bin/sh\nprintf \"synthetic contract\\n\"\n",
+            "sha256": "852df76bdccdcb7435e1d65b711dc6ba2a562a711d2a61ef2a5ed58aeb136274"
+          }
+        ]
+      }
+    ]
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the command file bin/mint of synthetic (new), bin/report of synthetic (new) and bin/builder of synthetic (new)"
+    }
+  ]
+}

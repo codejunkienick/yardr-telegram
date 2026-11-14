@@ -1,0 +1,60 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic pack?",
+  "context": [
+    "Synthetic isolated pack review"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "pack",
+      "apply",
+      "/synthetic/checkout/pack",
+      "--sha256",
+      "935acc9aab245bf3737d907c5be763a6d0a9dc529b8cc403cbc6a58944d91ff0"
+    ],
+    "command": "yardr pack apply /synthetic/checkout/pack --sha256 935acc9aab245bf3737d907c5be763a6d0a9dc529b8cc403cbc6a58944d91ff0",
+    "description": "Import a pack into the yard: set the yard to what the pack says",
+    "does": [
+      "pack synthetic (directory /synthetic/checkout/pack in yardr unknown), digest sha256:935acc9aab245bf3737d907c5be763a6d0a9dc529b8cc403cbc6a58944d91ff0, of kind source, into the yard: it adds 1 source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+      "source synthetic: its calls go to https://example.invalid. It names no credential.",
+      "call health (read): GET /health. It takes no parameter, and sends no query.",
+      "call health sends no body. Its answer is returned as it comes, at most 65536 bytes.",
+      "what it sends in: deliveries are verified by the header X-Secret holding the hook's secret itself (scheme secret); it sends no delivery id; it sends no timestamp; bodies are unique; the command [bin/report] turns a verified body into the envelope, handed no credential; its events carry no field of their own.",
+      "it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case) and no pull-request or CI events.",
+      "command file bin/report: [bin/report] (hook.normalize, handed no credential): sha256 9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4, mode 0700"
+    ],
+    "back": "yardr source rm synthetic",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "synthetic",
+        "text": "name: synthetic\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\nhook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [bin/report]\n",
+        "files": [
+          {
+            "program": "bin/report",
+            "text": "#!/bin/sh\n# Synthetic <&> file; never executed.\nprintf \"old\\n\"\n",
+            "sha256": "9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4"
+          }
+        ]
+      }
+    ],
+    "pack": {
+      "name": "synthetic",
+      "kind": "source",
+      "label": "directory /synthetic/checkout/pack in yardr unknown",
+      "digest": "935acc9aab245bf3737d907c5be763a6d0a9dc529b8cc403cbc6a58944d91ff0"
+    }
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the command file bin/report of synthetic (new)"
+    }
+  ]
+}

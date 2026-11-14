@@ -30,6 +30,20 @@ import run_asks as n
 n = getattr(b, 'run_asks', n)
 
 
+GO_ESCAPE = r'\\(?:[abfnrtv\\"]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})'
+GO_QUOTED_CHAR = rf'(?:[^"\\\x00-\x1f\x7f]|{GO_ESCAPE})'
+GO_QUOTED_NONEMPTY = rf'"{GO_QUOTED_CHAR}+"'
+GO_QUOTED_ANY = rf'"{GO_QUOTED_CHAR}*"'
+GO_QUOTED_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+DISPLAY_VALUE = rf'(?:{GO_QUOTED_NONEMPTY}|[^\s,=\\"]+)'
+COMMAND_TOKEN = rf'(?:{GO_QUOTED_NONEMPTY}|[^\s,\[\]\\"]+)'
+COMMAND_ARGV = rf'\[{COMMAND_TOKEN}(?:, {COMMAND_TOKEN})*\]'
+
+
+def and_list(items):
+    return ' and '.join(items) if len(items) < 3 else ', '.join(items[:-1]) + ' and ' + items[-1]
+
+
 def proposal():
     return dict(ask=7, turn=0, to='pat', asker='proposer', since='2026-01-01T00:00:00Z',
                 question='Change the test?', context=['First <context>', 'Second & context'], options=[], state='open',
@@ -74,6 +88,163 @@ def source_proposal(kind='replace', extra=''):
 
 def pack_proposal(kind='directory'):
     return json.loads(Path(__file__).with_name('fixtures').joinpath('pack_' + kind + '.json').read_text())
+
+
+RICH_YAML = (
+    'name: synthetic\n'
+    'base: https://api.example.invalid\n'
+    'bases:\n  eu: https://eu.example.invalid\n'
+    'credential:\n'
+    '  env: SRC_TOK\n'
+    '  update_env: SRC_UPD\n'
+    '  header: "Authorization: Bearer {credential}"\n'
+    '  mint:\n    - name: MINT_A\n      secret: true\n    - MINT_B\n'
+    '  mint_command: [bin/mint, --v1]\n'
+    'calls:\n'
+    '  fetch:\n'
+    '    kind: read\n'
+    '    params:\n'
+    '      q: {type: enum, values: [open, closed], optional: true, log: true}\n'
+    '      pat: {type: string, pattern: "^[a-z]+$", max: 20, optional: true}\n'
+    '    request:\n'
+    '      method: GET\n      path: /items\n      query: {q: "{q}", empty: ""}\n'
+    '    answer:\n      select: [id, title]\n      max: 4096\n'
+    '  mk:\n'
+    '    kind: update\n'
+    '    request: {method: POST, path: /items}\n'
+    '    build: [bin/builder, --json]\n'
+    '    params:\n      p: {type: string}\n'
+    '  tellcall:\n'
+    '    kind: update\n'
+    '    params:\n      to: {type: string}\n      t: {type: string}\n      x: {type: string}\n      l: {type: string, optional: true}\n'
+    '    request:\n'
+    '      method: POST\n      path: /tell\n      body: {to: "{to}", title: "{t}", text: "{x}", link: "{l}"}\n'
+    'check: fetch\n'
+    'idempotency: X-Req-Id\n'
+    'notify:\n  call: tellcall\n  address: {param: to, env: HEAR_ADDR}\n  title: t\n  text: x\n  link: l\n'
+    'hear:\n  field: sender\n  by: identity\n'
+    'limits:\n  command: [bin/report, limits]\n  kinds: {claude: pro}\n'
+    'thread:\n  open: [bin/report, open]\n  place: issue\n  states: [started, review, done]\n  labels: true\n  assignee: key\n'
+    'link:\n'
+    '  host: example.invalid\n'
+    '  issue: "^/(org/repo)/i/([0-9]+)$"\n  fixed: "https://example.invalid/{1}/i/{2}"\n  thread: "{2}"\n  fold: lower\n'
+    '  pull:\n    issue: "^/(org/repo)/pr/([0-9]+)$"\n    fixed: "https://example.invalid/{1}/pr/{2}"\n    thread: "{2}"\n'
+    '  repos: "^(org/repo)$"\n'
+    'identity:\n  fold: lower\n'
+    'events:\n  runs: [ci]\n  head_from: [push]\n  pr: [bin/report, pr]\n  ci: [bin/report, ci]\n'
+    'hook:\n'
+    '  verify:\n'
+    '    scheme: hmac-sha256\n    algorithm: sha512\n    signed: "v0:{timestamp}:{body}"\n'
+    '    signature: {header: X-Sig, encoding: hex, list: ",", prefix: "sha512="}\n'
+    '    key: {encoding: hex, prefix: "whsec_"}\n'
+    '    delivery: {body: deliv.id}\n    timestamp: {body: ts, unit: ms, window: 5m}\n'
+    '  bodies: unique\n'
+    '  normalize: [bin/report, norm]\n'
+    '  keys: [sender, repo]\n'
+    '  register: {call: tellcall, url: x, secret: t}\n'
+)
+
+
+def rich_add_proposal():
+    """Rich source add covering all capability slots, mint, bases, run/build calls, params, query and answer."""
+    rich_sha = n.file_hash('#!/bin/sh\necho ok\n')
+    rich_mint_sha = n.file_hash('#!/bin/sh\necho mint\n')
+    rich_add = source_proposal('new_public_main')
+    rich_add['run']['carried'][0]['text'] = RICH_YAML
+    rich_add['run']['carried'][0]['files'] = [
+        dict(program='bin/mint', text='#!/bin/sh\necho mint\n', sha256=rich_mint_sha),
+        dict(program='bin/report', text='#!/bin/sh\necho ok\n', sha256=rich_sha),
+        dict(program='bin/builder', text='#!/bin/sh\necho ok\n', sha256=rich_sha),
+    ]
+    rich_add['run']['does'] = [
+        "it adds one source and copies 3 command files (7 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+        (f'source synthetic: its calls go to https://eu.example.invalid (base eu). Its credential is the variable SRC_TOK (the name, never the value), '
+         f'with SRC_UPD for updates, minted from MINT_A and MINT_B by the declaration\'s own mint command [bin/mint, --v1] '
+         f'(command file bin/mint, copied to <home>/sources/synthetic/bin/mint: sha256 {rich_mint_sha}, mode 0700), '
+         f'run with the mint\'s inputs and the operator\'s local logins where the source\'s mint_command is unset: one the operator sets wins over it, '
+         f'sent in the header "Authorization: Bearer {{credential}}" on every call.'),
+        'call fetch (read): GET /items. It takes q (enum, optional, one of open, closed, its value is kept in the record of each call) and pat (string, optional, pattern ^[a-z]+$, at most 20), and sends the query q={q}, empty="".',
+        'call fetch sends no body. Its answer keeps id, title, at most 4096 bytes.',
+        'call mk (update): POST /items. It takes p (string, required), and sends no query.',
+        'call mk builds its body with the command [bin/builder, --json], run with the credential at each call and free to make its own requests with it while it builds. Its answer is returned as it comes, at most 65536 bytes.',
+        'call tellcall (update): POST /tell. It takes to (string, required), t (string, required), x (string, required) and l (string, optional), and sends no query.',
+        'call tellcall sends the body {"link":"{l}","text":"{x}","title":"{t}","to":"{to}"}. Its answer is returned as it comes, at most 65536 bytes.',
+        'Its check call is fetch, and updates carry their key in the header X-Req-Id.',
+        "it can tell a user: the call tellcall, whose to takes the person's address, read as HEAR_ADDR from the person's own env file; the title fills t and the text fills x and the link fills l.",
+        "it hears deliveries: only one whose sender is the address of a user told through it, read as , and every told user's: another's, and a stranger's, is dropped after verification.",
+        'its limits command [bin/report, limits] says what the subscription of claude as pro still carries.',
+        "it speaks in threads: a place to open one is called issue; the words state takes are started, review, done; it takes labels (label:<name> adds one, never removes); an assignee is a person's key in the source.",
+        "its issues are a bead's link: host example.invalid, the expression ^/(org/repo)/i/([0-9]+)$ reads an issue, the one fixed form https://example.invalid/{1}/i/{2} and the thread id {2}; the groups fold lower. Its pull requests read ^/(org/repo)/pr/([0-9]+)$, with the fixed form https://example.invalid/{1}/pr/{2} and the thread id {2}. A repository's path matches ^(org/repo)$.",
+        'its identity keys fold to lowercase (identity fold: lower), so one spelling is stored however it was typed.',
+        'what it sends in: deliveries are verified by HMAC-SHA512 over v0:{timestamp}:{body} (scheme hmac-sha256, algorithm: sha512, signed: v0:{timestamp}:{body}), the signature in the header X-Sig as hex, one or more separated by ",", each past the prefix "sha512=", any one of them passing; the HMAC key is what follows the prefix "whsec_" in the secret, read as hex (not the secret\'s own bytes); a delivery is named by deliv.id in its body; its time arrives at ts, in ms within 5m of the yard\'s clock; bodies are unique; the command [bin/report, norm] turns a verified body into the envelope, handed no credential; its events may carry the fields sender, repo; the yard registers its webhook with tellcall (POST /tell), filling x with the public URL and t with the hook\'s secret.',
+        'what it sends of pull requests and CI: the envelope types ci are runs; push tell a head; the command [bin/report, pr] reads the pull request, handed the credential; the command [bin/report, ci] reads CI, handed the credential.',
+        f'command file bin/report: [bin/report, limits] (limits.command, handed no credential), [bin/report, open] (thread.open, handed the credential), [bin/report, norm] (hook.normalize, handed no credential), [bin/report, pr] (events.pr, handed the credential) and [bin/report, ci] (events.ci, handed the credential): sha256 {rich_sha}, mode 0700',
+        f'command file bin/builder: [bin/builder, --json] (call.mk.build, handed the credential): sha256 {rich_sha}, mode 0700',
+        'still owed after it: the credential, by a secret ask for synthetic; and which user it tells, by yardr user set <user> notify=synthetic.',
+    ]
+    rich_add['weight'] = [dict(
+        {'class': 'code'},
+        line='brings a program the yard will run: the command file bin/mint of synthetic (new), bin/report of synthetic (new) and bin/builder of synthetic (new)',
+    )]
+    return rich_add
+
+
+def nested_replace_proposal(rich_add=None):
+    """Rich source as a replacement: whole new-side declaration diffs for every nested field."""
+    nested_rep = copy.deepcopy(rich_add if rich_add is not None else rich_add_proposal())
+    nrc = nested_rep['run']['carried'][0]
+    nrc['inventory'] = [dict(path=f['program'], sha256=f['sha256'], mode='0700',
+                             size=len(f['text'].encode())) for f in nrc['files']]
+    nested_rep['run']['back'] = ('yardr bead ask <bead> - with Q: <question> and R: source add '
+                                 '<a file holding the declaration that stands now> on stdin')
+    nested_rep['run']['back_by'] = 'only the operator'
+    nested_rep['run']['does'][0] = (
+        'it replaces one source and copies 3 command files (7 commands), and changes nothing else. '
+        'It grants no call, makes no hook, and sets no credential\'s file: the source keeps its env_file, '
+        'mint_command, region base, call limits and ignored senders, and every grant of it stands, '
+        'now for this declaration.')
+    nested_new = {
+        'check': 'fetch',
+        'credential': {'env': 'SRC_TOK', 'header': 'Authorization: Bearer {credential}',
+                       'mint': [{'name': 'MINT_A', 'secret': True}, 'MINT_B'],
+                       'mint_command': ['bin/mint', '--v1'], 'update_env': 'SRC_UPD'},
+        'notify': {'address': {'env': 'HEAR_ADDR', 'param': 'to'}, 'call': 'tellcall',
+                   'link': 'l', 'text': 'x', 'title': 't'},
+        'hear': {'by': 'identity', 'field': 'sender'},
+        'limits': {'command': ['bin/report', 'limits'], 'kinds': {'claude': 'pro'}},
+        'thread': {'assignee': 'key', 'labels': True, 'open': ['bin/report', 'open'],
+                   'place': 'issue', 'states': ['started', 'review', 'done']},
+        'link': {'fixed': 'https://example.invalid/{1}/i/{2}', 'fold': 'lower',
+                 'host': 'example.invalid', 'issue': '^/(org/repo)/i/([0-9]+)$',
+                 'pull': {'fixed': 'https://example.invalid/{1}/pr/{2}',
+                          'issue': '^/(org/repo)/pr/([0-9]+)$', 'thread': '{2}'},
+                 'repos': '^(org/repo)$', 'thread': '{2}'},
+        'hook': {'bodies': 'unique', 'keys': ['sender', 'repo'],
+                 'normalize': ['bin/report', 'norm'],
+                 'register': {'call': 'tellcall', 'secret': 't', 'url': 'x'},
+                 'verify': {'algorithm': 'sha512',
+                            'delivery': {'body': 'deliv.id'},
+                            'key': {'encoding': 'hex', 'prefix': 'whsec_'},
+                            'scheme': 'hmac-sha256',
+                            'signature': {'encoding': 'hex', 'header': 'X-Sig',
+                                          'list': ',', 'prefix': 'sha512='},
+                            'signed': 'v0:{timestamp}:{body}',
+                            'timestamp': {'body': 'ts', 'unit': 'ms', 'window': '5m'}}},
+        'events': {'ci': ['bin/report', 'ci'], 'head_from': ['push'],
+                   'pr': ['bin/report', 'pr'], 'runs': ['ci']},
+        'identity': {'fold': 'lower'},
+    }
+    nested_rep['run']['does'][2:2] = (
+        ['it would replace the source synthetic the yard has under that name; '
+         'no grant of source synthetic stands.'] +
+        [f'source synthetic {field}: none -> '
+         f'{json.dumps(value, sort_keys=True, separators=(",", ":"))}.'
+         for field, value in nested_new.items()])
+    nested_rep['weight'] = [dict(
+        {'class': 'code'},
+        line=('brings a program the yard will run: the declaration of synthetic replaces the one '
+              'that stands, and says where the credential it keeps is sent and which programs the yard runs'))]
+    return nested_rep
 
 
 def group_proposal(name='group_add', extra=''):
@@ -275,6 +446,8 @@ class NativeSocket:
 
             def reply(self, value):
                 raw = json.dumps(value).encode()
+                if owner.mode == 'duplicate-json':
+                    raw = raw.replace(b'"result":', b'"result":null,"result":', 1)
                 self.send_response(200)
                 self.send_header('Content-Length', str(len(raw)))
                 self.end_headers()
@@ -411,6 +584,201 @@ class NativeCase(BridgeTestCase):
 
 
 class NativeTests(NativeCase):
+    def assert_source_contract(self, ask, delivered):
+        self.reset_native(copy.deepcopy(ask))
+        result = self.create()
+        self.assertEqual(result['delivered'], delivered, result)
+        self.assertEqual(self.writes(), [])
+        if delivered:
+            self.assert_source_review(ask, self.bundle_review(self.row()))
+        else:
+            self.assertEqual((self.sent_count, self.documents), (0, []))
+
+    def assert_bound_source_change_stales(self, base, changed):
+        self.reset_native(copy.deepcopy(base))
+        self.assertTrue(self.create()['delivered'])
+        row = self.row()
+        if base.get('weight'):
+            self.press()
+            action = 'confirm:' + self.row()['pending']['nonce']
+        else:
+            action = 'approve'
+        query = dict(id='queued-source', data=f"runask:{row['id']}:{action}",
+            message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                         **{'from': dict(id=999, is_bot=True)}), **{'from': dict(id=123, is_bot=False)})
+        self.native.ask = copy.deepcopy(changed)
+        sent, documents = self.sent_count, len(self.documents)
+        original = self.bridge.telegram
+        def queued(method, body, timeout=15):
+            if method == 'getUpdates':
+                return 200, dict(ok=True, result=[dict(update_id=91, callback_query=query)])
+            return original(method, body, timeout)
+        with patch.object(self.bridge, 'telegram', side_effect=queued):
+            self.bridge.poll_once()
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.row()['state'], 'stale')
+        self.assertEqual(self.row()['display']['keyboard'], [])
+        self.assertEqual((self.sent_count, len(self.documents)), (sent, documents))
+
+    def assert_fixture_prose_mutation(self, base, changed):
+        does = changed['run']['does']
+        names = [c['name'] for c in base['run']['carried']]
+        anchors = [(i, line.split(': ', 1)[0][7:]) for i, line in enumerate(does)
+                   if re.fullmatch(r'source [^ :]+: .+', line)]
+        # These tables mutate prose only; protected fixture framing must survive.
+        same_lead = does[0] == base['run']['does'][0]
+        same_anchors = (bool(anchors) and anchors[0][0] == 1
+                        and [name for _, name in anchors] == names)
+        markers = [line for line in does if line.startswith('it would replace the source ')]
+        original = [line for line in base['run']['does'] if line.startswith('it would replace the source ')]
+        same_grants = markers == original
+        safe = all(line.strip() and not any(c in n.HIDDEN or c in '\n\r' for c in line) for line in does)
+        accepted = same_lead and same_anchors and same_grants and safe and len(does) <= 40
+        if base['run']['argv'][0] == 'source':
+            accepted = accepted and len(does) >= 4
+        self.assert_source_contract(changed, bool(accepted))
+
+    def test_source_pack_first_read_prose_is_presented_verbatim(self):
+        for base in (source_proposal('new_public_main'), pack_proposal('directory_public_main')):
+            ask = copy.deepcopy(base)
+            ask['run']['does'][0] = ask['run']['does'][0].replace('1 command file (1 command)', '9 command files (8 commands)')
+            ask['run']['does'][2] = 'Native prose <&>🙂: {"x":1,"x":2}; not interpreted.'
+            ask['run']['does'].append('An unfamiliar native disclosure, shown whole.')
+            self.assert_source_contract(ask, True)
+            self.assert_bound_source_change_stales(base, ask)
+        for kind in ('rich_public_main', 'address_public_main', 'numeric_public_main'):
+            self.assert_source_contract(source_proposal(kind), True)
+        self.reset_native(source_proposal('new_public_main'))
+        self.native.mode = 'duplicate-json'
+        self.assertFalse(self.create()['delivered'])
+        self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+
+    def test_source_pack_weight_presence_is_structural(self):
+        for base in (source_proposal('new_public_main'), pack_proposal('directory_public_main')):
+            ask = copy.deepcopy(base)
+            ask['weight'][0]['line'] = 'Native program warning <&>🙂; wording belongs to core.'
+            self.assert_source_contract(ask, True)
+            self.assertIn(ask['weight'][0]['line'], self.row()['plain'])
+            self.assert_bound_source_change_stales(base, ask)
+            ask['weight'] = []
+            self.assert_source_contract(ask, False)
+        free = source_proposal('free_public_main')
+        for weights in ([], [{'class': 'reads', 'line': 'Native reads warning'}],
+                        [{'class': 'code', 'line': 'Native code warning'}]):
+            free['weight'] = weights
+            self.assert_source_contract(free, True)
+        for weights in ([{'class': 'credential', 'line': 'Unknown'}],
+                        [{'class': 'code', 'line': 'One'}, {'class': 'code', 'line': 'Two'}],
+                        [{'class': 'reads', 'line': 'One'}, {'class': 'reads', 'line': 'Two'}],
+                        [{'class': 'reads', 'line': 'x' * (n.CAP + 1)}],
+                        [{'class': 'reads', 'line': ''}], [{'class': 'reads', 'line': '\u202ehidden'}]):
+            free['weight'] = weights
+            self.assert_source_contract(free, False)
+        empty = source_proposal('empty_replace_public_main')
+        empty['run']['does'][2] = 'it would replace the source empty the yard has under that name; no grant of source empty stands.'
+        self.assert_source_contract(empty, True)
+        empty['weight'] = []
+        self.assert_source_contract(empty, False)
+        pack = pack_proposal('empty_replace_public_main')
+        pack['run']['does'][2] = 'it would replace the source empty the yard has under that name; no grant of source empty stands.'
+        self.assert_source_contract(pack, True)
+        pack['weight'] = [{'class': 'reads', 'line': 'Native reads warning'}]
+        self.assert_source_contract(pack, True)
+        pack['weight'] = [{'class': 'code', 'line': 'Native optional program warning'}]
+        self.assert_source_contract(pack, True)
+        free['weight'] = [{'class': 'code', 'line': 'Native program warning'}, {'class': 'reads', 'line': 'Native reads warning'}]
+        changed = copy.deepcopy(free)
+        changed['weight'].pop()
+        self.assert_bound_source_change_stales(free, changed)
+        orphan = source_proposal('orphan_public_main')
+        carried = orphan['run']['carried'][0]
+        carried['inventory'][0].update(sha256=carried['files'][0]['sha256'], size=len(carried['files'][0]['text'].encode()))
+        carried.pop('old')
+        orphan['weight'] = []
+        self.assert_source_contract(orphan, True)
+        carried['inventory'][0]['symlink'] = True
+        self.assert_source_contract(orphan, False)
+        orphan['weight'] = [{'class': 'code', 'line': 'Native symlink program warning'}]
+        self.assert_source_contract(orphan, True)
+
+    def test_source_pack_replacement_accounting_fails_closed(self):
+        for base in (source_proposal('replace'), pack_proposal('directory_replace')):
+            self.assert_source_contract(base, True)
+            marker = next(i for i, line in enumerate(base['run']['does']) if line.startswith('it would replace the source '))
+            for value in (None, 'Native replacement wording changed.',
+                          base['run']['does'][marker].replace('source synthetic', 'source foreign')):
+                ask = copy.deepcopy(base)
+                if value is None:
+                    ask['run']['does'].pop(marker)
+                else:
+                    ask['run']['does'][marker] = value
+                self.assert_source_contract(ask, False)
+            ask = copy.deepcopy(base)
+            ask['run']['does'].insert(marker, ask['run']['does'][marker])
+            self.assert_source_contract(ask, False)
+        for kind in ('replace_public_main', 'empty_replace_public_main'):
+            self.assert_source_contract(source_proposal(kind), False)
+        orphan = source_proposal('orphan_public_main')
+        self.assert_source_contract(orphan, True)
+        for value in (None, 'The source orphan is absent, with old command copies.'):
+            ask = copy.deepcopy(orphan)
+            if value is None:
+                ask['run']['does'].pop(2)
+            else:
+                ask['run']['does'][2] = value
+            self.assert_source_contract(ask, False)
+        ask = source_proposal('replace')
+        ask['run']['does'][0] = source_proposal('new')['run']['does'][0]
+        ask['run']['back'] = 'yardr source rm synthetic'
+        ask['run']['back_by'] = 'the operator'
+        ask['run']['does'] = [line for line in ask['run']['does'] if not line.startswith('it would replace the source ')]
+        self.assert_source_contract(ask, False)
+        for field, value in (('back', 'yardr source rm synthetic'), ('back_by', 'the operator')):
+            ask = source_proposal('replace')
+            ask['run'][field] = value
+            self.assert_source_contract(ask, False)
+        orphan = pack_proposal('orphan_public_main')
+        self.assert_source_contract(orphan, True)
+        for value in (None, 'Unknown orphan wording.', orphan['run']['does'][2].replace('packorphan', 'foreign')):
+            ask = copy.deepcopy(orphan)
+            if value is None:
+                ask['run']['does'].pop(2)
+            else:
+                ask['run']['does'][2] = value
+            self.assert_source_contract(ask, False)
+        empty = pack_proposal('empty_replace_public_main')
+        self.assert_source_contract(empty, False)
+        empty['run']['does'][2] = 'it would replace the source empty the yard has under that name; no grant of source empty stands.'
+        self.assert_source_contract(empty, True)
+        for base in (empty, source_proposal('empty_replace_public_main')):
+            base['run']['does'][2] = 'it would replace the source empty the yard has under that name; no grant of source empty stands.'
+            for marker in (None, 'Unknown replacement wording.'):
+                ask = copy.deepcopy(base)
+                if marker is None:
+                    ask['run']['does'].pop(2)
+                else:
+                    ask['run']['does'][2] = marker
+                self.assert_source_contract(ask, False)
+        mixed = copy.deepcopy(empty)
+        free = source_proposal('free_public_main')
+        mixed['run']['does'][0] = mixed['run']['does'][0].replace('it replaces 1 source', 'it adds 1 source and replaces 1 source')
+        mixed['run']['carried'].extend(free['run']['carried'])
+        mixed['run']['does'].extend(free['run']['does'][1:])
+        self.assert_source_contract(mixed, True)
+        for mutate in ('missing-marker', 'reworded-marker', 'lost-cardinality', 'duplicate-grants', 'foreign-grants'):
+            ask = copy.deepcopy(mixed)
+            if mutate == 'missing-marker':
+                ask['run']['does'].pop(2)
+            elif mutate == 'reworded-marker':
+                ask['run']['does'][2] = 'Native replacement wording changed.'
+            elif mutate == 'lost-cardinality':
+                ask['run']['does'][0] = ask['run']['does'][0].replace('adds 1 source and replaces 1 source', 'adds 2 sources')
+            elif mutate == 'duplicate-grants':
+                ask['run']['does'].insert(3, ask['run']['does'][2])
+            else:
+                ask['run']['does'][2] = ask['run']['does'][2].replace('no grant of source empty', 'no grant of source foreign')
+            self.assert_source_contract(ask, False)
+
     def test_ordinary_options_words_later_reopen_decline_and_native_close(self):
         ask = dense_decision()
         self.assertTrue(self.create_decision(ask)['delivered'])
@@ -1514,6 +1882,14 @@ class NativeTests(NativeCase):
         self.assertNotIn("type the ask's number", result.stdout)
 
     def test_callback_and_proposal_binding_refusals(self):
+        for kind in ('new_public_main', 'free_public_main'):
+            base = source_proposal(kind)
+            for key in ('concealed', 'given'):
+                for value in (None, False, [], ['TOKEN']):
+                    with self.subTest(source_envelope_changed=(kind, key, value)):
+                        changed = dict(base, **{key: value})
+                        self.assert_bound_source_change_stales(base, changed)
+
         for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
@@ -1618,7 +1994,22 @@ class NativeTests(NativeCase):
                 self.assertEqual(close['metadata']['reason'], 'run_ask_message_binding_ambiguous')
 
     def test_unsupported_source_pack_and_malformed_payloads_never_send(self):
+        envelopes = [source_proposal(kind) for kind in
+                     ('new', 'replace', 'free', 'new_public_main', 'free_public_main')]
+        envelopes += [pack_proposal(kind) for kind in
+                      ('directory', 'directory_upstream', 'directory_public_main')]
+        for base in envelopes:
+            for key in ('secret', 'setup', 'identity', 'depot_push', 'concealed', 'given'):
+                for value in (None, False, [], ['TOKEN']):
+                    with self.subTest(source_envelope=(base['run']['argv'], key, value)):
+                        ask = dict(base, **{key: value})
+                        self.assert_source_contract(ask, False)
+                        entry = dict(queue_entry(ask), **{key: value})
+                        self.assertEqual(n.queue_kind(entry), ('terminal-only run', False))
+            self.assert_source_contract(base, True)
+
         base = proposal()
+        self.reset_native(base)
         cases = [{field: {}} for field in ('secret', 'setup', 'identity', 'depot_push')]
         cases += [{'run': dict(base['run'], **extra)} for extra in
                   ({'ask': ['name']}, {'carried': [{}]}, {'pack': {}}, {'argv': ['crew', 'add', 'helper']},
@@ -1715,12 +2106,19 @@ class NativeTests(NativeCase):
             self.native.ask['run']['carried'][0][field] *= 2
             self.assertFalse(self.create()['delivered'])
             self.assertEqual(self.sent_count, 0)
-        for kind in ('new', 'replace', 'free'):
+        for kind in ('new', 'replace', 'free', 'new_public_main', 'free_public_main'):
             self.reset_native(source_proposal(kind))
             self.assertTrue(self.create()['delivered'])
             row = self.row()
             review = NativeTests.bundle_review(row)
             self.assert_source_review(self.native.ask, review)
+        for kind in ('directory_public_main', 'embedded_public_main'):
+            ask = pack_proposal(kind)
+            self.reset_native(ask)
+            self.assertTrue(self.create()['delivered'])
+            self.assert_pack_document(ask, self.documents[-1][2])
+            review = NativeTests.bundle_review(self.row())
+            self.assert_source_review(ask, review)
         ask = source_proposal()
         carried = ask['run']['carried'][0]
         change = carried['old'][0]
@@ -1730,6 +2128,27 @@ class NativeTests(NativeCase):
         change['new_sha256'] = ''
         lines = old.removesuffix('\n').split('\n')
         change['diff'] = '--- was\n+++ is\n' + f'@@ -1,{len(lines)} +0,0 @@\n' + ''.join('-' + line + '\n' for line in lines)
+        ask['run']['does'] = [
+            "it replaces one source and copies no command files, and removes the command copies that stand, and changes nothing else. It grants no call, makes no hook, and sets no credential's file: the source keeps its env_file, mint_command, region base, call limits and ignored senders, and every grant of it stands, now for this declaration.",
+            'source synthetic: it has no base and calls nothing. It names no credential.',
+            'it would replace the source synthetic the yard has under that name; no grant of source synthetic stands.',
+            f'command file bin/report would change: sha256 {change["old_sha256"]} -> sha256 (none) (0 insertions, {len(lines)} deletions).',
+            ask['run']['does'][3],
+            'The source names no check call and no idempotency header.',
+            'it can tell no user.',
+            'it hears no deliveries.',
+            'it names no limits command.',
+            'it speaks in no threads.',
+            "its issues are no bead's link.",
+            'its identity keys keep their case.',
+            'it sends no hook deliveries into the yard.',
+            'it sends no pull-request or CI events.',
+            'it names no command.',
+        ]
+        ask['weight'] = [dict(
+            {'class': 'code'},
+            line='brings a program the yard will run: the declaration of synthetic replaces the one that stands, and what it names of commands or updates runs from now on',
+        )]
         self.reset_native(ask)
         self.assertTrue(self.create()['delivered'])
         self.assertIn('Remove sources/synthetic/bin/report; sha256 ' + change['old_sha256'], self.row()['plain'])
@@ -1745,13 +2164,236 @@ class NativeTests(NativeCase):
                               else 'invalid_source_pack', result['reason'])
                 self.assertEqual(self.sent_count, 0)
                 self.assertEqual(self.writes(), [])
-        self.reset_native(source_proposal('new', extra='# ' + '<&>🙂\t\r\n'
+        mint_ask = source_proposal('new', extra='# ' + '<&>🙂\t\r\n'
             'base: https://example.invalid\n'
             'credential:\n  env: TOKEN\n  mint: [TENANT, {name: ACCOUNT, secret: false}]\n'
             '  mint_command: [bin/report]\n  header: "Authorization: Bearer {credential}"\n'
-            'calls: {health: {kind: read, request: {method: GET, path: /health}}}\n'))
+            'calls: {health: {kind: read, request: {method: GET, path: /health}}}\n')
+        mint_sha = mint_ask['run']['carried'][0]['files'][0]['sha256']
+        mint_ask['run']['does'] = [
+            "it adds one source and copies 1 command file (2 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+            (f'source synthetic: its calls go to https://example.invalid. Its credential is the variable TOKEN (the name, never the value), '
+             f'minted from TENANT and ACCOUNT by the declaration\'s own mint command [bin/report] '
+             f'(command file bin/report, copied to <home>/sources/synthetic/bin/report: sha256 {mint_sha}, mode 0700), '
+             f'run with the mint\'s inputs and the operator\'s local logins where the source\'s mint_command is unset: one the operator sets wins over it, '
+             f'sent in the header "Authorization: Bearer {{credential}}" on every call. It has no second credential for updates.'),
+            'call health (read): GET /health. It takes no parameter, and sends no query.',
+            'call health sends no body. Its answer is returned as it comes, at most 65536 bytes.',
+            *mint_ask['run']['does'][2:],
+            'still owed after it: the credential, by a secret ask for synthetic.',
+        ]
+        self.reset_native(mint_ask)
         self.assertTrue(self.create()['delivered'])
         self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        # Historical mint prose mismatches are now displayed whole.
+        three_ask = source_proposal('new', extra='# ' + '<&>🙂\t\r\n'
+            'base: https://example.invalid\n'
+            'credential:\n  env: TOKEN\n  mint: [TENANT, {name: ACCOUNT, secret: false}, THIRD]\n'
+            '  mint_command: [bin/report]\n  header: "Authorization: Bearer {credential}"\n'
+            'calls: {health: {kind: read, request: {method: GET, path: /health}}}\n')
+        three_sha = three_ask['run']['carried'][0]['files'][0]['sha256']
+        three_lead = ("minted from TENANT and ACCOUNT and THIRD by the declaration's own mint command [bin/report] "
+             f'(command file bin/report, copied to <home>/sources/synthetic/bin/report: sha256 {three_sha}, mode 0700), '
+             'run with the mint\'s inputs and the operator\'s local logins where the source\'s mint_command is unset: one the operator sets wins over it, '
+             'sent in the header "Authorization: Bearer {credential}" on every call. It has no second credential for updates.')
+        three_ask['run']['does'] = [
+            "it adds one source and copies 1 command file (2 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+            ('source synthetic: its calls go to https://example.invalid. Its credential is the variable TOKEN (the name, never the value), '
+             + three_lead),
+            'call health (read): GET /health. It takes no parameter, and sends no query.',
+            'call health sends no body. Its answer is returned as it comes, at most 65536 bytes.',
+            *three_ask['run']['does'][2:],
+            'still owed after it: the credential, by a secret ask for synthetic.',
+        ]
+        self.reset_native(three_ask)
+        self.assertTrue(self.create()['delivered'])
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        for bad_lead in (
+                three_lead.replace('ACCOUNT and THIRD', 'ACCOUNT and WRONG'),
+                three_lead.replace('TENANT and ACCOUNT and THIRD', 'TENANT, ACCOUNT and THIRD'),
+                three_lead.replace('minted from TENANT and ACCOUNT and THIRD', 'minted from TENANT and ACCOUNT')):
+            with self.subTest(mint_lead=bad_lead[-48:]):
+                bad = copy.deepcopy(three_ask)
+                bad['run']['does'][1] = bad['run']['does'][1].replace(three_lead, bad_lead)
+                self.reset_native(bad)
+                result = self.create()
+                self.assertTrue(result['delivered'], result)
+                self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+                self.assertEqual(self.writes(), [])
+        # A credential that is the service address is handed to no call
+        # build/run helper, as captured from real public-main Bead responses:
+        # the build row says `run with no credential ... without one` and the
+        # command row says `handed no credential`. Other slots still get it.
+        url_file = '#!/bin/sh\nprintf "{}\\n"\n'
+        url_sha = n.file_hash(url_file)
+        url_text = (
+            'name: synthetic\n'
+            'credential: {env: DESTINATION, url: true}\n'
+            'calls:\n  send:\n    kind: update\n'
+            '    request: {method: POST, path: /}\n'
+            '    build: [bin/body]\n')
+        url_ask = source_proposal('new')
+        url_ask['run']['carried'][0]['text'] = url_text
+        url_ask['run']['carried'][0]['files'] = [dict(program='bin/body', text=url_file, sha256=url_sha)]
+        for key in ('old', 'inventory', 'removed'):
+            url_ask['run']['carried'][0].pop(key, None)
+        url_build_row = ('call send builds its body with the command [bin/body], run with no credential at each call '
+             'and free to make its own requests without one while it builds. Its answer is returned as it comes, at most 65536 bytes.')
+        url_cmd_row = (f'command file bin/body: [bin/body] (call.send.build, handed no credential): sha256 {url_sha}, mode 0700')
+        url_ask['run']['does'] = [
+            "it adds one source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+            ('source synthetic: its calls go to the URL in DESTINATION. Its credential is the variable DESTINATION (the name, never the value), '
+             'sent as the address every call goes to (credential.url: true): whoever sets the variable chooses where the calls go, '
+             'over https or plain http to this machine alone. It has no second credential for updates, no mint, no header of its own.'),
+            'call send (update): POST /. It takes no parameter, and sends no query.',
+            url_build_row,
+            'The source names no check call and no idempotency header.',
+            'it can tell no user.',
+            'it hears no deliveries.',
+            'it names no limits command.',
+            'it speaks in no threads.',
+            "its issues are no bead's link.",
+            'its identity keys keep their case.',
+            'it sends no hook deliveries into the yard.',
+            'it sends no pull-request or CI events.',
+            url_cmd_row,
+            'still owed after it: the credential, by a secret ask for synthetic.',
+        ]
+        url_ask['weight'] = [dict(
+            {'class': 'code'},
+            line='brings a program the yard will run: the command file bin/body of synthetic (new)',
+        )]
+        self.reset_native(url_ask)
+        self.assertTrue(self.create()['delivered'])
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        for bad_row in (
+                url_build_row.replace('run with no credential at each call', 'run with the credential at each call')
+                    .replace('without one while it builds', 'with it while it builds'),
+                url_cmd_row.replace('handed no credential', 'handed the credential')):
+            with self.subTest(url_row=bad_row[-48:]):
+                bad = copy.deepcopy(url_ask)
+                bad['run']['does'] = [bad_row if line in (url_build_row, url_cmd_row) else line
+                                      for line in bad['run']['does']]
+                self.reset_native(bad)
+                result = self.create()
+                self.assertTrue(result['delivered'], result)
+                self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+                self.assertEqual(self.writes(), [])
+        # A thread slot on a url-credential source still gets the credential.
+        url_thread_ask = source_proposal('new')
+        url_thread_ask['run']['carried'][0]['text'] = (
+            'name: synthetic\n'
+            'credential: {env: DESTINATION, url: true}\n'
+            'calls:\n  health:\n    kind: read\n    request: {method: GET, path: /}\n'
+            'thread:\n  reply: [bin/body]\n')
+        url_thread_ask['run']['carried'][0]['files'] = [dict(program='bin/body', text=url_file, sha256=url_sha)]
+        for key in ('old', 'inventory', 'removed'):
+            url_thread_ask['run']['carried'][0].pop(key, None)
+        url_thread_cmd = (f'command file bin/body: [bin/body] (thread.reply, handed the credential): sha256 {url_sha}, mode 0700')
+        url_thread_ask['run']['does'] = [
+            "it adds one source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+            ('source synthetic: its calls go to the URL in DESTINATION. Its credential is the variable DESTINATION (the name, never the value), '
+             'sent as the address every call goes to (credential.url: true): whoever sets the variable chooses where the calls go, '
+             'over https or plain http to this machine alone. It has no second credential for updates, no mint, no header of its own.'),
+            'call health (read): GET /. It takes no parameter, and sends no query.',
+            'call health sends no body. Its answer is returned as it comes, at most 65536 bytes.',
+            'The source names no check call and no idempotency header.',
+            'it can tell no user.',
+            'it hears no deliveries.',
+            'it names no limits command.',
+            'it speaks in threads: it names no place to open one; it names no state words; it takes no labels; it assigns nobody.',
+            "its issues are no bead's link.",
+            'its identity keys keep their case.',
+            'it sends no hook deliveries into the yard.',
+            'it sends no pull-request or CI events.',
+            url_thread_cmd,
+            'still owed after it: the credential, by a secret ask for synthetic.',
+        ]
+        url_thread_ask['weight'] = [dict(
+            {'class': 'code'},
+            line='brings a program the yard will run: the command file bin/body of synthetic (new)',
+        )]
+        self.reset_native(url_thread_ask)
+        self.assertTrue(self.create()['delivered'])
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        bad = copy.deepcopy(url_thread_ask)
+        bad['run']['does'] = [line.replace('handed the credential', 'handed no credential')
+                              for line in bad['run']['does']]
+        self.reset_native(bad)
+        result = self.create()
+        self.assertTrue(result['delivered'], result)
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        self.assertEqual(self.writes(), [])
+        # YAML integer spellings bind by value, as captured from real
+        # public-main Bead responses (0x10 renders as {"n":16}); a wrong
+        # value, or a quoted string type for a number, still refuses.
+        for decl_body, row_body in (('{n: 0x10}', '{"n":16}'), ('{n: 0o17}', '{"n":15}'),
+                                    ('{n: 1_000}', '{"n":1000}'), ('{n: 1e3}', '{"n":1000}')):
+            with self.subTest(yaml_int=decl_body):
+                hex_ask = source_proposal('new')
+                hex_ask['run']['carried'][0]['text'] = (
+                    'name: synthetic\nbase: https://example.invalid\n'
+                    'calls:\n  health:\n    kind: read\n'
+                    f'    request: {{method: POST, path: /health, body: {decl_body}}}\n')
+                hex_ask['run']['carried'][0]['files'] = []
+                for key in ('old', 'inventory', 'removed'):
+                    hex_ask['run']['carried'][0].pop(key, None)
+                hex_ask['run']['does'] = [
+                    "it adds one source and copies no command files, and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+                    'source synthetic: its calls go to https://example.invalid. It names no credential.',
+                    'call health (read): POST /health. It takes no parameter, and sends no query.',
+                    f'call health sends the body {row_body}. Its answer is returned as it comes, at most 65536 bytes.',
+                    'The source names no check call and no idempotency header.',
+                    'it can tell no user.',
+                    'it hears no deliveries.',
+                    'it names no limits command.',
+                    'it speaks in no threads.',
+                    "its issues are no bead's link.",
+                    'its identity keys keep their case.',
+                    'it sends no hook deliveries into the yard.',
+                    'it sends no pull-request or CI events.',
+                    'it names no command.',
+                ]
+                hex_ask['weight'] = []
+                self.reset_native(hex_ask)
+                self.assertTrue(self.create()['delivered'], decl_body)
+                self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        hex_ask = source_proposal('new')
+        hex_ask['run']['carried'][0]['text'] = (
+            'name: synthetic\nbase: https://example.invalid\n'
+            'calls:\n  health:\n    kind: read\n'
+            '    request: {method: POST, path: /health, body: {n: 0x10}}\n')
+        hex_ask['run']['carried'][0]['files'] = []
+        for key in ('old', 'inventory', 'removed'):
+            hex_ask['run']['carried'][0].pop(key, None)
+        hex_row = 'call health sends the body {"n":16}. Its answer is returned as it comes, at most 65536 bytes.'
+        hex_ask['run']['does'] = [
+            "it adds one source and copies no command files, and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+            'source synthetic: its calls go to https://example.invalid. It names no credential.',
+            'call health (read): POST /health. It takes no parameter, and sends no query.',
+            hex_row,
+            'The source names no check call and no idempotency header.',
+            'it can tell no user.',
+            'it hears no deliveries.',
+            'it names no limits command.',
+            'it speaks in no threads.',
+            "its issues are no bead's link.",
+            'its identity keys keep their case.',
+            'it sends no hook deliveries into the yard.',
+            'it sends no pull-request or CI events.',
+            'it names no command.',
+        ]
+        hex_ask['weight'] = []
+        for bad_body in ('{"n":17}', '{"n":"16"}'):
+            with self.subTest(yaml_int_bad=bad_body):
+                bad = copy.deepcopy(hex_ask)
+                bad['run']['does'] = [hex_row.replace('{"n":16}', bad_body) if line == hex_row else line
+                                      for line in bad['run']['does']]
+                self.reset_native(bad)
+                result = self.create()
+                self.assertTrue(result['delivered'], result)
+                self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+                self.assertEqual(self.writes(), [])
         # Data names and nested request bodies remain unrestricted by the declaration's field names.
         self.reset_native(source_proposal('free'))
         carried = self.native.ask['run']['carried'][0]
@@ -1760,8 +2402,41 @@ class NativeTests(NativeCase):
             '    request: {method: POST, path: /health, query: {future: "{future}"}, '
             'body: {future: {nested: [now, {other: later}]}}}\n'
             '    answer: {select: [future], max: 65536}\n')
+        # A defaulted param is optional on the native card: captured from real
+        # public-main Bead responses, where {type: string, default: hello} with
+        # no optional flag renders `value (string, optional)`.
+        self.native.ask['run']['does'][2] = 'call health (read): POST /health. It takes future (enum, optional, one of later, now), and sends the query future={future}.'
+        self.native.ask['run']['does'][3] = 'call health sends the body {"future":{"nested":["now",{"other":"later"}]}}. Its answer keeps future, at most 65536 bytes.'
         self.assertTrue(self.create()['delivered'])
         self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        self.native.ask['run']['does'][2] = self.native.ask['run']['does'][2].replace(
+            'future (enum, optional,', 'future (enum, required,', 1)
+        self.reset_native(self.native.ask)
+        result = self.create()
+        self.assertTrue(result['delivered'], result)
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        self.assertEqual(self.writes(), [])
+        # Pack call prose stays native-owned, including defaulted parameter wording.
+        pack_ask = pack_proposal('embedded_public_main')
+        pack_carried = pack_ask['run']['carried'][0]
+        pack_carried['text'] = pack_carried['text'].replace(
+            'title: { type: string, max: 250 }',
+            'title: { type: string, max: 250, default: Announcement }', 1)
+        pack_ask['run']['does'] = [
+            line.replace('title (string, required, at most 250)', 'title (string, optional, at most 250)')
+            if 'title (string, required, at most 250)' in line else line
+            for line in pack_ask['run']['does']]
+        self.reset_native(pack_ask)
+        self.assertTrue(self.create()['delivered'], pack_ask['run']['does'])
+        pack_ask['run']['does'] = [
+            line.replace('title (string, optional, at most 250)', 'title (string, required, at most 250)')
+            if 'title (string, optional, at most 250)' in line else line
+            for line in pack_ask['run']['does']]
+        self.reset_native(pack_ask)
+        result = self.create()
+        self.assertTrue(result['delivered'], result)
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        self.assertEqual(self.writes(), [])
         for field in ('declaration', 'file', 'total'):
             for overflow in (False, True):
                 with self.subTest(source_cap=field, overflow=overflow):
@@ -1773,13 +2448,35 @@ class NativeTests(NativeCase):
                         file = carried['files'][0]
                         file['text'] = '🙂'*2048 + ('x' if overflow else '')
                         file['sha256'] = n.file_hash(file['text'])
+                        self.native.ask['run']['does'][-1] = (
+                            f"command file bin/report: [bin/report] (limits.command, handed no credential): sha256 {file['sha256']}, mode 0700"
+                        )
                     else:
                         carried['text'] = 'name: synthetic\nlimits: {command: [bin/report]}\nthread:\n  reply: [two]\n  read: [three]\n  file: [four]\n'
                         carried['files'] = [dict(program=p, text='x'*8192, sha256=n.file_hash('x'*8192)) for p in ('bin/report', 'two', 'three', 'four')]
+                        fsha = n.file_hash('x'*8192)
                         # Three max files plus the declaration fit; four exceed the combined text cap.
                         if not overflow:
                             carried['text'] = carried['text'].replace('  file: [four]\n', '')
                             carried['files'].pop()
+                        nfiles = len(carried['files'])
+                        self.native.ask['run']['does'] = [
+                            f"it adds one source and copies {nfiles} command files ({nfiles} commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+                            'source synthetic: it has no base and calls nothing. It names no credential.',
+                            'its limits command [bin/report] says what the source itself carries, asked by the source\'s name.',
+                            'it speaks in threads: it names no place to open one; it names no state words; it takes no labels; it assigns nobody.',
+                            'it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.',
+                            f'command file bin/report: [bin/report] (limits.command, handed no credential): sha256 {fsha}, mode 0700',
+                            f'command file two: [two] (thread.reply, handed no credential): sha256 {fsha}, mode 0700',
+                            f'command file three: [three] (thread.read, handed no credential): sha256 {fsha}, mode 0700',
+                            *([f'command file four: [four] (thread.file, handed no credential): sha256 {fsha}, mode 0700'] if overflow else []),
+                        ]
+                        self.native.ask['weight'] = [dict(
+                            {'class': 'code'},
+                            line='brings a program the yard will run: the command file ' + and_list(
+                                [f'{f["program"]} of synthetic (new)' for f in carried['files']]
+                            ),
+                        )]
                     self.assertEqual(self.create()['delivered'], not overflow)
                     if overflow:
                         self.assertEqual(self.sent_count, 0)
@@ -1798,7 +2495,6 @@ class NativeTests(NativeCase):
             (('run', 'ask'), ['region']), (('run', 'value'), 'input'), (('secret',), {}),
             (('setup',), {}), (('identity',), {}), (('given',), 'input'),
             (('weight',), []), (('weight', 0, 'class'), 'trust'),
-            (('weight', 0, 'line'), 'invented warning'),
             (('run', 'argv'), ['pack', 'apply', '/another/pack']),
         ]
         for path, value in mutations:
@@ -1813,11 +2509,47 @@ class NativeTests(NativeCase):
                 self.assertFalse(result['delivered'], result)
                 self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
                 self.assertEqual((self.sent_count, self.writes()), (0, []))
+        reworded = pack_proposal()
+        reworded['weight'][0]['line'] = 'invented warning'
+        self.assert_source_contract(reworded, True)
         for factory in (source_proposal, pack_proposal):
             for count in (40, 41):
                 with self.subTest(card_lines=count, factory=factory.__name__):
                     ask = factory()
-                    ask['run']['does'] += ['Synthetic plan line'] * (count - len(ask['run']['does']))
+                    carried = ask['run']['carried'][0]
+                    decl = n.source_yaml(carried['text'])
+                    does = list(ask['run']['does'])
+                    if 'base' not in decl:
+                        carried['text'] += 'base: https://example.invalid\n'
+                        does[1] = f'source {carried["name"]}: its calls go to https://example.invalid. It names no credential.'
+                        if count == 41:
+                            does.insert(3, 'source synthetic base: none -> "https://example.invalid".')
+                    elif count == 41:
+                        does = does[:4] + [does[11]] + [
+                            'it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case) and no pull-request or CI events.',
+                            does[-1],
+                        ]
+                    if 'calls' not in decl:
+                        carried['text'] += 'calls:\n'
+                    insert_at = next(i for i, l in enumerate(does) if l.startswith(('The source names ', 'Its check call is ', 'what it sends in: ')))
+                    extra_calls = (count - len(does)) // 2
+                    pad_yaml = ''.join(
+                        f'  pad{i}:\n    kind: read\n    request: {{method: GET, path: /pad/{i}}}\n'
+                        for i in range(extra_calls)
+                    )
+                    if 'calls:\n' in carried['text']:
+                        carried['text'] = carried['text'].replace('calls:\n', 'calls:\n' + pad_yaml, 1)
+                    else:
+                        carried['text'] += pad_yaml
+                    # Preserve decl call order so call rows match carried decl order.
+                    call_pos = insert_at
+                    if 'calls' in decl and decl['calls']:
+                        call_pos = next(i for i, l in enumerate(does) if l.startswith('call '))
+                    for i in range(extra_calls):
+                        does.insert(call_pos + 2 * i, f'call pad{i} (read): GET /pad/{i}. It takes no parameter, and sends no query.')
+                        does.insert(call_pos + 2 * i + 1, f'call pad{i} sends no body. Its answer is returned as it comes, at most 65536 bytes.')
+                    ask['run']['does'] = does
+                    self.assertEqual(len(ask['run']['does']), count)
                     self.reset_native(ask)
                     self.assertEqual(self.create()['delivered'], count == 40)
                     if count == 41:
@@ -1843,14 +2575,18 @@ class NativeTests(NativeCase):
             file['text'] = n.source_diff(next(c for c in carried['old'] if c['program'] == file['program']), file['text'])
             file['sha256'] = n.file_hash(file['text'])
         carried['old'] = []
+        ask['run']['does'][-1] = (
+            f"command file bin/report: [bin/report] (hook.normalize, handed no credential): "
+            f"sha256 {carried['files'][0]['sha256']}, mode 0700"
+        )
         ask.pop('weight')
         self.reset_native(ask)
         self.assertTrue(self.create()['delivered'])
         self.press()
         self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='sample-1', ask=7, actor='pat', weighed=False, values={}))])
-        for legacy in ('source_replace_prealignment', 'source_replace_upstream',
+        for legacy in ('source_replace_prealignment', 'source_replace_upstream', 'source_replace_public_main',
                        'pack_directory_prealignment', 'pack_directory_replace_prealignment',
-                       'pack_directory_replace_upstream'):
+                       'pack_directory_replace_upstream', 'pack_directory_replace_public_main'):
             with self.subTest(unsupported_shape=legacy):
                 ask = json.loads(Path(__file__).with_name('fixtures').joinpath(legacy + '.json').read_text())
                 self.reset_native(ask)
@@ -1871,8 +2607,179 @@ class NativeTests(NativeCase):
                 self.press()
                 self.bridge.run_asks.refresh()
                 self.assertEqual(self.writes(), [])
+        for base_kind, base_ask in (('source', source_proposal('new_public_main')),
+                                    ('pack', pack_proposal('directory_public_main')),
+                                    ('source_legacy', source_proposal('new')),
+                                    ('pack_legacy', pack_proposal('directory'))):
+            does = list(base_ask['run']['does'])
+            cmd_idx = next(i for i, line in enumerate(does) if line.startswith('command file '))
+            unknown = 'it also deletes every existing source grant.'
+            mutations = [
+                ('unknown_before_caps', does[:2] + [unknown] + does[2:]),
+                ('unknown_before_command', does[:cmd_idx] + [unknown] + does[cmd_idx:]),
+                ('unknown_after_command', does + [unknown]),
+                ('unknown_still_owed', does + ['still owed after it: an invented extra grant.']),
+                ('half_call', does[:2] + ['call orphan (read): GET /orphan. It takes no parameter, and sends no query.'] + does[2:]),
+                ('call_after_command', does + [
+                    'call orphan (read): GET /orphan. It takes no parameter, and sends no query.',
+                    'call orphan sends no body. Its answer is returned as it comes, at most 65536 bytes.',
+                ]),
+                ('drop_command', does[:cmd_idx] + does[cmd_idx + 1:]),
+                ('short_does', does[:3]),
+            ]
+            cap_idx = next((i for i, line in enumerate(does) if line.startswith('it has ')), None)
+            if cap_idx is not None:
+                mutations.extend([
+                    ('drop_condensed', does[:cap_idx] + does[cap_idx + 1:]),
+                    ('truncated_lacks', does[:cap_idx] + [does[cap_idx].replace(' and no pull-request or CI events', '')] + does[cap_idx + 1:]),
+                    ('oxford_comma', does[:cap_idx] + [does[cap_idx].replace(' and no pull-request or CI events.', ', and no pull-request or CI events.')] + does[cap_idx + 1:]),
+                    ('wrong_lack', does[:cap_idx] + [does[cap_idx].replace('no bead link', 'no bead')] + does[cap_idx + 1:]),
+                    ('mix_absent_removed', does[:cap_idx] + ['it names no limits command.', does[cap_idx].replace(', no limits command', '')] + does[cap_idx + 1:]),
+                    ('mix_absent_kept', does[:cap_idx] + ['it names no limits command.', does[cap_idx]] + does[cap_idx + 1:]),
+                    ('cap_after_condensed', does[:cap_idx - 1] + [does[cap_idx], does[cap_idx - 1]] + does[cap_idx + 1:]),
+                    ('duplicate_condensed', does[:cap_idx + 1] + [does[cap_idx]] + does[cap_idx + 1:]),
+                ])
+            if base_kind.startswith('source'):
+                lim_idx = next(i for i, line in enumerate(does) if line.startswith('its limits command '))
+                mutations.extend([
+                    ('truncated_limits_prefix', does[:lim_idx] + ['its limits command '] + does[lim_idx + 1:]),
+                    ('truncated_limits_partial', does[:lim_idx] + ['its limits command [bin/report] says what '] + does[lim_idx + 1:]),
+                ])
+            if base_kind.startswith('pack'):
+                hook_idx = next(i for i, line in enumerate(does) if line.startswith('what it sends in: '))
+                mutations.extend([
+                    ('spoofed_source_header', does[:cmd_idx] + ['source spoofed: its calls go to https://evil.example.'] + does[cmd_idx:]),
+                    ('truncated_hook_prefix', does[:hook_idx] + ['what it sends in: '] + does[hook_idx + 1:]),
+                    ('truncated_hook_partial', does[:hook_idx] + [
+                        "what it sends in: deliveries are verified by the header X-Secret holding the hook's secret itself (scheme secret)."
+                    ] + does[hook_idx + 1:]),
+                ])
+            for label, bad_does in mutations:
+                with self.subTest(disclosure_case=base_kind + ':' + label):
+                    ask = copy.deepcopy(base_ask)
+                    ask['run']['does'] = bad_does
+                    self.assert_source_contract(ask, label != 'spoofed_source_header' and not (
+                        base_kind.startswith('source') and label == 'short_does'))
+        ask = pack_proposal('embedded_public_main')
+        does = ask['run']['does']
+        check_idx = next(i for i, line in enumerate(does) if line.startswith('Its check call is '))
+        does[check_idx], does[check_idx + 1] = does[check_idx + 1], does[check_idx]
+        self.reset_native(ask)
+        result = self.create()
+        self.assertTrue(result['delivered'], result)
+        self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+        self.assertEqual(self.writes(), [])
+        embedded = pack_proposal('embedded_public_main')
+        for prefix in ('Its check call is ', 'it can tell a user: ', 'it hears deliveries: ',
+                       'it speaks in threads: ', 'what it sends in: '):
+            idx = next(i for i, line in enumerate(embedded['run']['does']) if line.startswith(prefix))
+            for variant, bad_line in (('prefix', prefix), ('no_period', embedded['run']['does'][idx][:-1])):
+                with self.subTest(embedded_truncated=prefix + variant):
+                    ask = copy.deepcopy(embedded)
+                    ask['run']['does'][idx] = bad_line
+                    self.reset_native(ask)
+                    result = self.create()
+                    self.assertTrue(result['delivered'], result)
+                    self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+                    self.assertEqual(self.writes(), [])
+        full_caps = [
+            'Its check call is ping, and updates carry their key in the header Idempotency-Key.',
+            "it can tell a user: the call tell, whose chat takes the person's address, read as CHAT from the person's own env file; the title fills title and it takes no text and the link fills link.",
+            "it hears deliveries: only one whose chat is the address of a user told through it, read as CHAT, and every told user's: another's, and a stranger's, is dropped after verification.",
+            'its limits command [aiquokka, {provider}, --json] says what the subscription of claude as claude, codex as codex still carries.',
+            "it speaks in threads: a place to open one is called repo; the words state takes are open, closed; it takes labels (label:<name> adds one, never removes); an assignee is a person's login in the source.",
+            "its issues are a bead's link: host example.invalid, the expression ^#([0-9]+)$ reads an issue, the one fixed form #{1} and the thread id {1}; the groups keep their case. It names no pull-request shape. It keeps no repositories.",
+            'its identity keys fold to lowercase (identity fold: lower), so one spelling is stored however it was typed.',
+            'what it sends in: deliveries are verified by HMAC-SHA256 over the body (scheme hmac-sha256, signed: body), the signature in the header X-Hub-Signature-256 as hex past the prefix "sha256="; a delivery is named by the header X-Delivery; its time arrives at the header X-Time, in seconds within 5m0s of the yard\'s clock; bodies are unique; the command [bin/report] turns a verified body into the envelope, handed no credential; its events carry no field of their own.',
+            'what it sends of pull requests and CI: the envelope types pr, ci are runs; pr tell a head; the command [bin/pr] reads the pull request, handed the credential; it names no CI read-back command.',
+        ]
+        full_base = source_proposal('new_public_main')
+        full_base['run']['carried'][0]['text'] = (
+            'name: synthetic\n'
+            'base: https://example.invalid\n'
+            'credential:\n  env: TOKEN\n'
+            'calls:\n'
+            '  ping:\n    kind: read\n    request: {method: GET, path: /ping}\n'
+            '  tell:\n    kind: update\n    params:\n      chat: {type: string}\n      title: {type: string}\n      link: {type: string, optional: true}\n'
+            '    request: {method: POST, path: /tell}\n'
+            'check: ping\n'
+            'idempotency: Idempotency-Key\n'
+            'notify:\n  call: tell\n  address: {param: chat, env: CHAT}\n  title: title\n  link: link\n'
+            'hear:\n  field: chat\n  by: address\n  address: {env: CHAT}\n'
+            'limits:\n  command: [aiquokka, "{provider}", --json]\n  kinds: {claude: claude, codex: codex}\n'
+            'thread:\n  place: repo\n  states: [open, closed]\n  labels: true\n  assignee: login\n'
+            'link:\n  host: example.invalid\n  issue: "^#([0-9]+)$"\n  fixed: "#{1}"\n  thread: "{1}"\n  fold: keep\n'
+            'identity:\n  fold: lower\n'
+            'hook:\n  verify:\n    scheme: hmac-sha256\n    signed: body\n    signature: {header: X-Hub-Signature-256, encoding: hex, prefix: "sha256="}\n'
+            '    delivery: {header: X-Delivery}\n    timestamp: {header: X-Time, unit: seconds, window: 5m0s}\n'
+            '  bodies: unique\n  normalize: [bin/report]\n'
+            'events:\n  runs: [pr, ci]\n  head_from: [pr]\n  pr: [bin/pr]\n'
+        )
+        rep_file = full_base['run']['carried'][0]['files'][0]
+        full_base['run']['carried'][0]['files'] = [
+            dict(program='aiquokka', text='#!/bin/sh\necho ok\n', sha256=n.file_hash('#!/bin/sh\necho ok\n')),
+            rep_file,
+            dict(program='bin/pr', text='#!/bin/sh\necho pr\n', sha256=n.file_hash('#!/bin/sh\necho pr\n')),
+        ]
+        ai_sha = full_base['run']['carried'][0]['files'][0]['sha256']
+        pr_sha = full_base['run']['carried'][0]['files'][2]['sha256']
+        full_base['run']['does'] = [
+            "it adds one source and copies 3 command files (3 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+            'source synthetic: its calls go to https://example.invalid. Its credential is the variable TOKEN (the name, never the value), and no call\'s header, path or body holds it. It has no second credential for updates, no mint, no header of its own.',
+            'call ping (read): GET /ping. It takes no parameter, and sends no query.',
+            'call ping sends no body. Its answer is returned as it comes, at most 65536 bytes.',
+            'call tell (update): POST /tell. It takes chat (string, required), title (string, required) and link (string, optional), and sends no query.',
+            'call tell sends no body. Its answer is returned as it comes, at most 65536 bytes.',
+            *full_caps,
+            f'command file aiquokka: [aiquokka, {{provider}}, --json] (limits.command, handed no credential): sha256 {ai_sha}, mode 0700',
+            f"command file bin/report: [bin/report] (hook.normalize, handed no credential): sha256 {rep_file['sha256']}, mode 0700",
+            f'command file bin/pr: [bin/pr] (events.pr, handed the credential): sha256 {pr_sha}, mode 0700',
+            'still owed after it: the credential, by a secret ask for synthetic; and which user it tells, by yardr user set <user> notify=synthetic.',
+        ]
+        full_base['weight'] = [dict(
+            {'class': 'code'},
+            line='brings a program the yard will run: the command file aiquokka of synthetic (new), bin/report of synthetic (new) and bin/pr of synthetic (new)',
+        )]
+        self.reset_native(full_base)
+        self.assertTrue(self.create()['delivered'])
+        hear_identity = copy.deepcopy(full_base)
+        hear_identity['run']['carried'][0]['text'] = hear_identity['run']['carried'][0]['text'].replace(
+            'hear:\n  field: chat\n  by: address\n  address: {env: CHAT}\n',
+            'hear:\n  field: sender\n  by: identity\n',
+        )
+        hear_identity['run']['does'][8] = (
+            "it hears deliveries: only one whose sender is the address of a user told through it, "
+            "read as , and every told user's: another's, and a stranger's, is dropped after verification."
+        )
+        self.reset_native(hear_identity)
+        self.assertTrue(self.create()['delivered'])
+        for slot_idx, line in enumerate(full_caps):
+            prefix = line.split(' ', 3)[:3]
+            short = ' '.join(prefix) + ' '
+            with self.subTest(full_cap_truncated=slot_idx):
+                ask = copy.deepcopy(full_base)
+                ask['run']['does'][6 + slot_idx] = short
+                self.reset_native(ask)
+                result = self.create()
+                self.assertTrue(result['delivered'], result)
+                self.assert_source_review(self.native.ask, self.bundle_review(self.row()))
+                self.assertEqual(self.writes(), [])
         ask = pack_proposal()
-        ask['run']['does'] += ['Synthetic complete plan line ' + 'x' * 20000] * 25
+        big_val = 'x' * 18000
+        big_yaml = ''.join(
+            f'  big{i}:\n    kind: read\n    request: {{method: POST, path: /big/{i}, body: {{k: "{big_val}"}}}}\n'
+            for i in range(13)
+        )
+        ask['run']['carried'][0]['text'] = ask['run']['carried'][0]['text'].replace('calls:\n', 'calls:\n' + big_yaml, 1)
+        big_lines = [
+            line
+            for i in range(13)
+            for line in (
+                f'call big{i} (read): POST /big/{i}. It takes no parameter, and sends no query.',
+                f'call big{i} sends the body {{"k":"{big_val}"}}. Its answer is returned as it comes, at most 65536 bytes.',
+            )
+        ]
+        ask['run']['does'] = ask['run']['does'][:2] + big_lines + ask['run']['does'][2:]
         self.reset_native(ask)
         self.assertTrue(self.create()['delivered'])
         self.assertGreater(self.row()['bundle']['text_parts'], n.PACK_PARTS)
@@ -1887,6 +2794,1319 @@ class NativeTests(NativeCase):
             if ceiling < size:
                 self.assertIn('document_too_large', result['reason'])
                 self.assertEqual((self.sent_count, self.documents), (0, []))
+
+    def test_source_and_pack_every_does_row_preserves_prose_and_refuses_framing(self):
+        # Historical row/token/domain mutations now preserve native prose; framing still refuses.
+        supported = (
+            ('source_new', lambda: source_proposal('new')),
+            ('source_new_public_main', lambda: source_proposal('new_public_main')),
+            ('source_free', lambda: source_proposal('free')),
+            ('source_free_public_main', lambda: source_proposal('free_public_main')),
+            ('source_replace', lambda: source_proposal('replace')),
+            ('pack_directory', lambda: pack_proposal('directory')),
+            ('pack_directory_upstream', lambda: pack_proposal('directory_upstream')),
+            ('pack_directory_public_main', lambda: pack_proposal('directory_public_main')),
+            ('pack_directory_replace', lambda: pack_proposal('directory_replace')),
+            ('pack_embedded', lambda: pack_proposal('embedded')),
+            ('pack_embedded_upstream', lambda: pack_proposal('embedded_upstream')),
+            ('pack_embedded_public_main', lambda: pack_proposal('embedded_public_main')),
+        )
+        row_specs = (
+            ('source_add_lead',
+             re.compile(r"^it adds one source and copies (?:(no) command files|(\d+) command files? \((\d+) commands?\)), and changes nothing else\. It grants no call, makes no hook, and sets no credential's file\.$"),
+             lambda m: 'it adds one source and '),
+            ('source_replace_lead',
+             re.compile(r"^it replaces one source and copies (\d+) command files? \((\d+) commands?\), and changes nothing else\. It grants no call, makes no hook, and sets no credential's file: the source keeps its env_file, mint_command, (region base|base or host), call limits and ignored senders, and every grant of it stands, now for this declaration\.$"),
+             lambda m: 'it replaces one source and '),
+            ('pack_lead_dir',
+             re.compile(r"^pack ([a-z0-9_-]+) \(directory (/\S+) in yardr (\S+)\), digest sha256:([0-9a-f]{64}), of kind source, into the yard: it (adds|replaces) (\d+) sources? and copies (\d+) command files? \((\d+) commands?\), and changes nothing else\. It grants no call, makes no hook, and sets no credential's file\.$"),
+             lambda m: f"pack {m.group(1)} (directory {m.group(2)} in yardr {m.group(3)}), digest sha256:{m.group(4)}, of kind source, into the yard: "),
+            ('pack_lead_embedded',
+             re.compile(r"^pack ([a-z0-9_-]+) \(embedded in yardr (\S+)\), of kind source, into the yard: it (adds|replaces) (\d+) sources? and copies (\d+) command files? \((\d+) commands?\), and changes nothing else\. It grants no call, makes no hook, and sets no credential's file\.$"),
+             lambda m: f"pack {m.group(1)} (embedded in yardr {m.group(2)}), of kind source, into the yard: "),
+            ('source_summary_no_cred',
+             re.compile(r"^source ([a-z0-9_-]+): (?:it has no base and calls nothing|its calls go to (\S+))\. It names no credential\.$"),
+             lambda m: f"source {m.group(1)}: "),
+            ('source_summary_cred',
+             re.compile(r"^source ([a-z0-9_-]+): its calls go to (\S+)\. Its credential is the variable (\S+) \(the name, never the value\), sent in the request path wherever the declaration puts \{credential\} \(credential\.in_path: true\): it stands in the logs of every server on the way\. It has (no second credential for updates), (no mint), (no header of its own)\.$"),
+             lambda m: f"source {m.group(1)}: "),
+            ('replace_grants_none',
+             re.compile(r"^it would replace the source ([a-z0-9_-]+) the yard has under that name; no grant of source ([a-z0-9_-]+) stands\.$"),
+             lambda m: f"it would replace the source {m.group(1)} the yard has under that name; "),
+            ('replace_grants_kept',
+             re.compile(r"^it would replace the source ([a-z0-9_-]+) the yard has under that name; grants kept for source ([a-z0-9_-]+): (crew member) (\S+): ([a-z0-9_-]+) \((kept)\)\.$"),
+             lambda m: f"it would replace the source {m.group(1)} the yard has under that name; grants kept for source {m.group(2)}: "),
+            ('copy_remove',
+             re.compile(r"^the copy would remove ([^\s,]+), which neither declaration names: sha256 ([0-9a-f]{64}) \(mode (0[0-7]{3}), (\d+) bytes\)\.$"),
+             lambda m: 'the copy would remove '),
+            ('call_first_no_params',
+             re.compile(r"^call ([a-z0-9_-]+) \((read|update)\): (GET|POST) (\S+)\. It takes no parameter, and sends no query\.$"),
+             lambda m: f"call {m.group(1)} ({m.group(2)}): "),
+            ('call_first_2_params',
+             re.compile(r"^call ([a-z0-9_-]+) \((read|update)\): (POST) (\S+)\. It takes (\S+) \((\S+), (required|optional), at most (\d+)\) and (\S+) \((\S+), (required|optional), at most (\d+)\), and sends no query\.$"),
+             lambda m: f"call {m.group(1)} ({m.group(2)}): "),
+            ('call_first_3_params',
+             re.compile(r"^call ([a-z0-9_-]+) \((read|update)\): (POST) (\S+)\. It takes (\S+) \((\S+), (required|optional), pattern (\S+)\), (\S+) \((\S+), (required|optional), at most (\d+)\) and (\S+) \((\S+), (required|optional), at most (\d+)\), and sends no query\.$"),
+             lambda m: f"call {m.group(1)} ({m.group(2)}): "),
+            ('call_second',
+             re.compile(r"^call ([a-z0-9_-]+) (?:sends no body|sends the body (\{.+?\}))\. Its answer is returned as it comes, at most (\d+) bytes\.$"),
+             lambda m: f"call {m.group(1)} "),
+            ('cap_check_present',
+             re.compile(r"^Its check call is ([a-z0-9_-]+); it names no idempotency header\.$"),
+             lambda m: 'Its check call is '),
+            ('cap_notify_present',
+             re.compile(r"^it can tell a user: the call ([a-z0-9_-]+), whose (\S+) takes the person's address, read as (\S+) from the person's own env file; the title fills (\S+) and the text fills (\S+) and it takes no link\.$"),
+             lambda m: 'it can tell a user: '),
+            ('cap_hear_present',
+             re.compile(r"^it hears deliveries: only one whose (\S+) is the address of a user told through it, read as (\S+), and (only an operator's): another's, and a stranger's, is dropped after verification\.$"),
+             lambda m: 'it hears deliveries: '),
+            ('cap_limits_present',
+             re.compile(r"^its limits command \[([^\]]+)\] says what the source itself carries, asked by the source's name\.$"),
+             lambda m: 'its limits command '),
+            ('cap_thread_present',
+             re.compile(r"^it speaks in threads: it names no place to open one; it names no state words; it takes no labels; it assigns nobody\.$"),
+             lambda m: 'it speaks in threads: '),
+            ('cap_hook_present',
+             re.compile(r"^what it sends in: deliveries are verified by the header (\S+) holding the hook's secret itself \(scheme secret\); (?:it sends no delivery id|a delivery is named by (\S+) in its body); it sends no timestamp; bodies are (\S+); the command \[([^\]]+)\] turns a verified body into the envelope, handed no credential; (?:its events carry no field of their own|its events may carry the fields ([a-z0-9_]+))(?:; the yard registers its webhook with ([a-z0-9_-]+) \((\S+) (\S+)\), filling (\S+) with the public URL and (\S+) with the hook's secret)?\.$"),
+             lambda m: 'what it sends in: '),
+            ('cap_absent',
+             re.compile(r"^(The source names no check call and no idempotency header\.|it can tell no user\.|it hears no deliveries\.|it names no limits command\.|it speaks in no threads\.|its issues are no bead's link\.|its identity keys keep their case\.|it sends no hook deliveries into the yard\.|it sends no pull-request or CI events\.)$"),
+             lambda m: m.group(1).rsplit(' ', 1)[0] + ' '),
+            ('cap_condensed',
+             re.compile(r"^it has (.+)\.$"),
+             lambda m: 'it has '),
+            ('cmd_none',
+             re.compile(r"^it names no command\.$"),
+             lambda m: 'it names '),
+            ('cmd_file',
+             re.compile(r"^command file (\S+): (.+?): sha256 ([0-9a-f]{64})(?: -> sha256 ([0-9a-f]{64}))?, mode (0[0-7]{3})(?: \((\d+) insertions, (\d+) deletions\))?\.?$"),
+             lambda m: 'command file '),
+            ('still_owed',
+             re.compile(r"^still owed after it: the credential, by a secret ask for ([a-z0-9_-]+); and which user it tells, by yardr user set <user> notify=([a-z0-9_-]+)\.$"),
+             lambda m: 'still owed after it: '),
+        )
+        unknown_row = 'it also grants every call to everyone.'
+
+        def refuse(ask, tag):
+            with self.subTest(mutation=tag):
+                self.assert_fixture_prose_mutation(base, ask)
+
+        for fixture_name, factory in supported:
+            base = factory()
+            with self.subTest(intact=fixture_name):
+                self.reset_native(base)
+                self.assertTrue(self.create()['delivered'], fixture_name)
+            does = base['run']['does']
+            for idx, row in enumerate(does):
+                matched = next(((kind, m, prefix_fn) for kind, pat, prefix_fn in row_specs
+                                if (m := pat.fullmatch(row))), None)
+                self.assertIsNotNone(matched, f'{fixture_name} row {idx} unmatched by mutation table: {row!r}')
+                kind, m, prefix_fn = matched
+                tag_base = f'{fixture_name}[{idx}:{kind}]'
+                drift = copy.deepcopy(base)
+                drift['run']['does'][idx] += ' changed after display'
+                self.assert_bound_source_change_stales(base, drift)
+
+                # 1. Cut back to fixed prefix.
+                bad = copy.deepcopy(base)
+                bad['run']['does'][idx] = prefix_fn(m)
+                refuse(bad, tag_base + ':prefix')
+
+                # 2. Empty each variable part.
+                if kind == 'cap_absent':
+                    pass
+                elif kind == 'cap_condensed':
+                    for item_idx, item in enumerate(re.finditer(r'[^,]+?(?=(?:, | and |$))', m.group(1))):
+                        start, end = m.start(1) + item.start(), m.start(1) + item.end()
+                        bad = copy.deepcopy(base)
+                        bad['run']['does'][idx] = row[:start] + row[end:]
+                        refuse(bad, f'{tag_base}:empty_lack_{item_idx}')
+                else:
+                    spans = [m.span(g) for g in range(1, m.re.groups + 1) if m.span(g) != (-1, -1)]
+                    if kind == 'cmd_file':
+                        for tok in re.finditer(r'\[([^\]]+)\] \(([a-z0-9._]+), handed (?:no|the) credential\)', m.group(2)):
+                            spans.append((m.start(2) + tok.start(1), m.start(2) + tok.end(1)))
+                            spans.append((m.start(2) + tok.start(2), m.start(2) + tok.end(2)))
+                    for v_idx, (start, end) in enumerate(spans):
+                        bad = copy.deepcopy(base)
+                        bad['run']['does'][idx] = row[:start] + row[end:]
+                        refuse(bad, f'{tag_base}:empty_var_{v_idx}')
+
+                # 3. Tail truncated (no period, half-length, half-length + '.', and clause-truncated).
+                tails = [
+                    ('drop_end', row[:-1]),
+                    ('half_raw', row[:max(1, len(row) // 2)]),
+                    ('half_dot', row[:max(1, len(row) // 2)] + '.'),
+                ]
+                if '; ' in row:
+                    tails.append(('drop_last_semicolon', row.rsplit('; ', 1)[0] + '.'))
+                for t_name, bad_line in tails:
+                    bad = copy.deepcopy(base)
+                    bad['run']['does'][idx] = bad_line
+                    refuse(bad, f'{tag_base}:tail_{t_name}')
+
+                # 4. Unknown row inserted before and after this row.
+                for pos_name, pos in (('before', idx), ('after', idx + 1)):
+                    bad = copy.deepcopy(base)
+                    bad['run']['does'] = does[:pos] + [unknown_row] + does[pos:]
+                    refuse(bad, f'{tag_base}:unknown_{pos_name}')
+
+                # 5. Every command argv token and Go-quoted token rejects empty, bad escape/Unicode, NUL, and blank program.
+                if 'sends the body ' not in row:
+                    for cmd_idx, argv_match in enumerate(re.finditer(rf'(?:^|command |, )({COMMAND_ARGV})', row)):
+                        inner_start = argv_match.start(1) + 1
+                        inner_end = argv_match.end(1) - 1
+                        for tok_idx, tok_match in enumerate(re.finditer(COMMAND_TOKEN, row[inner_start:inner_end])):
+                            t_start, t_end = inner_start + tok_match.start(), inner_start + tok_match.end()
+                            bad_tokens = [('empty_q', '""'), ('bad_esc', r'"\q"'), ('bad_uni', r'"\uD800"'), ('nul', r'"\x00"')]
+                            if tok_idx == 0:
+                                bad_tokens.append(('blank_prog', '"   "'))
+                            for t_label, bad_tok in bad_tokens:
+                                bad = copy.deepcopy(base)
+                                bad['run']['does'][idx] = row[:t_start] + bad_tok + row[t_end:]
+                                refuse(bad, f'{tag_base}:cmd_{cmd_idx}_{tok_idx}_{t_label}')
+                    for q_idx, q_match in enumerate(GO_QUOTED_TOKEN_RE.finditer(row)):
+                        q_start, q_end = q_match.span()
+                        bad_quotes = [('bad_esc', r'"\q"'), ('bad_uni', r'"\uD800"'), ('nul', r'"\x00"')]
+                        if q_start == 0 or row[q_start - 1] != '=':
+                            bad_quotes.append(('empty_q', '""'))
+                        for q_label, bad_q in bad_quotes:
+                            bad = copy.deepcopy(base)
+                            bad['run']['does'][idx] = row[:q_start] + bad_q + row[q_end:]
+                            refuse(bad, f'{tag_base}:quoted_{q_idx}_{q_label}')
+
+                # 6. Malformed non-empty variable-domain values (URLs, paths, strict JSON bodies, hook/holder fields).
+                domain_mutations = []
+                if kind in ('source_summary_no_cred', 'source_summary_cred') and m.group(2):
+                    u_start, u_end = m.span(2)
+                    for u_label, bad_url in (
+                        ('bad_bracket_url', 'https://['),
+                        ('plain_http', 'http://example.invalid'),
+                        ('ftp_scheme', 'ftp://example.invalid'),
+                        ('userinfo', 'https://user@example.invalid'),
+                        ('query_url', 'https://example.invalid?x=1'),
+                        ('dotdot_url', 'https://example.invalid/../x'),
+                    ):
+                        domain_mutations.append((u_label, row[:u_start] + bad_url + row[u_end:]))
+                elif kind == 'copy_remove':
+                    p_start, p_end = m.span(1)
+                    for p_label, bad_path in (('escape', '../../escape'), ('abs', '/etc/passwd'), ('dot', './obsolete.txt')):
+                        domain_mutations.append((p_label, row[:p_start] + bad_path + row[p_end:]))
+                elif kind.startswith('call_first_') and m.group(4):
+                    r_start, r_end = m.span(4)
+                    for r_label, bad_req in (
+                        ('rel_path', 'health'),
+                        ('dotdot_path', '/../escape'),
+                        ('double_slash', '/a//b'),
+                        ('query_path', '/health?x=1'),
+                        ('frag_path', '/health#frag'),
+                    ):
+                        domain_mutations.append((r_label, row[:r_start] + bad_req + row[r_end:]))
+                elif kind == 'call_second' and m.group(2):
+                    b_start, b_end = m.span(2)
+                    for b_label, bad_body in (
+                        ('nan', 'NaN'),
+                        ('inf', 'Infinity'),
+                        ('nested_nan', '{"x":NaN}'),
+                        ('lone_surrogate', r'"\uD800"'),
+                        ('not_json', 'NOT_JSON'),
+                        ('truncated', '{"x":1'),
+                    ):
+                        domain_mutations.append((b_label, row[:b_start] + bad_body + row[b_end:]))
+                elif kind == 'cap_hook_present':
+                    b_start, b_end = m.span(3)
+                    domain_mutations.append(('bad_bodies', row[:b_start] + 'bogus' + row[b_end:]))
+                    if m.group(7):
+                        rp_start, rp_end = m.span(7)
+                        domain_mutations.append(('bad_reg_path', row[:rp_start] + '/../hook' + row[rp_end:]))
+                    if m.group(2):
+                        db_start, db_end = m.span(2)
+                        domain_mutations.append(('bad_deliv_dot', row[:db_start] + 'a..b' + row[db_end:]))
+                elif kind == 'cmd_file':
+                    cp_start, cp_end = m.span(1)
+                    for cp_label, bad_prog in (('escape', '../../escape'), ('abs', '/bin/report'), ('mismatch', 'other/report')):
+                        domain_mutations.append((cp_label, row[:cp_start] + bad_prog + row[cp_end:]))
+                elif kind == 'replace_grants_kept':
+                    h_start, h_end = m.span(4)
+                    domain_mutations.append(('bad_holder', row[:h_start] + '..' + row[h_end:]))
+                for d_label, bad_line in domain_mutations:
+                    bad = copy.deepcopy(base)
+                    bad['run']['does'][idx] = bad_line
+                    refuse(bad, f'{tag_base}:domain_{d_label}')
+
+        base = source_proposal('replace')
+        # Historical preamble mutations are opaque except the retained grants framing.
+        for label, bad_line in (
+            ('widens_empty_calls', 'a standing grant of read of source synthetic widens to  for crew member yardmaster.'),
+            ('widens_prefix_dot', 'a standing grant of read of source synthetic widens to .'),
+            ('widens_empty_holder', 'a standing grant of read of source synthetic widens to list for .'),
+            ('widens_bad_holder', 'a standing grant of read of source synthetic widens to list for group a//b.'),
+            ('still_granted_empty_holders', 'the changed call health (read) is still granted by its name to  (yardr source revoke synthetic health takes it back).'),
+            ('still_granted_mismatch_call', 'the changed call health (read) is still granted by its name to crew member reviewer (yardr source revoke synthetic other takes it back).'),
+            ('decl_diff_empty_old', 'source synthetic base:  -> "https://example.invalid".'),
+            ('decl_diff_empty_new', 'source synthetic base: "https://example.invalid" -> .'),
+            ('decl_diff_unparsed', 'source synthetic base: NOT_JSON -> ALSO_NOT_JSON.'),
+            ('decl_diff_truncated_json', 'source synthetic calls: [{"Name":"old" -> [{"Name":"new".'),
+            ('decl_diff_bad_quote', r'source synthetic base: "\q" -> "\uD800".'),
+            ('decl_diff_nan', 'source synthetic base: {"x": NaN} -> none.'),
+            ('decl_diff_same_none', 'source synthetic base: none -> none.'),
+            ('decl_diff_triple_arrow', 'source synthetic base: "https://a" -> "https://b" -> "https://c".'),
+            ('changed_copy_escape', 'command file ../../escape would change: sha256 9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4 -> sha256 7a86d9a4f1870b6e5b8f14ef6a5ac27d8a9b51580d2390a9dad425ee8875af68 (1 insertions, 1 deletions).'),
+            ('changed_copy_same_sha', 'command file bin/report would change: sha256 (none) -> sha256 (none) (0 insertions, 0 deletions).'),
+            ('removed_copy_escape', 'the copy would remove ../../escape, which neither declaration names: sha256 670ac0987d6acba567e81e9faa48aca43d2c7d8d26241fc7b3fa6604453b3a51 (mode 0644, 24 bytes).'),
+            ('grants_kept_prefix_dot', 'it would replace the source synthetic the yard has under that name; grants kept for source synthetic: .'),
+            ('grants_kept_empty_holder', 'it would replace the source synthetic the yard has under that name; grants kept for source synthetic: crew member : health (kept).'),
+        ):
+            bad = source_proposal('replace')
+            bad['run']['does'].insert(3 if not label.startswith('grants_kept') else 2, bad_line)
+            if label.startswith('grants_kept'):
+                bad['run']['does'].pop(3)
+            refuse(bad, 'replace_preamble:' + label)
+
+        for label, valid_line, extra_yaml in (
+            ('decl_diff_json_pair', 'source synthetic base: "https://old.example" -> none.', ''),
+            ('decl_diff_arrow_in_string', 'source synthetic base: "a -> b" -> "https://example.invalid".', 'base: https://example.invalid\n'),
+            ('decl_diff_none_to_array', 'source synthetic calls: none -> [{"name":"health","kind":"read","request":{"method":"GET","path":"/h"},"answer":{"max":65536}}].',
+             'base: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /h}\n'),
+        ):
+            good = source_proposal('replace')
+            good['run']['does'].insert(3, valid_line)
+            if extra_yaml:
+                good['run']['carried'][0]['text'] += extra_yaml
+                good['run']['does'][1] = 'source synthetic: its calls go to https://example.invalid. It names no credential.'
+            if 'calls' in extra_yaml:
+                good['run']['does'].insert(5, 'call health (read): GET /h. It takes no parameter, and sends no query.')
+                good['run']['does'].insert(6, 'call health sends no body. Its answer is returned as it comes, at most 65536 bytes.')
+            with self.subTest(valid_preamble=label):
+                self.reset_native(good)
+                self.assertTrue(self.create()['delivered'], label)
+
+    def test_source_pack_quoted_tokens_and_plural_counts(self):
+        def refuse(ask, tag):
+            with self.subTest(native_text=tag):
+                framed = tag.startswith(('bad_cmd_count:', 'bad_replace_count:', 'bad_pack_src_count:', 'pack_label_paren'))
+                self.assert_source_contract(ask, not framed)
+
+        def accept(ask, tag):
+            with self.subTest(accept=tag):
+                self.reset_native(ask)
+                result = self.create()
+                self.assertTrue(result['delivered'], (tag, result))
+
+        # 1. Exact Finding 1 quoted-token repros + shared token sites.
+        for label, bad_argv in (
+            ('empty_prog', '[""]'),
+            ('bad_esc', r'["\q"]'),
+            ('bad_uni', r'["\uD800"]'),
+            ('nul', r'["\x00"]'),
+            ('blank_prog', '["   "]'),
+            ('empty_arg', '[bin/report, ""]'),
+            ('bad_esc_arg', r'[bin/report, "\q"]'),
+        ):
+            bad_src = source_proposal('new_public_main')
+            bad_src['run']['does'][2] = bad_src['run']['does'][2].replace('[bin/report]', bad_argv)
+            refuse(bad_src, 'source_limits:' + label)
+
+            bad_pack = pack_proposal('directory_public_main')
+            bad_pack['run']['does'][6] = bad_pack['run']['does'][6].replace('[bin/report]', bad_argv)
+            refuse(bad_pack, 'pack_cmd_file:' + label)
+
+        good_argv = r'[bin/report, "a b", "x\"y", "\t", "   "]'
+        good_yaml_cmd = '[bin/report, "a b", "x\\"y", "\\t", "   "]'
+        good_src = source_proposal('new_public_main')
+        good_src['run']['carried'][0]['text'] = good_src['run']['carried'][0]['text'].replace('[bin/report]', good_yaml_cmd)
+        good_src['run']['does'][2] = good_src['run']['does'][2].replace('[bin/report]', good_argv)
+        good_src['run']['does'][4] = good_src['run']['does'][4].replace('[bin/report]', good_argv)
+        accept(good_src, 'source_valid_quoted_args')
+
+        good_pack = pack_proposal('directory_public_main')
+        good_pack['run']['carried'][0]['text'] = good_pack['run']['carried'][0]['text'].replace('[bin/report]', good_yaml_cmd)
+        good_pack['run']['does'][4] = good_pack['run']['does'][4].replace('[bin/report]', good_argv)
+        good_pack['run']['does'][6] = good_pack['run']['does'][6].replace('[bin/report]', good_argv)
+        accept(good_pack, 'pack_valid_quoted_args')
+
+        # runs (ARGV_LINE_TOKEN) via validate_source_disclosures
+        run_lines = [
+            'call c0 (read): runs bin/report. It takes no parameter.',
+            'call c0 is answered by that command, run with no credential at each call and free to make requests of its own without one, since the yard sends none. Its answer is returned as it comes, at most 65536 bytes.',
+            'it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.',
+            'command file bin/report: [bin/report] (call.c0.run, handed no credential): sha256 9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4, mode 0700',
+        ]
+        for run_text in ('bin/report "a b" "\\t"', '""', r'"\q"', r'"\uD800"', '"   "', 'bin/report ""', r'bin/report "\q"'):
+            ask = source_proposal('new_public_main')
+            ask['run']['does'][2:2] = [f'call c0 (read): runs {run_text}. It takes no parameter.'] + run_lines[1:2]
+            self.assert_source_contract(ask, True)
+
+        # query items allow RHS "" (e.g. k="") while rejecting empty key or bad escape
+        query_base = source_proposal('free_public_main')
+        query_base['run']['carried'][0]['text'] = query_base['run']['carried'][0]['text'].replace(
+            'request: {method: GET, path: /health}',
+            'request: {method: GET, path: /health, query: {k: ""}}',
+        )
+        query_base['run']['does'][2] = 'call health (read): GET /health. It takes no parameter, and sends the query k="".'
+        accept(query_base, 'query_empty_rhs')
+        for label, bad_q in (('empty_key', '""=v'), ('bad_esc_rhs', r'k="\q"'), ('bad_uni_rhs', r'k="\uD800"')):
+            bad = copy.deepcopy(query_base)
+            bad['run']['does'][2] = f'call health (read): GET /health. It takes no parameter, and sends the query {bad_q}.'
+            refuse(bad, 'query:' + label)
+
+        # PLACEMENT_HEADER, mint_command, and hook quoted tokens
+        hdr_base = source_proposal('new_public_main')
+        hdr_base['run']['carried'][0]['text'] += 'base: https://example.invalid\ncredential:\n  env: TOKEN\n  header: X-Api-Key\n'
+        hdr_base['run']['does'][1] = (
+            'source synthetic: its calls go to https://example.invalid. '
+            'Its credential is the variable TOKEN (the name, never the value), sent in the header "X-Api-Key" on every call. '
+            'It has no second credential for updates, no mint.'
+        )
+        hdr_base['run']['does'].append('still owed after it: the credential, by a secret ask for synthetic.')
+        accept(hdr_base, 'placement_header_valid')
+        for label, bad_hdr in (('empty', '""'), ('bad_esc', r'"\q"'), ('blank', '"   "')):
+            bad = copy.deepcopy(hdr_base)
+            bad['run']['does'][1] = bad['run']['does'][1].replace('"X-Api-Key"', bad_hdr)
+            refuse(bad, 'placement_header:' + label)
+
+        hook_base = pack_proposal('directory_public_main')
+        hook_base['run']['carried'][0]['text'] = (
+            'name: synthetic\nbase: https://example.invalid\n'
+            'calls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\n'
+            'hook:\n  verify:\n    scheme: hmac-sha256\n    signed: body\n'
+            '    signature: {header: X-Sig, encoding: hex, list: ",", prefix: "sha256="}\n'
+            '  bodies: unique\n  normalize: [bin/report]\n'
+        )
+        hook_base['run']['does'][4] = (
+            'what it sends in: deliveries are verified by HMAC-SHA256 over the body (scheme hmac-sha256, signed: body), '
+            'the signature in the header X-Sig as hex, one or more separated by ",", each past the prefix "sha256=", any one of them passing; '
+            'it sends no delivery id; it sends no timestamp; bodies are unique; '
+            'the command [bin/report] turns a verified body into the envelope, handed no credential; its events carry no field of their own.'
+        )
+        accept(hook_base, 'hook_quoted_valid')
+        for label, old, new in (
+            ('sep_empty', '","', '""'),
+            ('sep_bad_esc', '","', r'"\q"'),
+            ('prefix_empty', '"sha256="', '""'),
+            ('prefix_bad_esc', '"sha256="', r'"\q"'),
+            ('hook_cmd_empty', '[bin/report]', '[""]'),
+            ('bad_hmac', 'HMAC-SHA256', 'HMAC-MD5'),
+            ('bad_algo', 'scheme hmac-sha256,', 'scheme hmac-sha256, algorithm: md5,'),
+            ('bad_enc', 'as hex,', 'as rot13,'),
+            ('bad_bodies', 'bodies are unique;', 'bodies are invalid;'),
+            ('bad_window', 'it sends no timestamp;', 'its time arrives at a..b, in s within 0s of the yard\'s clock;'),
+            ('bad_window_unit', 'it sends no timestamp;', 'its time arrives at ts, in s within 5garbage of the yard\'s clock;'),
+        ):
+            bad = copy.deepcopy(hook_base)
+            bad['run']['does'][4] = bad['run']['does'][4].replace(old, new)
+            refuse(bad, 'hook_quoted:' + label)
+
+        # Valid loopback summary base + named base, valid link fold, valid hook variants
+        loopback_ok = source_proposal('free_public_main')
+        loopback_ok['run']['carried'][0]['text'] = loopback_ok['run']['carried'][0]['text'].replace(
+            'base: https://example.invalid\n',
+            'base: https://example.invalid\nbases:\n  local: http://127.0.0.1:8080\n',
+        )
+        loopback_ok['run']['does'][1] = 'source no-commands: its calls go to http://127.0.0.1:8080 (base local). It names no credential.'
+        accept(loopback_ok, 'summary_loopback_base')
+        for label, bad_summary in (
+            ('bad_base_name', 'source no-commands: its calls go to https://example.invalid (base ../bad). It names no credential.'),
+            ('bad_port', 'source no-commands: its calls go to https://example.invalid:bad. It names no credential.'),
+        ):
+            bad = source_proposal('free_public_main')
+            bad['run']['does'][1] = bad_summary
+            refuse(bad, 'summary_domain:' + label)
+
+        link_base = source_proposal('new_public_main')
+        link_base['run']['carried'][0]['text'] += (
+            'link:\n  host: linear.app\n  issue: "^/([A-Z]+-[0-9]+)$"\n'
+            '  fixed: "https://linear.app/issue/{1}"\n  thread: "{1}"\n  fold: lower\n'
+        )
+        link_base['run']['does'] = link_base['run']['does'][:3] + [
+            "its issues are a bead's link: host linear.app, the expression ^/([A-Z]+-[0-9]+)$ reads an issue, the one fixed form https://linear.app/issue/{1} and the thread id {1}; the groups fold lower. It names no pull-request shape. It keeps no repositories.",
+            'it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no way to speak in threads, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.',
+        ] + link_base['run']['does'][4:]
+        accept(link_base, 'link_fold_lower')
+        bad_fold = copy.deepcopy(link_base)
+        bad_fold['run']['does'][3] = bad_fold['run']['does'][3].replace('the groups fold lower', 'the groups fold upper')
+        refuse(bad_fold, 'link_fold_invalid')
+
+        for bad_run_prog in ('/bin/report', '../../escape'):
+            ask = source_proposal('new_public_main')
+            ask['run']['does'][2:2] = [f'call c0 (read): runs {bad_run_prog}. It takes no parameter.'] + run_lines[1:2]
+            self.assert_source_contract(ask, True)
+        for label, bad_op in (('rel', 'bin/tool'), ('dotdot', '/a/../b')):
+            bad = source_proposal('new_public_main')
+            bad['run']['does'][-1] = f"command [{bad_op}] (call.extra): the program is the operator's own, handed no credential."
+            refuse(bad, 'op_cmd:' + label)
+        bad_label = pack_proposal('embedded_public_main')
+        bad_label['run']['pack']['label'] = 'embedded in yardr foo)'
+        bad_label['run']['does'][0] = bad_label['run']['does'][0].replace('in yardr unknown', 'in yardr foo)')
+        refuse(bad_label, 'pack_label_paren')
+        bad_weight = pack_proposal('directory_public_main')
+        bad_weight['weight'][0]['line'] = 'brings a program the yard will run:    '
+        refuse(bad_weight, 'pack_weight_blank')
+
+        # 2. Exact Finding 2 10- and 11-command declarations (aligned and public-main) + plural count boundaries.
+        for total_cmds in (10, 11):
+            call_count = total_cmds - 1
+            calls_yaml = ''.join(
+                f'  c{i}:\n    kind: read\n    request: {{method: POST, path: /c{i}}}\n    build: [bin/report, "--n={i}"]\n'
+                for i in range(call_count)
+            )
+            decl = f'name: synthetic\nbase: https://example.invalid\nlimits:\n  command: [bin/report]\ncalls:\n{calls_yaml}'
+            call_lines = [
+                line
+                for i in range(call_count)
+                for line in (
+                    f'call c{i} (read): POST /c{i}. It takes no parameter, and sends no query.',
+                    f'call c{i} builds its body with the command [bin/report, --n={i}], run with no credential at each call and free to make its own requests without one while it builds. Its answer is returned as it comes, at most 65536 bytes.',
+                )
+            ]
+            entries = ['[bin/report] (limits.command, handed no credential)'] + [
+                f'[bin/report, --n={i}] (call.c{i}.build, handed no credential)' for i in range(call_count)
+            ]
+            cmd_line = (
+                f'command file bin/report: {and_list(entries)}: '
+                'sha256 9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4, mode 0700'
+            )
+            for variant in ('aligned', 'public_main'):
+                ask = source_proposal('new' if variant == 'aligned' else 'new_public_main')
+                ask['run']['carried'][0]['text'] = decl
+                ask['run']['does'] = [
+                    f"it adds one source and copies 1 command file ({total_cmds} commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+                    'source synthetic: its calls go to https://example.invalid. It names no credential.',
+                    *call_lines,
+                    *ask['run']['does'][2:-1],
+                    cmd_line,
+                ]
+                accept(ask, f'{variant}_{total_cmds}_commands')
+
+        for files_n, cmds_n in ((2, 2), (9, 9), (10, 10), (1, 10), (10, 11), (19, 19), (20, 20)):
+            phrase = f'{files_n} command files' if files_n != 1 else '1 command file'
+            slots = [
+                ('limits', 'command'), ('thread', 'reply'), ('thread', 'posted'), ('thread', 'read'),
+                ('thread', 'file'), ('thread', 'open'), ('thread', 'opened'), ('thread', 'state'),
+                ('notify', 'image'), ('events', 'pr'), ('events', 'ci'), ('git', 'credential'),
+            ]
+            # Build files_n distinct relative programs across section commands and call.<name>.build commands.
+            progs = ['bin/report' if i == 0 else f'bin/tool-{i}' for i in range(files_n)]
+            file_txt = '#!/bin/sh\necho ok\n'
+            fsha = n.file_hash(file_txt)
+            extra_cmds = cmds_n - files_n
+            # Assign prog[0] to limits.command; remaining files to call.<c>.build; extra_cmds to call.<ec>.build reusing bin/report.
+            calls_decl_str = ''
+            call_lines = []
+            extra_entries_for_0 = ['[bin/report] (limits.command, handed no credential)']
+            cmd_rows = []
+            call_idx = 0
+            for i in range(1, files_n):
+                cname = f'c{call_idx}'
+                call_idx += 1
+                calls_decl_str += f'  {cname}:\n    kind: read\n    request: {{method: POST, path: /{cname}}}\n    build: [{progs[i]}]\n'
+                call_lines.extend([
+                    f'call {cname} (read): POST /{cname}. It takes no parameter, and sends no query.',
+                    f'call {cname} builds its body with the command [{progs[i]}], run with no credential at each call and free to make its own requests without one while it builds. Its answer is returned as it comes, at most 65536 bytes.',
+                ])
+            for e in range(extra_cmds):
+                cname = f'c{call_idx}'
+                call_idx += 1
+                calls_decl_str += f'  {cname}:\n    kind: read\n    request: {{method: POST, path: /{cname}}}\n    build: [bin/report, --e={e}]\n'
+                call_lines.extend([
+                    f'call {cname} (read): POST /{cname}. It takes no parameter, and sends no query.',
+                    f'call {cname} builds its body with the command [bin/report, --e={e}], run with no credential at each call and free to make its own requests without one while it builds. Its answer is returned as it comes, at most 65536 bytes.',
+                ])
+                extra_entries_for_0.append(f'[bin/report, --e={e}] (call.{cname}.build, handed no credential)')
+            decl_text = 'name: synthetic\nbase: https://example.invalid\nlimits:\n  command: [bin/report]\n'
+            if calls_decl_str:
+                decl_text += 'calls:\n' + calls_decl_str
+            files_list = [dict(program=p, text=file_txt, sha256=fsha) for p in progs]
+            cmd_rows.append(f'command file bin/report: {and_list(extra_entries_for_0)}: sha256 {fsha}, mode 0700')
+            for i in range(1, files_n):
+                cname = f'c{i - 1}'
+                cmd_rows.append(f'command file {progs[i]}: [{progs[i]}] (call.{cname}.build, handed no credential): sha256 {fsha}, mode 0700')
+            weight_line = 'brings a program the yard will run: the command file ' + and_list(
+                [f'{p} of synthetic (new)' for p in progs]
+            )
+            if len(call_lines) + len(cmd_rows) + 4 <= 40:
+                for kind in ('new', 'new_public_main'):
+                    ask = source_proposal(kind)
+                    ask['run']['carried'][0]['text'] = decl_text
+                    ask['run']['carried'][0]['files'] = copy.deepcopy(files_list)
+                    ask['run']['does'] = [
+                        f"it adds one source and copies {phrase} ({cmds_n} commands), and changes nothing else. "
+                        "It grants no call, makes no hook, and sets no credential's file.",
+                        'source synthetic: its calls go to https://example.invalid. It names no credential.',
+                        *call_lines,
+                        'its limits command [bin/report] says what the source itself carries, asked by the source\'s name.',
+                        'it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.',
+                        *cmd_rows,
+                    ]
+                    ask['weight'] = [dict({'class': 'code'}, line=weight_line)]
+                    accept(ask, f'source_add_count_{kind}_{files_n}_{cmds_n}')
+            # Well-formed file/command counts are shown whole, without reconstructing them.
+            bad_cnt = source_proposal('new_public_main')
+            bad_cnt['run']['does'][0] = (
+                f"it adds one source and copies {phrase} ({cmds_n} commands), and changes nothing else. "
+                "It grants no call, makes no hook, and sets no credential's file."
+            )
+            refuse(bad_cnt, f'source_count_mismatch_{files_n}_{cmds_n}')
+        for plural_token in ('2', '9', '10', '19', '20', '100', '101'):
+            self.assertRegex(
+                f"it adds one source and copies {plural_token} command files ({plural_token} commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+                n.SOURCE_ADD_LEAD_RE,
+            )
+
+        for bad_phrase in (
+            '0 command files (1 command)',
+            '1 command files (1 command)',
+            '2 command file (2 commands)',
+            '2 command files (1 commands)',
+            '2 command files (0 commands)',
+            '02 command files (2 commands)',
+            '1 command file (02 commands)',
+        ):
+            bad = source_proposal('new_public_main')
+            bad['run']['does'][0] = bad['run']['does'][0].replace('1 command file (1 command)', bad_phrase)
+            refuse(bad, 'bad_cmd_count:' + bad_phrase)
+            bad_rep = source_proposal('replace')
+            bad_rep['run']['does'][0] = bad_rep['run']['does'][0].replace('1 command file (1 command)', bad_phrase)
+            refuse(bad_rep, 'bad_replace_count:' + bad_phrase)
+
+        for bad_src_phrase in ('0 sources', '1 sources', '2 source', '02 sources', '010 sources'):
+            bad = pack_proposal('directory_public_main')
+            bad['run']['does'][0] = bad['run']['does'][0].replace('1 source', bad_src_phrase)
+            refuse(bad, 'bad_pack_src_count:' + bad_src_phrase)
+
+        multi_pack = pack_proposal('directory_public_main')
+        multi_pack.pop('weight', None)
+        multi_pack['run']['carried'] = [{'name': f's{i}', 'text': f'name: s{i}\n'} for i in range(10)]
+        multi_pack['run']['back'] = 'yardr source rm s0'
+        multi_pack['run']['does'] = [
+            "pack synthetic (directory /synthetic/checkout/pack in yardr unknown), digest sha256:"
+            + multi_pack['run']['pack']['digest']
+            + ", of kind source, into the yard: it adds 10 sources and copies no command files, and changes nothing else. "
+            "It grants no call, makes no hook, and sets no credential's file.",
+        ] + [
+            line
+            for i in range(10)
+            for line in (
+                f'source s{i}: it has no base and calls nothing. It names no credential.',
+                'it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.',
+                'it names no command.',
+            )
+        ]
+        accept(multi_pack, 'pack_10_sources')
+
+    def test_source_and_pack_prose_values_are_native_owned(self):
+        """Historical semantic-value mutations are presented whole; structured framing stays bound."""
+        zero_sha = '0' * 64
+        alt_sha = 'f' * 64
+        fixtures = [
+            ('source:new', lambda: source_proposal('new')),
+            ('source:new_public_main', lambda: source_proposal('new_public_main')),
+            ('source:free', lambda: source_proposal('free')),
+            ('source:free_public_main', lambda: source_proposal('free_public_main')),
+            ('source:replace', lambda: source_proposal('replace')),
+            ('pack:directory', lambda: pack_proposal('directory')),
+            ('pack:directory_upstream', lambda: pack_proposal('directory_upstream')),
+            ('pack:directory_public_main', lambda: pack_proposal('directory_public_main')),
+            ('pack:directory_replace', lambda: pack_proposal('directory_replace')),
+            ('pack:embedded', lambda: pack_proposal('embedded')),
+            ('pack:embedded_upstream', lambda: pack_proposal('embedded_upstream')),
+            ('pack:embedded_public_main', lambda: pack_proposal('embedded_public_main')),
+        ]
+
+        # Build rich source (all 9 capability slots, mint, bases, run/build calls, params, query, answer) and rich replace (decl_diff, widens, still_granted, would change).
+        rich_sha = n.file_hash('#!/bin/sh\necho ok\n')
+        rich_mint_sha = n.file_hash('#!/bin/sh\necho mint\n')
+        rich_yaml = (
+            'name: synthetic\n'
+            'base: https://api.example.invalid\n'
+            'bases:\n  eu: https://eu.example.invalid\n'
+            'credential:\n'
+            '  env: SRC_TOK\n'
+            '  update_env: SRC_UPD\n'
+            '  header: "Authorization: Bearer {credential}"\n'
+            '  mint:\n    - name: MINT_A\n      secret: true\n    - MINT_B\n'
+            '  mint_command: [bin/mint, --v1]\n'
+            'calls:\n'
+            '  fetch:\n'
+            '    kind: read\n'
+            '    params:\n'
+            '      q: {type: enum, values: [open, closed], optional: true, log: true}\n'
+            '      pat: {type: string, pattern: "^[a-z]+$", max: 20, optional: true}\n'
+            '    request:\n'
+            '      method: GET\n      path: /items\n      query: {q: "{q}", empty: ""}\n'
+            '    answer:\n      select: [id, title]\n      max: 4096\n'
+            '  mk:\n'
+            '    kind: update\n'
+            '    request: {method: POST, path: /items}\n'
+            '    build: [bin/builder, --json]\n'
+            '    params:\n      p: {type: string}\n'
+            '  tellcall:\n'
+            '    kind: update\n'
+            '    params:\n      to: {type: string}\n      t: {type: string}\n      x: {type: string}\n      l: {type: string, optional: true}\n'
+            '    request:\n'
+            '      method: POST\n      path: /tell\n      body: {to: "{to}", title: "{t}", text: "{x}", link: "{l}"}\n'
+            'check: fetch\n'
+            'idempotency: X-Req-Id\n'
+            'notify:\n  call: tellcall\n  address: {param: to, env: HEAR_ADDR}\n  title: t\n  text: x\n  link: l\n'
+            'hear:\n  field: sender\n  by: identity\n'
+            'limits:\n  command: [bin/report, limits]\n  kinds: {claude: pro}\n'
+            'thread:\n  open: [bin/report, open]\n  place: issue\n  states: [started, review, done]\n  labels: true\n  assignee: key\n'
+            'link:\n'
+            '  host: example.invalid\n'
+            '  issue: "^/(org/repo)/i/([0-9]+)$"\n  fixed: "https://example.invalid/{1}/i/{2}"\n  thread: "{2}"\n  fold: lower\n'
+            '  pull:\n    issue: "^/(org/repo)/pr/([0-9]+)$"\n    fixed: "https://example.invalid/{1}/pr/{2}"\n    thread: "{2}"\n'
+            '  repos: "^(org/repo)$"\n'
+            'identity:\n  fold: lower\n'
+            'events:\n  runs: [ci]\n  head_from: [push]\n  pr: [bin/report, pr]\n  ci: [bin/report, ci]\n'
+            'hook:\n'
+            '  verify:\n'
+            '    scheme: hmac-sha256\n    algorithm: sha512\n    signed: "v0:{timestamp}:{body}"\n'
+            '    signature: {header: X-Sig, encoding: hex, list: ",", prefix: "sha512="}\n'
+            '    key: {encoding: hex, prefix: "whsec_"}\n'
+            '    delivery: {body: deliv.id}\n    timestamp: {body: ts, unit: ms, window: 5m}\n'
+            '  bodies: unique\n'
+            '  normalize: [bin/report, norm]\n'
+            '  keys: [sender, repo]\n'
+            '  register: {call: tellcall, url: x, secret: t}\n'
+        )
+        rich_add = source_proposal('new_public_main')
+        rich_add['run']['carried'][0]['text'] = rich_yaml
+        rich_add['run']['carried'][0]['files'] = [
+            dict(program='bin/mint', text='#!/bin/sh\necho mint\n', sha256=rich_mint_sha),
+            dict(program='bin/report', text='#!/bin/sh\necho ok\n', sha256=rich_sha),
+            dict(program='bin/builder', text='#!/bin/sh\necho ok\n', sha256=rich_sha),
+        ]
+        rich_add['run']['does'] = [
+            "it adds one source and copies 3 command files (7 commands), and changes nothing else. It grants no call, makes no hook, and sets no credential's file.",
+            (f'source synthetic: its calls go to https://eu.example.invalid (base eu). Its credential is the variable SRC_TOK (the name, never the value), '
+             f'with SRC_UPD for updates, minted from MINT_A and MINT_B by the declaration\'s own mint command [bin/mint, --v1] '
+             f'(command file bin/mint, copied to <home>/sources/synthetic/bin/mint: sha256 {rich_mint_sha}, mode 0700), '
+             f'run with the mint\'s inputs and the operator\'s local logins where the source\'s mint_command is unset: one the operator sets wins over it, '
+             f'sent in the header "Authorization: Bearer {{credential}}" on every call.'),
+            'call fetch (read): GET /items. It takes q (enum, optional, one of open, closed, its value is kept in the record of each call) and pat (string, optional, pattern ^[a-z]+$, at most 20), and sends the query q={q}, empty="".',
+            'call fetch sends no body. Its answer keeps id, title, at most 4096 bytes.',
+            'call mk (update): POST /items. It takes p (string, required), and sends no query.',
+            'call mk builds its body with the command [bin/builder, --json], run with the credential at each call and free to make its own requests with it while it builds. Its answer is returned as it comes, at most 65536 bytes.',
+            'call tellcall (update): POST /tell. It takes to (string, required), t (string, required), x (string, required) and l (string, optional), and sends no query.',
+            'call tellcall sends the body {"link":"{l}","text":"{x}","title":"{t}","to":"{to}"}. Its answer is returned as it comes, at most 65536 bytes.',
+            'Its check call is fetch, and updates carry their key in the header X-Req-Id.',
+            "it can tell a user: the call tellcall, whose to takes the person's address, read as HEAR_ADDR from the person's own env file; the title fills t and the text fills x and the link fills l.",
+            "it hears deliveries: only one whose sender is the address of a user told through it, read as , and every told user's: another's, and a stranger's, is dropped after verification.",
+            'its limits command [bin/report, limits] says what the subscription of claude as pro still carries.',
+            "it speaks in threads: a place to open one is called issue; the words state takes are started, review, done; it takes labels (label:<name> adds one, never removes); an assignee is a person's key in the source.",
+            "its issues are a bead's link: host example.invalid, the expression ^/(org/repo)/i/([0-9]+)$ reads an issue, the one fixed form https://example.invalid/{1}/i/{2} and the thread id {2}; the groups fold lower. Its pull requests read ^/(org/repo)/pr/([0-9]+)$, with the fixed form https://example.invalid/{1}/pr/{2} and the thread id {2}. A repository's path matches ^(org/repo)$.",
+            'its identity keys fold to lowercase (identity fold: lower), so one spelling is stored however it was typed.',
+            'what it sends in: deliveries are verified by HMAC-SHA512 over v0:{timestamp}:{body} (scheme hmac-sha256, algorithm: sha512, signed: v0:{timestamp}:{body}), the signature in the header X-Sig as hex, one or more separated by ",", each past the prefix "sha512=", any one of them passing; the HMAC key is what follows the prefix "whsec_" in the secret, read as hex (not the secret\'s own bytes); a delivery is named by deliv.id in its body; its time arrives at ts, in ms within 5m of the yard\'s clock; bodies are unique; the command [bin/report, norm] turns a verified body into the envelope, handed no credential; its events may carry the fields sender, repo; the yard registers its webhook with tellcall (POST /tell), filling x with the public URL and t with the hook\'s secret.',
+            'what it sends of pull requests and CI: the envelope types ci are runs; push tell a head; the command [bin/report, pr] reads the pull request, handed the credential; the command [bin/report, ci] reads CI, handed the credential.',
+            f'command file bin/report: [bin/report, limits] (limits.command, handed no credential), [bin/report, open] (thread.open, handed the credential), [bin/report, norm] (hook.normalize, handed no credential), [bin/report, pr] (events.pr, handed the credential) and [bin/report, ci] (events.ci, handed the credential): sha256 {rich_sha}, mode 0700',
+            f'command file bin/builder: [bin/builder, --json] (call.mk.build, handed the credential): sha256 {rich_sha}, mode 0700',
+            'still owed after it: the credential, by a secret ask for synthetic; and which user it tells, by yardr user set <user> notify=synthetic.',
+        ]
+        rich_add['weight'] = [dict(
+            {'class': 'code'},
+            line='brings a program the yard will run: the command file bin/mint of synthetic (new), bin/report of synthetic (new) and bin/builder of synthetic (new)',
+        )]
+
+        rich_replace = source_proposal('replace')
+        rc = rich_replace['run']['carried'][0]
+        old_rep_text = n.source_diff(rc['old'][0], rc['files'][0]['text'])
+        old_rep_sha = rc['old'][0]['old_sha256']
+        rep_lines = old_rep_text.removesuffix('\n').split('\n')
+        rc['text'] = (
+            'name: synthetic\nbase: https://api.example.invalid\n'
+            'calls:\n  a:\n    kind: read\n    request: {method: GET, path: /a}\n'
+            '  upd:\n    kind: update\n    request: {method: POST, path: /u, body: {ok: true}}\n'
+            '  fetch:\n    kind: read\n'
+            '    params:\n      q: {type: enum, values: [open, closed], optional: true, log: true}\n'
+            '    request:\n      method: GET\n      path: /items\n      query: {q: "{q}"}\n'
+            '    answer:\n      select: [id]\n      max: 4096\n'
+        )
+        rc['files'] = []
+        rc['old'][0]['new_sha256'] = ''
+        rc['old'][0]['diff'] = '--- was\n+++ is\n' + f'@@ -1,{len(rep_lines)} +0,0 @@\n' + ''.join('-' + l + '\n' for l in rep_lines)
+        rem = rc['removed'][0]
+        rich_replace['run']['does'] = [
+            "it replaces one source and copies no command files, and removes the command copies that stand, and changes nothing else. It grants no call, makes no hook, and sets no credential's file: the source keeps its env_file, mint_command, region base, call limits and ignored senders, and every grant of it stands, now for this declaration.",
+            'source synthetic: its calls go to https://api.example.invalid. It names no credential.',
+            'it would replace the source synthetic the yard has under that name; grants kept for source synthetic: crew member reviewer: gone (absent from the new declaration), read (kept), upd (changed).',
+            'source synthetic base: "https://old.example.invalid" -> "https://api.example.invalid".',
+            ('source synthetic calls: [{"name":"a","kind":"read","request":{"method":"GET","path":"/old"},"answer":{"max":65536}}] -> '
+             '[{"name":"a","kind":"read","request":{"method":"GET","path":"/a"},"answer":{"max":65536}},'
+             '{"name":"upd","kind":"update","request":{"method":"POST","path":"/u","body":{"ok":true}},"answer":{"max":65536}},'
+             '{"name":"fetch","kind":"read","params":[{"name":"q","type":"enum","values":["open","closed"],"optional":true,"log":true}],'
+             '"request":{"method":"GET","path":"/items","query":[{"key":"q","value":"{q}"}]},"answer":{"select":["id"],"max":4096}}].'),
+            f'command file bin/report would change: sha256 {old_rep_sha} -> sha256 (none) (0 insertions, {len(rep_lines)} deletions).',
+            f"the copy would remove {rem['path']}, which neither declaration names: sha256 {rem['sha256']} (mode {rem['mode']}, {rem['size']} bytes).",
+            'a standing grant of read of source synthetic widens to a for crew member reviewer.',
+            'the changed call upd (update) is still granted by its name to crew member reviewer (yardr source revoke synthetic upd takes it back).',
+            'call a (read): GET /a. It takes no parameter, and sends no query.',
+            'call a sends no body. Its answer is returned as it comes, at most 65536 bytes.',
+            'call upd (update): POST /u. It takes no parameter, and sends no query.',
+            'call upd sends the body {"ok":true}. Its answer is returned as it comes, at most 65536 bytes.',
+            'call fetch (read): GET /items. It takes q (enum, optional, one of open, closed, its value is kept in the record of each call), and sends the query q={q}.',
+            'call fetch sends no body. Its answer keeps id, at most 4096 bytes.',
+            'The source names no check call and no idempotency header.',
+            'it can tell no user.',
+            'it hears no deliveries.',
+            'it names no limits command.',
+            'it speaks in no threads.',
+            "its issues are no bead's link.",
+            'its identity keys keep their case.',
+            'it sends no hook deliveries into the yard.',
+            'it sends no pull-request or CI events.',
+            'it names no command.',
+        ]
+        rich_replace['weight'] = [
+            dict({'class': 'code'}, line='brings a program the yard will run: the declaration of synthetic replaces the one that stands, and what it names of commands or updates runs from now on'),
+            dict({'class': 'reads'}, line='widens what a standing grant of read reaches: a grant of read widens to a of synthetic for crew member reviewer'),
+        ]
+
+        all_bundles = fixtures + [
+            ('rich:add', lambda: copy.deepcopy(rich_add)),
+            ('rich:replace', lambda: copy.deepcopy(rich_replace)),
+        ]
+
+        # Build the table of well-formed single-value mismatch mutations for each bundle.
+        def build_mutations(tag, ask):
+            does = ask['run']['does']
+            rows = []
+
+            def rep_line(field, idx, old, new):
+                if idx < len(does) and old in does[idx] and does[idx].replace(old, new, 1) != does[idx]:
+                    out = copy.deepcopy(ask)
+                    out['run']['does'][idx] = out['run']['does'][idx].replace(old, new, 1)
+                    rows.append((field, out))
+
+            def rep_first(field, old, new, *, start=0):
+                for idx in range(start, len(does)):
+                    if old in does[idx] and does[idx].replace(old, new, 1) != does[idx]:
+                        rep_line(field, idx, old, new)
+                        return
+
+            # Lead row counts & pack metadata
+            rep_line('lead:files_count', 0, 'copies 1 command file (1 command)', 'copies 2 command files (1 command)')
+            rep_line('lead:cmds_count', 0, 'copies 1 command file (1 command)', 'copies 1 command file (2 commands)')
+            rep_line('lead:files_count', 0, 'copies 2 command files (6 commands)', 'copies 3 command files (6 commands)')
+            rep_line('lead:cmds_count', 0, 'copies 2 command files (6 commands)', 'copies 2 command files (7 commands)')
+            rep_line('lead:files_count', 0, 'copies 3 command files (9 commands)', 'copies 4 command files (9 commands)')
+            rep_line('lead:cmds_count', 0, 'copies 3 command files (9 commands)', 'copies 3 command files (10 commands)')
+            rep_line('lead:no_files_to_some', 0, 'copies no command files, and removes the command copies that stand', 'copies 1 command file (1 command)')
+            rep_line('lead:no_files_omit_removes', 0, 'copies no command files, and removes the command copies that stand', 'copies no command files')
+            rep_line('lead:free_no_files', 0, 'copies no command files', 'copies 1 command file (1 command)')
+            rep_line('lead:pack_adds', 0, 'it adds 1 source', 'it adds 2 sources')
+            rep_line('lead:pack_replaces', 0, 'it replaces 1 source', 'it replaces 2 sources')
+            if tag.startswith('pack:'):
+                pack = ask['run']['pack']
+                rep_line('lead:pack_name', 0, 'pack ' + pack['name'] + ' (', 'pack wrongname (')
+                if isinstance(pack.get('digest'), str):
+                    bad_digest = zero_sha if pack['digest'] == alt_sha else alt_sha
+                    rep_line('lead:pack_digest', 0, 'digest sha256:' + pack['digest'], 'digest sha256:' + bad_digest)
+                version = re.search(r'in yardr ([^\s()]+)', does[0])
+                if version and version.group(1) != 'deadbeef0000':
+                    rep_line('lead:pack_version', 0, 'in yardr ' + version.group(1), 'in yardr deadbeef0000')
+                path = re.search(r'directory (\S+) in yardr', does[0])
+                if path and path.group(1) != '/synthetic/checkout/other':
+                    rep_line('lead:pack_path', 0, 'directory ' + path.group(1) + ' in yardr', 'directory /synthetic/checkout/other in yardr')
+
+            # Summary row (index 1)
+            rep_line('summary:source_name', 1, f'source {ask["run"]["carried"][0]["name"]}:', 'source wrongname:')
+            rep_line('summary:base_url', 1, 'https://example.invalid', 'https://other.invalid')
+            rep_line('summary:base_url', 1, 'https://api.telegram.org', 'https://other.invalid')
+            rep_line('summary:base_name', 1, 'https://eu.example.invalid (base eu)', 'https://eu.example.invalid (base us)')
+            rep_line('summary:no_base_to_url', 1, 'it has no base and calls nothing.', 'its calls go to https://other.invalid.')
+            rep_line('summary:no_cred_to_cred', 1, 'It names no credential.', 'Its credential is the variable FAKE_TOK (the name, never the value), and no call\'s header, path or body holds it. It has no second credential for updates, no mint, no header of its own.')
+            rep_line('summary:cred_env', 1, 'TELEGRAM_BOT_TOKEN', 'OTHER_BOT_TOKEN')
+            rep_line('summary:cred_env', 1, 'SRC_TOK', 'OTHER_TOK')
+            rep_line('summary:update_env', 1, 'SRC_UPD', 'OTHER_UPD')
+            rep_line('summary:mint_envs', 1, 'MINT_A and MINT_B', 'MINT_A and MINT_C')
+            rep_line('summary:mint_cmd_argv', 1, '[bin/mint, --v1]', '[bin/mint, --v2]')
+            rep_line('summary:mint_sha', 1, f'sha256 {rich_mint_sha}', f'sha256 {alt_sha}')
+            rep_line('summary:header_value', 1, '"Authorization: Bearer {credential}"', '"X-Other: {credential}"')
+            rep_line('summary:cred_in_path', 1, 'in the request path wherever the declaration puts {credential} (credential.in_path: true): it stands in the logs of every server on the way', 'in the header "X-Other" on every call')
+
+            # Replace preamble & diffs & changes/removals
+            rep_first('replace:grants_absent_present', 'gone (absent from the new declaration)', 'a (absent from the new declaration)')
+            rep_first('replace:grants_kept_unknown', 'upd (changed)', 'ghost (changed)')
+            rep_first('replace:grants_kept_unknown', 'health (kept)', 'ghost (kept)')
+            rep_first('replace:decl_diff_new', '-> "https://api.example.invalid".', '-> "https://wrong.example.invalid".')
+            rep_first('replace:decl_diff_calls_name', '-> [{"name":"a",', '-> [{"name":"other",')
+            rep_first('replace:decl_diff_calls_kind', '-> [{"name":"a","kind":"read"', '-> [{"name":"a","kind":"update"')
+            rep_first('replace:decl_diff_calls_method', '{"method":"GET","path":"/a"}', '{"method":"POST","path":"/a"}')
+            rep_first('replace:decl_diff_calls_path', '{"method":"GET","path":"/a"}', '{"method":"GET","path":"/other"}')
+            rep_first('replace:decl_diff_calls_query_spurious', '{"method":"GET","path":"/a"}', '{"method":"GET","path":"/a","query":[{"key":"x","value":"1"}]}')
+            rep_first('replace:decl_diff_calls_query_value', '{"key":"q","value":"{q}"}', '{"key":"q","value":"{wrong}"}')
+            rep_first('replace:decl_diff_calls_params_type', '"type":"enum"', '"type":"string"')
+            rep_first('replace:decl_diff_calls_params_log', '"log":true', '"log":false')
+            rep_first('replace:decl_diff_calls_body', '"body":{"ok":true}', '"body":{"ok":false}')
+            rep_first('replace:decl_diff_calls_body_type', '"body":{"ok":true}', '"body":{"ok":"true"}')
+            rep_first('replace:decl_diff_calls_answer_max', '"path":"/a"},"answer":{"max":65536}', '"path":"/a"},"answer":{"max":4096}')
+            rep_first('replace:decl_diff_calls_answer_select', '"select":["id"]', '"select":["title"]')
+            rep_first('replace:decl_diff_calls_extra_key', '-> [{"name":"a",', '-> [{"name":"a","extra":1,')
+            rep_first('replace:would_change_prog', 'command file bin/report would change:', 'command file bin/other would change:')
+            rep_first('replace:would_change_sha', f'sha256 {old_rep_sha}', f'sha256 {alt_sha}')
+            rep_first('replace:would_change_del', '0 insertions,', '1 insertions,')
+            rep_first('replace:removed_path', 'extra.txt', 'wrong.txt')
+            rep_first('replace:removed_path', 'obsolete.txt', 'wrong.txt')
+            rep_first('replace:removed_sha', '670ac0987d6acba567e81e9faa48aca43d2c7d8d26241fc7b3fa6604453b3a51', alt_sha)
+            rep_first('replace:removed_mode', 'mode 0644', 'mode 0755')
+            rep_first('replace:removed_size', '24 bytes', '99 bytes')
+            rep_first('replace:widens_call', 'widens to a for', 'widens to wrongcall for')
+            rep_first('replace:still_granted_call', 'the changed call upd (update)', 'the changed call ghost (update)')
+            rep_first('replace:still_granted_kind', 'the changed call upd (update)', 'the changed call upd (read)')
+
+            # Call rows
+            rep_first('call:name', 'call health (read):', 'call ghost (read):')
+            rep_first('call:kind', 'call health (read):', 'call health (update):')
+            rep_first('call:method', 'GET /health.', 'POST /health.')
+            rep_first('call:path', 'GET /health.', 'GET /other.')
+            rep_first('call:run_argv', 'runs bin/report --run.', 'runs bin/report --other.')
+            rep_first('call:param_name', 'It takes q (enum,', 'It takes z (enum,')
+            rep_first('call:param_values', 'one of open, closed', 'one of open, archived')
+            rep_first('call:param_pattern', 'pattern ^[a-z]+$', 'pattern ^[0-9]+$')
+            rep_first('call:param_max', 'at most 20', 'at most 99')
+            rep_first('call:param_log', ', its value is kept in the record of each call', '')
+            rep_first('call:query', 'q={q}, empty=""', 'q={q}, empty="x"')
+            rep_first('call:run_cred', 'run with the credential at each call', 'run with no credential at each call')
+            rep_first('call:build_argv', '[bin/builder, --json]', '[bin/builder, --yaml]')
+            rep_first('call:body', '{"link":"{l}","text":"{x}","title":"{t}","to":"{to}"}', '{"link":"{l}","text":"{x}","title":"{t}","to":"WRONG"}')
+            rep_first('call:body_string_to_bool', '"to":"{to}"', '"to":true')
+            rep_first('call:body_bool_to_string', 'sends the body {"ok":true}.', 'sends the body {"ok":"true"}.')
+            rep_first('call:answer_select', 'keeps id, title', 'keeps id, body')
+            rep_first('call:answer_max', 'at most 4096 bytes.', 'at most 8192 bytes.')
+            rep_first('call:answer_default_max', 'at most 65536 bytes.', 'at most 4096 bytes.')
+
+            # Capabilities
+            rep_first('cap:check', 'Its check call is webhookinfo;', 'Its check call is message;')
+            rep_first('cap:check_idemp', 'header X-Req-Id.', 'header X-Wrong-Id.')
+            rep_first('cap:notify_call', 'the call message,', 'the call document,')
+            rep_first('cap:notify_from_env', 'read as TELEGRAM_CHAT_ID', 'read as OTHER_CHAT_ID')
+            rep_first('cap:hear_field', 'only one whose chat is', 'only one whose from_user is')
+            rep_first('cap:hear_who', "only an operator's:", "every told user's:")
+            rep_first('cap:limits_argv', 'its limits command [bin/report]', 'its limits command [bin/report, --extra]')
+            rep_first('cap:limits_kinds', 'claude as pro', 'claude as free')
+            rep_first('cap:thread_place', 'called issue;', 'called ticket;')
+            rep_first('cap:thread_states', 'started, review, done;', 'started, done;')
+            rep_first('cap:thread_labels', 'it takes labels (label:<name> adds one, never removes);', 'it takes no labels;')
+            rep_first('cap:thread_assignee', "a person's key in", "a person's id in")
+            rep_first('cap:link_host', 'host example.invalid,', 'host wrong.invalid,')
+            rep_first('cap:link_pr', '^/(org/repo)/pr/([0-9]+)$', '^/(org/repo)/pulls/([0-9]+)$')
+            rep_first('cap:link_repo', 'matches ^(org/repo)$.', 'matches ^(other/repo)$.')
+            rep_first('cap:identity_fold', 'identity fold: lower', 'identity fold: email')
+            rep_first('cap:hook_secret_hdr', 'header X-Secret holding', 'header X-Wrong holding')
+            rep_first('cap:hook_secret_hdr_vs_body', 'header X-Telegram-Bot-Api-Secret-Token holding', 'body field X-Telegram-Bot-Api-Secret-Token holding')
+            rep_first('cap:hook_deliv_body', 'named by update_id in its body;', 'named by event_id in its body;')
+            rep_first('cap:hook_hmac_outer_alg', 'HMAC-SHA512', 'HMAC-SHA256')
+            rep_first('cap:hook_hmac_over', 'over v0:{timestamp}:{body}', 'over wrong-input')
+            rep_first('cap:hook_hmac_over_body', 'over v0:{timestamp}:{body}', 'over the body')
+            rep_first('cap:hook_hmac_alg', 'algorithm: sha512', 'algorithm: sha256')
+            rep_first('cap:hook_ts_window', 'within 5m of', 'within 10m of')
+            rep_first('cap:hook_bodies', 'bodies are unique;', 'bodies are repeat;')
+            rep_first('cap:hook_norm', '[telegram/normalize]', '[telegram/other]')
+            rep_first('cap:hook_keys', 'fields chat;', 'fields from;')
+            rep_first('cap:hook_reg', 'with setwebhook (POST /bot{credential}/setWebhook)', 'with message (POST /bot{credential}/sendMessage)')
+            rep_first('cap:events_runs', 'envelope types ci are runs;', 'envelope types build are runs;')
+            rep_first('cap:events_pr', '[bin/report, pr] reads', '[bin/report, pull] reads')
+
+            # Bottom command rows & still owed
+            rep_first('cmd:prog', 'command file bin/report:', 'command file bin/other:', start=max(0, len(does) - 5))
+            rep_first('cmd:slot', '(limits.command, handed', '(thread.reply, handed', start=max(0, len(does) - 5))
+            rep_first('cmd:slot', '(hook.normalize, handed', '(limits.command, handed', start=max(0, len(does) - 5))
+            rep_first('cmd:cred', 'handed no credential', 'handed the credential', start=max(0, len(does) - 5))
+            rep_first('cmd:sha', 'sha256 9d9adc8ea0ca1a4bd6955d136517cd0dd7e5f59a69f843bdbc9cc56818224ba4', f'sha256 {alt_sha}', start=max(0, len(does) - 5))
+            rep_first('cmd:ins_del', '(1 insertions, 1 deletions).', '(9 insertions, 1 deletions).', start=max(0, len(does) - 5))
+            rep_first('cmd:ins_del', '(2 insertions, 2 deletions).', '(9 insertions, 2 deletions).', start=max(0, len(does) - 5))
+            rep_first('owed:cred_removed', 'still owed after it: the credential, by a secret ask for synthetic; and which user it tells, by yardr user set <user> notify=synthetic.', 'still owed after it: which user it tells, by yardr user set <user> notify=synthetic.')
+
+            # Weights
+            if ask.get('weight'):
+                for widx, w in enumerate(ask['weight']):
+                    if w['class'] == 'code':
+                        out = copy.deepcopy(ask)
+                        out['weight'][widx]['line'] = w['line'].replace('(new)', '(changed)') if '(new)' in w['line'] else w['line'].replace('(changed)', '(new)') if '(changed)' in w['line'] else 'brings a program the yard will run: other'
+                        rows.append(('weight:code', out))
+                    elif w['class'] == 'reads':
+                        out = copy.deepcopy(ask)
+                        out['weight'][widx]['line'] = w['line'].replace('widens to a of', 'widens to b of')
+                        rows.append(('weight:reads', out))
+                out = copy.deepcopy(ask)
+                out['weight'].append({'class': 'outside', 'line': 'lets the yard change something outside it: external target'})
+                rows.append(('weight:outside', out))
+            else:
+                out = copy.deepcopy(ask)
+                out['weight'] = [{'class': 'code', 'line': 'brings a program the yard will run: bin/fake of synthetic (new)'}]
+                rows.append(('weight:unexpected_code', out))
+            return rows
+
+        for tag, make_ask in all_bundles:
+            intact = make_ask()
+            with self.subTest(bundle=tag, mutation='intact'):
+                self.reset_native(intact)
+                res = self.create()
+                self.assertTrue(res['delivered'], (tag, res))
+            for field, mutated in build_mutations(tag, intact):
+                with self.subTest(bundle=tag, mutation=field):
+                    refused = (field.startswith('lead:pack_') or field in ('summary:source_name', 'weight:outside')
+                               or field == 'lead:free_no_files' and 'and removes the command copies' in mutated['run']['does'][0])
+                    self.assert_source_contract(mutated, not refused)
+                    self.assert_bound_source_change_stales(intact, mutated)
+
+        # Old-state and holder prose have no independent semantic binding in the bridge.
+        for label, mutate in (
+            ('decl_diff_old_side', lambda a: a['run']['does'].__setitem__(
+                3, 'source synthetic base: "https://different-old.invalid" -> "https://api.example.invalid".')),
+            ('grants_kept_holder_prose', lambda a: a['run']['does'].__setitem__(
+                2, a['run']['does'][2].replace('crew member reviewer:', 'crew member other:'))),
+        ):
+            prose_ask = copy.deepcopy(rich_replace)
+            mutate(prose_ask)
+            with self.subTest(prose_only=label):
+                self.reset_native(prose_ask)
+                res = self.create()
+                self.assertTrue(res['delivered'], (label, res))
+
+        # Preserve the historical build/parameter diff mutations as native prose.
+        build_rep = copy.deepcopy(source_proposal('replace'))
+        brc = build_rep['run']['carried'][0]
+        brc['text'] = (
+            'name: synthetic\nbase: https://api.example.invalid\n'
+            'calls:\n  mk:\n    kind: update\n'
+            '    params:\n      p: {type: string, pattern: "^[a-z]+$", max: 20, optional: true, default: "ok"}\n'
+            '    request: {method: POST, path: /mk}\n'
+            '    build: [bin/report, --build]\n'
+        )
+        b_sha = brc['files'][0]['sha256']
+        b_old_sha = brc['old'][0]['old_sha256']
+        b_calls_new = (
+            '[{"name":"mk","kind":"update",'
+            '"params":[{"name":"p","type":"string","pattern":"^[a-z]+$","max":20,"optional":true,"default":"ok"}],'
+            '"request":{"method":"POST","path":"/mk"},"build":["bin/report","--build"],"answer":{"max":65536}}]'
+        )
+        build_rep['run']['does'] = [
+            "it replaces one source and copies 1 command file (1 command), and changes nothing else. It grants no call, makes no hook, and sets no credential's file: the source keeps its env_file, mint_command, region base, call limits and ignored senders, and every grant of it stands, now for this declaration.",
+            'source synthetic: its calls go to https://api.example.invalid. It names no credential.',
+            'it would replace the source synthetic the yard has under that name; no grant of source synthetic stands.',
+            f'source synthetic calls: none -> {b_calls_new}.',
+            f"the copy would remove {brc['removed'][0]['path']}, which neither declaration names: sha256 {brc['removed'][0]['sha256']} (mode {brc['removed'][0]['mode']}, {brc['removed'][0]['size']} bytes).",
+            'call mk (update): POST /mk. It takes p (string, optional, pattern ^[a-z]+$, at most 20), and sends no query.',
+            'call mk builds its body with the command [bin/report, --build], run with no credential at each call and free to make its own requests without one while it builds. Its answer is returned as it comes, at most 65536 bytes.',
+            'The source names no check call and no idempotency header.',
+            'it can tell no user.',
+            'it hears no deliveries.',
+            'it names no limits command.',
+            'it speaks in no threads.',
+            "its issues are no bead's link.",
+            'its identity keys keep their case.',
+            'it sends no hook deliveries into the yard.',
+            'it sends no pull-request or CI events.',
+            f'command file bin/report: [bin/report, --build] (call.mk.build, handed no credential): sha256 {b_old_sha} -> sha256 {b_sha}, mode 0700 (1 insertions, 1 deletions).',
+        ]
+        with self.subTest(calls_diff='build_intact'):
+            self.reset_native(build_rep)
+            res = self.create()
+            self.assertTrue(res['delivered'], res)
+        for label, old_frag, new_frag in (
+            ('build_argv', '"build":["bin/report","--build"]', '"build":["bin/report","--other"]'),
+            ('param_pattern', '"pattern":"^[a-z]+$"', '"pattern":"^[0-9]+$"'),
+            ('param_max', '"max":20', '"max":30'),
+            ('param_default', '"default":"ok"', '"default":"bad"'),
+            ('param_optional', '"optional":true,', ''),
+        ):
+            mut = copy.deepcopy(build_rep)
+            mut['run']['does'][3] = mut['run']['does'][3].replace(old_frag, new_frag, 1)
+            with self.subTest(calls_diff=label):
+                self.assert_source_contract(mut, True)
+                self.assert_bound_source_change_stales(build_rep, mut)
+
+        # Historical nested diffs and displayed modes stay opaque; raw bytes remain structural.
+        nested_rep = copy.deepcopy(rich_add)
+        nrc = nested_rep['run']['carried'][0]
+        nrc['inventory'] = [dict(path=f['program'], sha256=f['sha256'], mode='0700',
+                                 size=len(f['text'].encode())) for f in nrc['files']]
+        nested_rep['run']['back'] = ('yardr bead ask <bead> - with Q: <question> and R: source add '
+                                     '<a file holding the declaration that stands now> on stdin')
+        nested_rep['run']['back_by'] = 'only the operator'
+        nested_rep['run']['does'][0] = (
+            'it replaces one source and copies 3 command files (7 commands), and changes nothing else. '
+            'It grants no call, makes no hook, and sets no credential\'s file: the source keeps its env_file, '
+            'mint_command, region base, call limits and ignored senders, and every grant of it stands, '
+            'now for this declaration.')
+        nested_new = {
+            'check': 'fetch',
+            'credential': {'env': 'SRC_TOK', 'header': 'Authorization: Bearer {credential}',
+                           'mint': [{'name': 'MINT_A', 'secret': True}, 'MINT_B'],
+                           'mint_command': ['bin/mint', '--v1'], 'update_env': 'SRC_UPD'},
+            'notify': {'address': {'env': 'HEAR_ADDR', 'param': 'to'}, 'call': 'tellcall',
+                       'link': 'l', 'text': 'x', 'title': 't'},
+            'hear': {'by': 'identity', 'field': 'sender'},
+            'limits': {'command': ['bin/report', 'limits'], 'kinds': {'claude': 'pro'}},
+            'thread': {'assignee': 'key', 'labels': True, 'open': ['bin/report', 'open'],
+                       'place': 'issue', 'states': ['started', 'review', 'done']},
+            'link': {'fixed': 'https://example.invalid/{1}/i/{2}', 'fold': 'lower',
+                     'host': 'example.invalid', 'issue': '^/(org/repo)/i/([0-9]+)$',
+                     'pull': {'fixed': 'https://example.invalid/{1}/pr/{2}',
+                              'issue': '^/(org/repo)/pr/([0-9]+)$', 'thread': '{2}'},
+                     'repos': '^(org/repo)$', 'thread': '{2}'},
+            'hook': {'bodies': 'unique', 'keys': ['sender', 'repo'],
+                     'normalize': ['bin/report', 'norm'],
+                     'register': {'call': 'tellcall', 'secret': 't', 'url': 'x'},
+                     'verify': {'algorithm': 'sha512',
+                                'delivery': {'body': 'deliv.id'},
+                                'key': {'encoding': 'hex', 'prefix': 'whsec_'},
+                                'scheme': 'hmac-sha256',
+                                'signature': {'encoding': 'hex', 'header': 'X-Sig',
+                                              'list': ',', 'prefix': 'sha512='},
+                                'signed': 'v0:{timestamp}:{body}',
+                                'timestamp': {'body': 'ts', 'unit': 'ms', 'window': '5m'}}},
+            'events': {'ci': ['bin/report', 'ci'], 'head_from': ['push'],
+                       'pr': ['bin/report', 'pr'], 'runs': ['ci']},
+            'identity': {'fold': 'lower'},
+        }
+        nested_rep['run']['does'][2:2] = (
+            ['it would replace the source synthetic the yard has under that name; '
+             'no grant of source synthetic stands.'] +
+            [f'source synthetic {field}: none -> '
+             f'{json.dumps(value, sort_keys=True, separators=(",", ":"))}.'
+             for field, value in nested_new.items()])
+        nested_rep['weight'] = [dict(
+            {'class': 'code'},
+            line=('brings a program the yard will run: the declaration of synthetic replaces the one '
+                  'that stands, and says where the credential it keeps is sent and which programs the yard runs'))]
+        with self.subTest(nested_diff='intact'):
+            self.reset_native(nested_rep)
+            res = self.create()
+            self.assertTrue(res['delivered'], res)
+
+        def mutate_row(ask, label, old, new, *, prefix=None):
+            out = copy.deepcopy(ask)
+            for idx, line in enumerate(out['run']['does']):
+                if prefix is not None and not line.startswith(prefix):
+                    continue
+                if old in line:
+                    out['run']['does'][idx] = line.replace(old, new, 1)
+                    with self.subTest(nested_diff=label):
+                        self.assert_source_contract(out, True)
+                        self.assert_bound_source_change_stales(ask, out)
+                    return
+            raise AssertionError(f'mutation {label} matched no row')
+
+        nested_cases = (
+            ('link_pull_issue', '"issue":"^/(org/repo)/pr/([0-9]+)$"', '"issue":"^/WRONG/([0-9]+)$"', None),
+            ('credential_env', '"env":"SRC_TOK"', '"env":"OTHER_TOK"', None),
+            ('credential_mint_secret', '"secret":true', '"secret":false', None),
+            ('notify_call', '"call":"tellcall"', '"call":"ghost"', None),
+            ('hear_field', '"field":"sender"', '"field":"recipient"', None),
+            ('thread_place', '"place":"issue"', '"place":"ticket"', None),
+            ('hook_bodies', '"bodies":"unique"', '"bodies":"repeat"', None),
+            ('events_runs', '"runs":["ci"]', '"runs":["build"]', None),
+            ('limits_kinds', '"claude":"pro"', '"claude":"free"', None),
+            ('check_call', 'check: none -> "fetch".', 'check: none -> "other".', None),
+            ('identity_fold', '"fold":"lower"', '"fold":"email"', 'source synthetic identity:'),
+            ('cmd_mode', 'mode 0700', 'mode 0600', 'command file bin/report:'),
+            ('mint_mode', 'mode 0700', 'mode 0600', 'source synthetic: its calls go to'),
+        )
+        for label, old, new, prefix in nested_cases:
+            mutate_row(nested_rep, label, old, new, prefix=prefix)
+
+        # Displayed-mode mutations cannot alter the structured inventory or installed bytes.
+        for label, factory, prefix in (
+                ('replace_changed_mode', lambda: source_proposal('replace'), None),
+                ('pack_replace_changed_mode', lambda: pack_proposal('directory_replace'), None),
+                ('calls_diff_changed_mode', lambda: copy.deepcopy(build_rep), None),
+        ):
+            probed = factory()
+            mutate_row(probed, label, 'mode 0700', 'mode 0600', prefix=prefix)
+
+        unchanged_size_mut = copy.deepcopy(nested_rep)
+        unchanged_size_mut['run']['carried'][0]['inventory'][0]['size'] += 1
+        with self.subTest(nested_diff='inv_unchanged_size'):
+            self.reset_native(unchanged_size_mut)
+            res = self.create()
+            self.assertFalse(res['delivered'], res)
+            self.assertTrue(res['reason'].endswith(n.FALLBACK), res)
+            self.assertEqual((self.sent_count, self.writes()), (0, []))
+
+    def test_source_and_pack_carried_leaves_are_structural_and_bound(self):
+        """All carried leaves stale old controls; only independent structural contradictions refuse on first read."""
+        import yaml
+
+        def iter_leaves(node, path=()):
+            if isinstance(node, dict):
+                for key, val in node.items():
+                    yield from iter_leaves(val, path + (key,))
+            elif isinstance(node, list):
+                for idx, val in enumerate(node):
+                    yield from iter_leaves(val, path + (idx,))
+            else:
+                yield path, node
+
+        def mutate_decl_value(val):
+            if isinstance(val, bool):
+                return not val
+            if isinstance(val, int):
+                return val + 1 if val != 0 else 1
+            if isinstance(val, float):
+                return val + 1.5
+            if val in ('true', 'false'):
+                return 'false' if val == 'true' else 'true'
+            if val.isdigit():
+                return str(int(val) + 1)
+            if val.startswith('https://'):
+                return 'https://mutated.invalid/x'
+            if val.startswith('/'):
+                return '/mutated/path'
+            if val in ('read', 'update'):
+                return 'update' if val == 'read' else 'read'
+            if val in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'):
+                return 'DELETE' if val != 'DELETE' else 'GET'
+            if val in ('hex', 'base64'):
+                return 'base64' if val == 'hex' else 'hex'
+            if val in ('sha256', 'sha1', 'sha512'):
+                return 'sha1' if val != 'sha1' else 'sha512'
+            if val in ('secret', 'hmac-sha256'):
+                return 'hmac-sha256' if val == 'secret' else 'secret'
+            if val in ('ms', 's', 'seconds'):
+                return 's' if val == 'ms' else 'ms'
+            if val in ('unique', 'unique-per-hook', 'repeat'):
+                return 'repeat' if val != 'repeat' else 'unique'
+            if val in ('operator', 'all'):
+                return 'all' if val == 'operator' else 'operator'
+            if val in ('identity', 'address'):
+                return 'address' if val == 'identity' else 'identity'
+            if val in ('lower', 'none'):
+                return 'none' if val == 'lower' else 'lower'
+            if val in ('string', 'enum', 'int', 'bool', 'file', 'secret-file'):
+                return 'int' if val != 'int' else 'string'
+            return val + '_mut'
+
+        def set_leaf(node, path, new_val):
+            cur = node
+            for key in path[:-1]:
+                cur = cur[key]
+            cur[path[-1]] = new_val
+
+        def alt_sha(cur):
+            return '0' * 64 if cur != '0' * 64 else 'f' * 64
+
+        def assert_refused(mut_ask, label):
+            self.reset_native(mut_ask)
+            res = self.create()
+            self.assertFalse(res['delivered'], (label, res))
+            self.assertTrue(res['reason'].endswith(n.FALLBACK), (label, res))
+            self.assertEqual((self.sent_count, self.writes()), (0, []), label)
+
+        bundles = (
+            ('source:new', source_proposal('new')),
+            ('source:new_public_main', source_proposal('new_public_main')),
+            ('source:free', source_proposal('free')),
+            ('source:free_public_main', source_proposal('free_public_main')),
+            ('source:replace', source_proposal('replace')),
+            ('pack:directory', pack_proposal('directory')),
+            ('pack:directory_upstream', pack_proposal('directory_upstream')),
+            ('pack:directory_public_main', pack_proposal('directory_public_main')),
+            ('pack:directory_replace', pack_proposal('directory_replace')),
+            ('pack:embedded', pack_proposal('embedded')),
+            ('pack:embedded_upstream', pack_proposal('embedded_upstream')),
+            ('pack:embedded_public_main', pack_proposal('embedded_public_main')),
+            ('rich:add', rich_add_proposal()),
+            ('rich:nested_replace', nested_replace_proposal()),
+        )
+
+        for tag, ask in bundles:
+            with self.subTest(bundle=tag, check='intact'):
+                self.reset_native(copy.deepcopy(ask))
+                res = self.create()
+                self.assertTrue(res['delivered'], (tag, res))
+
+            for ci, carried in enumerate(ask['run']['carried']):
+                decl = yaml.safe_load(carried['text'])
+                for path, val in iter_leaves(decl):
+                    mut_decl = copy.deepcopy(decl)
+                    set_leaf(mut_decl, path, mutate_decl_value(val))
+                    mut_ask = copy.deepcopy(ask)
+                    mut_ask['run']['carried'][ci]['text'] = yaml.safe_dump(mut_decl, sort_keys=False)
+                    with self.subTest(bundle=tag, carried=ci, decl_path=path):
+                        command_paths = {
+                            ('credential', 'mint_command'), ('limits', 'command'),
+                            *(('thread', k) for k in ('reply', 'posted', 'read', 'file', 'open', 'opened', 'state')),
+                            ('notify', 'image'), ('hook', 'normalize'), ('events', 'pr'), ('events', 'ci'), ('git', 'credential'),
+                        }
+                        program = (len(path) == 3 and path[-1] == 0 and path[:2] in command_paths
+                                   or len(path) == 4 and path[0] == 'calls' and path[2:] == ('build', 0))
+                        self.assert_source_contract(mut_ask, path != ('name',) and not program)
+                        self.assert_bound_source_change_stales(ask, mut_ask)
+
+                for fi, file_entry in enumerate(carried.get('files', [])):
+                    for mode_kind in ('program', 'sha256', 'text', 'text_and_sha256'):
+                        mut_ask = copy.deepcopy(ask)
+                        mf = mut_ask['run']['carried'][ci]['files'][fi]
+                        if mode_kind == 'program':
+                            mf['program'] = 'mut/' + file_entry['program']
+                        elif mode_kind == 'sha256':
+                            mf['sha256'] = alt_sha(file_entry['sha256'])
+                        elif mode_kind == 'text':
+                            mf['text'] = file_entry['text'] + '# size-change\n'
+                        else:
+                            mf['text'] = file_entry['text'] + '# size-change\n'
+                            mf['sha256'] = n.file_hash(mf['text'])
+                        with self.subTest(bundle=tag, carried=ci, files=fi, field=mode_kind):
+                            accepted = mode_kind == 'text_and_sha256' and not any(
+                                inv['path'] == file_entry['program'] for inv in carried.get('inventory', []))
+                            self.assert_source_contract(mut_ask, accepted)
+                            self.assert_bound_source_change_stales(ask, mut_ask)
+
+                for ii, inv in enumerate(carried.get('inventory', [])):
+                    for key in ('path', 'sha256', 'mode', 'size'):
+                        mut_ask = copy.deepcopy(ask)
+                        mi = mut_ask['run']['carried'][ci]['inventory'][ii]
+                        if key == 'path':
+                            mi['path'] = 'mut/' + inv['path']
+                        elif key == 'sha256':
+                            mi['sha256'] = alt_sha(inv['sha256'])
+                        elif key == 'mode':
+                            mi['mode'] = '0600' if inv['mode'] != '0600' else '0644'
+                        else:
+                            mi['size'] = inv['size'] + 1
+                        with self.subTest(bundle=tag, carried=ci, inventory=ii, field=key):
+                            accepted = key == 'mode' and inv['path'] not in {r['path'] for r in carried.get('removed', [])}
+                            self.assert_source_contract(mut_ask, accepted)
+                            self.assert_bound_source_change_stales(ask, mut_ask)
+
+                for ri, rem in enumerate(carried.get('removed', [])):
+                    for key in ('path', 'sha256', 'mode', 'size', 'text'):
+                        if key not in rem:
+                            continue
+                        mut_ask = copy.deepcopy(ask)
+                        mr = mut_ask['run']['carried'][ci]['removed'][ri]
+                        if key == 'path':
+                            mr['path'] = 'mut/' + rem['path']
+                        elif key == 'sha256':
+                            mr['sha256'] = alt_sha(rem['sha256'])
+                        elif key == 'mode':
+                            mr['mode'] = '0600' if rem['mode'] != '0600' else '0644'
+                        elif key == 'size':
+                            mr['size'] = rem['size'] + 1
+                        else:
+                            mr['text'] = rem['text'] + 'mut\n'
+                        with self.subTest(bundle=tag, carried=ci, removed=ri, field=key):
+                            assert_refused(mut_ask, (tag, 'removed', ri, key))
+                            self.assert_bound_source_change_stales(ask, mut_ask)
+
+                for oi, old in enumerate(carried.get('old', [])):
+                    for key in ('program', 'old_sha256', 'new_sha256', 'diff'):
+                        if key not in old:
+                            continue
+                        mut_ask = copy.deepcopy(ask)
+                        mo = mut_ask['run']['carried'][ci]['old'][oi]
+                        if key == 'program':
+                            mo['program'] = 'mut/' + old['program']
+                        elif key in ('old_sha256', 'new_sha256'):
+                            mo[key] = alt_sha(old[key])
+                        else:
+                            mo['diff'] = '--- was\n+++ is\n@@ -1,1 +1,1 @@\n-x\n+y\n'
+                        with self.subTest(bundle=tag, carried=ci, old=oi, field=key):
+                            assert_refused(mut_ask, (tag, 'old', oi, key))
+                            self.assert_bound_source_change_stales(ask, mut_ask)
+
 
 
     def test_bundle_complete_escaped_bounded_and_resume_every_delivery(self):
@@ -3635,6 +5855,120 @@ class NativeSettingsTests(unittest.TestCase):
 
 
 class RealNativeTests(BridgeTestCase):
+    def test_real_native_source_contract_and_authority(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        server, home, command, env = testyardr.start(root, binary)
+        try:
+            client, cli, _ = self.exercise_source_limit_and_trust(binary, root, home, command, env)
+            cli('bead', 'create', 'Synthetic native contract captures', '--id', 'contract-1')
+            updates = iter(range(40000, 41000))
+            public = hashlib.sha256(Path(binary).read_bytes()).hexdigest() == 'e2b090fcb9f86ff4dd2d9e70933a52bee3d6eeca1e8a07b65ad11adfb23c4009'
+            canonical = None
+            checkout = root / 'checkout'
+            for args in (['init', '-q', str(checkout)], ['-C', str(checkout), '-c', 'user.name=Synthetic',
+                         '-c', 'user.email=synthetic@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'Initial']):
+                subprocess.run(['git', *args], env=env, check=True, capture_output=True)
+            cli('depot', 'add', 'contract', str(checkout), '--base', 'HEAD')
+            scenarios = [('source', kind) for kind in ('rich_public_main', 'address_public_main', 'numeric_public_main',
+                          'orphan_public_main', 'empty_replace_public_main')]
+            scenarios += [('pack', kind) for kind in ('orphan_public_main', 'empty_replace_public_main')]
+            for prefix, kind in scenarios:
+                with self.subTest(native_contract=(prefix, kind)):
+                    fixture = source_proposal(kind) if prefix == 'source' else pack_proposal(kind)
+                    carried = fixture['run']['carried'][0]
+                    name = carried['name']
+                    if prefix == 'source':
+                        path = root / ('source_' + kind + '.yaml')
+                        declaration = path
+                        operation = 'source add '
+                    else:
+                        path = checkout / ('pack_' + kind)
+                        path.mkdir()
+                        (path / 'pack.yaml').write_text(f'name: {name}\nkind: source\nsources:\n  {name}:\n    declaration: source.yaml\n')
+                        declaration = path / 'source.yaml'
+                        operation = 'pack apply '
+                    declaration.write_text(carried['text'])
+                    for file in carried.get('files', []):
+                        target = (root if prefix == 'source' else path) / file['program']
+                        target.parent.mkdir(exist_ok=True)
+                        target.write_text(file['text'])
+                    if kind == 'orphan_public_main':
+                        old = home / 'sources' / name / 'bin/report'
+                        old.parent.mkdir(parents=True)
+                        old.write_text(n.source_diff(carried['old'][0], carried['files'][0]['text']))
+                        old.chmod(0o600)
+                    elif kind == 'empty_replace_public_main':
+                        cli('source', 'add', str(declaration))
+                    cli('--actor', 'proposer', 'bead', 'ask', 'contract-1', 'Review the synthetic contract?',
+                        '--to', 'pat', '--context', 'Synthetic isolated contract capture', '--run', operation + str(path))
+                    ask = client.call('Bead', dict(bead='contract-1', viewer='pat'))['asks'][-1]
+                    if public:
+                        self.assert_source_pack_fixture(ask, root, prefix + '_' + kind.removesuffix('_public_main'))
+                    if kind == 'rich_public_main':
+                        canonical = copy.deepcopy(ask)
+                    before = len(self.calls), len(self.documents)
+                    result = self.bridge.api_run_ask(dict(bead='contract-1', ask=ask['ask'], key=prefix + '-' + kind))
+                    missing_grants = kind == 'empty_replace_public_main' and not any('; ' in line for line in ask['run']['does'] if line.startswith('it would replace the source '))
+                    if missing_grants:
+                        self.assertFalse(result['delivered'], result)
+                        self.assertEqual((len(self.calls), len(self.documents)), before)
+                        print('Native contract:', prefix, kind, 'explicit grants-review refusal; no sends/writes')
+                        continue
+                    self.assertTrue(result['delivered'], result)
+                    row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'contract-1' and r['ask'] == ask['ask'])
+                    NativeTests.assert_source_review(self, ask, NativeTests.bundle_review(row))
+                    def press(action):
+                        if action == 'confirm':
+                            action += ':' + self.bridge.run_asks.get(row['id'])['pending']['nonce']
+                        self.bridge.inbound(dict(update_id=next(updates), callback_query=dict(id='native-contract',
+                            data=f"runask:{row['id']}:{action}", message=dict(message_id=row['message_id'],
+                                chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}),
+                            **{'from': dict(id=123, is_bot=False)})))
+                    if kind == 'rich_public_main':
+                        # Keep this source absent so the authority probe has the same initial state.
+                        press('decline')
+                        print('Native contract:', prefix, kind, 'complete review and native decline')
+                        continue
+                    press('approve')
+                    if ask.get('weight'):
+                        press('confirm')
+                    deadline = time.monotonic() + 10
+                    def current():
+                        return next(a for a in client.call('Bead', dict(bead='contract-1', viewer='pat'))['asks'] if a['ask'] == ask['ask'])
+                    while current().get('ran', {}).get('result') == n.PENDING:
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(.02)
+                    settled = current()
+                    self.assertEqual(settled['state'], 'answered')
+                    self.assertFalse(settled['ran'].get('failed'), settled['ran'])
+                    self.assertEqual(client.call('GetSource', [name])['declaration'], carried['text'])
+                    for file in carried.get('files', []):
+                        installed = home / 'sources' / name / file['program']
+                        self.assertEqual(installed.read_bytes(), file['text'].encode())
+                        self.assertEqual(installed.stat().st_mode & 0o777, 0o700)
+                    self.bridge.run_asks = n.RunAsks(self.bridge)
+                    self.bridge.run_asks.refresh()
+                    press('approve')
+                    self.assertEqual(current(), settled)
+                    events = [e for e in client.call('EventsOfKind', ['source_added' if prefix == 'source' else 'pack_applied', 100])
+                              if e['data'].get('approved', {}).get('ask') == ask['ask']
+                              and e['data'].get('approved', {}).get('bead') == 'contract-1']
+                    self.assertEqual(len(events), 1)
+                    print('Native contract:', prefix, kind, 'installed exact bytes/mode; one operation under restart/replay')
+            supplied = dict(question='Review caller authority?', to='pat', context=['Synthetic forged input'],
+                weight=[{'class': 'reads', 'line': 'CALLER WEIGHT'}], run=dict(copy.deepcopy(canonical['run']),
+                does=['CALLER DISCLOSURE'], seen={'forged': 'CALLER SEEN'}, back='CALLER BACK', back_by='CALLER OWNER'))
+            client.call('AddAsk', ['contract-1', supplied, 'proposer'])
+            stored = client.call('Bead', dict(bead='contract-1', viewer='pat'))['asks'][-1]
+            self.assertEqual(stored['run'], canonical['run'])
+            self.assertEqual(stored.get('weight'), canonical.get('weight'))
+            print('Native authority: caller Does/Seen/Back/weight discarded; core regenerates the stored ask')
+        finally:
+            testyardr.stop(server)
+
     def test_real_native_source_limit_and_trust_weight_apply_once(self):
         binary = testyardr.binary()
         if binary is None:
@@ -3728,6 +6062,7 @@ class RealNativeTests(BridgeTestCase):
             client, cli, _ = self.exercise_source_limit_and_trust(binary, root, home, command, env)
             self.exercise_source_adds(root, home, cli, client)
             self.exercise_source_packs(root, home, cli, client, command, env)
+            self.exercise_source_ten_commands(root, home, cli, client)
         finally:
             testyardr.stop(server)
 
@@ -4903,8 +7238,8 @@ class RealNativeTests(BridgeTestCase):
 
     def assert_source_pack_fixture(self, ask, root, name):
         actual = json.loads(json.dumps(dict(ask, ask=7, since='2026-01-01T00:00:00Z')).replace(str(root), '/synthetic'))
-        # A build label is provenance; compare all remaining wire keys against one of the two captures.
-        for suffix in ('', '_upstream'):
+        # A build label is provenance; compare all remaining wire keys against the aligned, upstream, or public main capture.
+        for suffix in ('', '_upstream', '_public_main'):
             path = Path(__file__).with_name('fixtures') / (name + suffix + '.json')
             if not path.exists():
                 continue
@@ -5095,6 +7430,45 @@ class RealNativeTests(BridgeTestCase):
                           if e['data'].get('approved', {}).get('ask') == ask['ask']
                           and e['data'].get('approved', {}).get('bead') == 'source-1']
                 self.assertEqual(len(events), 1)
+
+    def exercise_source_ten_commands(self, root, home, cli, client):
+        prog = root / 'bin' / 'report'
+        prog.parent.mkdir(exist_ok=True)
+        prog.write_text('#!/bin/sh\necho ok\n')
+        prog.chmod(0o700)
+        calls = ''.join(
+            f'  c{i}:\n    kind: read\n    request: {{method: POST, path: /c{i}}}\n    build: [bin/report, "--n={i}"]\n'
+            for i in range(9)
+        )
+        decl = f'name: synthetic-ten\nbase: https://example.invalid\nlimits:\n  command: [bin/report]\ncalls:\n{calls}'
+        file = root / 'source-ten.yaml'
+        file.write_text(decl)
+        cli('--actor', 'proposer', 'bead', 'ask', 'source-1', 'Add 10-command synthetic source?', '--to', 'pat',
+            '--context', 'Synthetic isolated ten-command source review', '--run', 'source add ' + str(file))
+        ask = client.call('Bead', dict(bead='source-1', viewer='pat'))['asks'][-1]
+        self.assertIn('(10 commands)', ask['run']['does'][0])
+        receipt = self.bridge.api_run_ask(dict(bead='source-1', ask=ask['ask'], key='source-ten-commands'))
+        self.assertTrue(receipt['delivered'], receipt)
+        row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'source-1' and r['ask'] == ask['ask'])
+        for action in ('approve', 'confirm'):
+            data = f"runask:{row['id']}:{action}"
+            if action == 'confirm':
+                data += ':' + (self.bridge.run_asks.get(row['id']).get('pending') or {}).get('nonce', '0' * 16)
+            self.bridge.inbound(dict(update_id=40000 + (action == 'confirm'), callback_query=dict(
+                id='ten-' + action, data=data,
+                message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                             **{'from': dict(id=999, is_bot=True)}),
+                **{'from': dict(id=123, is_bot=False)})))
+        deadline = time.monotonic() + 10
+        while True:
+            settled = next(a for a in client.call('Bead', dict(bead='source-1', viewer='pat'))['asks'] if a['ask'] == ask['ask'])
+            if settled.get('ran', {}).get('result') != n.PENDING:
+                break
+            self.assertLess(time.monotonic(), deadline, 'ten-command source carry did not settle')
+            time.sleep(.02)
+        self.assertEqual(settled['state'], 'answered')
+        self.assertFalse(settled['ran'].get('failed'), settled['ran'])
+        self.assertEqual(client.call('GetSource', ['synthetic-ten'])['declaration'], decl)
 
     def test_real_native_group_add_and_set_apply_once_through_their_gates(self):
         binary = testyardr.binary()

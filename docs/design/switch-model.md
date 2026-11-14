@@ -157,13 +157,31 @@ All switch durability lives in SQLite under `model_switch.locked()` (`flock` on
   32-byte pick IDs). Legacy bare `mayor-model:<pick>`, retired selectors,
   changed config/picks, or mismatched bindings answer `"That model button is
   out of date."`.
+  A digest of the complete native config, runner, directory, launch, enabled
+  flag and session generation also binds the card to the definition shown.
+  Tap-time reads compare that digest and use the freshly observed revision:
+  status, cursor and context activity may advance the revision without making
+  the card stale. A real config or session change refuses before reservation.
+  That refusal is a durable tap/action record, so a replay after a crash cannot
+  admit the rejected tap even if the native configuration has been restored.
+  Selectors from older releases without this digest must be opened again.
 - `model_operations(token, owner, active, value)` enforces at most one active
   operation per `(realpath(yardr_home), crew)` via partial unique index
   `model_operation_owner ON model_operations(owner) WHERE active=1`. A same-pick
   tap while unresolved acknowledges the original card without resetting the
-  deadline; a different pick is refused; a no-op requires `running_pick`
-  (`crew.state == "running"`, `crew.launch == op.target`, confirmed previous
-  launch receipt, and matching preserved non-target crew definition).
+  deadline; a different pick is refused. A no-op requires a running native
+  session, exact pick/config equality and proof that the actual launch matches
+  the complete config. `running_pick` compares the native v1 SHA-256 launch
+  fingerprint, including args, env path and preserved launch inputs. It never
+  opens an env file. Relative paths resolve against the live native server
+  working directory from its verified pidfile when available, falling back to
+  the yard home and process HOME; only a matching digest grants equality, so an
+  unknown native server working directory cannot produce a false match. The previous confirmed
+  receipt plus unchanged preserved definition remains a fallback for paths
+  whose native resolution cannot be reproduced locally.
+  The original selector becomes `"Already running <label>; nothing to switch."`
+  with no controls, native mutation or operation reservation. A durable `noop`
+  action and terminal selector notice support replay and card-edit recovery.
 - `model_actions(update_id, token, value)` records per-update intent (`admit`,
   `force`, `existing`, `noop`, `refused`).
 
@@ -184,6 +202,16 @@ All switch durability lives in SQLite under `model_switch.locked()` (`flock` on
   the operation `unknown`, removes Force controls, and displays `"Native
   request could not be matched; operator reconciliation required. Nothing
   retried."`.
+- A non-zero admission with an exact JSON `{"error": "..."}` response saves
+  the error and confirms absence with `crew switch show`. The error is cleaned,
+  bounded to 320 printable characters, redacted for configured env-file paths,
+  logged and HTML-escaped on the card. An exact exit `3` with
+  `{"error":"crew switch request: not found"}` settles an unconfirmed row as
+  refused and inactive, atomically marks its original tap refused and retires
+  its selectors. Old stuck rows recover on their next poll with `"not admitted"`
+  when no admission error was saved. Confirmed admissions never settle from
+  not-found evidence. Unexpected error shapes, transport failures and unmatched
+  recorded requests remain unknown; nothing is retried automatically.
 - If a Force tap crashed after reserving `force_action` but before native
   confirmation, a validated original-operation observation in `waiting` or
   `timed_out` (`mode == "handoff"`) clears `force_action`, increments
@@ -191,6 +219,15 @@ All switch durability lives in SQLite under `model_switch.locked()` (`flock` on
   operator tap can submit a new `action_id`.
 
 ## Rollout and rollback boundaries
+
+The isolated native tests against `bd7f54b44843` reproduce both admission cases:
+an identical launch/config pick with a fresh revision is accepted as another
+handoff (`0`, no error); changing only crew status before admission returns
+`1`, `{"error":"crew switch expected revision changed: stale"}` (57 bytes),
+then lookup returns `3`, `{"error":"crew switch request: not found"}`.
+Activity between the fresh tap-time read and admission can still refuse; the
+bridge exposes that error and releases the reservation rather than retrying.
+The native guard still protects the atomic write against every revision change.
 
 - **Settings compatibility:** `[yardr.mayor_model]`, its `picks`, `timeout`, and
   the `mayor-model:` namespace stay intact. While `[yardr.mayor_model]` is set,

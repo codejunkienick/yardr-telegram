@@ -165,6 +165,30 @@ def _capture_errors_and_edge_cases(found):
     finally:
         case.doCleanups()
 
+    case = NativeSwitchTests(methodName='test_native_refusal_stale_revision_and_unknown_receipt_collision')
+    try:
+        case.setUp()
+        selector = case.selector()
+        native = y.run_yardr
+        def stale(argv, *args, **kwargs):
+            if '--handoff' in argv:
+                case.rpc('CrewStatusFor', name='mayor', user='', status='idle')
+            return native(argv, *args, **kwargs)
+        with patch.object(y, 'run_yardr', stale):
+            case.poll(case.pick(selector))
+        found.append(('15. Refused · native admission rejected', 'admission-refused', copy.deepcopy(case.edit())))
+    finally:
+        case.doCleanups()
+
+    case = NativeSwitchTests(methodName='test_exact_actual_launch_noop_and_same_kind_model_effort_change')
+    try:
+        case.setUp()
+        case.native_launch_pick(case.picks[1])
+        case.poll(case.pick(case.selector()))
+        found.append(('16. Already running · no switch requested', 'already-running', copy.deepcopy(case.edit())))
+    finally:
+        case.doCleanups()
+
 
 def cards_with_groups():
     found = []
@@ -190,7 +214,7 @@ def html():
 <style>
 *{box-sizing:border-box}body{margin:0;padding:24px;background:#e9f0f5;color:#183044;font:14px/1.4 sans-serif}
 h1{font-size:24px;margin:0}p{color:#496175;margin:6px 0 20px}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:18px}
 h2{font-size:15px;margin:0 0 10px}section{min-width:0}
 article{background:#fff;border:1px solid #cfdee8;border-radius:12px;padding:14px}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.45 monospace;margin:0}

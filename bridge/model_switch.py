@@ -5,13 +5,18 @@ when Telegram is quiet. A shared three-second refresh budget bounds native I/O;
 the core owns the 600-second wait and continuation even if the bridge stops.
 """
 import contextlib
+import ctypes
 import datetime
 import fcntl
+import hashlib
 from html import escape
 import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
+import sys
 import time
 
 import run_asks as n
@@ -25,6 +30,7 @@ FORCE = re.compile(r'mayor-model:f:(' + TOKEN + r'):([1-9][0-9]{0,8})')
 STATES = {'waiting', 'timed_out', 'handoff_written', 'restart_requested', 'restarting',
           'running', 'superseded', 'stopped'}
 TERMINAL = {'running', 'superseded', 'stopped'}
+NOT_FOUND = {'error': 'crew switch request: not found'}
 
 
 class UnmatchedReceipt(y.MayorUnavailable):
@@ -76,6 +82,128 @@ def definition_of(crew, target):
                          runner=crew.get('runner'), dir=crew.get('dir')))
 
 
+def selector_definition(crew):
+    return n.digest(dict(config=crew['config'], runner=crew.get('runner'), dir=crew.get('dir'),
+                         launch=crew.get('launch'), session=crew['session_generation'], enabled=crew.get('enabled')))
+
+
+class _ProcBsdInfo(ctypes.Structure):
+    # Apple's sys/proc_info.h: PROC_PIDTBSDINFO (3), microsecond start identity.
+    _fields_ = [(name, ctypes.c_uint32) for name in
+                'flags status xstatus pid ppid uid gid ruid rgid svuid svgid reserved'.split()] + [
+        ('comm', ctypes.c_char * 16), ('name', ctypes.c_char * 32),
+        ('nfiles', ctypes.c_uint32), ('pgid', ctypes.c_uint32), ('pjobc', ctypes.c_uint32),
+        ('tdev', ctypes.c_uint32), ('tpgid', ctypes.c_uint32), ('nice', ctypes.c_int32),
+        ('start_seconds', ctypes.c_uint64), ('start_microseconds', ctypes.c_uint64)]
+
+
+def _process_start(pid):
+    if sys.platform == 'darwin':
+        info = _ProcBsdInfo()
+        query = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True).proc_pidinfo
+        query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        query.restype = ctypes.c_int
+        if (query(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info)
+                or info.pid != pid or info.start_microseconds >= 1000000):
+            return None
+        return info.start_seconds * 1000000 + info.start_microseconds
+    with open(f'/proc/{pid}/stat') as stream:
+        return int(stream.read().rsplit(')', 1)[1].split()[19])
+
+
+def _lsof_cwd(pid):
+    lsof = shutil.which('lsof', path=os.pathsep.join(
+        part for part in (os.environ.get('PATH', ''), '/usr/sbin', '/sbin') if part))
+    if not lsof:
+        return None
+    try:
+        result = subprocess.run([lsof, '-n', '-P', '-w', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    seen_pid = False
+    for line in result.stdout.splitlines():
+        if line == f'p{pid}':
+            seen_pid = True
+        elif line.startswith('p'):
+            seen_pid = False
+        elif seen_pid and line.startswith('n/'):
+            return line[1:]
+    return None
+
+
+def server_cwd(config):
+    """Best-effort native server working directory from its verified pidfile."""
+    home = config.get('yardr_home')
+    if not home:
+        return None
+    try:
+        with open(os.path.join(home, 'server.pid')) as stream:
+            pid = int(stream.read().strip())
+        if pid <= 0:
+            return None
+        start_path = os.path.join(home, 'server.pid.start')
+        if os.path.exists(start_path):
+            with open(start_path) as stream:
+                expected = int(stream.read().strip())
+            if _process_start(pid) != expected:
+                return None
+        if sys.platform != 'darwin':
+            try:
+                return os.readlink(f'/proc/{pid}/cwd')
+            except OSError:
+                pass
+        return _lsof_cwd(pid)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def launch_matches(config, crew, parsed):
+    """Compare the v1 native launch digest, without opening any environment file."""
+    launch = crew.get('launch')
+    if not launch or (launch['kind'], launch['model']) != (parsed['kind'], parsed['model']):
+        return False
+    env = parsed['env_file'] or ''
+    paths = {env}
+    if env:
+        env = os.path.expanduser(env)
+        if os.path.isabs(env):
+            paths = {os.path.abspath(env)}
+        else:
+            cwd = server_cwd(config)
+            roots = {config['yardr_home'], os.environ.get('HOME') or config['yardr_home']}
+            if cwd is not None:
+                # Prefer the live server's cwd; keep fallback roots only when they name that directory.
+                roots = {cwd} | {root for root in roots if os.path.realpath(root) == os.path.realpath(cwd)}
+            paths = {os.path.abspath(os.path.join(root, env)) for root in roots}
+    settings = crew['config']
+    for path in paths:
+        values = dict(Runner=crew.get('runner', ''), Dir=crew.get('dir', ''), Kind=parsed['kind'],
+                      Model=parsed['model'], Env=path, Args=parsed['args'] or None,
+                      Prompt=settings.get('prompt'), Provider=settings.get('provider'),
+                      Command=settings.get('env_command'), Skills=settings.get('skills'), Trust=settings.get('trust'))
+        raw = '{' + ','.join(json.dumps(key) + ':' + json.dumps(value, sort_keys=True, ensure_ascii=False,
+            separators=(',', ':'), allow_nan=False) for key, value in values.items()) + '}'
+        for char, escaped in (('&', '\\u0026'), ('<', '\\u003c'), ('>', '\\u003e'),
+                              ('\u2028', '\\u2028'), ('\u2029', '\\u2029')):
+            raw = raw.replace(char, escaped)
+        if hashlib.sha256(raw.encode()).hexdigest() == launch['fingerprint']:
+            return True
+    return False
+
+
+def native_error(out):
+    try:
+        value = y._strict_json(out)
+    except y.Unreadable:
+        return None
+    if type(value) is dict and set(value) == {'error'} and type(value['error']) is str and value['error'].strip():
+        return y.clean(value['error'], 320)
+    return None
+
+
 def read_json(config, args, deadline, log):
     status, out, problem = y._run_logged(config, y._crew_argv(config, *args), deadline, 'switch read', log)
     if problem or status != 0:
@@ -114,6 +242,11 @@ def read_current(config, deadline, log):
         timestamp(crew['context_at'])
     if 'switch' in crew and crew['switch'] is not None:
         validate_operation(crew['switch'])
+    launch = crew.get('launch')
+    if launch is not None and (type(launch) is not dict or set(launch) != {'kind', 'model', 'fingerprint'}
+            or any(type(value) is not str for value in launch.values())
+            or not re.fullmatch('[0-9a-f]{64}', launch['fingerprint'])):
+        raise y.MayorUnavailable('invalid native actual launch')
     for key in ('login_screen', 'enabled'):
         if key in crew and type(crew[key]) is not bool:
             raise y.MayorUnavailable('invalid native crew status')
@@ -273,8 +406,11 @@ class ModelSwitch:
 
     def running_pick(self, crew, parsed, pick):
         op = crew.get('switch')
-        if (crew['state'] != 'running' or not op or op['state'] != 'running'
-                or crew.get('launch') != op['target'] or not y.has_pick(pick, parsed)):
+        if crew['state'] != 'running' or not y.has_pick(pick, parsed):
+            return False
+        if launch_matches(self.config, crew, parsed):
+            return True
+        if not op or op['state'] != 'running' or crew.get('launch') != op['target']:
             return False
         with self.bridge.store.connect() as db:
             for item in db.execute('SELECT value FROM model_operations WHERE active=0'):
@@ -350,12 +486,14 @@ class ModelSwitch:
         if row is None:
             row = dict(token=secrets.token_urlsafe(12), binding=current_binding, snapshot=snapshot(self.config),
                        generation=1, message=None, retired=False, update_id=uid,
-                       current=current_lines(crew, parsed))
+                       current=current_lines(crew, parsed), definition=selector_definition(crew))
             with self.bridge.store.connect() as db:
                 db.execute('INSERT OR IGNORE INTO model_selectors VALUES (?, ?, ?)', (row['token'], uid, canonical(row)))
             row = self.load('model_selectors', 'update_id', uid)
         if row['binding'] != current_binding or row['snapshot'] != snapshot(self.config):
             raise y.MayorUnavailable('selector out of date')
+        if row.get('notice'):
+            return self.display_selector(row)
         keyboard = [[dict(text=pick['label'], callback_data=f'mayor-model:s:{row["token"]}:{pick["id"]}')]
                     for pick in row['snapshot']['picks']]
         keyboard = self.bridge._command_keyboard(keyboard)
@@ -393,7 +531,9 @@ class ModelSwitch:
         if previous:
             action = self.load('model_actions', 'update_id', uid)
             if action and action['kind'] == 'noop':
-                return self.answer(uid, query, 'Already running this exact pick.')
+                if action.get('notice'):
+                    self.display_selector(row)
+                return self.answer(uid, query, action.get('notice', 'Already running this exact pick.'))
             if action and action['kind'] == 'refused':
                 return self.answer(uid, query, action['notice'], True)
             target = self.load('model_operations', 'token', action['token']) if action else None
@@ -410,7 +550,11 @@ class ModelSwitch:
         # An external unresolved native switch also takes precedence over desired equality.
         if (crew.get('switch') or {}).get('unresolved'):
             return self.reserve_refusal(uid, query, row, pick)
+        if row.get('definition') != selector_definition(crew):
+            return self.reserve_refusal(uid, query, row, pick,
+                'That model button is out of date; crew configuration or session changed.')
         if self.running_pick(crew, parsed, pick):
+            notice = 'Already running ' + y.clean(pick['label'], 64) + '; nothing to switch.'
             with self.bridge.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 tap = db.execute('SELECT 1 FROM mayor_model_taps WHERE update_id=?', (uid,)).fetchone()
@@ -419,10 +563,14 @@ class ModelSwitch:
                     db.execute("INSERT INTO mayor_model_taps VALUES (?, ?, ?, 'done', ?)",
                                (uid, pick['id'], row['snapshot']['crew'], now().isoformat()))
                     db.execute('INSERT INTO model_actions VALUES (?, ?, ?)',
-                               (uid, row['token'], canonical(dict(token=row['token'], kind='noop'))))
+                               (uid, row['token'], canonical(dict(token=row['token'], kind='noop', notice=notice))))
+                    row.update(retired=True, notice=notice)
+                    db.execute('UPDATE model_selectors SET value=? WHERE token=?', (canonical(row), row['token']))
             if existing and not tap:
                 return self.reserve_existing(uid, query, json.loads(existing[0]), pick)
-            return self.answer(uid, query, 'Already running this exact pick.')
+            result = self.answer(uid, query, notice)
+            self.display_selector(row)
+            return result
         if not crew['session_generation']:
             raise y.MayorUnavailable('no current native session')
         op_token = secrets.token_urlsafe(12)
@@ -467,17 +615,59 @@ class ModelSwitch:
             self.observe(operation, y._strict_json(out), admission=True)
             self.bridge.store.record_mayor_tap(uid, 'done')
         except (y.MayorUnavailable, y.Unreadable):
+            error = native_error(out) if problem is None and status is not None and status != 0 else None
+            if error:
+                for path in (parsed['env_file'], pick['env_file']):
+                    if path:
+                        error = error.replace(path, '[env_file]')
+                error = y.clean(error, 320)
+                operation['admission_error'] = error
+                self.bridge._log('command mayor_model yardr handoff admission error: ' + error)
             if problem == 'not_started':
-                operation['active'], operation['refused'] = False, True
-                operation['settled_at'] = now().isoformat()
-            operation['problem'] = ('Switch refused; native command did not start.' if operation.get('refused') else
-                                    'Switch outcome unknown; reconcile the original native request. Nothing retried.')
-            self.bridge.store.record_mayor_tap(uid, 'refused' if operation.get('refused') else 'unknown')
-            self.save(operation)
+                self.refuse(operation, 'native command did not start.')
+            else:
+                operation['problem'] = 'Switch outcome unknown; reconcile the original native request. Nothing retried.'
+                self.bridge.store.record_mayor_tap(uid, 'unknown')
+                self.save(operation)
+            if error:
+                try:
+                    self.lookup(operation, deadline)
+                except (y.MayorUnavailable, y.Unreadable, n.NativeError):
+                    pass
         self.display(operation)
 
-    def reserve_refusal(self, uid, query, selector, pick):
-        notice = 'A switch is already pending; use its original operation.'
+    def display_selector(self, row):
+        b = self.bridge
+        with b.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            latest = json.loads(db.execute('SELECT value FROM model_selectors WHERE token=?', (row['token'],)).fetchone()[0])
+            latest['display_attempted_at'] = now().isoformat()
+            db.execute('UPDATE model_selectors SET value=? WHERE token=?', (canonical(latest), row['token']))
+        text = '\n'.join([latest['notice']] + latest['current'])
+        extra = dict(message_id=latest['message'], reply_markup={'inline_keyboard': []})
+        html = '<pre>' + escape(text) + '</pre>'
+        return b._reserve_and_deliver('model-selector:' + latest['token'] + ':complete',
+            dict(text=html, binding=latest['binding'], **extra), lambda pending: b._deliver_text(
+                html, None, pending, text, method='editMessageText', extra=extra, not_modified=True), retry_undelivered=True)
+
+    def refuse(self, row, reason):
+        row.update(active=False, refused=True, settled_at=now().isoformat(), problem='Switch refused; ' + reason,
+                   receipt=None, observed=None, target=None)
+        with self.bridge.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('UPDATE model_operations SET active=0, value=? WHERE token=?', (canonical(row), row['token']))
+            db.execute("UPDATE mayor_model_taps SET state='refused' WHERE update_id=?", (row['update_id'],))
+            self.retire_selectors(db, row)
+
+    def retire_selectors(self, db, row):
+        for token, value in db.execute('SELECT token, value FROM model_selectors').fetchall():
+            selector = json.loads(value)
+            if (selector['binding'] == row['binding'] and selector['snapshot']['crew'] == row['crew']
+                    and selector['update_id'] <= row['update_id']):
+                selector['retired'] = True
+                db.execute('UPDATE model_selectors SET value=? WHERE token=?', (canonical(selector), token))
+
+    def reserve_refusal(self, uid, query, selector, pick, notice='A switch is already pending; use its original operation.'):
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM mayor_model_taps WHERE update_id=?', (uid,)).fetchone():
@@ -532,20 +722,26 @@ class ModelSwitch:
         self.save(row)
         if not row['active']:
             with self.bridge.store.connect() as db:
-                for token, value in db.execute('SELECT token, value FROM model_selectors').fetchall():
-                    selector = json.loads(value)
-                    if (selector['binding'] == row['binding'] and selector['snapshot']['crew'] == row['crew']
-                            and selector['update_id'] <= row['update_id']):
-                        selector['retired'] = True
-                        db.execute('UPDATE model_selectors SET value=? WHERE token=?', (canonical(selector), token))
+                self.retire_selectors(db, row)
         # Admission reconciliation upgrades only the auxiliary lifecycle, never legacy tap semantics.
 
     def lookup(self, row, deadline):
-        value = read_json(self.config, ['crew', 'switch', 'show', row['request']['request_id'], '--json'], deadline, self.bridge._log)
+        status, out, problem = y._run_logged(self.config, y._crew_argv(self.config, 'crew', 'switch', 'show',
+            row['request']['request_id'], '--json'), deadline, 'switch read', self.bridge._log)
+        if problem or status != 0:
+            try:
+                missing = not problem and status == 3 and y._strict_json(out) == NOT_FOUND
+            except y.Unreadable:
+                missing = False
+            if missing and row.get('admission_confirmed') is not True:
+                self.refuse(row, row.get('admission_error') or 'not admitted (native request not found).')
+                return
+            raise y.MayorUnavailable('native switch unavailable')
+        value = y._strict_json(out)
         self.observe(row, value)
 
     def force(self, uid, query, row, generation):
-        if generation != row['generation']:
+        if generation != row['generation'] or not row['active']:
             return self.answer(uid, query, 'That Force button is out of date.', True)
         previous = self.bridge.store.mayor_tap(uid)
         if previous or row['force_action']:
@@ -620,7 +816,7 @@ class ModelSwitch:
         if op and row['active'] and row['force_action'] and not row.get('problem') and op['mode'] == 'handoff':
             state = 'force_requested'
         notice = {
-            'refused': 'Switch refused; native command did not start.',
+            'refused': row.get('problem') or 'Switch refused.',
             'waiting': 'Please wait for the handoff.', 'timed_out': 'Handoff timed out; target remains saved. Force apply is available.',
             'handoff_written': 'Handoff written; please wait for the restart.',
             'force_requested': 'Force apply accepted, please wait. Ordinary restart waits for idle when applicable.',
@@ -632,7 +828,7 @@ class ModelSwitch:
         target = op['target'] if op else None
         lines.append('Target launch: ' + (y.clean(target['kind'], 32) + ' · ' + y.clean(target['model'], 128) if target else 'unknown'))
         lines.append('Target effort: unknown · env: unknown.')
-        if row.get('problem'):
+        if row.get('problem') and row['problem'] != notice:
             lines.append(row['problem'])
         trail = ['requested'] if op else []
         for key, label in (('nudged_at', 'handoff requested from the session'), ('handoff_written_at', 'handoff written'),
@@ -707,14 +903,11 @@ class ModelSwitch:
         deadline = time.monotonic() + REFRESH_SECONDS
         with self.bridge.store.connect() as db:
             rows = [json.loads(item[0]) for item in db.execute('SELECT value FROM model_operations')]
-        # Active observations come first; terminal retries rotate durably even after a slow failed edit.
-        rows.sort(key=lambda row: (not row['active'], row.get('display_attempted_at', '')))
-        for row in rows:
+        active = [row for row in rows if row['active']]
+        active.sort(key=lambda row: row.get('display_attempted_at', ''))
+        for row in active:
             if time.monotonic() >= deadline:
                 break
-            if not row['active']:
-                self.display(row)
-                continue
             if not self.bound(row):
                 row['display_failure'] = 'binding changed; no native call or card edit'
                 self.save(row)
@@ -743,3 +936,16 @@ class ModelSwitch:
                 row['problem'] = 'Native observation unavailable/stale; nothing retried. Reconcile original request if unknown.'
             self.save(row)
             self.display(row)
+        with self.bridge.store.connect() as db:
+            selectors = [json.loads(item[0]) for item in db.execute('SELECT value FROM model_selectors')]
+        # Terminal operation and completed-selector edits rotate fairly by last attempt under the shared budget.
+        terminal = [('op', row) for row in rows if not row['active']] + [
+            ('sel', row) for row in selectors if row.get('notice') and self.bound(row)]
+        terminal.sort(key=lambda item: item[1].get('display_attempted_at', ''))
+        for kind, row in terminal:
+            if time.monotonic() >= deadline:
+                break
+            if kind == 'op':
+                self.display(row)
+            else:
+                self.display_selector(row)

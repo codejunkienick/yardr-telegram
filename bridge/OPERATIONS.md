@@ -717,21 +717,23 @@ gives the yard's aiquokka source a copy whose limits command ends in
 `timeout`; its answer goes out once per update through the delivery
 ledger.
 
-### /mayor_model
+<a id="mayor_model"></a>
 
-`/mayor_model` shows a crew member's model and lets the paired user, as
-the yard's operator, switch it with a tap. It is the telegram-quota
-add-on's `[mayor_model]` yardr target moved into the bridge: the same
-picks, the same tap rules and the same texts, with `[yardr] bin` and
-`home` in place of the add-on's `yardr` and `yardr_home`.
+### /switch_model
+
+`/switch_model` shows a crew member's running model and lets the paired user,
+as the yard's operator, switch it through a durable native handoff with one
+updating card. It retains the `[yardr.mayor_model]` table, the same picks and
+the `mayor-model:` callback prefix (`docs/design/switch-model.md`). `/mayor_model`
+is absent from the Telegram menu and replies `Use /switch_model to switch models.`
 
 ```toml
 [yardr.mayor_model]
 crew = "yardmaster"   # the crew member a tap switches, [A-Za-z0-9][A-Za-z0-9_-]{0,31}
-timeout = 60          # seconds a view or a tap may take in all, 10-120
+timeout = 60          # bounded CLI I/O deadline in seconds (10-120), NOT the 600s handoff wait
 
 [[yardr.mayor_model.picks]]
-id = "sol"            # [a-z0-9][a-z0-9_-]{0,31}, distinct; the button is mayor-model:<id>
+id = "sol"            # [a-z0-9][a-z0-9_-]{0,31}, distinct; selector/force payloads stay <=64 UTF-8 bytes
 label = "GPT-6.1 Sol high"   # the button, 1-32 printable characters
 kind = "codex"        # the yardr harness kind
 model = "gpt-6.1-sol" # the model id the kind's --model takes
@@ -739,80 +741,221 @@ args = ["--dangerously-bypass-approvals-and-sandbox", "-c", "model_reasoning_eff
 env_file = "/home/alex/.yardr/crew-yardmaster.env"   # optional, absolute, passed as written
 ```
 
-`picks` is required, 1-8 tables, with no defaults. `args` is the whole
-list the crew member runs with (permission flags, other config and the
-harness's effort flag), at most 64 printable args of 1-1024 characters.
-The effort is read from it as the add-on reads it: `--reasoning-effort`
-or `--effort` (Muse, Grok), or a `-c`/`--config` override of
-`model_reasoning_effort` (Codex). Picks must differ in kind, model or
-effort, so at most one is current. `env_file` is passed to yardr and
-never opened by the bridge; without it the crew member keeps the env
-file it has.
+`picks` is required, 1–8 tables, with no defaults. `args` is the complete list
+the crew member runs with, at most 64 printable args of 1–1024 characters. The
+effort is parsed from `--reasoning-effort` / `--effort` (Muse, Grok) or `-c` /
+`--config` `reasoning_effort` (Codex). Picks must differ in kind, model or
+effort. `env_file` is passed to yardr as written and never opened by the bridge;
+omitting it preserves the crew member's existing `env_file`.
 
-The view runs `yardr crew show <crew> --json` and shows the crew
-member's kind, model and effort (`default` when its args name none), its
-session's state and status, and the kind a running session keeps until
-it restarts, with one button per pick; the pick whose kind, model and
-effort the crew member has carries a ✓. It never shows the env file or
-anything in it. Text after `/mayor_model` is ignored: only a tap
-switches.
+**Native capability and baseline.** `/switch_model` requires a core supporting
+`crew_handoff_switch v1` (landed core baseline `bd7f54b4484321ce618c5224a9e419f3c9b94b55`;
+a locally built core is not evidence of a compatible public release). Before
+sending a selector, admitting a switch, forcing or running `--dry-run`, the
+bridge probes:
 
-A tap, within `timeout`:
+- `yardr --home <home> crew switch capabilities --json` (RPC `CrewSwitchCapabilities`),
+  requiring the exact JSON object `{"crew_handoff_switch": 1}` (never guessed from
+  `--version`);
+- `yardr --home <home> crew show <crew> --json` (RPC `GetCrew`) for `revision`,
+  `session_generation`, `launch`, `config`, `state`, `status`, context telemetry
+  and `switch`;
+- `yardr --home <home> crew set <crew> ... --revision <rev> --handoff --request-id <id>
+  --session-generation <gen> --wait-seconds 600 --json` (RPC `RequestCrewSwitch`,
+  socket-only operator mutation);
+- `yardr --home <home> crew switch show <request-id> --json` (RPC `GetCrewSwitch`);
+- `yardr --home <home> crew restart <crew> --switch <op-id> --generation <op-gen>
+  --action-id <action-id> --json` (RPC `ForceCrewSwitch`, socket-only operator
+  mutation).
 
-1. on a pick id the settings no longer have answers `That model button
-   is out of date.` and runs nothing;
-2. on an update already recorded answers from its record and runs no
-   set or restart again;
-3. checks the operator: the yard's `GetUser` must name `[yardr] operator`
-   with the operator role and its `[yardr] source` identity must be the
-   paired user. Otherwise it is refused before anything is reserved;
-4. reads the crew member; on the pick it already has, it says so and
-   changes nothing;
-5. reserves the tap in the bridge's store (`mayor_model_taps`, one row
-   per update), committed before anything is set;
-6. runs `yardr --home <home> --actor <operator> crew set <crew>
-   kind=<kind> model=<model> args=<args as one JSON list>
-   [env_file=<env_file>] --revision <the revision read in 4>`, which yardr
-   refuses when the crew member changed since;
-7. reads the crew member back: a set that exited non-zero with the
-   settings as before is refused; settings that read as the pick are
-   done; anything else (killed at the deadline, an unreadable re-read,
-   settings that are neither) is unknown and never retried;
-8. once done, runs `yardr --home <home> --actor <operator> crew restart
-   <crew>`: its next session, once the current one is idle, starts on
-   the pick. A restart that is not confirmed leaves the switch done, and
-   the answer says its next session starts on it;
-9. answers the press and edits the tapped message to the state read
-   again, with fresh buttons.
+Unsupported, malformed or oversized capability/status answers refuse before any
+SQLite reservation or write and disclose no stderr or stdout.
 
-A row reserved without an outcome (the bridge stopped mid-tap) reads as
-unknown on any later delivery of that update. No yardr stdout or stderr
-reaches the chat or the log; the log names the step, exit status and
-byte sizes of an off-course run.
+**Card lifecycle, target vs launch, and Force apply.**
+`/switch_model` sends one bound selector card (`model_selectors` token bound to
+bot, account, yard, source, `realpath(home)`, operator, paired user/chat,
+conversation, message, crew and canonical config snapshot). Text after
+`/switch_model` is ignored.
 
-With `[yardr.mayor_model]` the `mayor-model:` prefix is the bridge's own,
-as `decide:` is: a `[[command]]` or `[[menu]]` named `mayor_model`, or a
-`[[command]]` `callback_prefix` overlapping `mayor-model:`, refuses the
-settings with the migration message (delete the `[[command]]`
-mayor_model table), and a `publish()` keyboard or another command's
-answer naming the prefix is `foreign_callback_data`. Buttons the add-on sent keep working: they carry
-the same `mayor-model:<id>`.
+On a pick tap (`mayor-model:s:<token>:<pick>`):
 
-To switch from the add-on: copy the picks from its config's
-`[mayor_model]` as they are, add `[yardr.mayor_model]` and delete the
-`[[command]]` mayor_model table in the same edit, run the dry run below,
-then `check-install`, restart the unit and run `set-commands`. To switch
-back, restore the `[[command]]` table, remove the native table, restart
-and run `set-commands`. Before a release rollback, restore the
-pre-switch settings: an older release refuses the unknown `[yardr]` key.
+1. Stale selectors (legacy bare `mayor-model:<pick>`, unknown tokens, retired
+   selectors, changed picks/crew/config or mismatched bindings) answer
+   `That model button is out of date.` and reserve nothing.
+2. Private allowlist/bot/user/conversation and current native operator mapping
+   (`GetUser`) are verified before reservation and rechecked right before
+   admission.
+3. If an operation is already unresolved for `(realpath(home), crew)`: a tap for
+   the same pick acknowledges the original card without resetting the 600s
+   deadline or starting a new admission; a different pick is explicitly refused
+   (`A switch is already pending; a different pick is refused.`).
+4. Otherwise, if `crew.state == "running"`, `crew.launch` matches a previously
+   confirmed target and the preserved non-target crew definition matches, the
+   tap answers `Already running this exact pick.` with no write (desired config
+   equality alone does not skip admission while an older session still runs).
+5. The bridge durably reserves `mayor_model_taps` (keeping its 5-column schema),
+   `model_operations` (with 192-bit `tg-switch-...` `request_id` and original
+   binding/fingerprint) and `model_actions`, answers the callback, and runs the
+   single atomic `crew set ... --handoff --wait-seconds 600 --json` admission.
+   The core saves the next-session target while the active session keeps its
+   actual `launch` until it stops.
+6. The selector message is edited in place (never replaced with a second card)
+   to show `Please wait for the handoff.`, `Current: ...`, `Target: ...`,
+   elapsed/deadline, session status, context with reading time (or
+   `Context unavailable.`; active reads older than `45`s show `(stale
+   observation)`), `Target effort: unknown · env: unknown.`, and an immediate
+   `Force apply` button.
 
-The dry run prints the crew member's assignment and the two commands a
-tap on a pick would run, shlex-joined. It runs `crew show` alone and
-writes nothing: no tap row, no set, no restart.
+While unresolved, `model_switch.refresh()` polls after `drain()` within a shared
+3-second read budget (about every 20s when Telegram is quiet):
+
+- **Queued vs delivered vs written:** `requested` (request queued) →
+  `handoff requested from the session` (`nudged_at`: safe nudge delivered to the
+  session, or an earlier context/rotation nudge was delivered; not proof of
+  reading) →
+  `handoff written` (`handoff_written_at` and `handoff_note` from the
+  authenticated line session) → `restarting` (`restarting_at`) → `running on
+  target` (`running_at` and `new_generation != previous_generation`). Restart
+  accepted (`restart_requested` or CLI exit `0`) is never treated as `running`;
+  skipped intermediate polls still display the persisted milestone trail.
+- **600-second deadline and natural exit:** At `deadline` (`timed_out`), the
+  saved target remains intact, switch nudges stop, age rotation cannot auto-force,
+  and `Force apply` stays available. A legitimate late handoff or natural exit
+  (`previous_ended_without_handoff`) can still launch the saved target and
+  settle `running` without fabricating a handoff.
+- **Force apply:** Tapping `Force apply` (`mayor-model:f:<token>:<gen>`)
+  re-verifies operator/binding and current native operation, reserves a 192-bit
+  `tg-force-...` action, answers the callback, immediately edits the card to
+  `Force apply accepted, please wait. Ordinary restart waits for idle when
+  applicable.` with controls removed, and then calls `crew restart --switch`.
+  Force bypasses waiting for a handoff and schedules an ordinary restart on the
+  saved target; busy sessions still wait for idle/grace. Double Force, stale
+  Force after settlement, and Force racing a handoff cannot restart the new
+  session.
+- **Unknown, unmatched and display failures:** Unconfirmed admissions or Force
+  calls never retry automatically. On reopen, `lookup()` queries only the
+  original `request_id`. Receipts without a saved confirmed admission receipt
+  cannot be matched to the full v1 request and stay `unknown` (`Native request
+  could not be matched; operator reconciliation required. Nothing retried.`) with
+  Force removed. An abandoned Force reservation before native confirmation
+  clears `force_action` and increments the button generation only after a
+  validated `waiting`/`timed_out` handoff observation. Deleted or uneditable
+  messages record `display_failure` without sending a replacement message.
+
+**Collisions, migration and diagnostics (no silent conversion).**
+With `[yardr.mayor_model]`, `mayor-model:`, `/switch_model` and `/mayor_model`
+are owned by the bridge. Bare `mayor-model:<pick>` buttons answer out of date.
+A `[[command]]` or `[[menu]]` named `mayor_model` or `switch_model`, or any
+`[[command]]` `callback_prefix` overlapping `mayor-model:` (shorter such as
+`mayor-`, or longer such as `mayor-model:x`), refuses to load before any write.
+For example, keeping a legacy add-on handler beside `[yardr.mayor_model]`:
+
+```toml
+[yardr.mayor_model]
+crew = "yardmaster"
+[[yardr.mayor_model.picks]]
+id = "sol"
+label = "GPT-6.1 Sol high"
+kind = "codex"
+model = "gpt-6.1-sol"
+args = []
+
+[[command]]
+name = "mayor_model"
+description = "Switch model"
+handler = "/home/alex/bin/mayor-model"
+```
+
+fails with:
+
+```text
+settings: [[command]] mayor_model clashes with the native /mayor_model ([yardr.mayor_model]); delete the [[command]] mayor_model table
+```
+
+An overlapping custom prefix (`callback_prefix = "mayor-model:"` or `"mayor-"`)
+fails naming the conflicting table, `mayor-model:`, and the exact repair
+(`delete the [[command]] <name> table or change its callback_prefix to a non-overlapping prefix`).
+Repair settings explicitly (copy add-on `[mayor_model]` picks to `[yardr.mayor_model]`,
+delete conflicting `[[command]]` and `[[menu]]` tables, keep `mayor-model:`
+unclaimed), then verify with `--dry-run` and `check-install`.
+
+**Read-only dry run.** Both `switch-model --dry-run <pick>` and its read-only
+alias `mayor-model --dry-run <pick>` probe `crew switch capabilities --json` and
+`crew show <crew> --json` only; they open no SQLite store, reserve no tap or
+operation, contact no Telegram endpoint and run no `set`/`restart`/`force`:
 
 ```sh
+<root>/bin/telegram-bridge switch-model --dry-run sol
 <root>/bin/telegram-bridge mayor-model --dry-run sol
 ```
+
+When idle, the output prints the current launch, session status, target label,
+exact `crew set --handoff --request-id <stable-id> --revision <rev>
+--session-generation <gen> --wait-seconds 600 --json` flags, 600-second deadline
+semantics, and `crew restart --switch <operation-id> --generation <generation>
+--action-id <action-id>`. When an unresolved switch is already active, it
+reports truthfully whether `<pick>` acknowledges the existing card or is refused.
+Unknown picks and cores lacking `crew_handoff_switch v1` fail safely with fixed
+diagnostics.
+
+**Rollout and rollback.**
+Rollout order preserves existing settings, paired bot/user/chat, `tgbridge`
+source alias/env binding and grants (no new accounts, permissions, model choices,
+pack changes or `yardr pack apply` required):
+
+1. Reviewed bridge and core sources land; the authorized owner installs a
+   compatible core (`crew_handoff_switch v1`).
+2. Run the candidate suite with the landed core (`TGBRIDGE_TEST_YARDR=<core>
+   sh scripts/test.sh`).
+3. Install through the existing release path (`<checkout>/install.sh --settings
+   <settings> --root <root>`), run `<root>/bin/telegram-bridge check-install` and
+   `switch-model --dry-run <pick>`, restart the **same** configured unit
+   (`systemctl --user restart <unit>` on Linux; `launchctl` equivalent on macOS),
+   and run `<root>/bin/telegram-bridge set-commands`.
+4. Verify `/switch_model` live on the paired chat.
+
+For rollback:
+
+1. Resolve or explicitly supersede any pending native switch in the yard, then
+   stop the unit (`systemctl --user stop <unit>`). Rolling back bridge code alone
+   does not cancel a pending core operation or undo a saved crew target.
+2. Run `<root>/current/install.sh --settings <settings> --root <root> --rollback`
+   to restore the previous bridge release. (If rolling back to a release
+   predating `[yardr.mayor_model]`, restore the prior compatible settings first.)
+3. Keep SQLite state intact (`mayor_model_taps` retains its 5-column schema;
+   new `mayor-model:s:`/`f:` buttons fail out of date on the prior release). Do
+   not downgrade core while unresolved switch operations exist.
+4. Restart the same unit and run `<root>/bin/telegram-bridge set-commands` to
+   restore the menu. Independent instances and the public-core/committed-head
+   release chain remain untouched.
+
+**Neutral upgrade steps for another instance (e.g. IMD, for yardmaster release mail).**
+Use portable placeholders and that instance's **own** existing settings, root,
+unit, bot, and source/env bindings (nothing is sent from this build):
+
+```sh
+# 1. Confirm the installed yardr core supports crew_handoff_switch v1:
+<YARDR_BIN> --home <YARD_HOME> crew switch capabilities --json
+
+# 2. Install from the reviewed clean bridge commit into this instance's own root:
+<CHECKOUT>/install.sh --settings <INSTANCE_SETTINGS> --root <INSTANCE_ROOT> --dry-run
+<CHECKOUT>/install.sh --settings <INSTANCE_SETTINGS> --root <INSTANCE_ROOT>
+
+# 3. Verify install and read-only dry-run without changing settings/source/grants:
+<INSTANCE_ROOT>/bin/telegram-bridge check-install
+<INSTANCE_ROOT>/bin/telegram-bridge switch-model --dry-run <PICK>
+
+# 4. Restart the same configured unit and refresh the Telegram "/" menu:
+systemctl --user restart <INSTANCE_UNIT>
+<INSTANCE_ROOT>/bin/telegram-bridge set-commands
+```
+
+Verify `/switch_model` opens the selector card and `/mayor_model` prints the
+migration hint; keep `<INSTANCE_SETTINGS>`, `tgbridge` source alias/env
+bindings, and grants unchanged. To roll back, resolve/supersede any pending
+switch, stop `<INSTANCE_UNIT>`, run `<INSTANCE_ROOT>/current/install.sh
+--settings <INSTANCE_SETTINGS> --root <INSTANCE_ROOT> --rollback`, restart
+`<INSTANCE_UNIT>`, and run `<INSTANCE_ROOT>/bin/telegram-bridge set-commands`.
 
 ## Asks
 

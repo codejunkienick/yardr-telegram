@@ -47,17 +47,22 @@ hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints
 # machine_login = true     # also show the providers read on the machine's login
 # machine = false          # also show the machine's load, swap, disk and mem
 
-# The native /mayor_model (bridge/OPERATIONS.md, "/mayor_model"): its presence
-# turns /mayor_model on. A tap by the operator sets the crew member to a pick
-# with `yardr crew set ... --revision` and restarts it. It needs [yardr] home
-# and operator above, and no [[command]] or [[menu]] mayor_model beside it.
+# The native /switch_model (bridge/OPERATIONS.md, "/switch_model"): its
+# presence turns /switch_model on (/mayor_model replies with a migration hint
+# and is absent from the menu). Requires core crew_handoff_switch v1: a tap
+# saves the target pick atomically with a fixed 600-second handoff wait
+# (`yardr crew set ... --handoff`), updates one live card with Force apply
+# (ordinary restart without handoff), and settles running only on a new
+# launched generation. It needs [yardr] home and operator above, and no
+# [[command]] or [[menu]] named mayor_model or switch_model, nor a
+# callback_prefix overlapping mayor-model:, beside it.
 # The picks are the telegram-quota add-on's [mayor_model] picks, copied as
 # they are; there are no default picks.
 # [yardr.mayor_model]
 # crew = "yardmaster"      # the crew member a tap switches; default yardmaster
-# timeout = 60             # seconds a tap may take in all, 10-120
+# timeout = 60             # bounded CLI I/O deadline in seconds (10-120), NOT the 600s handoff wait
 # [[yardr.mayor_model.picks]]
-# id = "sol"               # the button's callback data is mayor-model:<id>
+# id = "sol"               # compact selector/force payloads stay under mayor-model: (<=64 UTF-8 bytes)
 # label = "GPT-6.1 Sol high"
 # kind = "codex"
 # model = "gpt-6.1-sol"

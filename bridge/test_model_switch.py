@@ -1442,6 +1442,79 @@ class NativeSwitchTests(unittest.TestCase):
                 m.dry_run(self.config, 'opus', self.bridge._log)
         self.assertEqual(self.operations(), [])
 
+    def test_dry_run_active_same_different_and_unknown_zero_writes(self):
+        with self.assertRaisesRegex(y.MayorUnavailable, 'unknown pick'):
+            m.dry_run(self.config, 'missing-pick', self.bridge._log)
+        self.assertEqual(self.operations(), [])
+        self.assertEqual(self.telegram.calls, [])
+        self.poll(self.pick(self.selector(), 'opus'))
+        before_crew = self.crew()
+        before_ops = self.operations()
+        before_calls = list(self.telegram.calls)
+        same = m.dry_run(self.config, 'opus', self.bridge._log)
+        other = m.dry_run(self.config, 'sol', self.bridge._log)
+        self.assertIn('acknowledges the existing operation/card', same)
+        self.assertIn('different pick is refused', other)
+        self.assertEqual(self.crew(), before_crew)
+        self.assertEqual(self.operations(), before_ops)
+        self.assertEqual(self.telegram.calls, before_calls)
+
+
+class PreviewSmokeTests(unittest.TestCase):
+    def test_preview_scripts_render_required_states_without_secret_leak(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('native model switch tests require a core with crew_handoff_switch v1; set TGBRIDGE_TEST_YARDR')
+        root = Path(__file__).resolve().parent.parent
+        env = dict(os.environ, TGBRIDGE_TEST_YARDR=binary)
+        html_proc = subprocess.run(
+            [sys.executable, '-B', str(root / 'scripts' / 'preview_model_switch.py')],
+            capture_output=True, text=True, check=True, env=env, timeout=120)
+        html = html_proc.stdout
+        self.assertIn('@media (max-width:', html)
+        self.assertGreaterEqual(html.count('<article>'), 14)
+        for marker in (
+            '1. Initial picks',
+            '2. Waiting to deliver · working',
+            '3. Waiting for written handoff · blocked',
+            '4. Handoff written · awaiting restart',
+            '5. Restarting · old session ending',
+            '6. Running on target · completed trail',
+            '7. Running · skipped polls keep trail',
+            '8. Timeout (600s) · Force apply kept',
+            'Handoff timed out; target remains saved. Force apply is available.',
+            '9. Explicit Force · waits for idle',
+            'Force apply accepted, please wait. Ordinary restart waits for idle when applicable.',
+            '10. Natural exit without handoff · running',
+            '11. Refused · native command did not start',
+            '12. Unknown · unmatched request on reopen',
+            'Switch outcome unknown; operator reconciliation required. Nothing retried.',
+            '13. Unavailable &amp; stale · missing context',
+            'Native observation unavailable/stale; nothing retried.',
+            'Context unavailable.',
+            '14. Escaped long label · env_file omitted',
+            '&lt;Ops &amp; Prod&gt; 32-char label-pad!!',
+            '<button>Force apply</button>',
+            'requested → handoff requested from the session → handoff written → restarting → running on target',
+        ):
+            self.assertIn(marker, html)
+        for forbidden in ('PRIVATE', 'crew-secret.env', 'TELEGRAM_BOT_TOKEN', '<Ops & Prod>'):
+            self.assertNotIn(forbidden, html)
+        cmds_proc = subprocess.run(
+            [sys.executable, '-B', str(root / 'scripts' / 'preview_yard_commands.py')],
+            capture_output=True, text=True, check=True, env=env, timeout=120)
+        text = cmds_proc.stdout
+        for marker in (
+            '### 1. Initial picks',
+            '### 8. Timeout (600s) · Force apply kept',
+            '### 12. Unknown · unmatched request on reopen',
+            '### 13. Unavailable & stale · missing context',
+            '[Force apply]',
+        ):
+            self.assertIn(marker, text)
+        for forbidden in ('PRIVATE', 'crew-secret.env', 'TELEGRAM_BOT_TOKEN'):
+            self.assertNotIn(forbidden, text)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -312,8 +312,9 @@ add-on may use them.
 Three ready add-ons are
 [telegram-quota](https://github.com/codejunkienick/telegram-quota), which adds
 a `/resets` command that spends a Codex reset credit (`/quota` and
-`/mayor_model` are native with `[yardr.quota]` and `[yardr.mayor_model]`,
-bridge/OPERATIONS.md, "Native yard commands"; the add-on keeps `/resets`),
+`/switch_model`, with `/mayor_model` as a migration hint, are native with
+`[yardr.quota]` and `[yardr.mayor_model]`, bridge/OPERATIONS.md, "Native yard commands";
+`/switch_model` requires core `crew_handoff_switch v1`; the add-on keeps `/resets`),
 [telegram-secret-drop](https://github.com/codejunkienick/telegram-secret-drop),
 which adds a one-time form on the local network for handing a secret to
 an agent without it passing through the chat, and

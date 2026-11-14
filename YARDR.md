@@ -177,7 +177,7 @@ requirements are:
 
 | add-on | change |
 |---|---|
-| telegram-quota | `/quota` is native with `[yardr.quota]` and `/mayor_model` with `[yardr.mayor_model]` (bridge/OPERATIONS.md, "Native yard commands"); `/resets` stays on the external handler. The native `/mayor_model` changes a crew member's model only on a tap by the verified operator, through `yardr crew set <crew> … --revision` and `yardr crew restart <crew>` |
+| telegram-quota | `/quota` is native with `[yardr.quota]` and `/switch_model` (menu name; `/mayor_model` answers with a migration hint) with `[yardr.mayor_model]` (bridge/OPERATIONS.md, "Native yard commands"); `/resets` stays on the external handler. `/switch_model` requires core `crew_handoff_switch v1` and switches only on a tap by the verified operator, saving the target atomically with `yardr crew set <crew> … --handoff` (600-second handoff wait), updating one durable card, offering immediate Force apply (`yardr crew restart <crew> --switch …`), and settling running only on a new launched generation |
 | telegram-waiting | the external snapshot producer must target the configured yard; the bridge does not supply or migrate it |
 | telegram-sysmon | settings only: `bridge_py` and `settings_file` point at this bridge |
 | telegram-pricewatch | settings only, as sysmon |

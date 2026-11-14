@@ -198,7 +198,7 @@ normal use through the declared source requires its application first.
 | Source add | Native new/free/orphan creation PASS; replacement missing grants disclosure REFUSED before send/write [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; explicit replacement-grants disclosure required |
 | Embedded/directory source-pack run cards | Native fresh/orphan cases PASS; replacements missing grants disclosure REFUSED [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; complete native carried review; no invented directory snapshot |
 | [Complete depot directory-pack review](../bridge/OPERATIONS.md#depot-pack-bundles) | Native bounded first/reapply/object plans PASS; missing replacement grants REFUSED [H] | Not tested for this depot slice | Same `run_ask`; explicit operator activation watermark; aligned `aadbbd841b1c` and pinned public `52e22d57` fixtures |
-| /quota, /mayor_model | Native PASS [F] | Native PASS [F] | Does not prove public pack or mayor/skills installation |
+| `/quota`, `/switch_model` (`/mayor_model` migration alias) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1` (`crew switch capabilities --json`), not present on `52e22d57` (refuses before mutation) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1`, not present on `v0.17.0` | `/switch_model` verified on landed core `bd7f54b4` (`NativeSwitchTests` [F], `crew_handoff_switch v1`); local core is not a public release; resolve/supersede pending switches before core downgrade |
 | skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only operator terminal workflow; no skill card/grant |
 
 Evidence locations (the named tests use fake Telegram and isolated real native
@@ -223,7 +223,8 @@ RPC/store where stated):
   `test_card_folds_exactly_the_shown_beads_and_unfold_returns_them`,
   `test_release_card_moves_one_bead_on_one_tap`.
 - [F] [bridge/test_yard_commands.py](../bridge/test_yard_commands.py),
-  `RealNativeTests.test_real_native_quota`, `MayorRealNativeTests.test_real_native_mayor_model`.
+  `RealNativeTests.test_real_native_quota`; [bridge/test_model_switch.py](../bridge/test_model_switch.py),
+  `NativeSwitchTests` (isolated real native core with `crew_handoff_switch v1`, SQLite tap/switch tables, and fake Telegram).
 - [G] [bridge/test_run_asks.py](../bridge/test_run_asks.py),
   `test_skill_add_refuses_before_send_and_lists_terminal_only`.
 
@@ -284,12 +285,16 @@ Siding mutations support only
 status-only. Stale proposals, ambiguous writes and pruned outcomes require
 canonical reconciliation; another key is not a retry workaround.
 
-Reserved callback prefixes are `ask:`, `runask:`, `askcard:`, `siding:` and,
-with native keys, `decide:` plus the `/decide` command/menu. Overlapping
-shorter or longer handler prefixes also conflict. Rename conflicting custom
+Reserved callback prefixes are `ask:`, `runask:`, `askcard:`, `siding:`, with
+native keys `decide:` plus the `/decide` command/menu, and with `[yardr.mayor_model]`
+`mayor-model:` plus both `/switch_model` and `/mayor_model` commands/menus.
+Overlapping shorter or longer handler prefixes also conflict. Rename conflicting custom
 handlers and their generated callbacks before upgrading; old posted handler
 buttons need operator reconciliation. This is a tested fail-before-write
 configuration diagnostic, not an assertion of universal drop-in compatibility.
+Similarly, resolve or explicitly supersede pending native `/switch_model` operations
+before rolling back or downgrading the core; `mayor_model_taps` keeps its five-column
+layout and SQLite state is preserved across bridge rollbacks.
 
 ## Committed-tree scan and export
 

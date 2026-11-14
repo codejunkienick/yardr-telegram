@@ -22,6 +22,9 @@ NORMALIZE = PACK / 'tgbridge' / 'normalize'
 THREAD = PACK / 'tgbridge' / 'thread'
 SECRET = 'test-callback-secret'
 
+sys.path.insert(0, str(PACK.parent / 'bridge'))
+import testyardr  # noqa: E402
+
 
 def run(program, args, stdin, env=None):
     base_env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': os.environ.get('HOME', '/tmp')}
@@ -304,9 +307,9 @@ class RenderedThreadTests(ThreadTests):
 
 
 class DeclarationTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which('yardr'), 'yardr is not on PATH')
+    @unittest.skipUnless(testyardr.binary(), 'yardr is not on PATH')
     def test_yardr_reads_the_pack_and_sends_explicit_attachment_kinds(self):
-        binary = str(Path(shutil.which('yardr')).resolve())
+        binary = str(Path(testyardr.binary()).resolve())
         with tempfile.TemporaryDirectory(prefix='pack-') as tmp:
             root = Path(tmp)
             home = root / 'yard'

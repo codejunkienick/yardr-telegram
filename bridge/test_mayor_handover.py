@@ -216,6 +216,10 @@ class Yard:
         self.case.assertNotEqual(result.returncode, 0, result.stdout)
         self.case.assertIn(words, result.stderr)
 
+    def supports_skill(self):
+        # The crew-skills step is fork-only: the public core has no `yardr skill`.
+        return self.run('skill').returncode == 0
+
     def cli(self, *args, actor='pat', env=None):
         result = self.run(*args, actor=actor, env=env)
         self.case.assertEqual(result.returncode, 0, result.stderr)
@@ -410,8 +414,12 @@ seconds = 0
         yard = Yard(self, self.root)
         settings, root, env, capability, state = self.install_mayor(yard)
         ledger = state / 'telegram-bridge.sqlite3'
-        for name in SKILLS:
-            yard.cli('skill', 'add', str(root / 'current/skills' / name))
+        has_skill = yard.supports_skill()
+        if has_skill:
+            for name in SKILLS:
+                yard.cli('skill', 'add', str(root / 'current/skills' / name))
+        else:
+            print('SKIP skill add: this core offers no `yardr skill`; the rest runs without installed skills')
         primary = InProcessBot(self, yard, 'tgbridge', 'yardmaster', 1000000001, 'PRIMARY-CAPABILITY', native=True)
         second = InProcessBot(self, yard, 'tgsecretary', 'secretary', 1000000003, 'SECOND-CAPABILITY')
         for bot, calls in ((primary, MAYOR_CALLS + ('run_ask', 'ask_card')), (second, MAYOR_CALLS)):
@@ -436,24 +444,32 @@ seconds = 0
         yard.cli('mail', 'yardmaster', 'synthetic note before the mayor')
         head = max(event['seq'] for event in yard.inbox('yardmaster'))
         role = private(self.root / 'roles/mayor.md', '# Mayor\n\nSynthetic role for the isolated slice.\n')
+        extra = ['--set', 'skills=' + json.dumps(list(SKILLS))] if has_skill else []
+        if not has_skill:
+            print('SKIP mayor skills: this core takes no `skills` crew key; the mayor runs skill-less')
         yard.cli('crew', 'add', 'mayor', '--runner', 'herdr', '--dir', str(self.root), '--on=',
                  '--context-handoff', '60', '--max-age', '24h', '--handoff-grace', '15m',
                  '--set', 'kind=codex', '--set', 'model=gpt-6.1-sol', '--set', 'args=' + json.dumps(MAYOR_ARGS),
-                 '--set', 'prompt=' + str(role), '--set', 'env_file=' + str(mayor_env),
-                 '--set', 'skills=' + json.dumps(list(SKILLS)))
+                 '--set', 'prompt=' + str(role), '--set', 'env_file=' + str(mayor_env), *extra)
         crew = yard.json('crew', 'show', 'mayor')['crew']
         self.assertGreaterEqual(crew['cursor'], head)
         self.assertEqual(yard.inbox('mayor'), [])
         self.assertEqual((crew['runner'], crew['on'], crew['context_handoff'], crew['max_age'], crew['handoff_grace']),
                          ('herdr', [], '60', '24h', '15m'))
-        self.assertEqual(crew['config'], dict(kind='codex', model='gpt-6.1-sol', args=MAYOR_ARGS, prompt=str(role),
-                                              env_file=str(mayor_env), skills=list(SKILLS)))
+        expected = dict(kind='codex', model='gpt-6.1-sol', args=MAYOR_ARGS, prompt=str(role),
+                        env_file=str(mayor_env))
+        if has_skill:
+            expected['skills'] = list(SKILLS)
+        self.assertEqual(crew['config'], expected)
         # Configuration, not a running assistant: no daemon runs here, and the session is stopped.
         self.assertEqual(crew['state'], 'stopped')
         primed = yard.cli('prime', '--crew', 'mayor')
         self.assertIn('Synthetic role for the isolated slice.', primed)
-        for name in SKILLS:
-            self.assertIn(f'`{name}`', primed)
+        if has_skill:
+            for name in SKILLS:
+                self.assertIn(f'`{name}`', primed)
+        else:
+            print('SKIP primed skills: no installed skills to render on this core')
         for call in MAYOR_CALLS:
             yard.cli('source', 'grant', 'tgmayor', call, '--crew', 'mayor')
         yard.cli('subscribe', 'mayor', 'tgmayor', '--scope', 'all', '--where', 'type=message')

@@ -292,7 +292,8 @@ Self-contained native run asks retain their original behavior. Secret,
 setup, identity, depot-push, parameter input, carried source/pack files and
 crew-add prompt payloads are refused before sending, except the group add and
 set cards, validated `source add` declaration and relative command file
-bundles, and source-kind `pack apply` bundles described below. Approval
+bundles, source-kind `pack apply` and bounded depot directory-pack bundles
+described below. Approval
 controls appear only after complete review
 delivery; core checks authority and stale state before applying.
 Self-contained cards over 3500 visible UTF16 units are refused whole. Use
@@ -342,38 +343,49 @@ yardr bead ask <bead> "Add or replace this source?" \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=source-review-1
 ```
 
-The upstream carried source-add contract supplies declarations, programs,
-inventory/diffs and canonical carry outcomes. The aligned build additionally
-discloses grants; replacing cards on plain upstream use the terminal fallback.
-Native Does prose is trusted whole; structural, identity and current-proposal
-checks remain. Keep the existing
-native home/operator/source and paired identity; there is no new grant,
-setting, package install or filesystem permission. The release includes its
-pinned pure-Python YAML reader. Absolute command programs, aliases/tags,
-unknown fields and over-limit snapshots refuse before sending; see
+The native source-add contract carries declarations, programs, inventory,
+diffs and canonical outcomes. Aligned core also discloses kept grants;
+plain upstream replacements refuse. Absolute command programs, YAML aliases/
+tags, unknown fields and oversized bundles refuse. No new grant/setting is
+needed; the release includes its pure-Python YAML reader. See
 [operations](../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
 
-Open the complete review document before approving. The declaration and
-command files, every replacement diff and inventory/removed records are
-quoted under exact hashes. The compact card names their bundle digest,
-size/counts and document hash and replies to the document. Core supplies
-the weight: replacements and new or
-changed code require Approve, then Confirm on the same card within 60
-seconds; a routine commands-free add applies on Approve. Source provenance
-can change or disappear after capture; the server installs the captured bytes.
-A changed standing copy is stale and writes nothing. Canonical pending,
-success and failed carry remain distinct; ambiguous delivery never resends.
+Open the complete document before approving: full declaration/program bytes,
+diffs/inventory/removals and exact hashes precede the bound compact card.
+Native replacements and new/changed code need Approve then Confirm within
+60 seconds; routine commandless adds use one tap. Core installs captured
+bytes even if provenance disappears. A changed standing copy is stale;
+pending, success and failed carry remain distinct. Ambiguous sends never
+resend under another key.
 
-Installation and activation belong to this instance's operator after review:
-use its existing independent release installer, `check-install` and printed
-`next:` service step. Source landed, release installed and service live are
-separate states. Before activation, inspect `preview_run_asks.py --source`
-and the isolated native gate; after activation check this instance's native
-identity and review a source proposal before any approval. No source-pack
-change or added grant is needed for this renderer. Roll back with the
-existing instance-root installer/printed restart step, retaining its ledger,
-identity and source bindings. Withdraw open source cards first; older bridge
-code refuses these bundles. Builders neither install nor activate them.
+The operator installs/activates reviewed code using the existing installer,
+`check-install` and printed restart. Inspect `preview_run_asks.py --source`
+and verify identity/outcome after activation. Rollback retains ledger,
+documents and identity/source bindings; withdraw open source cards first.
+Source landing is separate from installation and live activation.
+
+### Depot pack imports and activation
+
+Depot packs require an absolute registered-main directory, explicit matching
+`--sha256`/`--depot` and complete native plan/mappings (`git`, `dir` or no kind).
+Embedded/bare/URL/summary/`--yes`/overwrite/input forms refuse. One complete
+Markdown document discloses every object, change, consequence, text/diff/hash
+and carried source/grant; the card follows confirmed delivery. Native prose
+stays visible; public replacements missing kept grants refuse. Limits:
+40 Does lines, 256 KiB declarations, 64 KiB aggregate carried/depot file texts,
+diffs/removals and 50 MiB framed document; source per-file bounds remain.
+
+The operator stops the old bridge, installs reviewed code and explicitly
+records native `Head` as the global event watermark before activation.
+Only asks with a bound native creation event strictly after it can get
+controls; missing creation evidence refuses. Old ask-number markers require
+explicit recapture at activation. All earlier asks stay blocked across keys
+and `/decide`; withdraw them and propose fresh. Retain
+ledger/documents/watermark on rollback. No new setting/grant is needed.
+See [operations](../bridge/OPERATIONS.md#depot-pack-bundles) for the capture
+command, proposal, native stale checks, one-tap/Confirm gates and exact
+activation/rollback authority. Inspect `preview_run_asks.py --depot` first;
+local source tests do not activate a service or establish public compatibility.
 
 ### Declaration notes
 
@@ -1137,12 +1149,10 @@ yardr bead ask <bead> "Apply this tgbridge source pack upgrade?" \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=pack-upgrade-1
 ```
 
-The pin is optional. Open the single review document: every carried source,
-program, diff, inventory, removal and native Does line appears whole, with
-the directory digest. Upstream supplies no snapshot of `pack.yaml`, setup
-notes or other directory files. The compact card names the review and pack
-digests, document hash/size/counts, changed paths/hashes and kept grants.
-Controls appear only after the document is confirmed.
+The source-kind pin is optional. The one complete document carries every
+source/program/diff/inventory/removal and native Does, with the directory
+digest; core supplies no `pack.yaml`/setup snapshot. The compact card names
+hashes/counts and kept grants after confirmed document delivery.
 
 New or changed programs require Approve, then Confirm on that same card
 within 60 seconds. The first tap writes nothing; Cancel or expiry requires
@@ -1160,12 +1170,8 @@ before sending; new sources work. Apply replacements through the terminal
 fallback there. Loose declarations fit 8192 bytes; cards fit 40 Does lines.
 The trimmed `tgbridge.yaml` has the same YAML values as its commented version.
 
-The document ceiling is 50 MiB including framing. Oversize refuses before
-sending; no review is truncated. Unsent deliveries resume under their key;
-ambiguous sends need ledger reconciliation, including confirmed size.
-Preserve the state directory. Unsupported old card shapes retire on refresh
-and direct the operator to decide in the yard. See
-[source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
+Keep the ledger/documents; ambiguous sends require reconciliation. See
+[source pack bounds and legacy retirement](../bridge/OPERATIONS.md#source-pack-bundles).
 
 For an older core/bridge, a refusal, or an explicit terminal rollback, keep
 the terminal path below. A code rollback uses `install.sh --rollback`; a

@@ -13,7 +13,7 @@ def document_card(document):
     return dict(text='<b>Markdown review document · synthetic attachment</b>\n'
                 + '<a download="' + escape(path.name) + '" href="' + download + '">' + escape(path.name) + '</a>\n'
                 + str(len(raw)) + ' bytes · UTF-8 · no controls\n'
-                + '<details><summary>Open complete document</summary><pre>' + escape(raw.decode()) + '</pre></details>')
+                + '<details><summary>Open complete document</summary><pre>' + escape(raw.decode()).replace('\r', '&#13;') + '</pre></details>')
 
 
 def bundle_cards(source=False, pack=False):
@@ -62,6 +62,61 @@ def bundle_cards(source=False, pack=False):
             if refused['delivered'] or case.sent_count:
                 raise RuntimeError('over-bound pack sent a partial preview')
             capture('Synthetic over-bound refusal · zero parts sent', dict(text=escape(refused['reason'])), 'states')
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
+def depot_cards():
+    # Genuine depot captures through the same offline bridge transport and state machine.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests, depot_proposal
+    case = NativeTests()
+    case.setUp()
+    case.config['yard'] = 'example'
+    cards = []
+
+    def capture(label, body, group='states'):
+        rows = body.get('reply_markup', {}).get('inline_keyboard', [])
+        controls = ''.join('<div class="buttons">' + ''.join('<button>' + escape(item['text']) + '</button>'
+                           for item in row) + '</div>' for row in rows)
+        reply = body.get('reply_parameters', {}).get('message_id')
+        navigation = 'Reply to document message ' + str(reply) if reply else ''
+        cards.append(f'<section class="{group}"><h2>' + escape(label) + '</h2><article>'
+                     + '<div class="navigation">' + escape(navigation) + '</div><div class="body">'
+                     + body['text'] + '</div>' + controls + '</article></section>')
+
+    def create(kind):
+        case.reset_depot(depot_proposal(kind))
+        receipt = case.create()
+        if not receipt['delivered']:
+            raise RuntimeError('synthetic depot review refused')
+        capture('Complete ' + kind + ' document · open or download every byte', document_card(case.documents[-1]), 'bundle')
+        sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
+        capture('Native depot · ' + ('weighted first install' if kind == 'matrix_first' else 'routine change'), sends[-1])
+
+    try:
+        create('matrix_first')
+        case.press()
+        capture('Confirm · first tap installs nothing', case.edits()[-1])
+        case.native.mode = 'carrying'
+        case.press('confirm', uid=50)
+        capture('Synthetic canonical approval · pending carry', case.edits()[-1])
+        case.native.ask['ran'].update(result='Synthetic result: pack matrix applied; files, flow and configuration installed.', pending_reason='')
+        case.bridge.run_asks.refresh()
+        capture('Synthetic canonical success', case.edits()[-1])
+        case.native.ask['ran'].update(result='Synthetic failure: target directory is not writable; carry failed.', failed=True)
+        case.bridge.run_asks.refresh()
+        capture('Alternative synthetic canonical failure', case.edits()[-1])
+        create('matrix_change')
+        unsupported = depot_proposal('matrix_change')
+        unsupported['run']['pack']['summary'] = True
+        case.reset_depot(unsupported)
+        receipt = case.create()
+        if receipt['delivered'] or case.sent_count or case.documents:
+            raise RuntimeError('unsupported depot summary sent a partial preview')
+        capture('Unsupported summary · zero sends · no controls', dict(text=escape(receipt['reason'])))
     finally:
         case.doCleanups()
         case.tearDown()
@@ -360,6 +415,8 @@ def main():
         cards = bundle_cards(source=True)
     if '--pack' in sys.argv:
         cards = bundle_cards(pack=True)
+    if '--depot' in sys.argv:
+        cards = depot_cards()
     if len(sys.argv) == 1:
         cards += bundle_cards(pack=True)
     if '--decisions' in sys.argv:
@@ -377,6 +434,8 @@ def main():
                else 'Native operator run cards')
     if '--markdown' in sys.argv:
         heading = 'Explicit Markdown · actual emitted HTML'
+    if '--depot' in sys.argv:
+        heading = 'Native depot pack · complete document and approval states'
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}
@@ -386,11 +445,16 @@ h2{font-size:16px;margin:0 0 10px}article{background:white;border:1px solid #cfd
 b{font-weight:700}.footer{white-space:pre-wrap;border-top:1px solid #d9e5ed;padding-top:12px;margin-bottom:0}
 .buttons{display:flex;gap:8px;margin-top:16px}button{flex:1;border:0;border-radius:7px;padding:11px 5px;background:#e2eff9;color:#226295;font-weight:600}
 .navigation{font-size:12px;color:#496175;margin-bottom:8px}section{min-width:0}
+details{white-space:normal}details pre{max-height:680px;overflow:auto}summary{cursor:pointer;margin:8px 0}
 </style><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid" style="--columns:''' + str(2 if '--confirm' in sys.argv else min(len(cards), 3)) + '''">'''
           + ''.join(cards) + '''</div><script>
 const view = new URLSearchParams(location.search).get('view');
 if (view === 'bundle' || view === 'states') {
   document.querySelectorAll('section').forEach(section => section.hidden = !section.classList.contains(view));
+}
+if (view === 'bundle') {
+  document.querySelector('.grid').style.setProperty('--columns', '2');
+  document.querySelectorAll('details').forEach(detail => detail.open = true);
 }
 </script>''')
 

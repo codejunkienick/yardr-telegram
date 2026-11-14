@@ -2365,10 +2365,11 @@ cannot use `runask:`. Move any existing overlapping callback_prefix to a
 different namespace before updating. The complete canonical card is HTML-escaped and limited
 to 3500 visible UTF16 units. Asker WEIGHTY-mark lookalikes lose the mark,
 following Footplate; canonical warning lines alone are bold. Self-contained
-cards keep that limit. A `group
-add`/`group set`, native `source add` and source-kind `pack apply` use the complete review bundles below. Secret/setup/identity/depot_push, parameter inputs,
-other carried files, depot-kind pack plans and crew-add prompts still refuse before
-sending, with Footplate/cards as the fallback.
+cards keep that limit. `group add`/`group set`, native `source add`,
+source-kind `pack apply` and bounded depot directory packs use the complete
+review bundles below. Secret/setup/identity/depot_push, parameter inputs,
+other carried files, unsupported depot forms and crew-add prompts still
+refuse before sending, with Footplate/cards as the fallback.
 
 Routine Approve calls ApproveAsk with weighed=false after fresh checks.
 Weighty Approve persists a 60-second confirmation and edits that same bound
@@ -2437,7 +2438,7 @@ The bridge no longer cards `skill add`: the operator adds skills with
 ask refuses before any send with a terminal-only `/decide` line; use
 Footplate or the yard cards.
 
-Every new source, source-pack and group bundle arrives as **one
+Every new source, source-pack, depot-pack and group bundle arrives as **one
 UTF-8 Markdown review document (.md), then one compact confirmation card**.
 The document contains the full question, context, command, weight and undo,
 followed by the complete canonical review text previously carried in numbered parts.
@@ -2454,6 +2455,12 @@ SQLite row retains the immutable bytes, document SHA-256, size, stable send
 key and confirmed message ID. The proposal digest still binds native
 approval; the document hash is delivery evidence in the bridge, requiring
 no new core field or authority.
+
+The caller-key reservation and immutable native review row commit in one
+SQLite transaction. Before presenting or acting on an open card, the bridge
+checks its saved document text, filename, size and hash against the private
+file and confirmed delivery receipt. A missing or modified snapshot retires
+the controls; it cannot be repaired by regenerating a different review.
 
 The card shows each create/change/remove and its path hashes, kept source/group
 grants, size, one-document/zero-text-message
@@ -2565,14 +2572,15 @@ cannot be proposed. Use a copy of `yardr/` in that checkout for a card,
 or apply the installed pack in a terminal. The native server reads the pack;
 the bridge never opens its provenance path.
 
-Only source-kind packs without inputs are supported. Before sending, the
+This source-kind form supports packs without inputs. Before sending, the
 bridge checks the upstream pack name/kind/label/digest envelope, command and
 optional pin, first Does line, every carried declaration and program hash,
 replacement diffs, inventory and removals. Unknown fields, the old
 `pack.directory` snapshot, `pack.yes`, binding flags, inputs, URLs and
-depot/summary plans refuse whole with the terminal fallback. Upstream's
+summary plans refuse whole with the terminal fallback. Depot plans use the
+separate bounded contract below. Upstream's
 source-kind cards refuse `--yes`: that flag is for overwriting hand-edited
-files of depot plans, which this bridge does not support.
+files of depot plans; overwrite approval is unsupported here too.
 
 One review document contains every native Does line, each carried declaration
 and command file, complete replacement diffs, old/new identities, inventory
@@ -2622,6 +2630,126 @@ the operator owns release installation, pack apply and restart. For rollback,
 use `install.sh --rollback` and apply a reviewed earlier pack in a terminal.
 After activation, check `source show` and `source check`, then propose a
 synthetic card and verify its canonical result before relying on it.
+
+### Depot pack bundles
+
+The supported depot form is a complete native directory plan:
+`pack apply <absolute-directory> --sha256 <digest> --depot <depot>` with
+canonical native flow, crew, group, bind, members, open_threads and calls
+mappings where supplied. The directory must be in that registered depot's
+main checkout. Native `git`, `dir` and omitted-kind envelopes are accepted
+by their depot/plan fields. The bridge reconstructs argv from structured
+fields in core's fixed order and requires the POSIX-parsed command words to
+match `yardr` plus that argv. Argument words are compared with the same
+ask's structured depot and mappings, subject to generic text and size checks;
+the bridge adds no per-flag word grammar. The native command text is shown
+verbatim; paths remain subject to the core's proposal grammar.
+Embedded depots, bare records, URLs, summary/files/yes payloads, `--yes`,
+unresolved inputs, hand-edited overwrites and nonempty missing/asks/refused/
+nontext/edited blockers refuse whole before sending. Unknown nested fields,
+object kinds/actions, duplicate mappings or objects, invalid paths, partial
+old/new changes and invalid file hashes/diffs also refuse.
+
+The one Markdown document contains all native Does lines verbatim, name,
+kind, build label, depot, digest and mappings; every plan object/action,
+old/new field, runs/env/keeps/shadows and flow/governs consequence; full
+created/changed file text and diffs with old/new SHA-256; carried source
+declarations, programs, inventory, removals and standing grants. Dropped
+objects retain the native explanation of what stays standing. The compact
+card names the depot, operation, plan counts, native weight, bundle/document
+identities and undo limits. A review receipt proves delivery only; core
+approval and canonical execution outcome remain separate.
+
+Native Does prose is server-owned disclosure, not a second executable
+grammar in the bridge. Unknown or reworded prose remains visible and bound
+to the proposal. The narrow source-section/grants framing check remains:
+typed source create/change/unchanged actions must match carried sources,
+and replacement disclosure must account for every standing grant. Aligned
+core supplies that disclosure; public-main replacements omitting it refuse.
+No manifest/setup snapshot is invented, no provenance path is read by the
+bridge and the whole-pack digest is trusted to core's capture/stale check.
+Individual supplied file hashes and complete inverse diffs are validated.
+
+Bounds remain 40 Does lines, 256 KiB carried declarations and 64 KiB aggregate
+carried texts/diffs/removals plus depot file texts/diffs, with existing source
+per-file bounds and the shared 50 MiB framed-document ceiling. Empty text or
+diff omitted by native `omitempty` is valid only when the supplied hashes
+and action describe an empty file. Nothing is truncated to fit. Document
+delivery and matching size must be confirmed before the bounded card replies
+to it. Ambiguous sends retain their original ledger keys across restart and
+caller-key changes. Native routine proposals use one tap; native weighted
+proposals use Approve then nonce-bound Confirm on the same card within
+60 seconds. Refresh clears expired controls before queued updates drain.
+
+Enabling depot review requires an explicit prospective native event watermark,
+recorded while the old bridge is stopped. It binds the current native
+home/device/inode, operator, source, bot and paired routing to native `Head`,
+the latest global event sequence. The existing delivery ledger stores this
+activation metadata, never an invented historical refusal. Each publication
+and approval reads the bead's native `Events` and requires a `noted` creation
+event bound to that bead, ask number and asker, strictly after the watermark.
+Ask numbers are never compared with the watermark. Missing, malformed or
+ambiguous creation evidence refuses whole; there is no local-clock fallback.
+Missing or invalid activation metadata also refuses depot review. Older
+ask-number markers do not establish this event boundary: explicitly recapture
+during authorized activation; their original ledger rows remain untouched.
+Earlier asks remain blocked through original/new keys and `/decide`; withdraw
+them in the yard and create a fresh proposal after activation. Existing
+definitive refusals remain truthful and cannot be revived. See the
+[setup boundary](../yardr/SETUP.md#depot-pack-imports-and-activation).
+
+During that authorized stopped-instance activation, with native yardr
+running, use the reviewed release's configured interpreter/root/settings:
+
+```sh
+<instance-python> -B - <root> <settings> <<'PY'
+import runpy
+import sys
+from pathlib import Path
+
+module = runpy.run_path(str(Path(sys.argv[1]) / 'current/bridge/bridge.py'))
+settings = module['load_settings'](sys.argv[2])
+store = module['Store'](settings.state_dir / 'telegram-bridge.sqlite3',
+                        settings.pairing_update_id + 1)
+bridge = module['Bridge'](settings.config, store, '', None,
+                          port=settings.port, state_dir=settings.state_dir)
+print(bridge.run_asks.record_depot_cutover())
+PY
+```
+
+It prints only the global event floor and makes no Telegram call. Repeating
+this helper retains or advances that floor: it belongs to an intentional
+activation, never ordinary startup or check-install. The downstream instance handoff owns the exact
+landed refs, installation/restart/identity-check packet and rollback. No
+installer, CLI or settings change automatically records the marker.
+
+Create the fresh native proposal after capture, using the pin from native
+`pack check` and retaining the same proposed mappings:
+
+```sh
+yardr bead ask <bead> "Import this complete depot pack?" --to <operator> \
+  --context "Read the complete native plan, files and diffs." \
+  --run "pack apply /absolute/main/checkout/pack --sha256 <digest> --depot <depot> --crew reviewer=reviewer"
+yardr call tgbridge run_ask bead=<bead> ask=<fresh-ask> topic=general key=<fresh-key>
+```
+
+Core rechecks the pack reading, standing files, depot/mapped configuration,
+sources and grants before execution. Stale proposals lose their controls.
+Pending, success, failure, decline and withdrawal are read back from the yard;
+replay never treats a delivery receipt as permission to run again. Retain the
+state directory, review documents and watermark during rollback. Source
+reviewed/landed, release installed and service live are separate states;
+only the instance operator installs or activates this feature. No new
+settings, source grant or runtime permission is required.
+
+`python3 -B scripts/preview_run_asks.py --depot` produces a labelled synthetic
+preview from genuine native fixtures, including a complete large diff, a
+routine card, weighted Confirm and pending/success/failure/refusal states.
+The checked-in [preview](../docs/images/native-depot-pack.html) uses the same
+renderer/state machine with fake Telegram. Real isolated native tests on the
+aligned and pinned public-main cores cover exact carry, stale state, actual
+SQLite/poll ordering, crashes, source/API publication and replay. These are
+local source capabilities, not a compatible public-release promise.
 
 ### Native group add and set review
 

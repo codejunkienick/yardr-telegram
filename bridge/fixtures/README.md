@@ -171,3 +171,31 @@ same orphan/empty standing state; their declarations and copied bytes are
 carried in full. The source/pack boundary tests cover both authentic captures
 and explicitly labelled framing/grants mutations. No live yard or account is
 used.
+
+`depot_first.json`, `depot_source_replace.json` and their `_public_main`
+variants are genuine full Bead wire responses from isolated synthetic git
+depots, captured on installed core `aadbbd841b1c9602381fa77f93a33eebc9175e9e`
+(binary SHA-256 `5d103e342302a9f1d3b7e3c6d1d0049f47c83dea686ad0677e0679bb710b6461`)
+and pinned public core `52e22d570cfff58bae725e6df53c047bd63ff4a6`
+(binary SHA-256 `e2b090fcb9f86ff4dd2d9e70933a52bee3d6eeca1e8a07b65ad11adfb23c4009`,
+archive build label `unknown`). Only the temporary root (`/synthetic`), ask
+number and timestamp are stabilized; earlier fixtures remain intact.
+The harmless pack has one role and an explicit crew mapping. The replacement
+variant additionally carries an unchanged commandless source with a standing
+`reviewer: health` grant. That grant exists only in the installed core's Does
+text; the public capture omits its review and must refuse. These captures
+do not imply installation or activation of a live bridge.
+
+`depot_matrix_first.json`, `depot_matrix_change.json` and
+`depot_matrix_replace.json` and their `_public_main` companions are genuine
+Bead responses from the same two source revisions/executable hashes above.
+The isolated native test creates an omitted-kind depot pack with role,
+empty executable script (never routed or executed), stage files, manual and
+exec groups with env, flow/pointer/routes, subscription, a commandless source
+and flow/crew/members/read-call mappings. The role initially contains CRLF
+and Unicode. The next plan carries a 1000-line complete role replacement
+diff, flow/group changes and a dropped source (left standing). The final
+plan changes that standing source and retains its read grant: aligned core
+discloses the grant, public-main does not and must refuse. Each capture was
+compared against a fresh native run and resulting bytes/configuration;
+only the same fictional root, ask number and timestamp are stabilized.

@@ -279,9 +279,33 @@ native digest; upstream supplies no snapshot of setup or manifest files.
 New/changed programs require confirmation, while unchanged programs can make
 a replacement routine. Missing grants disclosure refuses replacements on
 plain upstream. Both forms use the existing `run_ask` grant and operator
-checks; depot/summary plans and old snapshot shapes refuse. See
+checks; summary plans and old snapshot shapes refuse. See
 [source pack bundles](bridge/OPERATIONS.md#source-pack-bundles) and
 [the source upgrade procedure](yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback).
+
+Depot-directory packs also support `pack apply <absolute-directory> --sha256
+<digest> --depot <depot>` with complete native mappings and plan. The directory
+belongs in a registered main checkout. One immutable document shows every
+native Does line, plan object/action/change, governing flow, mapping, file
+text/diff/hash, carried source and grants review; the card shows counts,
+native weight, document/bundle identities and undo limits. The core owns
+initial prose semantics; the bridge validates the structured envelope and
+retains the narrow source grants/framing exception. A missing grants review
+refuses replacements, including on public cores that omit it.
+
+Depot controls require a native global event watermark recorded with the old
+bridge stopped. A bound native ask creation event must be strictly newer;
+missing creation evidence and non-open asks refuse regardless of caller key
+or `/decide`. Old ask-number markers require explicit recapture; only fresh
+post-activation asks can be published. Native
+weight keeps the existing two taps, while routine native results use one.
+Embedded/bare/URL depot forms, summary/files/yes payloads, unresolved plans
+and hand-edited overwrites refuse. Limits remain 40 Does lines, 256 KiB of
+carried declarations, 64 KiB of all carried/depot file text and diffs together,
+and the shared 50 MiB document limit. No manifest/setup snapshot is invented.
+See [depot bundles](bridge/OPERATIONS.md#depot-pack-bundles) and
+[activation](yardr/SETUP.md#depot-pack-imports-and-activation). Source landing
+does not install or activate an instance or close the public release gate.
 
 Native group cards (`group add` and `group set`, upstream yardr's rows;
 `model=` on the aligned build alone) are read sentence by sentence against

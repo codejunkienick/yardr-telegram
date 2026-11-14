@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import socket
 import stat
 import string
@@ -31,7 +32,7 @@ UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
-         'NextStages', 'GetBead')
+         'NextStages', 'GetBead', 'Head', 'Events')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
@@ -164,7 +165,8 @@ class YardSocketClient:
                                 ' was written when the source ', ' was written from another declaration of the source ',
                                 ' was carded under ', ' says ', ' was written from ', ': was written from ')))
                                  or re.match(rf"ask {arguments.get('ask')}: pack .+: the pin is sha256:[0-9a-f]{{64}}, "
-                                             r'and the directory .+ as read has sha256:[0-9a-f]{64}:', error['message']))
+                                             r'and the directory .+ as read has sha256:[0-9a-f]{64}:', error['message'])
+                                 or re.match(rf"ask {arguments.get('ask')}: pack .+: its plan asks or refuses, so no card can apply it: ", error['message']))
                             and error['message'].endswith('Nothing ran. Decline it; it is asked again if it is still wanted.')):
                         raise RPCStale('native proposal is stale; nothing ran', code)
                     raise RPCRefused(f'native {method} refused ({code})', code)
@@ -659,7 +661,8 @@ def validate_run_card(ask):
         try:
             validate_pack(ask)
         except NativeError:
-            raise NativeError('run_ask_invalid_source_pack_use_terminal; use yardr pack apply <dir> in a terminal' + FALLBACK) from None
+            kind = 'depot' if depot_pack(run.get('pack')) else 'source'
+            raise NativeError(f'run_ask_invalid_{kind}_pack_use_terminal; use yardr pack apply <dir> in a terminal' + FALLBACK) from None
     elif argv[:2] in GROUP_ROWS:
         parse_group(ask)
     return argv
@@ -1285,7 +1288,15 @@ def _source_framing(run, fail):
     """Classify only source identity, replacement grants and orphan-copy framing."""
     does, carried = run['does'], run['carried']
     pack = run['argv'][:2] == ['pack', 'apply']
-    if pack:
+    depot = pack and depot_pack(run.get('pack'))
+    if depot:
+        objects = run['pack']['plan'].get('objects', [])
+        source_objects = {o['name']: o['action'] for o in objects if o['kind'] == 'source'}
+        sources = {name: action for name, action in source_objects.items() if action in ('create', 'change', 'unchanged')}
+        if set(sources) != {c['name'] for c in carried}:
+            raise NativeError(fail)
+        replaces = sum(action != 'create' for action in sources.values())
+    elif pack:
         info = run['pack']
         header = 'pack ' + info['name'] + ' (' + info['label'] + ')'
         if 'digest' in info:
@@ -1311,8 +1322,23 @@ def _source_framing(run, fail):
     anchors = [(i, m['name']) for i, line in enumerate(does)
                if (m := re.fullmatch(rf'source (?P<name>{SOURCE_NAME}): .+', line))]
     names = [c['name'] for c in carried]
-    if (not anchors or anchors[0][0] != 1 or [name for _, name in anchors] != names
+    if depot:
+        prefix = anchors[:-len(names)] if names else anchors
+        anchors = anchors[-len(names):] if names else []
+        prefix_names = [name for _, name in prefix]
+        if (len(prefix_names) != len(set(prefix_names))
+                or any(source_objects.get(name) not in ('create', 'change', 'dropped') for name in prefix_names)):
+            raise NativeError(fail)
+        if not names:
+            if any(line.startswith(('it would replace the source ', 'grants kept for source ', 'no grant of source ', 'the source '))
+                   for line in does):
+                raise NativeError(fail)
+            return {}
+    if (not anchors or (anchors[0][0] < 1 if depot else anchors[0][0] != 1) or [name for _, name in anchors] != names
             or len(set(names)) != len(names)):
+        raise NativeError(fail)
+    if depot and any(line.startswith(('it would replace the source ', 'grants kept for source ', 'no grant of source ', 'the source '))
+                     for line in does[:anchors[0][0]]):
         raise NativeError(fail)
     modes = {}
     for pos, (start, name) in enumerate(anchors):
@@ -1347,6 +1373,8 @@ def _source_framing(run, fail):
                 or (orphans and not standing)):
             raise NativeError(fail)
         is_replace = bool(headers)
+        if depot and is_replace != (sources[name] != 'create'):
+            raise NativeError(fail)
         if not pack and is_replace != replacing:
             raise NativeError(fail)
         modes[name] = (is_replace, headers)
@@ -1355,10 +1383,10 @@ def _source_framing(run, fail):
     return modes
 
 
-def _validate_source_weight(ask, carried_list, modes, fail, *, pack):
+def _validate_source_weight(ask, carried_list, modes, fail, *, pack, allowed=frozenset({'code', 'reads'})):
     weights = ask.get('weight', [])
     classes = [w['class'] for w in weights]
-    if len(set(classes)) != len(classes) or set(classes) - {'code', 'reads'}:
+    if len(set(classes)) != len(classes) or set(classes) - allowed:
         raise NativeError(fail)
     for weight in weights:
         line = weight['line']
@@ -1466,7 +1494,256 @@ def _pack_lead_pattern(header):
     )
 
 
+def depot_pack(pack):
+    return isinstance(pack, dict) and ('depot' in pack or 'plan' in pack or pack.get('kind') in ('git', 'dir'))
+
+
+def pack_line(value, field):
+    value = text(value, field)
+    if not value or '\n' in value or '\r' in value or '\t' in value or any(c in HIDDEN or ord(c) == 127 for c in value):
+        raise NativeError('invalid native ' + field)
+    return value
+
+
+def pack_mappings(value):
+    fail = 'invalid native depot pack mappings'
+    if not isinstance(value, dict) or set(value) - {'flow', 'crew', 'groups', 'binds', 'members', 'open_threads', 'calls'}:
+        raise NativeError(fail)
+    flags = []
+    if 'flow' in value:
+        flow = pack_line(value['flow'], 'pack mapping flow')
+        flags += ['--flow', flow]
+    for key, flag in (('crew', '--crew'), ('groups', '--group')):
+        entries = value.get(key, {})
+        if not isinstance(entries, dict):
+            raise NativeError(fail)
+        for name in entries:
+            pack_line(name, 'pack mapping name')
+        for name in sorted(entries):
+            target = pack_line(entries[name], 'pack mapping target')
+            flags += [flag, name + '=' + target]
+    for key, flag in (('binds', '--bind'), ('members', '--members'), ('open_threads', '--open-threads'), ('calls', '--calls')):
+        entries = value.get(key, [])
+        if not isinstance(entries, list):
+            raise NativeError(fail)
+        seen = set()
+        for entry in entries:
+            pack_line(entry, 'pack mapping')
+            who, _, word = entry.partition('=')
+            identity = (who, word.partition(':')[0]) if key == 'calls' else who
+            if identity in seen:
+                raise NativeError(fail)
+            seen.add(identity)
+            flags += [flag, entry]
+    return flags
+
+
+DEPOT_ACTIONS = ('create', 'change', 'unchanged', 'dropped', 'not_in_pack', 'takes')
+DEPOT_KINDS = {'file', 'group', 'flow', 'pointer', 'route', 'crew', 'subscription', 'map', 'source'}
+DEPOT_FIELDS = {
+    'file': {'content', 'mode'}, 'group': {'runner', 'prompt', 'cmd', 'limit', 'members'},
+    'flow': {'stages'}, 'pointer': {'flow'}, 'route': {'group', 'routes'},
+    'crew': {'prompt', 'on'}, 'subscription': {'scope'}, 'map': {'as', 'map', 'says', 'makes'},
+    'source': {'base', 'bases', 'credential', 'check', 'idempotency', 'notify', 'declaration'},
+}
+
+
+def depot_change_field(kind, field):
+    if field in DEPOT_FIELDS[kind]:
+        return
+    if kind == 'flow' and re.fullmatch(r'stage [A-Za-z0-9][A-Za-z0-9._-]*', field):
+        return
+    if kind == 'source':
+        if re.fullmatch(r'call ' + CALL_NAME, field):
+            return
+        if field.startswith('file '):
+            source_path(field[5:])
+            return
+    raise NativeError('invalid native depot change field')
+
+
+def validate_depot_text(value):
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            pending.extend(item)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, str):
+            if any(c in HIDDEN or (unicodedata.category(c) == 'Cc' and c not in '\r\n\t') for c in item):
+                raise NativeError('invalid native depot pack text')
+
+
+def validate_depot_pack(ask):
+    validate_depot_text(ask)
+    run, pack = ask['run'], ask['run']['pack']
+    fail = 'invalid native depot pack'
+    if (any(key in ask for key in ('secret', 'setup', 'identity', 'depot_push', 'concealed', 'given'))
+            or set(run) - {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack'}
+            or set(pack) - {'name', 'kind', 'depot', 'mappings', 'label', 'digest', 'plan'}
+            or pack.get('kind', '') not in ('', 'git', 'dir')
+            or not isinstance(pack.get('name'), str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', pack['name'])
+            or not isinstance(pack.get('depot'), str) or not pack['depot']
+            or not isinstance(pack.get('digest'), str) or not re.fullmatch('[0-9a-f]{64}', pack['digest'])
+            or not isinstance(run.get('carried', []), list)):
+        raise NativeError(fail)
+    argv = run['argv']
+    if len(argv) < 7:
+        raise NativeError(fail)
+    path = pack_line(argv[2], 'pack directory')
+    if (not os.path.isabs(path) or os.path.normpath(path) != path or '://' in path
+            or '\\' in path
+            or not re.fullmatch(r'(?i)(sha256:)?' + pack['digest'], argv[4])):
+        raise NativeError(fail)
+    pack_line(pack['depot'], 'pack depot')
+    expected = ['pack', 'apply', path, '--sha256', argv[4], '--depot', pack['depot']]
+    expected += pack_mappings(pack.get('mappings', {}))
+    try:
+        command = shlex.split(run['command'], posix=True)
+    except ValueError:
+        raise NativeError(fail) from None
+    if (argv != expected or command != ['yardr', *expected]
+            or run.get('description') != f"Import a pack into depot {pack['depot']}: set the yard to what the pack says"
+            or run.get('back_by') != 'the operator'
+            or run['back'] != f"no one command takes it back: read the standing state with yardr pack check {path} --depot {pack['depot']} in a terminal"
+            or not re.fullmatch(rf'directory {re.escape(path)} in yardr [^\s()]+', pack_line(pack.get('label'), 'pack label'))):
+        raise NativeError(fail)
+    does = run['does']
+    if not 1 <= len(does) <= 40:
+        raise NativeError(fail)
+    for line in does:
+        if not pack_line(line, 'pack disclosure').strip():
+            raise NativeError(fail)
+    plan = pack.get('plan')
+    if not isinstance(plan, dict) or set(plan) - {'objects', 'governs', 'missing', 'asks', 'refused', 'nontext', 'edited'}:
+        raise NativeError(fail)
+    for key in ('missing', 'asks', 'refused', 'nontext', 'edited'):
+        if lines(plan.get(key, []), 'pack blockers'):
+            raise NativeError(fail)
+    if not isinstance(plan.get('objects', []), list) or not isinstance(plan.get('governs', []), list):
+        raise NativeError(fail)
+    objects, payload = set(), 0
+    for obj in plan.get('objects', []):
+        if (not isinstance(obj, dict) or set(obj) - {'kind', 'name', 'action', 'changes', 'edited', 'runs', 'keeps', 'shadows', 'env',
+                                                  'file_old_sha256', 'file_new_sha256', 'text', 'diff'}
+                or not isinstance(obj.get('kind'), str) or obj['kind'] not in DEPOT_KINDS
+                or not isinstance(obj.get('action'), str) or obj['action'] not in DEPOT_ACTIONS):
+            raise NativeError(fail)
+        name = pack_line(obj.get('name'), 'pack object name')
+        if obj['action'] == 'takes' and obj['kind'] != 'group':
+            raise NativeError(fail)
+        ident = obj['kind'], name
+        if ident in objects:
+            raise NativeError(fail)
+        objects.add(ident)
+        for key in ('edited', 'runs'):
+            if type(obj.get(key, False)) is not bool or (key == 'edited' and obj.get(key)):
+                raise NativeError(fail)
+        for key in ('keeps', 'shadows', 'env'):
+            for line in lines(obj.get(key, []), 'pack object ' + key):
+                pack_line(line, 'pack object ' + key)
+        changes = obj.get('changes', [])
+        if not isinstance(changes, list):
+            raise NativeError(fail)
+        fields = set()
+        for change in changes:
+            if not isinstance(change, dict) or set(change) != {'field', 'old', 'new'}:
+                raise NativeError(fail)
+            field = pack_line(change['field'], 'pack change field')
+            depot_change_field(obj['kind'], field)
+            if field in fields:
+                raise NativeError(fail)
+            fields.add(field)
+            for key in ('old', 'new'):
+                source_text(change[key], 'pack change ' + key, 262144)
+            if change['old'] == change['new']:
+                raise NativeError(fail)
+        if (obj['action'] == 'change' and not changes) or (obj['action'] in ('unchanged', 'dropped', 'not_in_pack', 'takes') and changes):
+            raise NativeError(fail)
+        file_keys = {'file_old_sha256', 'file_new_sha256', 'text', 'diff'}
+        if obj['kind'] != 'file':
+            if file_keys & set(obj) or 'runs' in obj or 'edited' in obj:
+                raise NativeError(fail)
+            continue
+        source_path(name)
+        if '\\' in name:
+            raise NativeError(fail)
+        if obj['action'] not in ('create', 'change'):
+            if file_keys & set(obj):
+                raise NativeError(fail)
+            continue
+        old_sha, new_sha = obj.get('file_old_sha256', ''), obj.get('file_new_sha256', '')
+        if (not isinstance(old_sha, str) or (old_sha and not re.fullmatch('[0-9a-f]{64}', old_sha))
+                or not isinstance(new_sha, str) or not re.fullmatch('[0-9a-f]{64}', new_sha)
+                or (obj['action'] == 'change') != bool(old_sha)):
+            raise NativeError(fail)
+        value = source_text(obj.get('text', ''), 'depot file text', 65536)
+        diff = source_text(obj.get('diff', ''), 'depot file diff', 65536)
+        if obj['action'] == 'create' and changes:
+            raise NativeError(fail)
+        if obj['action'] == 'change':
+            if fields - {'content', 'mode'} or ('content' in fields) != (old_sha != new_sha):
+                raise NativeError(fail)
+            for change in changes:
+                if change['field'] == 'content':
+                    if (change['old'], change['new']) != ('sha256 ' + old_sha[:12], 'sha256 ' + new_sha[:12]):
+                        raise NativeError(fail)
+                elif any(not re.fullmatch('0[0-7]{3}', change[key]) for key in ('old', 'new')):
+                    raise NativeError(fail)
+        if file_hash(value) != new_sha:
+            raise NativeError(fail)
+        source_diff(dict(old_sha256=old_sha, diff=diff), value)
+        payload += len(value.encode()) + len(diff.encode())
+    governed = set()
+    for govern in plan.get('governs', []):
+        if not isinstance(govern, dict) or set(govern) - {'type', 'flow', 'now'}:
+            raise NativeError(fail)
+        typ = govern.get('type', '')
+        if not isinstance(typ, str) or (typ and not GROUP_NAME.fullmatch(typ)) or typ in governed:
+            raise NativeError(fail)
+        governed.add(typ)
+        if not GROUP_NAME.fullmatch(pack_line(govern.get('flow'), 'pack governing flow')):
+            raise NativeError(fail)
+        if 'now' in govern:
+            pack_line(govern['now'], 'pack standing flow')
+    carried = run.get('carried', [])
+    declarations = 0
+    facts = []
+    for source in carried:
+        name, files, inventory, changes = validate_carried(source, pack=True)
+        facts.append((name, files, inventory, changes))
+        declarations += len(source['text'].encode())
+        payload += sum(len(f['text'].encode()) for f in source.get('files', []))
+        payload += sum(len(f.get('diff', '').encode()) for f in source.get('old', []))
+        payload += sum(len(f.get('text', '').encode()) for f in source.get('removed', []))
+    if declarations > 262144 or payload > 65536:
+        raise NativeError(fail)
+    framing_run = dict(run, carried=carried)
+    modes = _source_framing(framing_run, fail)
+    for name, files, inventory, changes in facts:
+        for program, file in files.items():
+            entry = inventory.get(program)
+            if ((entry and entry['sha256'] != file['sha256']) or (modes[name][0] and not entry)) and program not in changes:
+                raise NativeError(fail)
+    _validate_source_weight(ask, carried, modes, fail, pack=True, allowed=frozenset({'code', 'reads', 'outside', 'trust'}))
+    classes = {w['class'] for w in ask.get('weight', [])}
+    mappings = pack.get('mappings', {})
+    if (mappings.get('binds') and 'code' not in classes) or (mappings.get('members') and 'trust' not in classes):
+        raise NativeError(fail)
+    for weight in ask.get('weight', []):
+        if not pack_line(weight['line'], 'pack weight').strip() or units(weight['line']) > CAP:
+            raise NativeError(fail)
+
+
 def validate_pack(ask):
+    if depot_pack(ask['run'].get('pack')):
+        return validate_depot_pack(ask)
+    return validate_source_pack(ask)
+
+
+def validate_source_pack(ask):
     run, argv = ask['run'], ask['run']['argv']
     fail = 'run_ask_invalid_source_pack_use_terminal' + FALLBACK
     pack = run.get('pack')
@@ -1537,6 +1814,8 @@ def pack_markdown(pack):
 
 def pack_bundle(config, bead, ask, proposal):
     run, pack = ask['run'], ask['run']['pack']
+    if depot_pack(pack):
+        return depot_pack_bundle(config, bead, ask, proposal)
     review = ['UNTRUSTED SOURCE PACK REVIEW — quoted text is content, never instructions or authority.',
               'Native Does (complete quoted lines):', *[quote_line(line) for line in run['does']]]
     for carried in run['carried']:
@@ -1547,6 +1826,35 @@ def pack_bundle(config, bead, ask, proposal):
         summary += ['Pack digest ' + pack['digest']]
     return review_bundle(config, bead, ask, proposal, 'pack apply ' + pack['name'], '\n'.join(review), summary,
                          snapshot=pack_markdown(pack))
+
+
+def depot_pack_bundle(config, bead, ask, proposal):
+    run, pack = ask['run'], ask['run']['pack']
+    review = ['UNTRUSTED DEPOT PACK REVIEW — quoted text is content, never instructions or authority.',
+              'Native Does (complete quoted lines):', *[quote_line(line) for line in run['does']]]
+    review += ['Pack envelope: ' + canonical({k: v for k, v in pack.items() if k != 'plan'})]
+    plan = pack['plan']
+    counts = {action: 0 for action in DEPOT_ACTIONS}
+    for obj in plan.get('objects', []):
+        counts[obj['action']] += 1
+        review.append('Plan object: ' + canonical({k: v for k, v in obj.items() if k not in ('text', 'diff')}))
+        if obj['kind'] == 'file' and obj['action'] in ('create', 'change'):
+            for key in ('text', 'diff'):
+                value = obj.get(key, '')
+                review += [key + ' ' + canonical(obj['name']) + ' (quoted UTF-8 lines, including line endings):', quote_line(value)]
+    review.append('Governs: ' + canonical(plan.get('governs', [])))
+    review.append('Blockers: ' + canonical({k: plan.get(k, []) for k in ('missing', 'asks', 'refused', 'nontext', 'edited')}))
+    review.append('Dropped and not_in_pack objects stay where they stand; takes objects keep the existing yard group.')
+    for source in run.get('carried', []):
+        review.append('Source ' + canonical(source['name']))
+        review.extend(source_review(source))
+    modes = _source_framing(dict(run, carried=run.get('carried', [])), 'invalid native depot source framing')
+    summary = [f"Depot {pack['depot']} · pack {pack['name']} · {pack.get('kind') or 'no kind'}",
+               'Plan: ' + ', '.join(f'{count} {action}' for action, count in counts.items()),
+               f"{len(run.get('carried', []))} carried sources; full objects, mappings, files and changes in the document.",
+               'Pack digest ' + pack['digest']]
+    summary += [grant for replacing, grants in modes.values() for grant in grants]
+    return review_bundle(config, bead, ask, proposal, 'depot pack apply ' + pack['name'], '\n'.join(review), summary)
 
 
 def group_bundle(config, bead, ask, proposal):
@@ -1703,6 +2011,88 @@ class RunAsks:
         return {key: str(self.config.get(key, 'tgbridge' if key == 'yardr_source' else '')) for key in
                 ('yard', 'yardr_home', 'yardr_operator', 'yardr_source', 'bot_id', 'user_id', 'chat_id')}
 
+    def depot_cutover_identity(self):
+        home = validate_home(Path(self.config['yardr_home']))
+        info = home.stat()
+        identity = dict(purpose='native_depot_pack_event_activation', binding=self.binding(), home=[info.st_dev, info.st_ino])
+        fingerprint = digest(identity)
+        return 'runask:depot-cutover:' + fingerprint, fingerprint
+
+    def depot_cutover(self):
+        key, fingerprint = self.depot_cutover_identity()
+        try:
+            saved = self.store.saved_delivery(key)
+            if saved is None:
+                raise NativeError('run_ask_depot_pack_activation_unconfirmed' + FALLBACK)
+            receipt = saved[1]
+            meta = receipt.get('metadata')
+            if (saved[0] != fingerprint or set(receipt) != {'delivered', 'failure_kind', 'metadata'}
+                    or receipt['delivered'] is not False or receipt['failure_kind'] != 'permanent'
+                    or not isinstance(meta, dict) or set(meta) != {'reason', 'event_floor'}
+                    or meta['reason'] != 'native_depot_pack_event_activation'
+                    or type(meta['event_floor']) is not int or not 0 <= meta['event_floor'] < 2**64):
+                raise NativeError('run_ask_depot_pack_activation_invalid' + FALLBACK)
+            return meta['event_floor']
+        except (ValueError, TypeError, AttributeError):
+            raise NativeError('run_ask_depot_pack_activation_invalid' + FALLBACK) from None
+
+    def record_depot_cutover(self):
+        """Record the native event head during authorized activation, never during a send."""
+        with self.lock():
+            verify_operator(self.client, self.config)
+            floor = self.client.call('Head', [])
+            if type(floor) is not int or not 0 <= floor < 2**64:
+                raise NativeError('invalid native activation Head response')
+            key, fingerprint = self.depot_cutover_identity()
+            if self.store.saved_delivery(key) is not None:
+                floor = max(floor, self.depot_cutover())
+            receipt = dict(delivered=False, failure_kind='permanent', metadata=dict(
+                reason='native_depot_pack_event_activation', event_floor=floor))
+            with self.store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if (db.execute('SELECT 1 FROM run_ask_keys WHERE key=?', (key,)).fetchone()
+                        or db.execute('SELECT 1 FROM asks WHERE ask_id=?', (self.bridge._ask_id_for_key(key),)).fetchone()):
+                    raise NativeError('idempotency_key_conflict')
+                db.execute('INSERT OR REPLACE INTO deliveries VALUES (?,?,?)', (key, fingerprint, canonical(receipt)))
+            return floor
+
+    def require_depot_cutover(self, bead_id, ask):
+        run = ask.get('run')
+        if not isinstance(run, dict) or not depot_pack(run.get('pack')):
+            return
+        floor = self.depot_cutover()
+        limit = 64
+        while True:
+            # Core returns the newest bead events in ascending sequence order.
+            events = self.client.call('Events', [bead_id, limit])
+            if not isinstance(events, list) or len(events) > limit:
+                raise NativeError('invalid native depot creation Events response' + FALLBACK)
+            previous, found = 0, []
+            for event in events:
+                required = {'seq', 'id', 'bead', 'kind', 'actor', 'at'}
+                if (not isinstance(event, dict) or not required <= set(event) or set(event) - required - {'data'}
+                        or type(event['seq']) is not int or not previous < event['seq'] < 2**64
+                        or event['id'] != str(event['seq']) or event['bead'] != bead_id
+                        or any(not isinstance(event[field], str) or not event[field]
+                               for field in ('kind', 'actor', 'at'))
+                        or not isinstance(event.get('data', {}), dict)):
+                    raise NativeError('invalid native depot creation Events row' + FALLBACK)
+                previous = event['seq']
+                data = event.get('data', {})
+                if event['kind'] == 'noted' and data.get('note') == ask['ask']:
+                    if (set(data) != {'note'} or type(data['note']) is not int
+                            or event['actor'] != ask['asker']):
+                        raise NativeError('invalid native depot ask creation event' + FALLBACK)
+                    found.append(event['seq'])
+            if len(found) > 1:
+                raise NativeError('invalid native depot duplicate ask creation event' + FALLBACK)
+            if found and found[0] > floor:
+                return
+            if found or not events or len(events) < limit or events[0]['seq'] <= floor:
+                raise NativeError('run_ask_depot_pack_before_activation_or_creation_unavailable; '
+                                  'create a fresh native ask after activation' + FALLBACK)
+            limit *= 2
+
     def ident(self, bead_id, number):
         return digest(dict(binding=self.binding(), bead=bead_id, ask=number))[:24]
 
@@ -1782,6 +2172,30 @@ class RunAsks:
         verify_operator(self.client, self.config)
         try:
             bead, ask = self.fetch(row['bead'], row['ask'], row.get('kind', 'run'))
+            if ask['state'] == 'open':
+                self.require_depot_cutover(bead['id'], ask)
+                bundle = row.get('bundle')
+                if bundle is not None:
+                    document = bundle.get('document')
+                    if not document and not bundle.get('parts'):
+                        raise NativeError('native_pack_document_unavailable' + FALLBACK)
+                    if document:
+                        try:
+                            self.document_file(document)
+                            if document.get('name', '').endswith('.md'):
+                                expected = f"runask:{row['id']}:bundle:{row['proposal']}:document"
+                                if (bundle.get('digest') != row['proposal'] or document.get('key') != expected
+                                        or document['name'] != 'review-' + row['proposal'] + '.md'):
+                                    raise NativeError('native_pack_document_changed')
+                                if row['message_id'] is not None:
+                                    receipt = self.store.saved_receipt(document['key'])
+                                    if (not receipt or receipt.get('delivered') is not True
+                                            or type(receipt.get('document_size')) is not int
+                                            or receipt['document_size'] != document['size']
+                                            or str(receipt.get('message_id')) != str(document['message_id'])):
+                                        raise NativeError('native_pack_document_delivery_unconfirmed')
+                        except NativeError as error:
+                            raise NativeError(str(error) + FALLBACK) from None
         except NativeError as error:
             # A sent run card the yard now writes in a shape this bridge cannot show whole (a yard upgrade) is decided there.
             if row.get('kind') == 'decision' or isinstance(error, RPCRefused) or not str(error).endswith(FALLBACK):
@@ -1831,6 +2245,10 @@ class RunAsks:
         with self.lock():
             verify_operator(self.client, self.config)
             bead, ask = self.fetch(bead_id, number, kind)
+            if isinstance(ask.get('run'), dict) and depot_pack(ask['run'].get('pack')):
+                if ask['state'] != 'open':
+                    raise NativeError('run_ask_depot_pack_not_open' + FALLBACK)
+                self.require_depot_cutover(bead_id, ask)
             with self.store.connect() as db:
                 saved = db.execute('SELECT id,request FROM run_ask_keys WHERE key=?', (key,)).fetchone()
             if saved and saved[1] != request:
@@ -1872,7 +2290,7 @@ class RunAsks:
                         or db.execute('SELECT 1 FROM asks WHERE ask_id=?', (self.bridge._ask_id_for_key(key),)).fetchone()):
                     raise NativeError('idempotency_key_conflict')
                 db.execute('INSERT OR IGNORE INTO run_ask_keys VALUES (?,?,?)', (key, ident, request))
-            self.save(row)
+                db.execute('INSERT OR REPLACE INTO ' + self.table + ' VALUES (?,?)', (row['id'], canonical(row)))
             if kind == 'decision':
                 receipt = self.present_decision(row, ask) if ask['state'] == 'open' else self.settle(row, ask)
                 # Callback proof binds the card without rewriting its original send receipt.
@@ -1932,6 +2350,12 @@ class RunAsks:
     def document_file(self, document):
         directory = (self.bridge.state_dir or Path(self.store.path).parent) / 'run-ask-documents'
         try:
+            if (not isinstance(document, dict) or set(document) - {'text', 'sha256', 'size', 'name', 'message_id', 'key'}
+                    or not isinstance(document.get('text'), str) or type(document.get('size')) is not int
+                    or not 0 <= document['size'] <= PACK_DOCUMENT_BYTES
+                    or len(document['text'].encode('utf-8')) != document['size']
+                    or file_hash(document['text']) != document.get('sha256')):
+                raise NativeError('native_pack_document_changed')
             directory.mkdir(mode=0o700, exist_ok=True)
             info = directory.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -1959,7 +2383,7 @@ class RunAsks:
                     or info.st_size != document['size'] or hashlib.sha256(path.read_bytes()).hexdigest() != document['sha256']):
                 raise NativeError('native_pack_document_changed')
             return str(path)
-        except OSError:
+        except (OSError, UnicodeError):
             raise NativeError('native_pack_document_unavailable') from None
 
     def send_card(self, row):
@@ -2398,7 +2822,7 @@ class RunAsks:
         if refused and isinstance(refusal, RPCStale) and ask['run']['argv'][:2] in (['source', 'add'], ['pack', 'apply']):
             row.update(state='stale', pending=None, uncertain=False)
             self.save(row)
-            kind = 'source pack' if ask['run']['argv'][:2] == ['pack', 'apply'] else 'source'
+            kind = ('depot pack' if depot_pack(ask['run'].get('pack')) else 'source pack') if ask['run']['argv'][:2] == ['pack', 'apply'] else 'source'
             self.display(row, 'Stale ' + kind + ' proposal; nothing ran. Decline it in the yard and ask again.', [])
             return str(refusal)
         footer = str(refusal) if refused and isinstance(refusal, RPCUnsupported) else 'The yard refused this action; read the card again'

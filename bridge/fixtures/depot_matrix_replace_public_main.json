@@ -1,0 +1,154 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic depot matrix?",
+  "context": [
+    "Complete native synthetic plan; no live state"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "pack",
+      "apply",
+      "/synthetic/checkout/matrix",
+      "--sha256",
+      "8f25d810a03fbafa8e6cdcdb4d242da7eb17783921c0a115261c84c5691a7842",
+      "--depot",
+      "synthetic",
+      "--flow",
+      "default",
+      "--crew",
+      "reviewer=reviewer",
+      "--calls",
+      "crew:reviewer=matrixsvc:health"
+    ],
+    "command": "yardr pack apply /synthetic/checkout/matrix --sha256 8f25d810a03fbafa8e6cdcdb4d242da7eb17783921c0a115261c84c5691a7842 --depot synthetic --flow default --crew reviewer=reviewer --calls crew:reviewer=matrixsvc:health",
+    "description": "Import a pack into depot synthetic: set the yard to what the pack says",
+    "does": [
+      "pack matrix (directory /synthetic/checkout/matrix in yardr unknown), of no kind, into depot synthetic: 0 to create, 1 to change, 12 unchanged, and 0 dropped and left where they stand, digest sha256:8f25d810a03fbafa8e6cdcdb4d242da7eb17783921c0a115261c84c5691a7842. It asks nothing.",
+      "the plan uses mapping --flow default.",
+      "the plan uses mapping --crew reviewer=reviewer.",
+      "the plan uses mapping --calls crew:reviewer=matrixsvc:health.",
+      "source matrixsvc: change (base: https://example.invalid -> https://api.example.invalid).",
+      "depot synthetic would follow flow matrix.default; it follows matrix.default (store) now.",
+      "source matrixsvc: its calls go to https://api.example.invalid. It names no credential.",
+      "it would replace the source matrixsvc the yard has under that name.",
+      "source matrixsvc base: \"https://example.invalid\" -> \"https://api.example.invalid\".",
+      "call health (read): GET /health. It takes no parameter, and sends no query.",
+      "call health sends no body. Its answer is returned as it comes, at most 65536 bytes.",
+      "it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.",
+      "it names no command."
+    ],
+    "back": "no one command takes it back: read the standing state with yardr pack check /synthetic/checkout/matrix --depot synthetic in a terminal",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "matrixsvc",
+        "text": "name: matrixsvc\nbase: https://api.example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\n"
+      }
+    ],
+    "pack": {
+      "name": "matrix",
+      "depot": "synthetic",
+      "mappings": {
+        "flow": "default",
+        "crew": {
+          "reviewer": "reviewer"
+        },
+        "calls": [
+          "crew:reviewer=matrixsvc:health"
+        ]
+      },
+      "label": "directory /synthetic/checkout/matrix in yardr unknown",
+      "plan": {
+        "objects": [
+          {
+            "kind": "file",
+            "name": "roles/sample.md",
+            "action": "unchanged",
+            "runs": true
+          },
+          {
+            "kind": "file",
+            "name": "scripts/archive",
+            "action": "unchanged",
+            "runs": true
+          },
+          {
+            "kind": "file",
+            "name": "flows/default/new.md",
+            "action": "unchanged"
+          },
+          {
+            "kind": "file",
+            "name": "flows/default/review.md",
+            "action": "unchanged"
+          },
+          {
+            "kind": "group",
+            "name": "reviewers",
+            "action": "unchanged"
+          },
+          {
+            "kind": "group",
+            "name": "synthetic-archive",
+            "action": "unchanged"
+          },
+          {
+            "kind": "flow",
+            "name": "matrix.default",
+            "action": "unchanged"
+          },
+          {
+            "kind": "pointer",
+            "name": "depot synthetic -> matrix.default",
+            "action": "unchanged"
+          },
+          {
+            "kind": "route",
+            "name": "depot synthetic stage new -> reviewers",
+            "action": "unchanged"
+          },
+          {
+            "kind": "route",
+            "name": "depot synthetic stage review -> reviewers",
+            "action": "unchanged"
+          },
+          {
+            "kind": "crew",
+            "name": "reviewer",
+            "action": "unchanged"
+          },
+          {
+            "kind": "subscription",
+            "name": "reviewer yardr all depot=synthetic stage=new",
+            "action": "unchanged"
+          },
+          {
+            "kind": "source",
+            "name": "matrixsvc",
+            "action": "change",
+            "changes": [
+              {
+                "field": "base",
+                "old": "https://example.invalid",
+                "new": "https://api.example.invalid"
+              }
+            ]
+          }
+        ],
+        "governs": [
+          {
+            "flow": "matrix.default",
+            "now": "matrix.default (store)"
+          }
+        ]
+      },
+      "digest": "8f25d810a03fbafa8e6cdcdb4d242da7eb17783921c0a115261c84c5691a7842"
+    }
+  }
+}

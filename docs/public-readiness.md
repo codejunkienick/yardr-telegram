@@ -196,7 +196,8 @@ normal use through the declared source requires its application first.
 | Siding fold/release | Native plain FoldBeads and guarded Advance PASS [E] | Standalone native PASS [E]; full-declaration registration separately refused on formats | `siding_card`; existing plain-fold race remains |
 | Group add/set | Native supported fields PASS; group-set `model=` REFUSED [C] | Native setup unsupported: `effort` config key refused | `model=` is fork-only; same `run_ask` |
 | Source add | Native new/free/orphan creation PASS; replacement missing grants disclosure REFUSED before send/write [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; explicit replacement-grants disclosure required |
-| Embedded/directory source-pack run cards | Native fresh/orphan cases PASS; replacements missing grants disclosure REFUSED [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; complete directory setup/manifest snapshot contract remains fork-only |
+| Embedded/directory source-pack run cards | Native fresh/orphan cases PASS; replacements missing grants disclosure REFUSED [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; complete native carried review; no invented directory snapshot |
+| [Complete depot directory-pack review](../bridge/OPERATIONS.md#depot-pack-bundles) | Native bounded first/reapply/object plans PASS; missing replacement grants REFUSED [H] | Not tested for this depot slice | Same `run_ask`; explicit operator activation watermark; aligned `aadbbd841b1c` and pinned public `52e22d57` fixtures |
 | /quota, /mayor_model | Native PASS [F] | Native PASS [F] | Does not prove public pack or mayor/skills installation |
 | skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only operator terminal workflow; no skill card/grant |
 
@@ -226,6 +227,11 @@ RPC/store where stated):
 - [G] [bridge/test_run_asks.py](../bridge/test_run_asks.py),
   `test_skill_add_refuses_before_send_and_lists_terminal_only`.
 
+- [H] [bridge/test_run_asks.py](../bridge/test_run_asks.py),
+  `RealNativeTests.test_real_native_depot_pack_apply_once`: actual native store,
+  bridge ledger and production poll order; complete document, routine/weighted
+  carry, source/API cutover, stale state, crashes and one execution under replay.
+
 Long polling, topics, buttons/menu/add-ons, typing, media, silent replies and
 optional local transcription are bridge features covered by its offline
 suite; this does not add a native adoption claim for each feature. Unsupported
@@ -245,12 +251,31 @@ proposal binding and explicit replacement-grants disclosure. Missing grants
 framing refuses public replacements; it is never assumed safe. New-source
 and fresh pack cards show the complete carried declaration/program/diff review
 before controls. Native directory digest review on public core does not
-include a snapshot of setup/manifest files. That full snapshot contract is
-fork-specific; see [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
+include a snapshot of setup/manifest files. This bridge accepts only native
+carried fields and invents no such snapshot on either core; see [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
 Weighty cards use Approve then Confirm on the same card within 60 seconds;
 typed numbers never approve. Ordinary decisions retain guarded ask turns.
 
-Native run cards exclude depot-kind/summary pack plans, `crew add`,
+Complete depot directory plans additionally require explicit `--depot`, a
+matching mandatory pin, a native absolute directory in the registered main
+checkout and complete structured plan/mappings. Native `git`, `dir` and
+omitted-kind envelopes use the depot/plan fields. Every object/action,
+old/new change, consequence, text/diff/hash, carried source/program and kept
+grant is disclosed in one immutable document, followed by a bounded card.
+Does prose remains native-owned; the narrow source framing/grants policy
+still refuses public replacements with missing kept grants. No bridge path
+reread or whole-pack digest reconstruction is added. Bounds remain 40 Does
+lines, 256 KiB declarations, 64 KiB aggregate carried and depot file texts/
+diffs/removals, existing source per-file bounds and a 50 MiB framed document.
+Unknown/incomplete/oversized plans refuse whole. The operator records a
+prospective native global event watermark with the old bridge stopped; a bound
+ask creation event must be strictly newer. Missing creation evidence refuses;
+old ask-number markers require explicit recapture at activation. Earlier asks
+remain blocked across keys and `/decide`, without inventing refusal history.
+See [activation](../yardr/SETUP.md#depot-pack-imports-and-activation).
+
+Native run cards exclude embedded/bare/URL/summary depot plans, `--yes` and
+hand-edited overwrites or unresolved inputs, `crew add`,
 `depot push`, `skill add`, secret/setup/identity operations and
 parameter input; use the full native client for those. Unknown/oversized
 cards refuse whole. Ordinary asks have no operation/weight/file payload.

@@ -9,6 +9,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shlex
 import shutil
 import socketserver
 import subprocess
@@ -88,6 +89,10 @@ def source_proposal(kind='replace', extra=''):
 
 def pack_proposal(kind='directory'):
     return json.loads(Path(__file__).with_name('fixtures').joinpath('pack_' + kind + '.json').read_text())
+
+
+def depot_proposal(kind='first'):
+    return json.loads(Path(__file__).with_name('fixtures').joinpath('depot_' + kind + '.json').read_text())
 
 
 RICH_YAML = (
@@ -368,6 +373,8 @@ class NativeSocket:
         # Several beads, as the core's Bead and UserAsks read them; None keeps the one ask above.
         self.beads = None
         self.raw_queue = None
+        self.event_head = 0
+        self.raw_events = None
         self.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         owner = self
 
@@ -399,6 +406,17 @@ class NativeSocket:
                         self.send_error(503)
                         return
                     result = owner.queue(args) if owner.raw_queue is None else owner.raw_queue
+                elif method == 'Head':
+                    result = owner.event_head
+                elif method == 'Events':
+                    events = owner.raw_events
+                    if events is None:
+                        events = [dict(seq=100 + ask['ask'], id=str(100 + ask['ask']), bead=bead['id'],
+                                       kind='noted', actor=ask['asker'], data=dict(note=ask['ask']), at=ask['since'])
+                                  for bead in owner.beads_view().values() if bead['id'] == args[0]
+                                  for ask in bead['asks']]
+                        events.sort(key=lambda event: event['seq'])
+                    result = events[-args[1]:] if isinstance(events, list) else events
                 elif method in ('ApproveAsk', 'DeclineAsk', 'AnswerAsk', 'DeferAsk',
                                 'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected'):
                     target = owner.target(args)
@@ -537,12 +555,22 @@ class NativeCase(BridgeTestCase):
         self.native.ask = ask
         self.native.calls.clear()
         self.native.mode = None
+        self.native.event_head = 0
+        self.native.raw_events = None
         self.native.user = dict(name='pat', role='operator', identities={'tgbridge': {'id': '123'}})
         self.native.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         self.calls.clear()
         self.sent_count = 0
         self.documents.clear()
         self.bridge.run_asks = n.RunAsks(self.bridge)
+
+    def reset_depot(self, ask):
+        self.reset_native(ask)
+        self.native.beads = {}
+        try:
+            self.assertEqual(self.bridge.run_asks.record_depot_cutover(), 0)
+        finally:
+            self.native.beads = None
 
     def create(self, **kwargs):
         return self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='native-1', **kwargs))
@@ -652,6 +680,380 @@ class NativeTests(NativeCase):
         self.native.mode = 'duplicate-json'
         self.assertFalse(self.create()['delivered'])
         self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+
+    def test_depot_pack_review_and_envelope_fail_closed(self):
+        self.reset_native(depot_proposal())
+        self.assertFalse(self.create()['delivered'])
+        self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        self.reset_depot(depot_proposal())
+        self.native.beads = {'history-1': dict(id='history-1', title='Synthetic old history',
+                                            asks=[dict(proposal(), ask=900)])}
+        self.native.event_head = 500
+        self.bridge.run_asks.record_depot_cutover()
+        low = dict(depot_proposal(), ask=1)
+        self.native.beads = {'fresh-1': dict(id='fresh-1', title='Synthetic fresh bead', asks=[low])}
+        creation = dict(seq=501, id='501', bead='fresh-1', kind='noted', actor=low['asker'],
+                        data=dict(note=1), at=low['since'])
+        self.native.raw_events = [creation]
+        receipt = self.bridge.api_run_ask(dict(bead='fresh-1', ask=1, key='low-after-activation'))
+        self.assertTrue(receipt['delivered'], receipt)
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.bridge.run_asks.depot_cutover(), 500)
+        self.native.event_head = 400
+        self.assertEqual(self.bridge.run_asks.record_depot_cutover(), 500)
+        for bad in (True, -1, 2**64, '500', None, {}):
+            with self.subTest(invalid_native_head=bad):
+                self.native.event_head = bad
+                with self.assertRaises(n.NativeError):
+                    self.bridge.run_asks.record_depot_cutover()
+                self.assertEqual(self.bridge.run_asks.depot_cutover(), 500)
+        creation = dict(creation, bead='sample-1')
+        for events in ({}, [], [dict(creation, seq=499, id='499')],
+                       [dict(creation, bead='other-1')], [dict(creation, actor='other')],
+                       [dict(creation, data=dict(note=2))], [dict(creation, data=dict(note=True))],
+                       [dict(creation, data=dict(note=1, unknown=True))], [dict(creation, unknown=True)],
+                       [dict(creation, seq=True, id='True')], [dict(creation, id='other')],
+                       [creation, creation], [creation, dict(creation, seq=502, id='502')]):
+            with self.subTest(invalid_creation_events=events):
+                self.reset_depot(low)
+                self.native.event_head = 500
+                self.bridge.run_asks.record_depot_cutover()
+                self.native.raw_events = events
+                # An omitted timestamp cannot be guessed when the creation event is unavailable.
+                if events == []:
+                    self.native.ask.pop('since')
+                result = self.bridge.api_run_ask(dict(bead='sample-1', ask=1, key='missing-creation'))
+                self.assertFalse(result['delivered'], result)
+                self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        self.reset_depot(depot_proposal())
+        self.native.event_head = 100
+        self.bridge.run_asks.record_depot_cutover()
+        creation = dict(creation, bead='sample-1', data=dict(note=7), seq=101, id='101')
+        self.native.raw_events = [creation] + [dict(creation, seq=i, id=str(i), kind='updated', data={})
+                                              for i in range(102, 172)]
+        self.assertTrue(self.create()['delivered'])
+        event_reads = [args for method, args, _ in self.native.calls if method == 'Events']
+        self.assertIn(['sample-1', 64], event_reads)
+        self.assertIn(['sample-1', 128], event_reads)
+        self.native.event_head = 200
+        self.bridge.run_asks.record_depot_cutover()
+        self.bridge.run_asks.refresh()
+        self.assertEqual(self.row()['state'], 'stale')
+        self.assertEqual(self.row()['display']['keyboard'], [])
+        self.assertEqual(self.writes(), [])
+        self.reset_native(depot_proposal())
+        info = self.home.stat()
+        old_fingerprint = n.digest(dict(purpose='native_depot_pack_activation',
+            binding=self.bridge.run_asks.binding(), home=[info.st_dev, info.st_ino]))
+        old_key = 'runask:depot-cutover:' + old_fingerprint
+        old_receipt = dict(delivered=False, failure_kind='permanent', metadata=dict(
+            reason='native_depot_pack_activation', ask_floor=0, linked_asks_excluded=0))
+        with self.store.connect() as db:
+            db.execute('INSERT INTO deliveries VALUES (?,?,?)', (old_key, old_fingerprint, n.canonical(old_receipt)))
+        self.assertFalse(self.create()['delivered'])
+        self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        self.bridge.run_asks.record_depot_cutover()
+        self.assertTrue(self.create()['delivered'])
+        self.assertEqual(self.store.saved_delivery(old_key), (old_fingerprint, old_receipt))
+        for kind in ('first', 'first_public_main', 'source_replace', 'source_replace_public_main',
+                     'matrix_first', 'matrix_first_public_main', 'matrix_change', 'matrix_change_public_main',
+                     'matrix_replace', 'matrix_replace_public_main'):
+            with self.subTest(genuine_depot=kind):
+                ask = depot_proposal(kind)
+                self.reset_depot(ask)
+                receipt = self.create()
+                expected = kind not in ('source_replace_public_main', 'matrix_replace_public_main')
+                self.assertEqual(receipt['delivered'], expected, receipt)
+                if not expected:
+                    self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+                    continue
+                document = self.row()['bundle']['document']['text']
+                for line in ask['run']['does']:
+                    self.assertIn(n.review_code(line), document)
+                for obj in ask['run']['pack']['plan']['objects']:
+                    self.assertIn(n.review_escape('Plan object: ' + n.canonical({k: v for k, v in obj.items()
+                        if k not in ('text', 'diff')})), document)
+                    if obj['kind'] == 'file' and obj['action'] in ('create', 'change'):
+                        for field in ('text', 'diff'):
+                            self.assertIn(n.review_code(obj.get(field, '')), document)
+                self.assertEqual(self.writes(), [])
+        # The native core owns mapping-word syntax; this path only binds the words it supplied.
+        for key, flag, value in (
+                ('flow', '--flow', 'native[flow]:variant'),
+                ('crew', '--crew', {'reviewer[slot]': 'native:crew[1]'}),
+                ('groups', '--group', {'checkers[slot]': 'native:group[1]'}),
+                ('binds', '--bind', ['checkers=claude:opus[1m]']),
+                ('binds', '--bind', ['checkers=pi:openrouter/test:free']),
+                ('members', '--members', ['checkers=native:member[1]']),
+                ('open_threads', '--open-threads', ['reviewer=native:source[1]']),
+                ('calls', '--calls', ['crew:reviewer=native:source/read[1]:health'])):
+            with self.subTest(native_mapping_word=(key, value)):
+                ask = copy.deepcopy(depot_proposal())
+                run = ask['run']
+                run['pack']['mappings'] = {key: value}
+                if key == 'members':
+                    ask['weight'].append({'class': 'trust', 'line': 'Synthetic native membership weight.'})
+                words = ([value] if isinstance(value, str) else
+                         [name + '=' + target for name, target in sorted(value.items())] if isinstance(value, dict) else value)
+                run['argv'] = run['argv'][:7] + [word for entry in words for word in (flag, entry)]
+                run['command'] = shlex.join(['yardr', *run['argv']])
+                self.reset_depot(ask)
+                receipt = self.create()
+                self.assertTrue(receipt['delivered'], receipt)
+                document = self.row()['bundle']['document']['text']
+                envelope = {k: v for k, v in run['pack'].items() if k != 'plan'}
+                self.assertIn(n.review_escape('Pack envelope: ' + n.canonical(envelope)), document)
+                self.assertEqual(self.writes(), [])
+                for control in ('\n', '\t', '\x85', '\u202e'):
+                    changed = copy.deepcopy(ask)
+                    mapping = changed['run']['pack']['mappings']
+                    if isinstance(value, str):
+                        mapping[key] += control
+                    elif isinstance(value, dict):
+                        mapping[key][next(iter(value))] += control
+                    else:
+                        mapping[key][0] += control
+                    changed['run']['argv'][-1] += control
+                    changed['run']['command'] = shlex.join(['yardr', *changed['run']['argv']])
+                    self.reset_depot(changed)
+                    self.assertFalse(self.create()['delivered'])
+                    self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+                for field in ('mapping', 'argv', 'command'):
+                    changed = copy.deepcopy(ask)
+                    target = changed['run']
+                    if field == 'mapping':
+                        mapping = target['pack']['mappings']
+                        if isinstance(value, str):
+                            mapping[key] += '-other'
+                        elif isinstance(value, dict):
+                            mapping[key][next(iter(value))] += '-other'
+                        else:
+                            mapping[key][0] += '-other'
+                    else:
+                        target['argv'][-1] += '-other'
+                        target['command'] = shlex.join(['yardr', *target['argv']])
+                        if field == 'command':
+                            target['argv'] = run['argv'][:]
+                    self.reset_depot(changed)
+                    receipt = self.create()
+                    self.assertFalse(receipt['delivered'], (field, receipt))
+                    self.assertEqual(receipt['failure_kind'], 'permanent')
+                    self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+                if isinstance(value, list):
+                    changed = copy.deepcopy(ask)
+                    duplicate = value[0] + '-other'
+                    changed['run']['pack']['mappings'][key].append(duplicate)
+                    changed['run']['argv'] += [flag, duplicate]
+                    changed['run']['command'] = shlex.join(['yardr', *changed['run']['argv']])
+                    self.reset_depot(changed)
+                    self.assertFalse(self.create()['delivered'])
+                    self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        ask = copy.deepcopy(depot_proposal())
+        run = ask['run']
+        depot = 'native[depot]:variant'
+        run['pack']['depot'] = run['argv'][6] = depot
+        run['description'] = run['description'].replace('synthetic', depot)
+        run['back'] = run['back'].replace('--depot synthetic', '--depot ' + depot)
+        run['command'] = shlex.join(['yardr', *run['argv']])
+        self.reset_depot(ask)
+        self.assertTrue(self.create()['delivered'])
+        self.assertEqual(self.writes(), [])
+        for field in ('depot', 'argv', 'command'):
+            changed = copy.deepcopy(ask)
+            if field == 'depot':
+                changed['run']['pack']['depot'] += '-other'
+            else:
+                changed['run']['argv'][6] += '-other'
+                changed['run']['command'] = shlex.join(['yardr', *changed['run']['argv']])
+                if field == 'command':
+                    changed['run']['argv'] = run['argv'][:]
+            self.reset_depot(changed)
+            self.assertFalse(self.create()['delivered'])
+            self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        for name in ('[matrix]', 'left[', 'right]', 'star*', 'question?', '{braces}',
+                     "single'quote", 'double"quote', 'with spaces', '[all]*?{}\'" spaces'):
+            with self.subTest(depot_command_path=name):
+                ask = copy.deepcopy(depot_proposal())
+                old = ask['run']['argv'][2]
+                path = '/synthetic/checkout/' + name
+                ask['run']['argv'][2] = path
+                ask['run']['back'] = ask['run']['back'].replace(old, path)
+                ask['run']['pack']['label'] = ask['run']['pack']['label'].replace(old, path)
+                ask['run']['does'] = [line.replace(old, path) for line in ask['run']['does']]
+                ask['run']['command'] = shlex.join(['yardr', *ask['run']['argv']])
+                self.reset_depot(ask)
+                receipt = self.create()
+                self.assertTrue(receipt['delivered'], receipt)
+                self.assertIn('- Command: ` ' + ask['run']['command'] + ' `', self.row()['bundle']['document']['text'])
+                self.assertEqual(self.writes(), [])
+                for command in ("'yardr'  \"pack\" apply " + shlex.quote(path) + ' ' + ' '.join(ask['run']['argv'][3:]),
+                                'other ' + ask['run']['command'], ask['run']['command'] + ' --yes',
+                                ask['run']['command'] + " '", ask['run']['command'] + ' \\',
+                                ask['run']['command'].replace('--depot synthetic', '--depot other'),
+                                ask['run']['command'].replace('reviewer=reviewer', 'reviewer=other'),
+                                ask['run']['command'].replace(shlex.quote(path), shlex.quote(path + '-other'))):
+                    with self.subTest(command=command):
+                        changed = copy.deepcopy(ask)
+                        changed['run']['command'] = command
+                        self.reset_depot(changed)
+                        receipt = self.create()
+                        equivalent = command.startswith("'yardr'")
+                        self.assertEqual(receipt['delivered'], equivalent, receipt)
+                        self.assertEqual(self.writes(), [])
+                        if equivalent:
+                            self.assertIn('- Command: ` ' + command + ' `', self.row()['bundle']['document']['text'])
+                        else:
+                            self.assertEqual(receipt['failure_kind'], 'permanent')
+                            self.assertEqual((self.sent_count, self.documents), (0, []))
+        def string_positions(value, path=()):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    yield path + (key,), True
+                    yield from string_positions(item, path + (key,))
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    yield from string_positions(item, path + (index,))
+            elif isinstance(value, str):
+                yield path, False
+
+        for fixture in sorted(Path(__file__).with_name('fixtures').glob('depot_*.json')):
+            if fixture.stem in ('depot_source_replace_public_main', 'depot_matrix_replace_public_main'):
+                continue  # These genuine replacements already refuse for missing grants disclosure.
+            base = json.loads(fixture.read_text())
+            for path, key in string_positions(base):
+                for control in ('\u0085', '\x00', '\u009b'):
+                    with self.subTest(depot_control=f'U+{ord(control):04X}', fixture=fixture.name, path=path, key=key):
+                        ask = copy.deepcopy(base)
+                        parent = ask
+                        for part in path[:-1]:
+                            parent = parent[part]
+                        if key:
+                            parent[path[-1] + control] = parent.pop(path[-1])
+                        else:
+                            parent[path[-1]] += control
+                        self.reset_depot(ask)
+                        receipt = self.create()
+                        self.assertFalse(receipt['delivered'], receipt)
+                        self.assertEqual(receipt['failure_kind'], 'permanent')
+                        self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        base = depot_proposal()
+        mutations = [
+            ('unknown pack key', lambda a: a['run']['pack'].update(unknown=True)),
+            ('summary presence', lambda a: a['run']['pack'].update(summary=False)),
+            ('files presence', lambda a: a['run']['pack'].update(files=[])),
+            ('yes presence', lambda a: a['run']['pack'].update(yes=False)),
+            ('unknown plan key', lambda a: a['run']['pack']['plan'].update(unknown=[])),
+            ('missing plan', lambda a: a['run']['pack'].pop('plan')),
+            ('depot mismatch', lambda a: a['run']['pack'].update(depot='other')),
+            ('mapping mismatch', lambda a: a['run']['pack']['mappings']['crew'].update(reviewer='other')),
+            ('unknown mapping', lambda a: a['run']['pack']['mappings'].update(unknown=[])),
+            ('unknown object', lambda a: a['run']['pack']['plan']['objects'][0].update(unknown=True)),
+            ('unknown kind', lambda a: a['run']['pack']['plan']['objects'][0].update(kind='shell')),
+            ('unknown frame kind', lambda a: a['run']['pack']['plan']['objects'][0].update(kind='frame')),
+            ('unknown action', lambda a: a['run']['pack']['plan']['objects'][0].update(action='remove')),
+            ('duplicate object', lambda a: a['run']['pack']['plan']['objects'].append(copy.deepcopy(a['run']['pack']['plan']['objects'][0]))),
+            ('unknown change key', lambda a: a['run']['pack']['plan']['objects'][1]['changes'][0].update(unknown='x')),
+            ('unknown change field', lambda a: a['run']['pack']['plan']['objects'][1]['changes'][0].update(field='env_file')),
+            ('missing old change', lambda a: a['run']['pack']['plan']['objects'][1]['changes'][0].pop('old')),
+            ('missing new change', lambda a: a['run']['pack']['plan']['objects'][1]['changes'][0].pop('new')),
+            ('missing changed fields', lambda a: a['run']['pack']['plan']['objects'][1].pop('changes')),
+            ('wrong file hash', lambda a: a['run']['pack']['plan']['objects'][0].update(file_new_sha256='a' * 64)),
+            ('missing file text', lambda a: a['run']['pack']['plan']['objects'][0].pop('text')),
+            ('missing file diff', lambda a: a['run']['pack']['plan']['objects'][0].pop('diff')),
+            ('partial file diff', lambda a: a['run']['pack']['plan']['objects'][0].update(diff='--- was\n+++ is\n')),
+            ('invalid file path', lambda a: a['run']['pack']['plan']['objects'][0].update(name='../escape')),
+            ('hand edited', lambda a: a['run']['pack']['plan']['objects'][0].update(edited=True)),
+            ('unknown weights', lambda a: a.update(weight=[dict({'class': 'credential'}, line='Unsupported pack weight')])),
+            ('duplicate weights', lambda a: a['weight'].append(copy.deepcopy(a['weight'][0]))),
+            ('whole line limit', lambda a: a['run'].update(does=['A trusted native row.'] * 41)),
+            ('control content', lambda a: a['run']['does'].append('Hidden\x1bdisclosure')),
+            ('foreign orphan section', lambda a: a['run']['does'].append('the source other is not in the yard, but its command copy directory has entries this pack would replace or remove.')),
+            ('missing pin', lambda a: a['run'].update(argv=a['run']['argv'][:3] + a['run']['argv'][5:])),
+            ('unrecognized argv', lambda a: a['run']['argv'].extend(['--yes'])),
+            ('repeated mapping', lambda a: a['run']['argv'].extend(['--crew', 'reviewer=reviewer'])),
+        ]
+        for blocker in ('missing', 'asks', 'refused', 'nontext', 'edited'):
+            mutations.append((blocker, lambda a, key=blocker: a['run']['pack']['plan'].update({key: ['Unresolved']})))
+        for label, mutate in mutations:
+            with self.subTest(depot_refusal=label):
+                ask = copy.deepcopy(base)
+                mutate(ask)
+                self.reset_depot(ask)
+                receipt = self.create()
+                self.assertFalse(receipt['delivered'], receipt)
+                if label != 'control content':
+                    self.assertIn('invalid_depot_pack', receipt['reason'])
+                self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        for kind in ('matrix_first', 'matrix_change'):
+            for code in (*range(32), *range(127, 160), *sorted(map(ord, n.HIDDEN))):
+                if chr(code) in '\r\n\t':
+                    continue
+                with self.subTest(depot_file_control=f'U+{code:04X}', fixture=kind):
+                    ask = depot_proposal(kind)
+                    obj = ask['run']['pack']['plan']['objects'][0]
+                    first = obj['text'].split('\n')[0]
+                    obj['text'] = obj['text'].replace(first, chr(code) + first, 1)
+                    obj['diff'] = obj['diff'].replace('\n+' + first, '\n+' + chr(code) + first, 1)
+                    obj['file_new_sha256'] = n.file_hash(obj['text'])
+                    for change in obj.get('changes', []):
+                        if change['field'] == 'content':
+                            change['new'] = 'sha256 ' + obj['file_new_sha256'][:12]
+                    self.reset_depot(ask)
+                    receipt = self.create()
+                    self.assertFalse(receipt['delivered'], receipt)
+                    self.assertIn('invalid_depot_pack', receipt['reason'])
+                    self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        for empty_field in ('text', 'diff'):
+            ask = copy.deepcopy(base)
+            obj = ask['run']['pack']['plan']['objects'][0]
+            obj.update(text='', diff='', file_new_sha256=n.file_hash(''))
+            obj.pop(empty_field)
+            self.reset_depot(ask)
+            self.assertTrue(self.create()['delivered'])
+            self.assertIn(n.review_code(''), self.row()['bundle']['document']['text'])
+        ask = copy.deepcopy(base)
+        ask['run']['does'][0] = 'Reworded native depot disclosure, deliberately not semantically parsed.'
+        ask['run']['does'].append('An unfamiliar native sentence remains visible.')
+        self.reset_depot(ask)
+        self.assertTrue(self.create()['delivered'])
+        self.assertIn(n.review_code(ask['run']['does'][-1]), self.row()['bundle']['document']['text'])
+        self.reset_depot(base)
+        self.assertTrue(self.create()["delivered"])
+        self.native.ask = ask
+        self.press()
+        self.assertEqual(self.row()["state"], "stale")
+        self.assertEqual(self.writes(), [])
+        ask = depot_proposal('source_replace')
+        ask['run']['does'].insert(1, 'grants kept for source other: crew member reviewer: read (kept).')
+        self.reset_depot(ask)
+        self.assertFalse(self.create()['delivered'])
+        self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        ask = depot_proposal('matrix_change')
+        duplicate = copy.deepcopy(ask['run']['pack']['plan']['objects'][0])
+        duplicate['name'] = 'roles/another.md'
+        ask['run']['pack']['plan']['objects'].append(duplicate)
+        self.reset_depot(ask)
+        self.assertFalse(self.create()['delivered'], 'two complete individually bounded files exceed aggregate 64 KiB')
+        self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        for limit in ('PACK_DOCUMENT_BYTES', 'CAP'):
+            self.reset_depot(depot_proposal('matrix_first'))
+            with patch.object(n, limit, 1):
+                self.assertFalse(self.create()['delivered'])
+            self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        preview = Path(__file__).resolve().parents[1] / 'scripts/preview_run_asks.py'
+        env = dict(HOME=self.tmp.name, PATH=self.tmp.name + ':/usr/local/bin:/usr/bin:/bin')
+        html = subprocess.run([sys.executable, '-B', str(preview), '--depot'], env=env,
+                              check=True, capture_output=True).stdout.decode()
+        self.assertNotIn('\r', html, 'HTML carriage returns must be entities so the browser preserves them')
+        self.assertIn('&#13;', html)
+        documents = re.findall('href="data:text/plain;base64,([A-Za-z0-9+/=]+)"', html)
+        self.assertEqual(len(documents), 2)
+        for name, encoded in zip(('matrix_first', 'matrix_change'), documents):
+            document = base64.b64decode(encoded).decode()
+            for obj in depot_proposal(name)['run']['pack']['plan']['objects']:
+                if obj['kind'] == 'file' and obj['action'] in ('create', 'change'):
+                    for field in ('text', 'diff'):
+                        self.assertIn(n.review_code(obj.get(field, '')), document)
 
     def test_source_pack_weight_presence_is_structural(self):
         for base in (source_proposal('new_public_main'), pack_proposal('directory_public_main')):
@@ -5855,6 +6257,863 @@ class NativeSettingsTests(unittest.TestCase):
 
 
 class RealNativeTests(BridgeTestCase):
+    def test_real_native_depot_pack_apply_once(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        server, home, command, env = testyardr.start(root, binary)
+        try:
+            client, cli, _ = self.exercise_source_limit_and_trust(binary, root, home, command, env)
+            checkout = root / 'checkout'
+            for args in (['init', '-q', str(checkout)], ['-C', str(checkout), '-c', 'user.name=Synthetic',
+                         '-c', 'user.email=synthetic@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'Initial']):
+                subprocess.run(['git', *args], env=env, check=True, capture_output=True)
+            cli('depot', 'add', 'synthetic', str(checkout), '--base', 'HEAD')
+            cli('crew', 'add', 'reviewer', '--set', 'kind=codex')
+            pack = checkout / 'pack'
+            (pack / 'roles').mkdir(parents=True)
+            (pack / 'pack.yaml').write_text('api: 1\nname: harmless\nkind: git\ncrew:\n  reviewer:\n    role: roles/sample.md\n')
+            content = 'Review synthetic examples only.\n'
+            (pack / 'roles/sample.md').write_text(content)
+            # The accepted base lacks a cutover helper; still reach its actual API refusal in the regression check.
+            activation = getattr(self.bridge.run_asks, 'record_depot_cutover', None)
+            if activation is not None:
+                activation()
+            updates = iter(range(50000, 51000))
+
+            def current(number):
+                return next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == number)
+
+            def poll(batch):
+                telegram = self.bridge.telegram
+                def fetched(method, body, timeout=15):
+                    return (200, dict(ok=True, result=batch)) if method == 'getUpdates' else telegram(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                    self.bridge.poll_once()
+
+            def event(row, action='approve'):
+                if action == 'confirm':
+                    action += ':' + self.bridge.run_asks.get(row['id'])['pending']['nonce']
+                return dict(update_id=next(updates), callback_query=dict(id='depot-callback',
+                    data=f"runask:{row['id']}:{action}", message=dict(message_id=row['message_id'],
+                        chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}),
+                    **{'from': dict(id=123, is_bot=False)}))
+
+            def press(row, action='approve'):
+                poll([event(row, action)])
+
+            def propose(extra=''):
+                check = cli('pack', 'check', str(pack), '--depot', 'synthetic', '--crew', 'reviewer=reviewer')
+                pin = re.search(r'sha256:([0-9a-f]{64})', check)[1]
+                cli('--actor', 'proposer', 'bead', 'ask', 'sample-1', 'Import the harmless synthetic depot pack?',
+                    '--to', 'pat', '--context', 'Synthetic native depot refusal; no live state',
+                    '--run', f'pack apply {pack} --sha256 {pin} --depot synthetic --crew reviewer=reviewer' + extra)
+                return client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+
+            bindings = checkout / 'bindings'
+            (bindings / 'roles').mkdir(parents=True)
+            (bindings / 'roles/sample.md').write_text(content)
+            (bindings / 'pack.yaml').write_text('api: 1\nname: bindings\nkind: git\ngroups:\n'
+                '  checkers: {agent: roles/sample.md}\ncrew:\n  reviewer:\n    role: roles/sample.md\n')
+            pin = re.search(r'sha256:([0-9a-f]{64})', cli('pack', 'check', str(bindings), '--depot', 'synthetic',
+                '--crew', 'reviewer=reviewer'))[1]
+            for bind in ('checkers=codex:gpt-5', 'checkers=claude:opus[1m]', 'checkers=pi:openrouter/test:free'):
+                with self.subTest(native_bind_word=bind):
+                    cli('--actor', 'proposer', 'bead', 'ask', 'sample-1', 'Review a synthetic native group binding?',
+                        '--to', 'pat', '--context', 'Synthetic binding review only; no agent execution',
+                        '--run', f'pack apply {bindings} --sha256 {pin} --depot synthetic --crew reviewer=reviewer --bind {bind}')
+                    ask = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+                    self.assertEqual(ask['run']['pack']['mappings']['binds'], [bind])
+                    self.assertTrue(any(o['kind'] == 'group' and o['action'] == 'create'
+                                        for o in ask['run']['pack']['plan']['objects']))
+                    head = client.call('Head', [])
+                    crew = client.call('GetCrew', ['reviewer'])
+                    rpc = self.bridge.run_asks.client.call
+                    for field in ('mapping', 'argv', 'command'):
+                        with self.subTest(native_bind_mismatch=field):
+                            def changed_response(method, args):
+                                self.assertIn(method, n.READS, 'validation must not mutate the native store')
+                                value = rpc(method, args)
+                                if method == 'Bead':
+                                    value = copy.deepcopy(value)
+                                    target = next(a for a in value['asks'] if a['ask'] == ask['ask'])['run']
+                                    if field == 'mapping':
+                                        target['pack']['mappings']['binds'][0] += '-other'
+                                    else:
+                                        target['argv'][-1] += '-other'
+                                        target['command'] = shlex.join(['yardr', *target['argv']])
+                                        if field == 'command':
+                                            target['argv'] = ask['run']['argv'][:]
+                                return value
+                            before = len(self.calls), len(self.documents)
+                            with patch.object(self.bridge.run_asks.client, 'call', side_effect=changed_response):
+                                receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'],
+                                    key='bind-' + str(ask['ask']) + '-' + field))
+                            self.assertFalse(receipt['delivered'], receipt)
+                            self.assertEqual(receipt['failure_kind'], 'permanent')
+                            self.assertEqual((len(self.calls), len(self.documents)), before)
+                            self.assertIsNone(self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', ask['ask'])))
+                            self.assertEqual(client.call('Head', []), head)
+                            self.assertEqual(current(ask['ask']), ask)
+                    documents = len(self.documents)
+                    receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='bind-' + str(ask['ask'])))
+                    self.assertTrue(receipt['delivered'], receipt)
+                    self.assertEqual(len(self.documents), documents + 1)
+                    row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+                    document = row['bundle']['document']
+                    self.assertEqual(document['sha256'], n.file_hash(document['text']))
+                    self.assertEqual(self.calls[-1][1]['reply_parameters']['message_id'], document['message_id'])
+                    self.assertIn(bind, document['text'])
+                    self.assertEqual(client.call('Head', []), head)
+                    self.assertEqual(current(ask['ask']), ask)
+                    self.assertEqual(client.call('GetCrew', ['reviewer']), crew)
+                    self.assertFalse((home / 'packs/bindings').exists())
+                    self.assertFalse(any(g['name'] == 'synthetic-checkers' for g in client.call('Groups', [])))
+                    client.call('TakeBackAsk', ['sample-1', ask['ask'], 'Synthetic binding review complete', 'pat'])
+                    self.bridge.run_asks.refresh()
+                    print('Native depot binding:', bind, 'complete document/card; mismatches refuse; no approval or execution')
+            for index in range(2):
+                ask = propose()
+                if index == 0:
+                    self.assert_source_pack_fixture(ask, root, 'depot_first')
+                    self.assertTrue(ask.get('weight'))
+                    native = self.bridge.run_asks.client.call
+                    def missing_creation(method, args):
+                        return [] if method == 'Events' else native(method, args)
+                    before = len(self.calls), len(self.documents), client.call('Head', [])
+                    with patch.object(self.bridge.run_asks.client, 'call', side_effect=missing_creation):
+                        result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='no-creation'))
+                    self.assertFalse(result['delivered'], result)
+                    self.assertIn('creation_unavailable', result['reason'])
+                    self.assertEqual((len(self.calls), len(self.documents), client.call('Head', [])), before)
+                    self.assertEqual(current(ask['ask']), ask)
+                    self.assertFalse((home / 'packs/harmless').exists())
+                else:
+                    self.assertFalse(ask.get('weight'), 'unchanged reapply must exercise routine native approval')
+                receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='depot-' + str(index)))
+                self.assertTrue(receipt['delivered'], receipt)
+                row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+                document = row['bundle']['document']
+                self.assertEqual(document['sha256'], n.file_hash(document['text']))
+                self.assertEqual(document['size'], len(document['text'].encode()))
+                self.assertEqual(self.calls[-1][1]['reply_parameters']['message_id'], document['message_id'])
+                self.assertIn('synthetic', row['plain'])
+                self.assertIn('no one command takes it back', row['plain'])
+                for line in ask['run']['does']:
+                    self.assertIn(n.review_code(line), document['text'])
+                if index == 0:
+                    self.assertIn(n.review_code(content), document['text'])
+                    self.assertFalse((home / 'packs/harmless').exists())
+                press(row)
+                if ask.get('weight'):
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    self.assertFalse((home / 'packs/harmless').exists())
+                    press(row, 'confirm')
+                deadline = time.monotonic() + 10
+                while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.02)
+                settled = current(ask['ask'])
+                self.assertEqual(settled['state'], 'answered')
+                self.assertFalse(settled['ran'].get('failed'), settled['ran'])
+                self.assertEqual((home / 'packs/harmless/roles/sample.md').read_bytes(), content.encode())
+                self.assertEqual(client.call('GetCrew', ['reviewer'])['config']['prompt'], str(home / 'packs/harmless/roles/sample.md'))
+                self.assertEqual(client.call('GetCrew', ['reviewer']).get('on', []), [])
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                press(row)
+                self.assertEqual(current(ask['ask']), settled)
+                events = [e for e in client.call('EventsOfKind', ['pack_applied', 100])
+                          if e['data'].get('approved', {}).get('ask') == ask['ask']
+                          and e['data'].get('approved', {}).get('bead') == 'sample-1']
+                self.assertEqual(len(events), 1)
+                receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='closed-depot-' + str(index)))
+                self.assertFalse(receipt['delivered'], receipt)
+                self.assertIn('not_open', receipt['reason'])
+                print('Native depot:', 'weighted first install' if index == 0 else 'routine reapply',
+                      'complete document; bound approval; exact role/config; one native event under restart/replay')
+            original_pack = pack
+            for name in ('[matrix]', 'left[', 'right]'):
+                with self.subTest(native_depot_path=name):
+                    pack = checkout / name
+                    shutil.copytree(original_pack, pack)
+                    ask = propose()
+                    self.assertEqual(shlex.split(ask['run']['command']), ['yardr', *ask['run']['argv']])
+                    rpc = self.bridge.run_asks.client.call
+                    for field in ('command program', 'command path', 'command parse', 'argv path', 'depot', 'mapping'):
+                        with self.subTest(native_command_mismatch=field):
+                            def changed_response(method, args):
+                                self.assertIn(method, n.READS, 'validation must not mutate the native store')
+                                value = rpc(method, args)
+                                if method == 'Bead':
+                                    value = copy.deepcopy(value)
+                                    target = next(a for a in value['asks'] if a['ask'] == ask['ask'])['run']
+                                    if field == 'command program':
+                                        target['command'] = 'other ' + target['command']
+                                    elif field == 'command path':
+                                        target['command'] = target['command'].replace(str(pack), str(pack) + '-other')
+                                    elif field == 'command parse':
+                                        target['command'] += " '"
+                                    elif field == 'argv path':
+                                        target['argv'][2] += '-other'
+                                    elif field == 'depot':
+                                        target['pack']['depot'] = 'other'
+                                    else:
+                                        target['pack']['mappings']['crew']['reviewer'] = 'other'
+                                return value
+                            before = len(self.calls), len(self.documents)
+                            with patch.object(self.bridge.run_asks.client, 'call', side_effect=changed_response):
+                                receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'],
+                                    key='quoted-' + str(ask['ask']) + '-' + field.replace(' ', '-')))
+                            self.assertFalse(receipt['delivered'], receipt)
+                            self.assertEqual(receipt['failure_kind'], 'permanent')
+                            self.assertEqual((len(self.calls), len(self.documents)), before)
+                            self.assertIsNone(self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', ask['ask'])))
+                            self.assertEqual(current(ask['ask']), ask)
+                    receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='quoted-' + str(ask['ask'])))
+                    self.assertTrue(receipt['delivered'], receipt)
+                    row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+                    self.assertIn('- Command: ` ' + ask['run']['command'] + ' `', row['bundle']['document']['text'])
+                    self.assertEqual(current(ask['ask']), ask)
+                    self.assertEqual((home / 'packs/harmless/roles/sample.md').read_bytes(), content.encode())
+                    client.call('TakeBackAsk', ['sample-1', ask['ask'], 'Synthetic path review complete', 'pat'])
+                    self.bridge.run_asks.refresh()
+                    print('Native depot path:', name, 'genuine command delivered verbatim; mismatches refused without sends/writes')
+            for name in ('star*', 'question?', '{braces}', "single'quote", 'double"quote', 'with spaces'):
+                with self.subTest(native_proposal_limit=name):
+                    pack = checkout / name
+                    shutil.copytree(original_pack, pack)
+                    pin = re.search(r'sha256:([0-9a-f]{64})', cli('pack', 'check', str(pack), '--depot', 'synthetic',
+                        '--crew', 'reviewer=reviewer'))[1]
+                    before = client.call('Bead', dict(bead='sample-1', viewer='pat'))
+                    result = subprocess.run(command + ['--actor', 'proposer', 'bead', 'ask', 'sample-1',
+                        'Synthetic unsupported native path', '--to', 'pat', '--run',
+                        f'pack apply {pack} --sha256 {pin} --depot synthetic --crew reviewer=reviewer'],
+                        env=env, cwd=root, text=True, capture_output=True, timeout=20)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat')), before)
+                    print('Native depot proposal limit:', name, 'core refuses before creating an ask; API quoting covered synthetically')
+            pack = original_pack
+            # A cutover advances only from real native history, never invented refusal rows.
+            ask = propose()
+            receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='depot-pre-cutover'))
+            self.assertTrue(receipt['delivered'], receipt)
+            row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+            head = client.call('Head', [])
+            self.assertEqual(self.bridge.run_asks.record_depot_cutover(), head)
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+            self.bridge.run_asks.refresh()
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['display']['keyboard'], [])
+            sends = len(self.calls), len(self.documents)
+            for key in ('depot-pre-cutover', 'depot-pre-cutover-new-key'):
+                receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key=key))
+                self.assertFalse(receipt['delivered'], receipt)
+                self.assertIn('before_activation', receipt['reason'])
+            with self.assertRaisesRegex(n.NativeError, 'before_activation'):
+                self.bridge.run_asks.decide_open('sample-1', ask['ask'], '123')
+            self.assertEqual((len(self.calls), len(self.documents)), sends)
+            self.assertEqual(current(ask['ask']), ask)
+            press(row)
+            self.assertEqual(current(ask['ask']), ask)
+            self.assertEqual((home / 'packs/harmless/roles/sample.md').read_bytes(), content.encode())
+            client.call('TakeBackAsk', ['sample-1', ask['ask'], 'Synthetic withdrawal', 'pat'])
+            receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='withdrawn-depot'))
+            self.assertFalse(receipt['delivered'], receipt)
+            self.assertIn('not_open', receipt['reason'])
+            self.assertEqual(current(ask['ask'])['state'], 'taken back')
+            cli('bead', 'create', 'Synthetic fresh cross-bead depot ask', '--id', 'fresh-1')
+            check = cli('pack', 'check', str(pack), '--depot', 'synthetic', '--crew', 'reviewer=reviewer')
+            pin = re.search(r'sha256:([0-9a-f]{64})', check)[1]
+            cli('--actor', 'proposer', 'bead', 'ask', 'fresh-1', 'Review a fresh post-activation pack?',
+                '--to', 'pat', '--context', 'Synthetic cross-bead native creation event',
+                '--run', f'pack apply {pack} --sha256 {pin} --depot synthetic --crew reviewer=reviewer')
+            fresh = client.call('Bead', dict(bead='fresh-1', viewer='pat'))['asks'][0]
+            # Both selected cores use one global note counter, even on a new bead.
+            self.assertGreater(fresh['ask'], ask['ask'])
+            created = next(e for e in client.call('Events', ['fresh-1', 64])
+                           if e['kind'] == 'noted' and e.get('data', {}).get('note') == fresh['ask'])
+            self.assertGreater(created['seq'], head)
+            result = self.bridge.api_run_ask(dict(bead='fresh-1', ask=fresh['ask'], key='fresh-other-bead'))
+            self.assertTrue(result['delivered'], result)
+            self.assertEqual(client.call('Bead', dict(bead='fresh-1', viewer='pat'))['asks'], [fresh])
+            self.assertEqual((home / 'packs/harmless/roles/sample.md').read_bytes(), content.encode())
+            client.call('TakeBackAsk', ['fresh-1', fresh['ask'], 'Synthetic review complete', 'pat'])
+            self.bridge.run_asks.refresh()
+            print('Native depot cutover: global event Head; old/new keys and /decide refuse earlier asks; '
+                  'fresh other-bead creation event delivers; missing event refuses without sends/writes; no execution')
+            self.exercise_depot_boundaries(home, client, cli, pack, propose, poll, event, current, env)
+            self.exercise_depot_objects(home, client, cli, pack.parent, poll, event)
+        finally:
+            testyardr.stop(server)
+
+    def exercise_depot_boundaries(self, home, client, cli, pack, propose, poll, event, current, env):
+        clock = [time.time()]
+        role = home / 'packs/harmless/roles/sample.md'
+        original_role = role.read_bytes()
+
+        def restart():
+            self.bridge.run_asks = n.RunAsks(self.bridge, now=lambda: clock[0])
+
+        def saved(row):
+            return self.bridge.run_asks.get(row['id'])
+
+        def events(ask):
+            return [e for e in client.call('EventsOfKind', ['pack_applied', 1000])
+                    if e['data'].get('approved', {}).get('ask') == ask['ask']
+                    and e['data'].get('approved', {}).get('bead') == 'sample-1']
+
+        def publish(ask, key=None):
+            key = key or 'boundary-' + str(ask['ask'])
+            result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key=key))
+            self.assertTrue(result['delivered'], result)
+            return next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+
+        def make(weighted=True):
+            ask = propose(' --bind crew:reviewer=codex' if weighted else '')
+            self.assertEqual(bool(ask.get('weight')), weighted)
+            return publish(ask), ask
+
+        def untouched(ask):
+            self.assertEqual(current(ask['ask']), ask)
+            self.assertEqual(events(ask), [])
+            self.assertEqual(role.read_bytes(), original_role)
+
+        def settled_once(row, ask, failed=False):
+            deadline = time.monotonic() + 10
+            while current(ask['ask']).get('ran', {}).get('result') == n.PENDING:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.02)
+            value = current(ask['ask'])
+            self.assertEqual(value['state'], 'answered')
+            self.assertEqual(bool(value['ran'].get('failed')), failed, value)
+            poll([])
+            self.assertEqual(saved(row)['state'], 'failed' if failed else 'approved')
+            before = copy.deepcopy(value)
+            restart()
+            poll([event(row)])
+            self.assertEqual(current(ask['ask']), before)
+            self.assertEqual(len(events(ask)), 0 if failed else 1)
+
+        restart()
+        ask = propose()
+        rpc = self.bridge.run_asks.client.call
+        for label in ('missing plan', 'unknown object', 'mismatched mapping', 'wrong recipient'):
+            with self.subTest(depot_native_response=label):
+                def changed_response(method, args):
+                    value = rpc(method, args)
+                    if method == 'Bead':
+                        value = copy.deepcopy(value)
+                        target = next(a for a in value['asks'] if a['ask'] == ask['ask'])
+                        if label == 'missing plan':
+                            target['run']['pack'].pop('plan')
+                        elif label == 'unknown object':
+                            target['run']['pack']['plan']['objects'][0]['unknown'] = True
+                        elif label == 'mismatched mapping':
+                            target['run']['pack']['mappings']['crew']['reviewer'] = 'other'
+                        else:
+                            target['to'] = 'proposer'
+                    return value
+                before = len(self.calls), len(self.documents)
+                with patch.object(self.bridge.run_asks.client, 'call', side_effect=changed_response):
+                    result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='wire-' + label.replace(' ', '-')))
+                self.assertFalse(result['delivered'], result)
+                self.assertEqual((len(self.calls), len(self.documents)), before)
+                self.assertIsNone(self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', ask['ask'])))
+                untouched(ask)
+        try:
+            role.write_text('Synthetic hand edit, not approved.\n')
+            ask = propose(' --yes')
+            self.assertTrue(ask['run']['pack'].get('yes'))
+            before = len(self.calls), len(self.documents)
+            result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='native-edited-overwrite'))
+            self.assertFalse(result['delivered'], result)
+            self.assertEqual((len(self.calls), len(self.documents)), before)
+            self.assertEqual(role.read_text(), 'Synthetic hand edit, not approved.\n')
+            self.assertEqual(events(ask), [])
+            self.assertEqual(current(ask['ask']), ask)
+        finally:
+            role.write_bytes(original_role)
+        ask = propose()
+        ident = self.bridge.run_asks.ident('sample-1', ask['ask'])
+        key = 'interrupted-depot-reservation'
+        with self.store.connect() as db:
+            db.execute("CREATE TRIGGER interrupt_depot_snapshot BEFORE INSERT ON run_asks "
+                       f"WHEN NEW.id='{ident}' BEGIN SELECT RAISE(ABORT, 'synthetic snapshot interruption'); END")
+        try:
+            with self.assertRaises(b.sqlite3.IntegrityError):
+                self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key=key))
+        finally:
+            with self.store.connect() as db:
+                db.execute('DROP TRIGGER interrupt_depot_snapshot')
+        with self.subTest(depot_reservation='atomic snapshot and key'):
+            with self.store.connect() as db:
+                self.assertIsNone(db.execute('SELECT id FROM run_ask_keys WHERE key=?', (key,)).fetchone())
+                self.assertIsNone(db.execute('SELECT id FROM run_asks WHERE id=?', (ident,)).fetchone())
+        untouched(ask)
+        restart()
+        row = publish(ask, key)
+        poll([event(row)])
+        settled_once(row, ask)
+
+        for crash_point in ('document', 'card'):
+            with self.subTest(depot_save_crash=crash_point):
+                ask = propose()
+                documents, sends = len(self.documents), len([u for u, _ in self.calls if u.endswith('/sendMessage')])
+                save = self.bridge.run_asks.save
+                def crash(value):
+                    if value['ask'] == ask['ask'] and ((crash_point == 'document' and value.get('bundle', {}).get('document', {}).get('message_id'))
+                                                     or (crash_point == 'card' and value.get('message_id'))):
+                        raise RuntimeError('synthetic crash after confirmed delivery')
+                    save(value)
+                with patch.object(self.bridge.run_asks, 'save', side_effect=crash):
+                    with self.assertRaisesRegex(RuntimeError, 'confirmed delivery'):
+                        publish(ask)
+                row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+                snapshot = copy.deepcopy(row['bundle']['document'])
+                restart()
+                row = publish(ask)
+                self.assertEqual(len(self.documents), documents + 1)
+                self.assertEqual(len([u for u, _ in self.calls if u.endswith('/sendMessage')]), sends + 1)
+                for field in ('key', 'text', 'sha256', 'size', 'name'):
+                    self.assertEqual(row['bundle']['document'][field], snapshot[field])
+                untouched(ask)
+
+        for failure in ('ambiguous', 'missing-size'):
+            with self.subTest(depot_document=failure):
+                ask = propose()
+                original = self.bridge.request_multipart
+                before = len(self.documents)
+                def interrupted(*args, **kwargs):
+                    status, response = original(*args, **kwargs)
+                    if failure == 'ambiguous':
+                        raise b.RequestUnconfirmed('synthetic lost document response')
+                    response['result'].pop('document')
+                    return status, response
+                with patch.object(self.bridge, 'request_multipart', side_effect=interrupted):
+                    result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='interrupted-' + str(ask['ask'])))
+                self.assertFalse(result['delivered'], result)
+                row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+                self.assertIsNone(row['message_id'])
+                snapshot = copy.deepcopy(row['bundle']['document'])
+                restart()
+                for key in ('interrupted-' + str(ask['ask']), 'new-interrupted-' + str(ask['ask'])):
+                    result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key=key))
+                    self.assertFalse(result['delivered'], result)
+                self.assertEqual(len(self.documents), before + 1)
+                self.assertEqual(saved(row)['bundle']['document'], snapshot)
+                untouched(ask)
+
+        row, ask = make()
+        for origin in ('user', 'bot', 'chat', 'topic', 'message', 'forward', 'nonce'):
+            with self.subTest(depot_origin=origin):
+                update = event(row)
+                query = update['callback_query']
+                if origin == 'user':
+                    query['from']['id'] = 124
+                elif origin == 'bot':
+                    query['message']['from']['id'] = 998
+                elif origin == 'chat':
+                    query['message']['chat']['id'] = 124
+                elif origin == 'topic':
+                    query['message']['message_thread_id'] = 12
+                    query['message']['is_topic_message'] = True
+                elif origin == 'message':
+                    query['message']['message_id'] += 1
+                elif origin == 'forward':
+                    query['message']['forward_origin'] = dict(type='hidden_user', sender_user_name='Synthetic')
+                else:
+                    query['data'] = f"runask:{row['id']}:confirm:" + '0' * 16
+                poll([update])
+                self.assertIsNone(saved(row)['pending'])
+                untouched(ask)
+        poll([event(row)])
+        nonce = saved(row)['pending']['nonce']
+        clock[0] += 61
+        poll([event(row, 'confirm:' + nonce)])
+        self.assertIsNone(saved(row)['pending'])
+        untouched(ask)
+
+        for point in ('arm-before-save', 'arm-after-save', 'consumed', 'native-committed', 'lost-native-reply'):
+            with self.subTest(depot_arm_crash=point):
+                row, ask = make()
+                if point == 'arm-before-save':
+                    save = self.bridge.run_asks.save
+                    def crash(value):
+                        if value['id'] == row['id'] and value.get('pending'):
+                            raise RuntimeError('synthetic arm save interruption')
+                        save(value)
+                    with patch.object(self.bridge.run_asks, 'save', side_effect=crash):
+                        with self.assertRaises(RuntimeError):
+                            poll([event(row)])
+                    restart()
+                    self.assertIsNone(saved(row)['pending'])
+                    untouched(ask)
+                elif point == 'arm-after-save':
+                    display = self.bridge.run_asks.display
+                    def interrupted(value, *args, **kwargs):
+                        if value['id'] == row['id'] and value.get('pending'):
+                            raise RuntimeError('synthetic arm edit interruption')
+                        return display(value, *args, **kwargs)
+                    with patch.object(self.bridge.run_asks, 'display', side_effect=interrupted):
+                        with self.assertRaises(RuntimeError):
+                            poll([event(row)])
+                    arm = copy.deepcopy(saved(row)['pending'])
+                    restart()
+                    poll([event(row)])
+                    self.assertEqual(saved(row)['pending'], arm)
+                    untouched(ask)
+                poll([event(row)])
+                confirm = event(row, 'confirm')
+                if point == 'consumed':
+                    with patch.object(self.bridge.run_asks, 'decide', side_effect=RuntimeError('synthetic pre-native interruption')):
+                        with self.assertRaises(RuntimeError):
+                            poll([confirm])
+                    restart()
+                    poll([confirm])
+                    self.assertIsNone(saved(row)['pending'])
+                    untouched(ask)
+                    poll([event(row)])
+                    confirm = event(row, 'confirm')
+                if point == 'native-committed':
+                    settle = self.bridge.run_asks.settle
+                    def interrupted(value, canonical):
+                        if value['id'] == row['id'] and canonical['state'] != 'open':
+                            raise RuntimeError('synthetic post-native interruption')
+                        return settle(value, canonical)
+                    with patch.object(self.bridge.run_asks, 'settle', side_effect=interrupted):
+                        with self.assertRaises(RuntimeError):
+                            poll([confirm])
+                    restart()
+                elif point == 'lost-native-reply':
+                    native = self.bridge.run_asks.client.call
+                    def lost(method, args):
+                        result = native(method, args)
+                        if method == 'ApproveAsk':
+                            raise n.RPCAmbiguous('synthetic lost native reply')
+                        return result
+                    with patch.object(self.bridge.run_asks.client, 'call', side_effect=lost):
+                        poll([confirm])
+                else:
+                    poll([confirm])
+                settled_once(row, ask)
+
+        for state in ('pack-digest', 'standing-file', 'mapped-crew'):
+            with self.subTest(depot_stale=state):
+                row, ask = make()
+                poll([event(row)])
+                if state == 'pack-digest':
+                    path = pack / 'roles/sample.md'
+                    before = path.read_bytes()
+                    path.write_bytes(before + b'Synthetic changed pack.\n')
+                elif state == 'standing-file':
+                    path, before = role, original_role
+                    role.write_bytes(original_role + b'Synthetic standing edit.\n')
+                else:
+                    path, before = None, None
+                    cli('crew', 'set', 'reviewer', 'model=synthetic-boundary')
+                try:
+                    poll([event(row, 'confirm')])
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    self.assertNotIn('ran', current(ask['ask']))
+                    self.assertEqual(events(ask), [])
+                    self.assertEqual(saved(row)['state'], 'stale')
+                    self.assertEqual(saved(row)['display']['keyboard'], [])
+                finally:
+                    if path is not None:
+                        path.write_bytes(before)
+        for damage in ('file', 'captured-text', 'document-name'):
+            with self.subTest(depot_snapshot_damage=damage):
+                row, ask = make()
+                document = row['bundle']['document']
+                path = Path(self.bridge.run_asks.document_file(document))
+                before = path.read_bytes()
+                if damage == 'file':
+                    path.write_bytes(b'Synthetic edited review document')
+                elif damage == 'captured-text':
+                    document['text'] = document['text'].replace('Canonical review', 'Synthetic review', 1)
+                    self.bridge.run_asks.save(row)
+                else:
+                    document['name'] = 'review-' + '0' * 64 + '.md'
+                    self.bridge.run_asks.save(row)
+                try:
+                    poll([event(row)])
+                    if saved(row)['pending']:
+                        poll([event(row, 'confirm')])
+                    untouched(ask)
+                    self.assertEqual(saved(row)['state'], 'stale')
+                    self.assertEqual(saved(row)['display']['keyboard'], [])
+                finally:
+                    path.write_bytes(before)
+        for binding in ('yardr_source', 'yardr_home', 'identity'):
+            with self.subTest(depot_binding=binding):
+                row, ask = make()
+                poll([event(row)])
+                original = self.config.get(binding)
+                if binding == 'identity':
+                    cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '124')
+                elif binding == 'yardr_home':
+                    other = home.parent / 'other-native-home'
+                    other.mkdir(mode=0o700, exist_ok=True)
+                    self.config[binding] = str(other)
+                else:
+                    self.config[binding] = 'other-source'
+                try:
+                    poll([event(row, 'confirm')])
+                    untouched(ask)
+                finally:
+                    if binding == 'identity':
+                        cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+                    else:
+                        self.config[binding] = original
+                restart()
+                poll([event(row, 'cancel')])
+
+        proposed_role = pack / 'roles/sample.md'
+        proposed_role.write_bytes(original_role + b'Synthetic failed carry.\n')
+        row, ask = make()
+        poll([event(row)])
+        native = self.bridge.run_asks.client.call
+        approved = []
+        def capture_pending(method, args):
+            result = native(method, args)
+            if method == 'ApproveAsk':
+                approved.append(result)
+            return result
+        mode = role.parent.stat().st_mode & 0o777
+        role.parent.chmod(0o555)
+        try:
+            with patch.object(self.bridge.run_asks.client, 'call', side_effect=capture_pending):
+                poll([event(row, 'confirm')])
+            settled_once(row, ask, failed=True)
+            self.assertEqual([a['result'] for a in approved], [n.PENDING])
+            self.assertEqual(role.read_bytes(), original_role)
+            self.assertIn('approved, failed', saved(row)['display']['footer'])
+        finally:
+            role.parent.chmod(mode)
+            proposed_role.write_bytes(original_role)
+        with patch.dict(os.environ, env, clear=True):
+            try:
+                port = self.start_callback_server()
+                declaration = home.parent / 'native-bridge.yaml'
+                declaration.write_text('name: tgbridge\nbase: http://127.0.0.1:' + str(port) + '\n'
+                    'credential:\n  env: TGBRIDGE_SECRET\n  header: "Authorization: Bearer {credential}"\n'
+                    'calls:\n  run_ask:\n    kind: update\n    params:\n      bead: {type: string}\n'
+                    '      ask: {type: string}\n      key: {type: string}\n'
+                    '    request:\n      method: POST\n      path: /v1/run-ask\n'
+                    '      body: {bead: "{bead}", ask: "{ask}", key: "{key}"}\n')
+                credential = home.parent / 'native-bridge.env'
+                credential.write_text('TGBRIDGE_SECRET=CAPABILITY\n')
+                credential.chmod(0o600)
+                cli('source', 'add', str(declaration))
+                cli('source', 'set', 'tgbridge', 'env_file=' + str(credential))
+                def source_call(key, number):
+                    return json.loads(cli('call', 'tgbridge', 'run_ask', 'bead=sample-1', 'ask=' + str(number),
+                                          'key=' + key, '--json'))
+                old = propose()
+                head = client.call('Head', [])
+                self.assertEqual(self.bridge.run_asks.record_depot_cutover(), head)
+                before = len(self.documents)
+                for key in ('real-source-refusal', 'real-source-refusal-new-key'):
+                    result = source_call(key, old['ask'])
+                    self.assertFalse(result['delivered'], result)
+                    self.assertEqual(result['failure_kind'], 'permanent')
+                    self.assertIn('before_activation', result['reason'])
+                    with self.store.connect() as db:
+                        self.assertIsNone(db.execute('SELECT id FROM run_ask_keys WHERE key=?', (key,)).fetchone())
+                restart()
+                self.assertFalse(source_call('real-source-refusal', old['ask'])['delivered'])
+                self.assertEqual(len(self.documents), before)
+                untouched(old)
+                fresh = propose()
+                result = source_call('real-source-fresh', fresh['ask'])
+                self.assertTrue(result['delivered'], result)
+                row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == fresh['ask'])
+                self.assertEqual(len(self.documents), before + 1)
+                other = propose()
+                result = source_call('real-source-fresh', other['ask'])
+                self.assertFalse(result['delivered'], result)
+                self.assertEqual(result['reason'], 'idempotency_key_conflict')
+                for key in (row['bundle']['document']['key'], self.bridge.run_asks.send_request(row)[0]):
+                    result = source_call(key, fresh['ask'])
+                    self.assertFalse(result['delivered'], result)
+                    self.assertEqual(result['reason'], 'idempotency_key_conflict')
+                sent = self.bridge.api_send(dict(text='Synthetic ordinary send; no approval controls', key='ordinary-depot-collision'))
+                self.assertTrue(sent['delivered'], sent)
+                result = source_call('ordinary-depot-collision', other['ask'])
+                self.assertFalse(result['delivered'], result)
+                self.assertEqual(result['reason'], 'idempotency_key_conflict')
+                result = self.bridge.api_send(dict(text='Synthetic conflicting ordinary send', key='real-source-fresh'))
+                self.assertFalse(result['delivered'], result)
+                untouched(fresh)
+                untouched(other)
+            finally:
+                self.doCleanups()
+        print('Native depot boundary: actual RPC/store + SQLite + poll refresh; reservation, document/card saves, '
+              'ambiguous/size receipt, origin/expiry, arm/native commit/lost reply, stale digest/file/mapping, '
+              'snapshot edits and binding, real pending then failed carry, source HTTP cutover and caller/document/card/send keys; no duplicate effects')
+
+    def exercise_depot_objects(self, home, client, cli, checkout, poll, event):
+        matrix = checkout / 'matrix'
+        for directory in ('roles', 'scripts', 'flows/default'):
+            (matrix / directory).mkdir(parents=True, exist_ok=True)
+        role = matrix / 'roles/sample.md'
+        role.write_bytes('Review café 🙂.\r\n'.encode())
+        (matrix / 'scripts/archive').write_bytes(b'')
+        (matrix / 'flows/default/new.md').write_text('Start synthetic review.\n')
+        declaration = 'name: matrixsvc\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\n'
+        (matrix / 'service.yaml').write_text(declaration)
+        def manifest(source=True, changed=False):
+            value = ('api: 1\nname: matrix\nflows:\n  default:\n    stages:\n'
+                     '      new: {group: reviewers, file: flows/default/new.md, outcomes: {done: ' + ('review' if changed else 'done') + '}}\n')
+            if changed:
+                value += '      review: {group: reviewers, file: flows/default/review.md, outcomes: {done: done}}\n'
+            value += ('      done: {end: true}\ngroups:\n  reviewers: {people: true' + (', limit: 2' if changed else '') + '}\n'
+                      '  archive: {run: scripts/archive, env: {MODE: synthetic}}\n'
+                      'crew:\n  reviewer:\n    role: roles/sample.md\n    hears:\n      stages: [new]\n')
+            if source:
+                value += '    calls:\n      matrixsvc: [health]\nsources:\n  matrixsvc: {declaration: service.yaml}\n'
+            (matrix / 'pack.yaml').write_text(value)
+
+        def propose(tag, source=True, members=False, extra=''):
+            pin = re.search(r'sha256:([0-9a-f]{64})', cli('pack', 'check', str(matrix), '--depot', 'synthetic',
+                                                      '--crew', 'reviewer=reviewer'))[1]
+            flags = ' --flow default --crew reviewer=reviewer'
+            if members:
+                flags += ' --members reviewers=pat'
+            if source:
+                flags += ' --calls crew:reviewer=matrixsvc:health'
+            cli('--actor', 'proposer', 'bead', 'ask', 'sample-1', 'Review the synthetic depot matrix?', '--to', 'pat',
+                '--context', 'Complete native synthetic plan; no live state',
+                '--run', f'pack apply {matrix} --sha256 {pin} --depot synthetic' + flags + extra)
+            ask = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+            if tag:
+                self.assert_source_pack_fixture(ask, home.parent, 'depot_matrix_' + tag)
+            return ask
+
+        def publish(ask):
+            before = len(self.documents)
+            result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='matrix-' + str(ask['ask'])))
+            if not result['delivered']:
+                self.assertEqual(len(self.documents), before)
+                return result, None
+            row = next(r for r in self.bridge.run_asks.rows() if r['ask'] == ask['ask'])
+            document = row['bundle']['document']['text']
+            for obj in ask['run']['pack']['plan']['objects']:
+                if obj['kind'] == 'file' and obj['action'] in ('create', 'change'):
+                    self.assertIn(n.review_code(obj.get('text', '')), document)
+                    self.assertIn(n.review_code(obj.get('diff', '')), document)
+            return result, row
+
+        def approve(row, ask):
+            poll([event(row)])
+            if ask.get('weight'):
+                pending = next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == ask['ask'])
+                self.assertEqual(pending['state'], 'open')
+                poll([event(row, 'confirm')])
+            deadline = time.monotonic() + 10
+            def current():
+                return next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == ask['ask'])
+            while current().get('ran', {}).get('result') == n.PENDING:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.02)
+            self.assertEqual(current()['state'], 'answered')
+            self.assertFalse(current()['ran'].get('failed'), current())
+            for obj in ask['run']['pack']['plan']['objects']:
+                if obj['kind'] == 'file' and obj['action'] in ('create', 'change'):
+                    target = (home / 'flows/matrix.default' / Path(obj['name']).name if obj['name'].startswith('flows/default/')
+                              else home / 'packs/matrix' / obj['name'])
+                    self.assertEqual(target.read_bytes(), obj.get('text', '').encode())
+            poll([])
+            poll([event(row)])
+            applied = [e for e in client.call('EventsOfKind', ['pack_applied', 1000])
+                       if e['data'].get('approved', {}).get('ask') == ask['ask']]
+            self.assertEqual(len(applied), 1)
+
+        manifest()
+        ask = propose('first', members=True)
+        self.assertNotIn('kind', ask['run']['pack'])
+        result, row = publish(ask)
+        self.assertTrue(result['delivered'], result)
+        approve(row, ask)
+        self.assertEqual((home / 'packs/matrix/roles/sample.md').read_bytes(), role.read_bytes())
+        self.assertEqual((home / 'packs/matrix/scripts/archive').read_bytes(), b'')
+        self.assertEqual((home / 'packs/matrix/scripts/archive').stat().st_mode & 0o777, 0o755)
+        self.assertEqual(client.call('GetGroup', ['reviewers'])['members'], ['pat'])
+        self.assertEqual(client.call('GetGroup', ['synthetic-archive'])['runner'], 'exec')
+        self.assertEqual(client.call('GetGroup', ['synthetic-archive'])['config']['cmd'],
+                         'MODE=synthetic ' + str(home / 'packs/matrix/scripts/archive'))
+        self.assertEqual(client.call('GetFlow', ['matrix.default'])['stages'], ['new', 'done'])
+        self.assertIn(dict(depot='synthetic', flow='matrix.default'), client.call('FlowPointers', []))
+        crew = client.call('GetCrew', ['reviewer'])
+        self.assertEqual(crew['config']['prompt'], str(home / 'packs/matrix/roles/sample.md'))
+        self.assertIn(dict(source='yardr', scope='all', where=dict(depot='synthetic', stage='new')), crew['subscriptions'])
+        routes = [r for r in client.call('Routes', []) if r.get('depot') == 'synthetic']
+        self.assertEqual([(r['stage'], r['group']) for r in routes], [('new', 'reviewers')])
+        self.assertEqual(client.call('GetSource', ['matrixsvc'])['declaration'], declaration)
+        self.assertEqual(len(client.call('SourceGrants', ['matrixsvc'])), 1)
+
+        manifest(source=False, changed=True)
+        large = ''.join(f'Line {index:04d} café.\n' for index in range(1000)).encode()
+        role.write_bytes(large)
+        (matrix / 'flows/default/new.md').write_text('The formerly empty stage now has text.\n')
+        (matrix / 'flows/default/review.md').write_text('Review synthetic examples.\n')
+        ask = propose('change', source=False)
+        result, row = publish(ask)
+        self.assertTrue(result['delivered'], result)
+        approve(row, ask)
+        self.assertEqual((home / 'packs/matrix/roles/sample.md').read_bytes(), large)
+        self.assertEqual(client.call('GetFlow', ['matrix.default'])['stages'], ['new', 'review', 'done'])
+        routes = [r for r in client.call('Routes', []) if r.get('depot') == 'synthetic']
+        self.assertEqual(sorted((r['stage'], r['group']) for r in routes), [('new', 'reviewers'), ('review', 'reviewers')])
+        self.assertEqual(client.call('GetGroup', ['reviewers'])['limit'], 2)
+        self.assertEqual(client.call('GetSource', ['matrixsvc'])['declaration'], declaration)
+        for mutation in ('depot', 'mapped-group'):
+            ask = propose(None, source=False, extra=' --group reviewers=reviewers')
+            result, row = publish(ask)
+            self.assertTrue(result['delivered'], result)
+            if mutation == 'depot':
+                value = client.call('GetDepot', ['synthetic'])
+                value['test'] = 'true'
+                client.call('PutDepot', [value, 'pat'])
+            else:
+                value = client.call('GetGroup', ['reviewers'])
+                value['members'] = ['pat', 'proposer']
+                client.call('PutGroup', [value, 'pat'])
+            poll([event(row)])
+            if self.bridge.run_asks.get(row['id']).get('pending'):
+                poll([event(row, 'confirm')])
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
+            native = next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == ask['ask'])
+            self.assertEqual(native['state'], 'open')
+            self.assertNotIn('ran', native)
+            self.assertEqual((home / 'packs/matrix/roles/sample.md').read_bytes(), large)
+
+        manifest(source=True, changed=True)
+        replacement = declaration.replace('https://example.invalid', 'https://api.example.invalid')
+        (matrix / 'service.yaml').write_text(replacement)
+        ask = propose('replace')
+        result, row = publish(ask)
+        complete = any('grants kept for source matrixsvc:' in line for line in ask['run']['does'])
+        self.assertEqual(result['delivered'], complete, result)
+        if complete:
+            approve(row, ask)
+            self.assertEqual(client.call('GetSource', ['matrixsvc'])['declaration'], replacement)
+            ask = propose(None)
+            result, row = publish(ask)
+            self.assertTrue(result['delivered'], result)
+            cli('source', 'grant', 'matrixsvc', 'read', '--group', 'reviewers')
+            poll([event(row)])
+            if self.bridge.run_asks.get(row['id']).get('pending'):
+                poll([event(row, 'confirm')])
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
+        else:
+            self.assertEqual(client.call('GetSource', ['matrixsvc'])['declaration'], declaration)
+        print('Native depot objects: no-kind, role/script/stage CRLF/Unicode/empty files, flow/pointer/routes, '
+              'manual/exec groups, env, subscription, read mapping, large complete diff, dropped source, '
+              'depot/group/grants stale; replacement ' + ('supported' if complete else 'explicit missing-grants refusal'))
+
     def test_real_native_source_contract_and_authority(self):
         binary = testyardr.binary()
         if binary is None:

@@ -1,0 +1,85 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Import the harmless synthetic depot pack?",
+  "context": [
+    "Synthetic native depot refusal; no live state"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "pack",
+      "apply",
+      "/synthetic/checkout/pack",
+      "--sha256",
+      "26c7aab763917b2e862793f4208cd423b6530fe6895ea3ab075a70bc492231b2",
+      "--depot",
+      "synthetic",
+      "--crew",
+      "reviewer=reviewer"
+    ],
+    "command": "yardr pack apply /synthetic/checkout/pack --sha256 26c7aab763917b2e862793f4208cd423b6530fe6895ea3ab075a70bc492231b2 --depot synthetic --crew reviewer=reviewer",
+    "description": "Import a pack into depot synthetic: set the yard to what the pack says",
+    "does": [
+      "pack harmless (directory /synthetic/checkout/pack in yardr unknown), of kind git, into depot synthetic: 1 to create, 1 to change, 0 unchanged, and 0 dropped and left where they stand, digest sha256:26c7aab763917b2e862793f4208cd423b6530fe6895ea3ab075a70bc492231b2. It asks nothing.",
+      "this is a first install: depot synthetic holds no import of pack harmless.",
+      "the plan uses mapping --crew reviewer=reviewer.",
+      "file roles/sample.md: create, sha256 (none) -> sha256 0c0400d23e7cf8626a3b54a8f275d0e7d3eb8b453bf938436fcaec2dbb9fa11f (1 insertions, 0 deletions).",
+      "crew reviewer: change (prompt: none -> /synthetic/yard/packs/harmless/roles/sample.md; on: [attention] -> [])."
+    ],
+    "back": "no one command takes it back: read the standing state with yardr pack check /synthetic/checkout/pack --depot synthetic in a terminal",
+    "back_by": "the operator",
+    "pack": {
+      "name": "harmless",
+      "kind": "git",
+      "depot": "synthetic",
+      "mappings": {
+        "crew": {
+          "reviewer": "reviewer"
+        }
+      },
+      "label": "directory /synthetic/checkout/pack in yardr unknown",
+      "plan": {
+        "objects": [
+          {
+            "kind": "file",
+            "name": "roles/sample.md",
+            "action": "create",
+            "runs": true,
+            "file_new_sha256": "0c0400d23e7cf8626a3b54a8f275d0e7d3eb8b453bf938436fcaec2dbb9fa11f",
+            "text": "Review synthetic examples only.\n",
+            "diff": "--- was\n+++ is\n@@ -0,0 +1,1 @@\n+Review synthetic examples only.\n"
+          },
+          {
+            "kind": "crew",
+            "name": "reviewer",
+            "action": "change",
+            "changes": [
+              {
+                "field": "prompt",
+                "old": "",
+                "new": "/synthetic/yard/packs/harmless/roles/sample.md"
+              },
+              {
+                "field": "on",
+                "old": "[attention]",
+                "new": "[]"
+              }
+            ]
+          }
+        ]
+      },
+      "digest": "26c7aab763917b2e862793f4208cd423b6530fe6895ea3ab075a70bc492231b2"
+    }
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the first install of pack harmless into depot synthetic makes file roles/sample.md and crew reviewer"
+    }
+  ]
+}

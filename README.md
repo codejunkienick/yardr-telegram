@@ -146,14 +146,26 @@ for the outstanding contracts and required passing check.
   Public `52e22d57` supports the tested group fields (not group-set `model=`),
   new source-add and fresh embedded/directory source-pack cards. Source/pack
   replacements without explicit kept-grants disclosure refuse before send.
-  Full directory setup/manifest snapshots remain fork-specific. Weighty cards
+  Review documents contain native carried files and full diffs; no
+  manifest/setup snapshot is invented. Weighty cards
   require Approve then Confirm on the same card within 60 seconds; typed
   numbers never approve. See [source pack review](bridge/OPERATIONS.md#source-pack-bundles).
+- Native depot-directory packs require an explicit depot, matching SHA-256
+  pin, complete input-free plan and recorded native global event watermark.
+  Their document includes every object/change, mapping, file and full diff.
+  Pre-activation, closed and missing-creation-event asks refuse; create a fresh
+  ask after activation.
+  Embedded/bare/URL depot forms, summary and overwrite cards remain unsupported.
+  Limits are 40 Does lines, 256 KiB declarations, 64 KiB aggregate carried/
+  depot file text and diffs/removals, and a 50 MiB framed document; existing
+  source per-file bounds remain. No review is truncated.
+  See [depot bundles](bridge/OPERATIONS.md#depot-pack-bundles) and
+  [activation](yardr/SETUP.md#depot-pack-imports-and-activation).
 - For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).
 
-Native run cards exclude depot-kind/summary pack plans, `crew add`,
+Native run cards exclude unsupported depot forms and summary plans, `crew add`,
 `depot push`, `skill add`, secret/setup/identity operations and
 parameter input; use the full native client for those.
 

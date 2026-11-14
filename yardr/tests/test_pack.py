@@ -208,6 +208,9 @@ class RenderedPackTests(unittest.TestCase):
     def setUpClass(cls):
         cls.b = runpy.run_path(str(BRIDGE))
 
+    def test_setup_fits_core_limit(self):
+        self.assertLessEqual(len((PACK / 'SETUP.md').read_bytes()), 65536)
+
     def test_two_instances_differ_from_the_release_only_in_the_base_line(self):
         release = self.b['pack_tree'](PACK)
         declaration = release['tgbridge.yaml'][0]

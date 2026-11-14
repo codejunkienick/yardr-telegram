@@ -6,12 +6,36 @@ replays. The public socket contract below is the Calls section of
 `docs/api.md` at `11f81f38`. The installed build at the time of this record
 was `10533b9e`, before that alignment.
 
+## Public re-proof (2026-11-14)
+
+The original alignment hashes below are historical local capability baselines. The
+bridge proof landed at `4c2b886`, including selector repair `7b526ef` and
+source/pack boundary repair `757c340`. It exercises public core
+[`52e22d570cfff58bae725e6df53c047bd63ff4a6`](https://github.com/yardr-dev/yardr/commit/52e22d570cfff58bae725e6df53c047bd63ff4a6)
+and [v0.17.0](https://github.com/yardr-dev/yardr/releases/tag/v0.17.0)
+(`b8595f6f5c873513e67cb15cc734984b075712d8`). Basic rendered-pack,
+hook/store/reply/Markdown/full-history adoption passes on that main revision;
+v0.17.0 refuses the full declaration on `thread.formats`. Standalone native
+`/quota`, `/mayor_model` and siding pass on both; this does not prove release
+pack adoption. The frozen public-main suite has one fork-only skill-add
+failure, so it is not all-green and proves no public mayor/skills installation.
+See [the per-capability results and test names](../public-readiness.md#capabilities-and-grants).
+Newer upstream main observations are not this tested runtime.
+
+`757c340` presents canonical native Does prose whole rather than rebuilding
+its semantics from a prose whitelist. Structural validation, inventory/command
+constraints, current actor/identity/proposal binding and explicit replacement
+grants framing remain. Public new/fresh/orphan source and source-pack cases
+pass; replacements lacking grants disclosure refuse before send/write.
+Unsupported or oversized advanced cards refuse whole. A native directory
+apply does not imply the fork's complete setup/manifest snapshot contract.
+
 ## Calls made by the bridge
 
 The bridge uses object arguments for the public contract. Yardr's own calls
-use arrays; their shapes can change with a build, so the native integration
-tests pin these calls against both `11f81f38` and plain upstream
-`09fa95be`.
+use arrays; their shapes can change with a build. The original native
+integration record pinned these calls against `11f81f38` and plain upstream
+`09fa95be`; the later re-proof above uses the selected public core.
 
 | Call | Classification | Use |
 |---|---|---|
@@ -37,7 +61,7 @@ tests pin these calls against both `11f81f38` and plain upstream
 | `FoldBeads` | Yardr array call | Fold the exact eligible members shown on a card |
 
 The array calls are yardr's own interface, not the stable public contract.
-The native tests build isolated yardr copies at both revisions and exercise
+The native tests start isolated yardr stores with the selected build and exercise
 the card paths against their real RPC and store implementations. A build that
 does not answer with the expected whole shape is refused before the bridge
 sends an actionable card.
@@ -51,8 +75,10 @@ its fallback instead of presenting a card it cannot apply.
 Replacing-source cards also depend on the grants text that says whether grants
 will remain or none will remain. The aligned build provides that text. Plain
 upstream omits it, so the bridge refuses the replacement card with its
-fallback before sending it. These are the two local-only differences; the
-remaining supported cards use upstream's shapes on both builds.
+fallback before sending it. These are historical differences, not an
+exhaustive compatibility list: skill installation/assignment and complete
+directory setup/manifest snapshots also remain fork-only. Other capabilities
+retain the revision-specific limits in the public re-proof above.
 
 ## Siding cards on plain calls
 
@@ -117,13 +143,16 @@ the bead in the siding is not the chosen action.
 
 ## Skills decision S1
 
-The skill-install card and crew self-service adds were removed. The operator
-continues to use `skill add`, `skill rm`, `skill list`, `skill show` and
-`skills=` from the terminal. Skill assignment remains an operator action.
+The skill-install card and crew self-service adds were removed. On the
+aligned fork, the operator continues to use `skill add`, `skill rm`,
+`skill list`, `skill show` and `skills=` from the terminal. Skill assignment
+remains an operator action. Public core in both proved builds lacks
+`skill add` and `skills=`; skip installation, assignment and related skill
+upgrade/rollback steps there.
 
 ## Install, activation and rollback
 
-The recorded rollout order is:
+The historical aligned-fork rollout order is:
 
 1. Upgrade yardr to the aligned build.
 2. Install the bridge release with `install.sh --settings <file>` for each
@@ -138,6 +167,11 @@ Rollback uses `install.sh --settings <file> --rollback`, then reapplies the
 pack with `yardr pack apply <root>/pack` and restarts the service. The
 preceding bridge release was verified to keep polling when it reads the new
 siding-ledger rows.
+
+The public basic slice is SETUP steps 1–11, omitting native home/operator
+and native-card grants and skipping fork-only skills. This source-only
+record does not authorize installation: a compatible public release plus
+its exact-candidate check must precede installable presentation.
 
 The operator owns installation and activation; source landing alone does
 neither. The operator authorizes the pack apply, skill refresh and restart.

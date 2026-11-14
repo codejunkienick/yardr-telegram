@@ -1,19 +1,29 @@
 # yardr-telegram
 
-**Public source, not an installable release (2026-11-10).** This source
-is published alongside the thread-formats change proposed for
-[yardr-dev/yardr](https://github.com/yardr-dev/yardr). It requires a core
-with `thread.formats` declaration support. Released cores today refuse
-this pack at `yardr pack check yardr/` with
-`thread.formats: unknown key`. An installable release must wait for
-the change to merge, a compatible public core release and the
-[compatibility re-check](docs/public-readiness.md#public-core-release-gate).
+**Public source, not an installable release (2026-11-14).** Basic pack
+adoption is proved offline on public core
+[`52e22d57`](https://github.com/yardr-dev/yardr/commit/52e22d570cfff58bae725e6df53c047bd63ff4a6).
+Thread formats ([#20](https://github.com/yardr-dev/yardr/pull/20)) and guarded
+answers ([#17](https://github.com/yardr-dev/yardr/pull/17)) have merged upstream.
+The latest release checked, [v0.17.0](https://github.com/yardr-dev/yardr/releases/tag/v0.17.0),
+refuses this pack with `thread.formats: unknown key`, even without native
+keys. Installable presentation waits for a compatible public core release
+and the [exact-candidate re-check](docs/public-readiness.md#public-core-release-gate).
+The tested main revision is source evidence, not a released install target.
 
 A private Telegram bridge for a [yardr](https://github.com/yardr-dev/yardr)
 yard: one paired chat with the yard's crew, its topics, tap-button asks,
 pins, reactions, typing and on-host voice transcription. The bridge runs
 as a service of its own, and the yard reaches it as the
 declared source `tgbridge` (`yardr/`).
+
+yardr's bundled `telegram` pack uses a webhook with a public HTTPS URL and
+needs no separate bridge service. This bridge uses long polling and a verified
+loopback hook, adding its ledger, history, topics, buttons and optional local
+transcription. It costs a Python 3.11+ service per bot, with its own updates,
+secrets, state and rollback. Use one integration per bot: the bundled pack's
+`setWebhook` conflicts with this bridge's `getUpdates` polling. See the
+[proposal and evidence](docs/design/upstream-proposal.md).
 
 (Terms such as the paired chat and the ledger: `bridge/OPERATIONS.md`, "Terms".)
 
@@ -67,8 +77,9 @@ Release history: `CHANGELOG.md`.
 - The operator gets setup checks from `install.sh` and `check-install`
   before the bridge runs, and a service for each yard: a systemd user
   unit on Linux and WSL 2, a launchd agent on macOS.
-- The agent gets ready-made skills for Telegram formatting, attachments
-  and voice transcripts.
+- The repository includes skills for Telegram formatting, attachments
+  and voice transcripts; installing/assigning them with `skill add`/`skills=`
+  is an aligned-fork-only operator workflow, skipped on public core.
 
 | Path | What |
 | --- | --- |
@@ -108,8 +119,9 @@ details; this is not a live Telegram chat.
 ## Prerequisites
 
 This is public source for review. The setup steps below require a
-compatible public core release; released cores currently reject the
-shipped declaration, including for hook/chat-only setup. See the
+compatible public core release; v0.17.0 rejects the shipped declaration,
+including for hook/chat-only setup. Basic adoption on public `52e22d57` is
+proved in isolation. See the
 [public-core gate and capability table](docs/public-readiness.md#public-core-release-gate)
 for the outstanding contracts and required passing check.
 
@@ -124,29 +136,19 @@ for the outstanding contracts and required passing check.
   additional capabilities listed in [the compatibility table](docs/public-readiness.md#capabilities-and-grants).
   Hook-only settings still require a core that accepts the whole pack.
   A version number alone does not establish those capabilities.
-- The [yard-local skill setup](yardr/SETUP.md#the-crews-skills-shell) needs
-  `yardr skill add` and crew/group `skills=` (local core baseline `a66722bb`,
-  not a public install target), under the same public-core release gate.
-  Adding and assigning stay the operator's. The bridge carries no `skill add` card.
-- Optional native group cards (`group add`, `group set`) read upstream
-  yardr's group rows (`model=` on the aligned build alone) and need the
-  same setup ([SETUP.md](yardr/SETUP.md#group-add-and-set)).
-- Optional native source-add review (`source add <file>`) needs the carried
-  source-add contract (local baseline `546e3fdd2127`, not a public install
-  target). No compatible public core is available yet. It uses the same
-  `run_ask` grant and paired operator setup, and reviews the declaration,
-  command files and replacement diffs
-  ([SETUP.md](yardr/SETUP.md#source-declarations-and-command-files)).
-- Optional native source-kind pack review uses the same `run_ask` grant
-  and paired operator setup. Directory
-  `pack apply <absolute-directory> --sha256 <digest>` needs the directory
-  source-pack proposal contract (local baseline `ced24b0e849c`, not a public
-  install target). Complete review parts and a snapshot document precede
-  controls; Approve then requires a direct card reply with the exact ask
-  number. Embedded `pack apply <name>` uses complete carried-source text
-  parts and core weight rules, without a snapshot document. No compatible
-  public core is available yet. See [pack upgrade setup](yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback)
-  and [source pack bundles](bridge/OPERATIONS.md#source-pack-bundles).
+- The [yard-local skill setup](yardr/SETUP.md#the-crews-skills-shell),
+  `yardr skill add` and crew/group `skills=` are fork-only; skip that section
+  and its skill upgrade/rollback steps on public core. The bridge carries no
+  `skill add` card. Basic SETUP steps 1–11 omit native home/operator and
+  native-card grants.
+- Optional native cards require the per-build contracts in the
+  [capability table](docs/public-readiness.md#capabilities-and-grants).
+  Public `52e22d57` supports the tested group fields (not group-set `model=`),
+  new source-add and fresh embedded/directory source-pack cards. Source/pack
+  replacements without explicit kept-grants disclosure refuse before send.
+  Full directory setup/manifest snapshots remain fork-specific. Weighty cards
+  require Approve then Confirm on the same card within 60 seconds; typed
+  numbers never approve. See [source pack review](bridge/OPERATIONS.md#source-pack-bundles).
 - For transcription also git, cmake, make or ninja, a C++ compiler, ffmpeg,
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).
@@ -235,8 +237,10 @@ both directions.
 ## Skills
 
 The skills are the shared base set, written for any yard and any bot,
-naming no yard, person or product. The operator copies them from its
-installed release with `yardr skill add` into that yard's home.
+naming no yard, person or product. On the aligned fork, the operator copies
+them from its installed release with `yardr skill add` into that yard's home.
+Public core lacks `skill add` and `skills=`; skip these steps, including
+skill refresh after upgrades/rollbacks.
 Giving the names to crew or groups stays the operator's. See [the crew's skills](yardr/SETUP.md#the-crews-skills-shell)
 for setup and refresh after an install or rollback. Harness skill folders
 such as `~/.claude/skills` are shared by all yards on the host; keep

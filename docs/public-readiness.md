@@ -1,17 +1,19 @@
 # Public-readiness and local release handoff
 
-This is preparation of a working tree for review. Nothing here authorizes
-publication, a push, history rewriting, changing repository visibility, live
-settings/source/grant writes or service activation. A clean source tree,
-installed code and a live accepted instance are three different states.
+This record separates source landed locally, source published publicly,
+code installed, source applied/granted and a live accepted instance. Source
+publication and an upstream documentation proposal can proceed after review
+and exact-candidate audit; runtime installation, settings/source/grant writes
+and activation remain each instance operator's separate action.
 
-**Public source, not an installable release (2026-11-10).** The source
-is published alongside the thread-formats change proposed for
-[yardr-dev/yardr](https://github.com/yardr-dev/yardr). A core with
-`thread.formats` declaration support is required; released cores today
-refuse this pack at `yardr pack check yardr/` with
-`thread.formats: unknown key`. The installation steps below apply only
-after the [public-core release gate](#public-core-release-gate) closes.
+**Public source, not an installable release (2026-11-14).** Basic adoption
+passes in isolation on public core
+[`52e22d57`](https://github.com/yardr-dev/yardr/commit/52e22d570cfff58bae725e6df53c047bd63ff4a6).
+The latest release checked, [v0.17.0](https://github.com/yardr-dev/yardr/releases/tag/v0.17.0),
+refuses the full pack on `thread.formats`, including hook/chat without native
+keys. The installation instructions apply after the
+[public-core release gate](#public-core-release-gate) closes. A newer upstream
+main is not the tested core. See [the upstream proposal](design/upstream-proposal.md).
 
 ## Portable installation
 
@@ -108,42 +110,67 @@ No persisted or wire identifier is renamed by this preparation.
 
 ## Public-core release gate
 
-Release order, as decided by the owner on 2026-11-10: publish this
-repository as public source alongside the thread-formats change proposed
-for [yardr-dev/yardr](https://github.com/yardr-dev/yardr). Repository
-visibility remains the owner's action. This is not an installable release.
+The owner's 2026-11-10 decision remains: public source may be published;
+installable presentation waits for compatible released core and a final
+exact-candidate re-check. Reviewed source refresh and upstream documentation
+publication may proceed before that release. Keep `thread.formats: [markdown]`;
+there is no formats-less release mode.
 
-An installable pack release must wait for the thread-formats change to
-merge upstream, a public core release carrying it, and the final
-compatibility re-check below. Until then, no tag, release notes or setup
-instructions may present the pack as installable. Released cores today
-refuse `yardr pack check yardr/` with `thread.formats: unknown key`,
-including hook/chat configurations without native keys. Keep
-`thread.formats: [markdown]` in the pack.
+Thread formats [PR #20](https://github.com/yardr-dev/yardr/pull/20) merged as
+`dd8d8b5be4e86b384f5ac774deb334cd9f3f09d6` on November 10. Guarded answers
+[PR #17](https://github.com/yardr-dev/yardr/pull/17) merged as
+`3d7837c4eddf93669afe4ba75be7ea0d87662c47` on November 11. Both postdate
+[v0.17.0](https://github.com/yardr-dev/yardr/releases/tag/v0.17.0)
+(`b8595f6f5c873513e67cb15cc734984b075712d8`). No duplicate prerequisite PR
+is needed; neither merge alone closes the release gate.
 
-Checked on 2026-11-09: public upstream
-[`019090bef09973fb51ca8081b0f764a26a65e60a`](https://github.com/yardr-dev/yardr/commit/019090bef09973fb51ca8081b0f764a26a65e60a)
-was built from source. In an isolated home, `yardr pack check yardr/` on
-the unchanged shipped pack exited 1 with
-`tgbridge.yaml:205: thread.formats: unknown key`. All 61 fetched heads and
-tags across upstream and its public fork lacked `thread.formats` declaration
-support. Keep `thread.formats: [markdown]` in the pack; omitting native
-settings or disabling Markdown use does not make this declaration parse.
+The frozen offline proof landed in bridge `4c2b886`, after `7b526ef`
+(selected-core test repair) and `757c340` (native source/pack rendering
+boundary). It tested public core
+[`52e22d570cfff58bae725e6df53c047bd63ff4a6`](https://github.com/yardr-dev/yardr/commit/52e22d570cfff58bae725e6df53c047bd63ff4a6)
+and the exact v0.17.0 commit above. Public-main `pack check yardr/` exited 0
+and acknowledged `runs 2 programs of the pack as you: tgbridge/normalize, tgbridge/thread`.
+The release check exited 1 with `thread.formats: unknown key`, before apply.
+Omitting native home/operator or avoiding Markdown does not bypass parsing.
 
-The hashes in the table and SETUP are local capability baselines, not public
-release tags or install targets. These baselines were absent from the
-fetched public history. The public fork's guarded-ask preview
-[`10bf0b06e978`](https://github.com/codejunkienick/yardr/commit/10bf0b06e978e2a611dcd3074f878a37da9ae121)
-does expose Answer/Defer/DeclineAskExpected, but still lacks the pack's
-thread-format declaration support. Public previews of individual contracts
-do not establish a compatible core for this pack.
+| Frozen proof target | Ran | Passed | Skipped | Failed/error methods |
+| --- | ---: | ---: | ---: | ---: |
+| Default aligned core | 1097 | 1095 | 2 | 0 |
+| Public `52e22d57` | 1097 | 1094 | 2 | 1 |
+| v0.17.0 `b8595f6f` | 1097 | 1084 | 3 | 10 |
 
-Before an installable bridge release, replace each unavailable public-core
-entry below with a publicly reachable tag or commit containing that contract.
-Build the selected core and record a passing `yardr pack check yardr/` against
-the exact candidate bridge commit, then check the instance's rendered
-`<root>/pack` before applying it. The recorded failure above leaves this release gate open;
-local-core tests cannot supply the required public-core success evidence.
+These totals combine bridge and separately executed pack suites. On public
+builds `scripts/test.sh` stopped after the bridge's nonzero result; pack tests
+were then run separately with the same selected core. They are historical
+proof counts, not the latest documentation candidate's default-suite totals.
+The public-main failure is solely the fork-only `skill add` prerequisite in
+`MayorSliceTests.test_installed_mayor_bot_reaches_its_inbox_and_answers_through_its_own_source`
+([test](../bridge/test_mayor_handover.py)). It fails before mayor configuration
+or adoption: no public mayor installation/skills claim follows. The default
+suite passes this fork workflow. The two common skips are the removed
+pre-alignment skill-card method and the Apple-Silicon-only GPU check on Linux.
+
+The release's ten failed/error methods include formats prerequisites, guarded
+`ask_card`, `/decide`'s `UserAsks` turn shape, group `effort=` setup and skill
+add. They are not formats-only failures. Its extra skip first asserts pack
+refusal and no applied source, then skips the adoption legs. No unclassified
+public-main incompatibility remained in this proof; the known skill failure
+still makes its suite non-green.
+
+Read-only preflight on 2026-11-14 observed newer upstream main
+`32878da29cb401b16b78bf966dd0a699474d5edb`, latest release v0.17.0 and open
+PRs #25/#26, with no duplicate alternative-pack proposal. That newer main was
+not tested here. The bridge public main was
+`ce7ebd5af7d1098346cbc69264e4ac14502186cc`, with no tags/releases; it needs the
+reviewed source refresh before upstream links it. Recompute the publication
+range at audit time rather than reusing an older candidate's counts.
+
+Before installable presentation, select a public release containing formats
+and guarded answers, build that exact core and re-check the exact final bridge
+candidate. Record pack check/apply and the basic hook-to-reply adoption slice,
+classify per-capability limits, and check the instance's rendered `<root>/pack`
+before any operator-owned apply. Local aligned hashes below and in SETUP are
+historical capability baselines, not public release tags or install targets.
 
 ## Capabilities and grants
 
@@ -152,45 +179,76 @@ Only grant calls a crew actually uses. `yardr source grant tgbridge <call>
 the private home/operator, current source identity, bot/user/chat and native
 proposal. A crew grant never authorizes the crew to approve its own card.
 
-Every feature below requires the pack-application row first. Public-core
-status is for use with this shipped pack, as checked on 2026-11-09.
+The matrix is the frozen proof at public `52e22d57` and release v0.17.0,
+not a claim about untested main. PASS names the exercised surface. Standalone
+callbacks or native methods do not establish adoption of this full pack;
+normal use through the declared source requires its application first.
 
-| Feature | Required core capability (local baselines) | Compatible public core | Source update grant |
+| Capability | Public `52e22d57` | v0.17.0 `b8595f6f` | Fork boundary / minimum grant |
 | --- | --- | --- | --- |
-| Apply the pack, required even for hook/chat | Source packs accepting `thread.formats: [markdown]` (`0035b8c13e27`) | None yet | None |
-| Ordinary send/react/pin/unpin/chat ask close | Source packs and matching loopback API | None yet; pack application blocked | Individually `send`, `react`, `pin`, `unpin`, `ask_close` as needed |
-| Routine run ask, weighted Approve then Confirm | Canonical Bead/ApproveAsk and current operator mapping | None yet | `run_ask` |
-| Yard-local skill copies and crew/group assignment | `yardr skill add` and crew/group `skills=` (`a66722bb`) | None yet | None; operator CLI adds; assignments stay operator-only |
-| Skill add review (removed) | n/a: the bridge carries no skill card | None yet | refused before any send; decided in the yard |
-| Herdr group add/set | Complete canonical group/argv/role digest contract (`fc7375cf5ad4`) | None yet | Same `run_ask` |
-| [Source-add declaration and command file review](../bridge/OPERATIONS.md#source-add-declaration-and-command-review) | Carried source-add snapshots, inventory/diffs and canonical carry outcomes (`546e3fdd2127`) | None yet | Same `run_ask` |
-| [Source-kind pack review (directory and embedded)](../bridge/OPERATIONS.md#source-pack-bundles) | Complete carried-source pack bundles; directory snapshot/digest proposal contract (`ced24b0e849c`) for directory applies | None yet | Same `run_ask` |
-| Ordinary option/words/manual-stage decisions and `/decide` | Bead ask turns, UserAsks and guarded Answer/Defer/DeclineAskExpected (`7fa0d4c75ff6`) | None yet; preview alone cannot apply pack | `ask_card` |
-| Siding status and paired fold | Plain GetDepot, Groups, Routes, ListBeads, SidingBeads, NextStages, GetBead and FoldBeads (aligned `11f81f38`, upstream `09fa95be`) | None yet | `siding_card` |
-| Explicit Markdown replies | Core explicit reply format transport (`0035b8c13e27`) plus `thread.formats: [markdown]` in installed source | None yet | No new grant for thread replies; `send`/`pin` for those calls |
+| Rendered pack, hook, identity/subscription, full thread read, ordinary reply | Native adoption PASS: positive seq, dedupe, full text, one send [A] | Full pack REFUSED on formats; no source applied [A] | Basic SETUP 1–11 omits native keys/grants |
+| Send | Native reply via `/v1/send`, posted/ledger recovery PASS [A] | Standalone callback PASS [B]; no release-pack adoption | `send` only when used as a call; no extra grant for thread replies |
+| React, pin/unpin, chat ask_close | Standalone callbacks PASS [B] | Standalone callbacks PASS [B] | Individually `react`, `pin`, `unpin`, `ask_close` as used |
+| Explicit Markdown reply | Native PASS, exact escaped HTML; scratch declaration without formats refuses before callback [A] | Unsupported: full pack refused | No new thread-reply grant |
+| Weighted run_ask, Approve then Confirm | Native PASS [C] | Native case not supported: formats prerequisite refused before body | `run_ask`; identity/proposal/nonce/expiry checks retained |
+| Ordinary ask_card | Native PASS, including decline without held [C] | REFUSED: `ask_card_requires_guarded_core` | `ask_card` |
+| /decide | Selected-core queue/open/answer/outcome PASS [D] | REFUSED: invalid native `UserAsks` response | Native operator mapping; `ask_card` for ordinary cards |
+| Siding fold/release | Native plain FoldBeads and guarded Advance PASS [E] | Standalone native PASS [E]; full-declaration registration separately refused on formats | `siding_card`; existing plain-fold race remains |
+| Group add/set | Native supported fields PASS; group-set `model=` REFUSED [C] | Native setup unsupported: `effort` config key refused | `model=` is fork-only; same `run_ask` |
+| Source add | Native new/free/orphan creation PASS; replacement missing grants disclosure REFUSED before send/write [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; explicit replacement-grants disclosure required |
+| Embedded/directory source-pack run cards | Native fresh/orphan cases PASS; replacements missing grants disclosure REFUSED [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; complete directory setup/manifest snapshot contract remains fork-only |
+| /quota, /mayor_model | Native PASS [F] | Native PASS [F] | Does not prove public pack or mayor/skills installation |
+| skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only operator terminal workflow; no skill card/grant |
 
-These are locally verified capability baselines, not a public minimum version
-promise. Unsupported/missing/unknown methods or payloads refuse; a version
-string alone is insufficient. Existing settings without native home/operator still load
-and retain hook/chat behavior on a compatible core; they cannot bypass the
-pack's thread-format declaration requirement.
+Evidence locations (the named tests use fake Telegram and isolated real native
+RPC/store where stated):
 
-The bridge carries no `skill add` card: such asks refuse before any send
-with a terminal-only `/decide` line. The operator adds and refreshes skills
-with `yardr skill add` in a terminal; assigning them stays the operator's.
+- [A] [bridge/test_adoption.py](../bridge/test_adoption.py),
+  `NativeAdoptionTests.test_rendered_pack_hook_reply_retry_markdown_and_full_thread`;
+  [yardr/tests/test_pack.py](../yardr/tests/test_pack.py),
+  `DeclarationTests.test_yardr_reads_the_pack_and_sends_explicit_attachment_kinds`.
+- [B] [bridge/test_yard_api.py](../bridge/test_yard_api.py), `YardApiTests`:
+  `test_send_answers_delivered_with_the_message_id_and_the_conversation`,
+  `test_react_sets_a_named_or_emoji_reaction_on_a_message`,
+  `test_pin_keeps_a_slot_pinned_and_unpins_it`, `test_ask_close_closes_a_recorded_ask`.
+- [C] [bridge/test_run_asks.py](../bridge/test_run_asks.py), `RealNativeTests`:
+  `test_real_native_source_limit_and_trust_weight_apply_once`,
+  `test_real_native_decision_decline_without_held_works`,
+  `test_real_native_group_add_and_set_apply_once_through_their_gates`,
+  `test_real_native_source_and_pack_apply_once`, `test_real_native_source_contract_and_authority`.
+- [D] [bridge/test_decide.py](../bridge/test_decide.py),
+  `RealDecideTests.test_real_core_lists_opens_answers_and_reports_outcomes`.
+- [E] [bridge/test_siding_cards.py](../bridge/test_siding_cards.py), `SidingTests`:
+  `test_card_folds_exactly_the_shown_beads_and_unfold_returns_them`,
+  `test_release_card_moves_one_bead_on_one_tap`.
+- [F] [bridge/test_yard_commands.py](../bridge/test_yard_commands.py),
+  `RealNativeTests.test_real_native_quota`, `MayorRealNativeTests.test_real_native_mayor_model`.
+- [G] [bridge/test_run_asks.py](../bridge/test_run_asks.py),
+  `test_skill_add_refuses_before_send_and_lists_terminal_only`.
 
-[`source add <file>`](../bridge/OPERATIONS.md#source-add-declaration-and-command-review)
-reviews one declaration and its relative command files, including replacement
-diffs and inventory, in one complete review document before controls appear.
-Source-kind packs with no parameter inputs also support native review.
-Directory `pack apply <absolute-directory> --sha256 <digest>` sends complete
-review and snapshot in one document containing every named file,
-including `pack.yaml` and setup notes, before controls appear. Approve then
-requires Confirm on that same card within 60 seconds; typed numbers never
-approve. Embedded `pack apply <name>` uses one complete carried-source review
-document and core weight rules, without inventing a directory snapshot. See
-[pack upgrade setup](../yardr/SETUP.md#the-source-pack-crew-then-you-in-telegram-shell-fallback)
-and [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
+Long polling, topics, buttons/menu/add-ons, typing, media, silent replies and
+optional local transcription are bridge features covered by its offline
+suite; this does not add a native adoption claim for each feature. Unsupported
+methods, unknown payloads and oversized advanced cards refuse whole. Version
+strings alone do not establish capability.
+
+The basic slice uses SETUP steps 1–11 without native home/operator or
+native-card grants. Public builds lack `skill add` and `skills=`: skip the
+crew-skills section and associated skill install/upgrade/rollback steps.
+The bridge carries no skill card; skill asks refuse before send with a
+terminal-only `/decide` line. Optional native keys and per-call grants belong
+on one primary bridge per yard, under the operator's authority.
+
+Source/pack repair `757c340` trusts canonical native Does prose while retaining
+structural validation, inventory/command constraints, current actor/identity/
+proposal binding and explicit replacement-grants disclosure. Missing grants
+framing refuses public replacements; it is never assumed safe. New-source
+and fresh pack cards show the complete carried declaration/program/diff review
+before controls. Native directory digest review on public core does not
+include a snapshot of setup/manifest files. That full snapshot contract is
+fork-specific; see [source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles).
+Weighty cards use Approve then Confirm on the same card within 60 seconds;
+typed numbers never approve. Ordinary decisions retain guarded ask turns.
 
 Native run cards exclude depot-kind/summary pack plans, `crew add`,
 `depot push`, `skill add`, secret/setup/identity operations and
@@ -250,30 +308,34 @@ is not an installable checkout.
 
 ## Remaining release steps
 
-1. Complete normal/expert review and local landing. Run the committed-head
-   gate again on the actual landing tree with `YARDR_LANDING=1`.
-2. Regenerate scan/export from that clean landed commit before freezing the
-   candidate tree and running the final audit; landing may squash and change
-   its commit ID. Compare that exact tree/manifest/archive and review the
-   remaining contextual identifiers, attribution, attachments, license sources
-   and old history separately. Resolve the destination/history strategy and
-   exact public payload with the owner; preserve this development repository.
-   This work does not certify historical exposure or rewrite it.
-3. The owner may then make the reviewed repository public as source alongside
-   the thread-formats PR, following the 2026-11-10 decision. Link that PR
-   here and in the README once it has a number; until then, name the change
-   and upstream repository. Keep the source-only status visible before setup
-   steps. Visibility does not close the release gate. No publication runs here.
-4. Before any installable tag or release, close the
-   [public-core release gate](#public-core-release-gate). After the
-   thread-formats change merges and a public core release carries it,
-   rerun the final compatibility audit on the exact candidate pack.
-   Name the compatible public tag/commit for every capability and attach
-   a passing `yardr pack check yardr/` with that core. Public source
-   remains non-installable until this check passes.
-5. Each instance's operator owns installation, source apply, minimum grants,
-   activation and acceptance: probe, check-install, correct ExecStart/current,
-   source health, ordinary chat/topic/file and any enabled native card. Verify
-   another instance's release/config/state/binding did not change. Source-only
-   fixtures prove compatibility/isolation under test, not live acceptance.
-   Keep the rollback target and private state until those checks pass.
+1. Complete ordinary/expert and capability-claim review, then local landing.
+   Run the default committed-head gate again on the actual landing tree with
+   `YARDR_LANDING=1`. Source landed locally is not source published or installed.
+2. Audit the exact final bridge candidate from the then-current public
+   ancestor: tree and complete history exposure, committed scan/export,
+   manifest/archive, attachments, attribution and contextual private material.
+   Freeze commit/tree IDs, source range and archive hashes. Re-run the default
+   gate and selected public-core suite plus separate pack suite. Classify the
+   fork-only skill failure as a known limitation, never all-green; any new
+   unclassified incompatibility blocks publication. A moved candidate requires
+   renewed exact-candidate acceptance.
+3. The publication coordinator fast-forwards the audited exact bridge ref to
+   the existing public repository and verifies the published SHA. Then publish
+   the accepted upstream documentation preview and open its PR. The existing
+   source-publication decision covers this reviewed refresh/proposal without
+   a second confirmation or core-release wait. No repository creation,
+   visibility change, tag, runtime install or activation is included. Public
+   exposure cannot be undone; corrections use a new commit, and the proposal
+   can be withdrawn by closing the PR.
+4. Installable presentation alone waits for a compatible public core release
+   and the [exact-candidate re-check](#public-core-release-gate). A predicted
+   release, merged change or source-built-main proof does not close this gate.
+5. After a separate operational instruction, each instance's operator owns
+   install, source apply, minimum grants, activation and acceptance: probe,
+   check-install, correct ExecStart/current, source health, ordinary chat/topic/
+   file and any enabled native card. Check that another instance's release,
+   config, state and binding did not change. Keep rollback target, private
+   settings/credentials and ledger; rollback uses the existing installer and
+   matching rendered pack with the same alias/env bindings. The first move
+   retains `service.previous`. Never reset delivery state or retry ambiguous
+   writes under a new key. Source-only tests do not establish live acceptance.

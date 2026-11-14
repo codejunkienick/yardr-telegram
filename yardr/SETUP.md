@@ -1,11 +1,13 @@
 # Setting up tgbridge in a yard
 
-Check the [public-core release gate](../docs/public-readiness.md#public-core-release-gate)
-before starting: as of 2026-11-09 no compatible public core is available for
-this pack, even for hook/chat alone. The core hashes below are local
-capability baselines, not public install targets. The required core changes
-must be published and accepted before this bridge is published; applying
-the pack also requires `thread.formats` support when native keys are omitted.
+**Public source, not an installable release (2026-11-14).** Public core
+`52e22d57` proved basic chat offline; v0.17.0 refuses `thread.formats` even
+without native keys. Installable use waits for a compatible public release
+and the [exact-candidate check](../docs/public-readiness.md#public-core-release-gate).
+Other hashes below are local baselines, not public install targets.
+Steps 1–11 are the basic slice: omit native home/operator and native-card
+grants. Steps 12–14 are optional; unsupported cards refuse whole. See the
+[per-build limits](../docs/public-readiness.md#capabilities-and-grants).
 
 One bridge serves one bot in one yard; several bots may serve the same yard.
 The examples use a fictional yard
@@ -323,7 +325,7 @@ bindings and delivery history.
 
 ### Skill copies (shell)
 
-The bridge carries no `skill add` card: the operator adds and refreshes
+The bridge carries no `skill add` card: on the fork, the operator refreshes
 skill copies with `yardr skill add` in a terminal, as [The crew's skills](#the-crews-skills-shell)
 says. A stored `skill add` ask refuses before any send; a `/decide` row for one
 is terminal-only, decided in the yard.
@@ -343,7 +345,8 @@ yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=source-revie
 The upstream carried source-add contract supplies declarations, programs,
 inventory/diffs and canonical carry outcomes. The aligned build additionally
 discloses grants; replacing cards on plain upstream use the terminal fallback.
-The bridge validates actual envelopes on every read. Keep the existing
+Native Does prose is trusted whole; structural, identity and current-proposal
+checks remain. Keep the existing
 native home/operator/source and paired identity; there is no new grant,
 setting, package install or filesystem permission. The release includes its
 pinned pure-Python YAML reader. Absolute command programs, aliases/tags,
@@ -850,7 +853,7 @@ yardr crew show secretary
    delivery's source even though both thread IDs equal the human's chat id.
    The menu is bot-token scoped, pins and quota notices use that bot's
    ledger, and its quota watcher names `crew = "secretary"`. `/decide` stays
-   on the primary. Copy the shared Telegram skills from a landed install
+   on the primary. On the fork, copy the shared Telegram skills from an install
    using [The crew's skills](#the-crews-skills-shell), then assign them to
    the secretary; their `<source>` examples follow the reader's prime.
 
@@ -968,7 +971,7 @@ ledgers; the capture, start, handback and restart above are the operator's.
 For a bridge whose unit still runs `bridge.py` from a checkout. Its settings,
 token, secrets, state directory, port, bot, source credential, alias and
 grants all stay as they are; what moves is the code the unit runs, the
-launchers, the pack's origin and the yard-local skill copies. Move one
+launchers, the pack's origin and (fork-only) yard-local skill copies. Move one
 instance at a time: no other instance is changed or needs to be running.
 The design and what it does not promise: `docs/design/independent-instances.md`.
 
@@ -1195,6 +1198,9 @@ tgbridge` reads it from there.
 
 ### The crew's skills (shell)
 
+Fork-only: public core lacks `skill add` and `skills=`. Skip this section and
+all related skill install, upgrade and rollback steps on public core.
+
 The operator runs the four adds below to copy this instance's skills into
 the yard's own home.
 Keep `YARDR_HOME` explicitly set to this yard as above:
@@ -1267,7 +1273,7 @@ yardr pack check <root>/pack        # where it shows a change, apply as above
 
 It verifies `previous` against its `SHA256SUMS`, swaps `current` and
 `previous`, and returns `<root>/pack` to that release's own. A second
-`--rollback` goes forward again. The operator refreshes this yard's skill
+`--rollback` goes forward again. On the fork, the operator refreshes skill
 copies with the `skill add` commands above for that release.
 
 Undoing this first move, when there is no previous release (`--rollback`
@@ -1283,7 +1289,7 @@ systemctl --user start <unit>
 The unit runs the checkout again, so the checkout must still be there. The
 pack applied above still works with it (the same port or alias); apply
 `<checkout>/yardr` with the same flags only to move the recorded origin back.
-To revert the skill version too, the operator repeats `yardr skill add` from
+On the fork, revert skills with `yardr skill add` from
 `<checkout>/skills/<name>` for this yard.
 The host-wide voice-transcribe link remains the operator's choice as above.
 

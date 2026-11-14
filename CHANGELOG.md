@@ -8,6 +8,11 @@ sees and does, not how the code is organised.
 
 ### Changed
 
+- Public compatibility now names the tested core revision and v0.17.0,
+  with separate native/callback evidence, fork-only skills and the remaining
+  installable-release gate. The upstream proposal records a documentation
+  link to the independent bridge, its service cost and one-bot rule.
+
 - Native `/quota` keeps compact Antigravity labels for distinct windows and
   collapses shared model windows with the same displayed percentage and
   reset. Model ids are omitted when the row label already names the family.

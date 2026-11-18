@@ -236,8 +236,6 @@ def read_current(config, deadline, log):
     for key in ('context_pct', 'context_window', 'failures'):
         if key in crew and (type(crew[key]) is not int or crew[key] < 0):
             raise y.MayorUnavailable('invalid native crew telemetry')
-    if crew.get('context_pct', 0) > 100:
-        raise y.MayorUnavailable('invalid native crew telemetry')
     if crew.get('context_at'):
         timestamp(crew['context_at'])
     if 'switch' in crew and crew['switch'] is not None:

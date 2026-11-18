@@ -1378,6 +1378,46 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertIn('42% of 200000', self.edit()['text'])
         self.assertIn('read ', self.edit()['text'])
 
+    def test_context_over_100_accepted_and_rendered(self):
+        self.rpc('SetContextFor', name='mayor', user='', pct=42, window=200000)
+        original = y.run_yardr
+        def over_hundred(argv, *args, **kwargs):
+            status, out, err, problem = original(argv, *args, **kwargs)
+            if 'show' in argv:
+                try:
+                    value = json.loads(out)
+                except ValueError:
+                    return status, out, err, problem
+                if isinstance(value, dict) and 'crew' in value:
+                    value['crew']['context_pct'] = 102
+                    value['crew']['context_window'] = 200000
+                    return status, json.dumps(value).encode(), err, problem
+            return status, out, err, problem
+        with patch.object(y, 'run_yardr', over_hundred):
+            try:
+                crew, _parsed = m.read_current(self.config, m.time.monotonic() + 10, lambda message: None)
+            except y.MayorUnavailable:
+                self.fail('read_current refuses context_pct 102')
+            selector = self.selector()
+            self.poll(self.pick(selector))
+        self.assertEqual(crew['context_pct'], 102)
+        self.assertIn('102% of 200000', self.edit()['text'])
+        for bad in (-1, 'x'):
+            def corrupt(argv, *args, bad=bad, **kwargs):
+                status, out, err, problem = original(argv, *args, **kwargs)
+                if 'show' in argv:
+                    try:
+                        value = json.loads(out)
+                    except ValueError:
+                        return status, out, err, problem
+                    if isinstance(value, dict) and 'crew' in value:
+                        value['crew']['context_pct'] = bad
+                        return status, json.dumps(value).encode(), err, problem
+                return status, out, err, problem
+            with patch.object(y, 'run_yardr', corrupt):
+                with self.assertRaises(y.MayorUnavailable):
+                    m.read_current(self.config, m.time.monotonic() + 10, lambda message: None)
+
     def test_bad_capability_status_and_output_never_reserve_or_disclose(self):
         selector = self.selector()
         original = y.run_yardr

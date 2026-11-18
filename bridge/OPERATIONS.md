@@ -3091,8 +3091,8 @@ automatically retried. Error bodies and HTTP errors after writes remain
 ambiguous until a canonical Bead reread establishes the result.
 
 The full question/context/options/consequences/about/recommendation/why must
-fit the existing 3500-unit card bound and 100-button limit (98 options plus
-Later/Decline). Buttons use the displayed stored option
+fit the existing 3500-unit card bound and 100-button limit (97 options plus
+Later/Decline/Report). Buttons use the displayed stored option
 number; they do not synthesize You decide. Direct replies take `N optional
 words`, or the whole answer with option zero on a no-options card. The message,
 conversation/topic, bot and paired human must match; forwards, stale proposals,
@@ -3251,6 +3251,59 @@ counts toward Telegram's 100). The core needs `UserAsks` (public Calls
 contract) beside the ordinary-card baseline; no new grant, setting, table
 migration or service. The bridge adds one SQLite table, `decide_ids`, mapping
 a button id to its bead and ask.
+
+## Decision report on tap (`📄 Report`)
+
+Every open native decision and run card (from `ask_card`, `run_ask`, or
+`/decide`) carries a final `📄 Report` row (`askcard:<id>:report:<turn>` or
+`runask:<id>:report`). Settled cards drop all controls as before.
+
+Tapping `📄 Report` is strictly read-only toward the yard and leaves the card's
+text, buttons, generation bindings and state untouched (`ensure` and
+`reconcile_callback` do not run, and no yard write RPC is called). The bridge
+verifies the paired user, paired private chat, bot-authored card message,
+matching topic thread, current binding and `GetUser` operator identity, then
+reads `Bead`, `Notes` and `Events` on the configured home's socket at tap time.
+
+The bridge renders and sends one Markdown document named `<bead>-ask-<n>.md` in
+reply to the card's message (`text_fallback=False`), using the existing send
+ledger key `runask:<id>:report:<message_id>:<update_id>` so a retried update
+never sends the document twice. A yard or Telegram failure leaves the card
+untouched and sends one short text reply (under `:error`) saying why.
+
+Report selection and formatting:
+
+- **Header:** bead id and title, stage, ask number, question, the newest
+  commit SHA named in the notes (`VERDICT:`, `STATUS:`, `head:`, `commit:`,
+  `on`, `fixed`, `blocked,`, or `@`) if present, and a one-line
+  `How to read:` key (`finding -> answer -> reviewer status -> recommendation`)
+  naming the note seqs present.
+- **Finding being answered:** before the notes since stage entry, the bridge
+  includes the most recent substantive review report at or before the cutoff
+  (a `kind == "note"` starting `VERDICT: FINDINGS`, or a prior report note
+  named by a repair/status note) under `## Finding being answered`, even when
+  it is older than the stage entry.
+- **Note range:** if the ask note's JSON carries an `entry` event seq, the
+  bridge walks `Events` (doubling from 64 up to 8192) to find `noted` events at
+  or before `entry`; otherwise it uses notes with `seq <= ask`. Starting from
+  the last ordinary (`kind == "note"`) note at or before that cutoff whose
+  author is not `yard`, `yardmaster`, or the configured operator (falling back
+  to the last `kind == "note"` at or before the cutoff, else the ask note or
+  earliest note), it includes every note through the newest note in ascending
+  `seq` order (without duplicating the finding note if it is in that range).
+- **Note rendering:** each note prints `seq`, `author`, and timestamp converted
+  to `+05` (`YYYY-MM-DD HH:MM:SS +05`). `ask` and `answer` notes are rendered
+  from their structured fields (question, context, options, pick/words/status,
+  or run command/result), never as raw JSON.
+- **200 KB cap:** the document is capped at 204,800 UTF-8 bytes (`200 * 1024`).
+  Over the cap, older notes are dropped first to keep the newest notes and a
+  notice names the omitted seq range and byte count (if a single newest note
+  alone exceeds the cap, it is truncated on a UTF-8 boundary with the cut byte
+  count noted). The "Finding being answered" section is never omitted: when
+  it and the newest note do not fit together, their text is truncated (each with
+  a visible "truncated, N bytes cut, full text in note <seq>" line) before
+  anything else is dropped. No new grant, setting, or ledger migration is
+  required.
 
 ## Siding status and the plain fold
 

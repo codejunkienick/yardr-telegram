@@ -2,6 +2,7 @@
 same native cards, over fake Telegram and a fake or real isolated core."""
 import copy
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -201,7 +202,7 @@ class DecideTests(DecideCase):
         self.command('/decide run-1#3', 1)
         card = self.sends()[-1]
         self.assertIn('yardr depot test web', card['text'])
-        self.assertEqual([b['text'] for b in self.buttons(card)], ['✓ Approve in test-city', '✕ Decline'])
+        self.assertEqual([b['text'] for b in self.buttons(card)], ['✓ Approve in test-city', '✕ Decline', '📄 Report'])
         for uid, (ident, kind) in enumerate((('secret-1#2', 'secret'), ('weighted-1#4', 'weighted decision'),
                                             ('file-1#5', 'terminal-only run')), 2):
             self.command('/decide ' + ident, uid)
@@ -251,7 +252,7 @@ class DecideTests(DecideCase):
                 self.assertIn(path.name, sends[0]['text'])
                 self.assertNotIn('reply_markup', fields)
                 self.assertEqual(sends[-1]['reply_parameters']['message_id'], row['bundle']['document']['message_id'])
-                self.assertEqual([b['text'] for b in self.buttons(sends[-1])], ['✓ Approve in test-city', '✕ Decline'])
+                self.assertEqual([b['text'] for b in self.buttons(sends[-1])], ['✓ Approve in test-city', '✕ Decline', '📄 Report'])
                 self.assertEqual(self.writes(), [])
 
         unsupported = []
@@ -717,6 +718,344 @@ class DecideNamespaceTests(BridgeTestCase):
             b.load_settings(self.native_settings(too_many))
 
 
+class DecideReportTests(DecideCase):
+    def setUp(self):
+        super().setUp()
+        self.stage_ask = dict(
+            ask=7022, turn=0, to='pat', asker='yard', since='2026-11-18T07:00:26.78839Z',
+            question='Which authorized continuation should this delivery take?',
+            context=['Bead: stage-1 — Synthetic stage fix (branch yard/stage-1)',
+                     'Repair round (note on daeff461).'],
+            options=[
+                dict(label='review-blocked', consequence='The bead goes back to review-blocked.'),
+                dict(label='expert-blocked', consequence='The bead goes back to expert-blocked.'),
+                dict(label='decide', consequence='The bead goes back to decide.'),
+            ],
+            state='open',
+        )
+        self.earlier_ask = dict(
+            question='Earlier question?', to='pat', context=['Prior context'],
+            options=[dict(label='Repair', consequence='Start repair.'), dict(label='Drop', consequence='Stop.')],
+        )
+        self.notes = [
+            dict(seq=7004, kind='note', author='stage-1-new', at='2026-11-18T06:24:53.46346Z',
+                 text='Early plan before stage entry on daeff461.'),
+            dict(seq=7006, kind='note', author='stage-1-review', at='2026-11-18T06:36:39.059344Z',
+                 text='VERDICT: FINDINGS 0efc609c\n\n1. P1 check missing in validator.'),
+            dict(seq=7008, kind='ask', author='yardmaster', at='2026-11-18T06:37:13.71729Z',
+                 text=json.dumps(self.earlier_ask)),
+            dict(seq=7016, kind='answer', author='pat', at='2026-11-18T06:47:18.763274Z',
+                 text=json.dumps(dict(ask=7008, option=1, words='repair F1 only'))),
+            dict(seq=7020, kind='note', author='stage-1-new', at='2026-11-18T06:57:15.915218Z',
+                 text='Repair round (ask 7008 option 1, review note 7006).\n\n- fixed 077d295e: updated check.'),
+            dict(seq=7021, kind='note', author='stage-1-review', at='2026-11-18T07:00:22.968157Z',
+                 text='STATUS: EXHAUSTED @ 077d295e\n\nFirst-full slot consumed.'),
+            dict(seq=7022, kind='ask', author='yard', at='2026-11-18T07:00:26.78839Z',
+                 text=json.dumps(dict(
+                     **{k: self.stage_ask[k] for k in ('question', 'to', 'context', 'options')},
+                     stage='blocked', entry=38212, moves=True))),
+            dict(seq=7023, kind='note', author='yardmaster', at='2026-11-18T07:01:21.389429Z',
+                 text='body changed: read the bead again'),
+            dict(seq=7024, kind='note', author='yardmaster', at='2026-11-18T07:01:21.412638Z',
+                 text='Yardmaster recommendation for card 7022: pick expert-blocked.'),
+        ]
+        self.events = [
+            dict(seq=38190, id='38190', bead='stage-1', kind='noted', actor='stage-1-new', data=dict(note=7004), at='2026-11-18T06:24:53Z'),
+            dict(seq=38192, id='38192', bead='stage-1', kind='noted', actor='stage-1-review', data=dict(note=7006), at='2026-11-18T06:36:39Z'),
+            dict(seq=38195, id='38195', bead='stage-1', kind='noted', actor='yardmaster', data=dict(note=7008), at='2026-11-18T06:37:13Z'),
+            dict(seq=38200, id='38200', bead='stage-1', kind='noted', actor='pat', data=dict(note=7016), at='2026-11-18T06:47:18Z'),
+            dict(seq=38205, id='38205', bead='stage-1', kind='noted', actor='stage-1-new', data=dict(note=7020), at='2026-11-18T06:57:15Z'),
+            dict(seq=38211, id='38211', bead='stage-1', kind='noted', actor='stage-1-review', data=dict(note=7021), at='2026-11-18T07:00:22Z'),
+            dict(seq=38212, id='38212', bead='stage-1', kind='advanced', actor='stage-1-review', data={'from': 'review', 'to': 'blocked'}, at='2026-11-18T07:00:26Z'),
+            dict(seq=38213, id='38213', bead='stage-1', kind='noted', actor='yard', data=dict(note=7022), at='2026-11-18T07:00:26Z'),
+            dict(seq=38214, id='38214', bead='stage-1', kind='noted', actor='yardmaster', data=dict(note=7023), at='2026-11-18T07:01:21Z'),
+            dict(seq=38215, id='38215', bead='stage-1', kind='noted', actor='yardmaster', data=dict(note=7024), at='2026-11-18T07:01:21Z'),
+        ]
+        self.native.beads['stage-1'] = dict(
+            id='stage-1', title='Synthetic stage fix', stage='blocked',
+            asks=[self.stage_ask], notes=self.notes,
+        )
+        self.native.raw_events = self.events
+
+    def test_report_button_delivers_markdown_reply_and_leaves_card_unchanged(self):
+        receipt = self.bridge.api_ask_card(dict(bead='stage-1', ask=7022, topic='ops', key='stage-card-1'))
+        self.assertTrue(receipt['delivered'])
+        card = self.sends()[-1]
+        buttons = self.buttons(card)
+        self.assertEqual([b['text'] for b in buttons],
+                         ['Choose 1', 'Choose 2', 'Choose 3', 'Later', '✕ Decline', '📄 Report'])
+        report_btn = card['reply_markup']['inline_keyboard'][-1][0]
+        self.assertEqual(report_btn['text'], '📄 Report')
+        self.assertLessEqual(len(report_btn['callback_data'].encode()), 64)
+        row = self.bridge.run_asks.rows()[0]
+        row_before = copy.deepcopy(row)
+        edits_before = len(self.edits())
+
+        self.native.calls.clear()
+        self.tap(report_btn['callback_data'], row['message_id'], 40, thread=OPS)
+        self.assertEqual(self.answers()[-1], 'Report sent')
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(len(self.edits()), edits_before)
+        self.assertEqual(self.bridge.run_asks.get(row['id']), row_before)
+        self.assertEqual(self.native.beads['stage-1']['asks'][0]['state'], 'open')
+        self.assertEqual(len(self.documents), 1)
+
+        fields, path, raw = self.documents[-1]
+        self.assertEqual(path.name, 'stage-1-ask-7022.md')
+        self.assertEqual(json.loads(fields['reply_parameters']), {'message_id': row['message_id']})
+        self.assertEqual(fields['message_thread_id'], str(OPS))
+        self.assertNotIn('reply_markup', fields)
+        md = raw.decode('utf-8')
+        self.assertIn('# stage-1 · Synthetic stage fix', md)
+        self.assertIn('- Stage: blocked', md)
+        self.assertIn('- Ask: #7022', md)
+        self.assertIn('- Question: Which authorized continuation should this delivery take?', md)
+        self.assertIn('- Head: `077d295e`', md)
+        self.assertIn('- How to read: finding #7006 -> reviewer status #7021 -> recommendation #7024', md)
+        # Starts with finding 7006 under its heading, then notes since stage entry (7021..7024).
+        self.assertNotIn('Early plan before stage entry', md)
+        self.assertNotIn('Repair round (ask 7008 option 1', md)
+        self.assertIn('## Finding being answered', md)
+        self.assertIn('## Note #7006 · stage-1-review · 2026-11-18 11:36:39 +05', md)
+        self.assertIn('1. P1 check missing in validator.', md)
+        self.assertIn('## Notes since stage entry', md)
+        self.assertIn('## Note #7021 · stage-1-review · 2026-11-18 12:00:22 +05', md)
+        self.assertIn('## Note #7022 (ask) · yard · 2026-11-18 12:00:26 +05', md)
+        self.assertIn('## Note #7023 · yardmaster · 2026-11-18 12:01:21 +05', md)
+        self.assertIn('## Note #7024 · yardmaster · 2026-11-18 12:01:21 +05', md)
+        self.assertLess(md.index('## Finding being answered'), md.index('Note #7006'))
+        self.assertLess(md.index('Note #7006'), md.index('## Notes since stage entry'))
+        self.assertLess(md.index('## Notes since stage entry'), md.index('Note #7021'))
+        self.assertLess(md.index('Note #7021'), md.index('Note #7022'))
+        self.assertLess(md.index('Note #7022'), md.index('Note #7023'))
+        self.assertLess(md.index('Note #7023'), md.index('Note #7024'))
+        # Ask note rendered as question & options, never raw JSON.
+        self.assertIn('1. review-blocked — The bead goes back to review-blocked.', md)
+        self.assertNotIn('"entry":38212', md)
+        self.assertNotIn('"moves":true', md)
+
+        # Repeated delivery of the same update (including after restart) sends once.
+        self.restart()
+        self.native.calls.clear()
+        self.tap(report_btn['callback_data'], row['message_id'], 40, thread=OPS)
+        self.assertEqual(len(self.documents), 1)
+        self.assertEqual(self.native.calls, [])
+
+        # A newer tap after answer variants renders ask/answer notes cleanly without raw JSON.
+        self.notes.extend([
+            dict(seq=7025, kind='answer', author='pat', at='2026-11-18T07:06:06Z',
+                 text=json.dumps(dict(ask=7022, option=2, words='proceed carefully'))),
+            dict(seq=7026, kind='ask', author='proposer', at='2026-11-18T07:06:30Z',
+                 text=json.dumps(dict(question='Free words?', to='pat', context=['ctx']))),
+            dict(seq=7027, kind='answer', author='pat', at='2026-11-18T07:06:35Z',
+                 text=json.dumps(dict(ask=7026, words='plain words'))),
+            dict(seq=7028, kind='answer', author='pat', at='2026-11-18T07:06:40Z',
+                 text=json.dumps(dict(ask=7022, later=True))),
+            dict(seq=7029, kind='answer', author='pat', at='2026-11-18T07:06:45Z',
+                 text=json.dumps(dict(ask=7022, decline=True, words='not now'))),
+            dict(seq=7030, kind='answer', author='yard', at='2026-11-18T07:06:50Z',
+                 text=json.dumps(dict(ask=7022, take_back=True, words='superseded'))),
+            dict(seq=7031, kind='answer', author='pat', at='2026-11-18T07:06:55Z',
+                 text=json.dumps(dict(ask=7022, ran=dict(argv=['source', 'set'], result='ok')))),
+            dict(seq=7032, kind='note', author='yardmaster', at='2026-11-18T07:07:00Z',
+                 text='Follow-up note'),
+        ])
+        self.tap(report_btn['callback_data'], row['message_id'], 41, thread=OPS)
+        self.assertEqual(len(self.documents), 2)
+        md2 = self.documents[-1][2].decode('utf-8')
+        self.assertIn('- How to read: finding #7006 -> answer #7031 -> reviewer status #7021 -> recommendation #7024', md2)
+        self.assertIn('## Note #7025 (answer) · pat · 2026-11-18 12:06:06 +05', md2)
+        self.assertIn('Question: Which authorized continuation should this delivery take?', md2)
+        self.assertIn('Options: 1. review-blocked; 2. expert-blocked; 3. decide', md2)
+        self.assertIn('Ask #7022 — Pick: 2. expert-blocked', md2)
+        self.assertIn('Words: proceed carefully', md2)
+        self.assertIn('(free-text answer)', md2)
+        self.assertIn('Ask #7026 — Answered\nWords: plain words', md2)
+        self.assertIn('Ask #7022 put aside', md2)
+        self.assertIn('Ask #7022 declined: not now', md2)
+        self.assertIn('Ask #7022 taken back: superseded', md2)
+        self.assertIn('Ask #7022 approved: `source set`\nResult: ok', md2)
+        self.assertNotIn('{"ask":', md2)
+        self.assertNotIn('{"question":', md2)
+        # Card buttons remain live and can still answer the ask.
+        self.tap(f"askcard:{row['id']}:pick2:{row['turn']}", row['message_id'], 42, thread=OPS)
+        self.assertEqual(self.native.beads['stage-1']['asks'][0]['state'], 'answered')
+
+        # Run cards opened via /decide also show Report and deliver their .md report.
+        self.command('/decide run-1#3', 50)
+        run_card = self.sends()[-1]
+        self.assertEqual(run_card['reply_markup']['inline_keyboard'][-1][0]['text'], '📄 Report')
+        run_row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'run-1')
+        self.tap(f"runask:{run_row['id']}:report", run_row['message_id'], 51)
+        self.assertEqual(self.documents[-1][1].name, 'run-1-ask-3.md')
+        self.assertEqual(json.loads(self.documents[-1][0]['reply_parameters']), {'message_id': run_row['message_id']})
+        self.assertEqual(self.bridge.run_asks.get(run_row['id'])['state'], 'open')
+
+        # Repair note citing an earlier review note (without VERDICT: FINDINGS) also pulls that finding to the top.
+        cited_ask = dict(self.stage_ask, ask=12, state='open')
+        cited_ask.pop('entry', None)
+        self.native.beads['cited-1'] = dict(
+            id='cited-1', title='Synthetic cited finding', stage='review-blocked', asks=[cited_ask],
+            notes=[
+                dict(seq=10, kind='note', author='cited-1-review', at='2026-11-18T06:00:00Z',
+                     text='Substantive findings: fix edge guard.'),
+                dict(seq=11, kind='note', author='cited-1-new', at='2026-11-18T06:30:00Z',
+                     text='Repair round (review note 10): fixed edge guard @ abc12345.'),
+                dict(seq=12, kind='ask', author='yard', at='2026-11-18T06:31:00Z',
+                     text=json.dumps({k: cited_ask[k] for k in ('question', 'to', 'context', 'options')})),
+            ])
+        self.native.raw_events = None
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='cited-1', ask=12, key='cited-card'))['delivered'])
+        cited_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('cited-1', 12))
+        self.tap(f"askcard:{cited_row['id']}:report:{cited_row['turn']}", cited_row['message_id'], 52)
+        cited_md = self.documents[-1][2].decode('utf-8')
+        self.assertIn('- How to read: finding #10 -> answer #11', cited_md)
+        self.assertIn('## Finding being answered', cited_md)
+        self.assertIn('Substantive findings: fix edge guard.', cited_md)
+        self.assertLess(cited_md.index('Note #10'), cited_md.index('Note #11'))
+
+    def test_report_tap_authorizations_and_failure_replies(self):
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='stage-1', ask=7022, topic='ops', key='auth-card'))['delivered'])
+        row = self.bridge.run_asks.rows()[0]
+        data = f"askcard:{row['id']}:report:{row['turn']}"
+        docs_before = len(self.documents)
+        sends_before = len(self.sends())
+
+        for uid, changes in enumerate((
+                dict(sender=124),
+                dict(chat=dict(id=124, type='private')),
+                dict(chat=dict(id=123, type='group')),
+                dict(forward_date=123),
+                dict(thread=None),
+                dict(thread=99),
+                dict(message_id=row['message_id'] + 1),
+        ), 100):
+            kwargs = dict(thread=OPS)
+            kwargs.update(changes)
+            mid = kwargs.pop('message_id', row['message_id'])
+            self.native.calls.clear()
+            self.tap(data, mid, uid, **kwargs)
+            expected_answer = ('' if ('sender' in changes or changes.get('chat', {}).get('id') == 124)
+                               else n.RECONCILE if 'message_id' in changes
+                               else 'Native card not authorized')
+            self.assertEqual(self.answers()[-1], expected_answer)
+            self.assertEqual(len(self.documents), docs_before)
+            self.assertEqual(len(self.sends()), sends_before)
+            self.assertEqual(self.native.calls, [])
+            self.assertEqual(self.writes(), [])
+
+        # Non-operator bot sender in query.from
+        self.bridge.inbound(dict(update_id=120, callback_query=dict(
+            id='q120', data=data,
+            message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                         is_topic_message=True, message_thread_id=OPS, **{'from': dict(id=999, is_bot=True)}),
+            **{'from': dict(id=123, is_bot=True)})))
+        self.assertEqual(len(self.documents), docs_before)
+
+        # Wrong turn in callback_data refuses without touching card or yard.
+        self.tap(f"askcard:{row['id']}:report:99", row['message_id'], 121, thread=OPS)
+        self.assertEqual(self.answers()[-1], 'Native card not authorized')
+        self.assertEqual(len(self.documents), docs_before)
+
+        # Yard failure gives a short text reply saying why; card stays untouched.
+        self.native.mode = 'unreadable'
+        self.tap(data, row['message_id'], 122, thread=OPS)
+        self.assertEqual(len(self.documents), docs_before)
+        err_reply = self.sends()[-1]
+        self.assertEqual(err_reply['reply_parameters'], {'message_id': row['message_id']})
+        self.assertEqual(err_reply['message_thread_id'], OPS)
+        self.assertIn('Could not send report for stage-1#7022:', err_reply['text'])
+        self.assertIn('unavailable', err_reply['text'])
+        self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'open')
+
+        # Telegram sendDocument rejection gives a short text reply and retries send nothing twice.
+        self.native.mode = None
+        def reject_doc(url, fields, field, path, timeout=20):
+            self.calls.append((url, dict(fields)))
+            return 400, dict(ok=False, error_code=400, description='Bad Request: file refused')
+        orig_mp = self.bridge.request_multipart
+        self.bridge.request_multipart = reject_doc
+        self.tap(data, row['message_id'], 123, thread=OPS)
+        self.bridge.request_multipart = orig_mp
+        self.assertIn('telegram_rejected_not_sent_400', self.sends()[-1]['text'])
+        self.assertEqual(self.sends()[-1]['reply_parameters'], {'message_id': row['message_id']})
+        sends_after_err = len(self.sends())
+        self.tap(data, row['message_id'], 123, thread=OPS)
+        self.assertEqual(len(self.sends()), sends_after_err)
+
+    def test_report_cap_keeps_newest_notes_and_names_what_was_cut(self):
+        big_notes = [
+            dict(seq=1, kind='note', author='stage-1-review', at='2026-11-18T06:00:00Z', text='A' * 110000),
+            dict(seq=2, kind='note', author='yardmaster', at='2026-11-18T06:05:00Z', text='B' * 110000),
+            dict(seq=3, kind='ask', author='yard', at='2026-11-18T06:10:00Z',
+                 text=json.dumps(dict(
+                     **{k: self.stage_ask[k] for k in ('question', 'to', 'context', 'options')},
+                     stage='blocked', moves=True))),
+            dict(seq=4, kind='note', author='yardmaster', at='2026-11-18T06:15:00Z', text='NEWEST-' + ('C' * 110000)),
+        ]
+        big_ask = dict(self.stage_ask, ask=3)
+        big_ask.pop('entry', None)
+        self.native.beads['big-report'] = dict(
+            id='big-report', title='Synthetic large report', stage='blocked', asks=[big_ask], notes=big_notes)
+        self.native.raw_events = None
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='big-report', ask=3, key='big-rep'))['delivered'])
+        row = self.bridge.run_asks.rows()[0]
+        self.tap(f"askcard:{row['id']}:report:{row['turn']}", row['message_id'], 200)
+        raw = self.documents[-1][2]
+        self.assertLessEqual(len(raw), 200 * 1024)
+        md = raw.decode('utf-8')
+        self.assertIn('Truncated to 204800 bytes: omitted 2 older notes (#1..#2,', md)
+        self.assertIn('kept 2 newest notes.', md)
+        self.assertNotIn('Note #1', md)
+        self.assertNotIn('Note #2', md)
+        self.assertIn('Note #3 (ask)', md)
+        self.assertIn('Note #4', md)
+        self.assertIn('NEWEST-', md)
+
+        # A single newest note exceeding 200 KB is also bounded cleanly on a UTF-8 boundary.
+        huge_ask = dict(self.stage_ask, ask=2)
+        huge_ask.pop('entry', None)
+        self.native.beads['huge-single'] = dict(
+            id='huge-single', title='Synthetic single huge note', stage='blocked', asks=[huge_ask],
+            notes=[
+                dict(seq=1, kind='note', author='stage-1-review', at='2026-11-18T06:00:00Z', text='Earlier note.'),
+                dict(seq=3, kind='note', author='yardmaster', at='2026-11-18T06:05:00Z',
+                     text='HEAD: 1234abcd\n' + ('🙂' * 60000)),
+            ])
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='huge-single', ask=2, key='huge-one'))['delivered'])
+        row2 = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'huge-single')
+        self.tap(f"askcard:{row2['id']}:report:{row2['turn']}", row2['message_id'], 201)
+        raw2 = self.documents[-1][2]
+        self.assertLessEqual(len(raw2), 200 * 1024)
+        md2 = raw2.decode('utf-8')
+        self.assertIn('truncated note #3 by', md2)
+        self.assertIn('- Head: `1234abcd`', md2)
+
+    def test_report_cap_keeps_oversized_finding_truncated_with_newer_note(self):
+        asks = dict(self.stage_ask, ask=11)
+        asks.pop('entry', None)
+        self.native.beads['big-finding'] = dict(
+            id='big-finding', title='Synthetic oversized finding', stage='blocked', asks=[asks],
+            notes=[
+                dict(seq=10, kind='note', author='stage-1-review', at='2026-11-18T06:00:00Z',
+                     text='VERDICT: FINDINGS @ abc1234\n' + ('F' * (205 * 1024))),
+                dict(seq=11, kind='ask', author='yard', at='2026-11-18T06:10:00Z',
+                     text=json.dumps(dict(
+                         **{k: self.stage_ask[k] for k in ('question', 'to', 'context', 'options')},
+                         stage='blocked', moves=True))),
+            ])
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='big-finding', ask=11, key='big-fnd'))['delivered'])
+        row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'big-finding')
+        self.tap(f"askcard:{row['id']}:report:{row['turn']}", row['message_id'], 210)
+        raw = self.documents[-1][2]
+        self.assertLessEqual(len(raw), 200 * 1024)
+        md = raw.decode('utf-8')
+        self.assertIn('## Finding being answered', md)
+        self.assertIn('Note #10', md)
+        self.assertRegex(md, r'truncated, \d+ bytes cut, full text in note 10')
+        self.assertIn('Note #11 (ask)', md)
+
+
 class RealDecideTests(BridgeTestCase):
     def test_real_core_lists_opens_answers_and_reports_outcomes(self):
         binary = testyardr.binary()
@@ -786,7 +1125,16 @@ class RealDecideTests(BridgeTestCase):
             elif url.endswith('/editMessageText'):
                 response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
             return status, response
-        bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+        documents = []
+
+        def multipart(url, fields, file_field, file_path, timeout=20):
+            raw = Path(file_path).read_bytes()
+            documents.append((dict(fields), Path(file_path).name, raw))
+            self.calls.append((url, dict(fields)))
+            return 200, dict(ok=True, result=dict(message_id=next(ids), chat=dict(id=123),
+                                                document=dict(file_id='real-doc', file_size=len(raw))))
+
+        bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram, request_multipart=multipart)
         bridge.hook_secret = None
         sends = lambda: [body for url, body in self.calls if url.endswith('/sendMessage')]
 
@@ -866,6 +1214,46 @@ class RealDecideTests(BridgeTestCase):
         refreshed = [body for url, body in self.calls if url.endswith('/editMessageText') and body['message_id'] == 77][-1]
         self.assertTrue(refreshed['text'].startswith('2 open decisions in test-city for pat'), refreshed['text'])
         self.assertIn(f'sample-1#{later}', refreshed['text'])
+
+        # Real core stage-template moves ask: Report button delivers .md from last report note at/before entry.
+        cli('user', 'add', 'reviewer')
+        cli('group', 'add', 'humans', '--runner', 'manual', '--members', 'pat')
+        flow_file = root / 'report.flow'
+        flow_file.write_text('new -> review on done\nreview -> blocked on blocked\nblocked -> new on new | approved on approved\n')
+        cli('flow', 'set', 'repflow', '-f', str(flow_file))
+        stage_dir = home / 'flows' / 'repflow'
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        (stage_dir / 'blocked.md').write_text(
+            '## Ask\nkind: choice\nquestion: Which path?\ncontext:\n- Repair round (note on abc12345).\n'
+            'options:\nnew: Return to new.\napproved: Land it.\n')
+        cli('route', 'add', '--stage', 'blocked', '--group', 'humans')
+        cli('bead', 'create', 'Real report stage bead', '--id', 'rep-1', '--stage', 'new', '--meta', 'flow=repflow')
+        cli('bead', 'note', 'rep-1', 'Old builder plan on dead1111', actor='proposer')
+        cli('bead', 'done', 'rep-1', actor='proposer')
+        cli('bead', 'note', 'rep-1', 'Reviewer findings @ cafe2222', actor='reviewer')
+        cli('bead', 'done', 'rep-1', '--outcome', 'blocked', actor='reviewer')
+        cli('bead', 'note', 'rep-1', 'Yardmaster advice for rep-1', actor='pat')
+        stage_ask = client.call('Bead', dict(bead='rep-1', viewer='pat'))['asks'][0]
+        self.assertTrue(bridge.api_ask_card(dict(bead='rep-1', ask=stage_ask['ask'], key='rep-stage'))['delivered'])
+        rep_row = bridge.run_asks.get(bridge.run_asks.ident('rep-1', stage_ask['ask']))
+        tap(f"askcard:{rep_row['id']}:report:{rep_row['turn']}", rep_row['message_id'], 15)
+        self.assertEqual(len(documents), 1)
+        doc_fields, doc_name, doc_raw = documents[0]
+        self.assertEqual(doc_name, f"rep-1-ask-{stage_ask['ask']}.md")
+        self.assertEqual(json.loads(doc_fields['reply_parameters']), {'message_id': rep_row['message_id']})
+        doc_md = doc_raw.decode('utf-8')
+        self.assertIn('# rep-1 · Real report stage bead', doc_md)
+        self.assertIn('- Stage: blocked', doc_md)
+        self.assertIn('- Head: `cafe2222`', doc_md)
+        self.assertNotIn('Old builder plan', doc_md)
+        self.assertIn('Reviewer findings @ cafe2222', doc_md)
+        self.assertIn('Yardmaster advice for rep-1', doc_md)
+        self.assertIn(' +05', doc_md)
+        self.assertNotIn('"entry":', doc_md)
+        # Card & ask stayed open and unchanged; picking option 1 afterwards works.
+        self.assertEqual(client.call('Bead', dict(bead='rep-1', viewer='pat'))['asks'][0]['state'], 'open')
+        tap(f"askcard:{rep_row['id']}:pick1:{rep_row['turn']}", rep_row['message_id'], 16)
+        self.assertEqual(client.call('Bead', dict(bead='rep-1', viewer='pat'))['stage'], 'new')
 
 
 if __name__ == '__main__':

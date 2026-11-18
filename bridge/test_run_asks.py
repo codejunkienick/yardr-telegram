@@ -393,6 +393,7 @@ class NativeSocket:
         self.raw_queue = None
         self.event_head = 0
         self.raw_events = None
+        self.raw_notes = None
         self.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         owner = self
 
@@ -426,6 +427,18 @@ class NativeSocket:
                     result = owner.queue(args) if owner.raw_queue is None else owner.raw_queue
                 elif method == 'Head':
                     result = owner.event_head
+                elif method == 'Notes':
+                    if owner.mode == 'unreadable':
+                        self.send_error(503)
+                        return
+                    if owner.raw_notes is not None:
+                        result = owner.raw_notes
+                    else:
+                        bead = owner.beads_view().get(args[0])
+                        if bead is None:
+                            self.reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
+                            return
+                        result = owner.notes_for(bead)
                 elif method == 'Events':
                     events = owner.raw_events
                     if events is None:
@@ -498,6 +511,20 @@ class NativeSocket:
 
     def beads_view(self):
         return self.beads if self.beads is not None else {self.bead['id']: dict(self.bead, asks=[self.ask])}
+
+    def notes_for(self, bead):
+        notes = [dict(n) for n in bead.get('notes', [])]
+        seqs = {n['seq'] for n in notes}
+        for ask in bead.get('asks', []):
+            if ask['ask'] in seqs:
+                continue
+            payload = {k: ask[k] for k in ('question', 'to', 'context', 'options', 'recommend',
+                                           'why', 'about', 'run', 'stage', 'move', 'moves', 'entry')
+                       if k in ask}
+            notes.append(dict(bead=bead['id'], seq=ask['ask'], kind='ask', author=ask['asker'],
+                              at=ask['since'], text=json.dumps(payload)))
+        notes.sort(key=lambda item: item['seq'])
+        return notes
 
     def target(self, args):
         if self.beads is None:
@@ -575,6 +602,7 @@ class NativeCase(BridgeTestCase):
         self.native.mode = None
         self.native.event_head = 0
         self.native.raw_events = None
+        self.native.raw_notes = None
         self.native.user = dict(name='pat', role='operator', identities={'tgbridge': {'id': '123'}})
         self.native.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         self.calls.clear()
@@ -1270,7 +1298,7 @@ class NativeTests(NativeCase):
                       '3. You decide', 'leave it to proposer', 'Recommended: 1. Move',
                       'Why: The new location is ready.', 'About: related-1 · Related &lt;work&gt; · backlog'):
             self.assertIn(field, card['text'])
-        self.assertEqual(len(card['reply_markup']['inline_keyboard']), 4)
+        self.assertEqual(len(card['reply_markup']['inline_keyboard']), 5)
         self.assertFalse(self.bridge.api_ask_close(dict(ask_key='decision-1', decision='forged'))['delivered'])
         self.press('pick3')
         self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0, actor='pat', option=3, words='', weighed=False))])
@@ -2150,7 +2178,7 @@ class NativeTests(NativeCase):
                 self.assertIn('Tap Confirm within 60 s, or Cancel.', edit['text'])
                 buttons = edit['reply_markup']['inline_keyboard']
                 self.assertEqual([[b['text'] for b in row] for row in buttons],
-                                 [['Cancel', '✕ Decline'], ['✓ Confirm ask 7']])
+                                 [['Cancel', '✕ Decline'], ['✓ Confirm ask 7'], ['📄 Report']])
                 self.assertEqual(buttons[1][0]['callback_data'], f"runask:{self.row()['id']}:{confirm}")
                 self.assertEqual(len(buttons[1][0]['callback_data'].encode()), 56)
                 self.assertEqual(self.writes(), [])

@@ -1,5 +1,6 @@
 """Native asks: socket authority, complete cards and durable interactions."""
 import contextlib
+import datetime
 import fcntl
 import hashlib
 from html import escape, unescape
@@ -27,12 +28,15 @@ _markdown_spec.loader.exec_module(markdown)
 CAP = 3500
 PACK_PARTS = 128
 PACK_DOCUMENT_BYTES = 50 * 1024 * 1024
+REPORT_MAX_BYTES = 200 * 1024
+REPORT_TZ = datetime.timezone(datetime.timedelta(hours=5))
+REPORT_NON_REPORT_AUTHORS = frozenset({'yard', 'yardmaster'})
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
-         'NextStages', 'GetBead', 'Head', 'Events')
+         'NextStages', 'GetBead', 'Head', 'Events', 'Notes')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
@@ -2084,6 +2088,363 @@ def short(value, limit):
     return value[:end].rstrip() + '…'
 
 
+HEAD_SHA_RE = re.compile(
+    r'(?:\b(?:VERDICT:\s+\S+|STATUS:\s+\S+|on|(?i:head|commit):?|fixed|blocked,)\s+|@\s*)([0-9a-f]{7,40})\b')
+
+
+def format_report_time(value):
+    text_value = text(value, 'note.at')
+    normalized = text_value[:-1] + '+00:00' if text_value.endswith('Z') else text_value
+    try:
+        moment = datetime.datetime.fromisoformat(normalized)
+    except ValueError:
+        raise NativeError('invalid native note timestamp') from None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    return moment.astimezone(REPORT_TZ).strftime('%Y-%m-%d %H:%M:%S +05')
+
+
+def parse_note_json(raw_text):
+    try:
+        value = json.loads(raw_text, object_pairs_hook=strict_object)
+    except (ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def extract_report_head(notes):
+    """Return the newest commit SHA named in ordinary notes, or None."""
+    for note in reversed(notes):
+        if note['kind'] != 'note':
+            continue
+        matches = HEAD_SHA_RE.findall(note['text'])
+        if matches:
+            return matches[-1]
+    return None
+
+
+def render_ask_note(payload, fallback_question=''):
+    """Render a parsed ask note payload without raw JSON."""
+    if not isinstance(payload, dict):
+        return '[ask note]'
+    out = []
+    if isinstance(payload.get('to'), str) and payload['to']:
+        out.append('To: ' + payload['to'])
+    question = payload.get('question') if isinstance(payload.get('question'), str) else fallback_question
+    if question:
+        out.append('Question: ' + question)
+    if isinstance(payload.get('context'), list):
+        context_lines = [item for item in payload['context'] if isinstance(item, str) and item]
+        if context_lines:
+            out.extend(['', *context_lines])
+    options = payload.get('options')
+    if isinstance(options, list) and options:
+        out.extend(['', 'Options:'])
+        recommend = payload.get('recommend')
+        for index, option in enumerate(options, 1):
+            if not isinstance(option, dict):
+                continue
+            label = str(option.get('label', ''))
+            consequence = str(option.get('consequence', ''))
+            mark = ' (recommended)' if recommend == index else ''
+            line = f'{index}. {label}{mark}'
+            if consequence:
+                line += f' — {consequence}'
+            out.append(line)
+    if isinstance(payload.get('why'), str) and payload['why']:
+        out.append('Why: ' + payload['why'])
+    if isinstance(payload.get('run'), dict):
+        run = payload['run']
+        command = run.get('command') or (
+            ' '.join(str(x) for x in run['argv']) if isinstance(run.get('argv'), list) else '')
+        if command:
+            out.append(f'Run: `{command}`')
+        if isinstance(run.get('does'), list):
+            for item in run['does']:
+                if isinstance(item, str) and item:
+                    out.append('- ' + item)
+    if isinstance(payload.get('about'), list):
+        for about in payload['about']:
+            if isinstance(about, dict):
+                out.append(f"About: {about.get('id', '')} · {about.get('title', '')} · {about.get('stage', '')}")
+    if not options and not isinstance(payload.get('run'), dict):
+        out.append('(free-text answer)')
+    return '\n'.join(out) if out else '[ask note]'
+
+
+def render_answer_note(payload, asks_by_seq):
+    """Render a parsed answer note payload as question, options and pick, never raw JSON."""
+    if not isinstance(payload, dict):
+        return '[answer note]'
+    ask_seq = payload.get('ask')
+    target = asks_by_seq.get(ask_seq) if type(ask_seq) is int else None
+    prefix = f'Ask #{ask_seq}' if type(ask_seq) is int else 'Ask'
+    out = []
+    if isinstance(target, dict):
+        if isinstance(target.get('question'), str) and target['question']:
+            out.append('Question: ' + target['question'])
+        options = target.get('options')
+        if isinstance(options, list) and options:
+            labels = [f"{i}. {opt.get('label', '')}" for i, opt in enumerate(options, 1) if isinstance(opt, dict)]
+            if labels:
+                out.append('Options: ' + '; '.join(labels))
+    if payload.get('take_back') is True:
+        words = payload.get('words', '')
+        out.append(f'{prefix} taken back' + (f': {words}' if isinstance(words, str) and words else ''))
+    elif payload.get('later') is True:
+        out.append(f'{prefix} put aside')
+    elif payload.get('decline') is True:
+        words = payload.get('words', '')
+        out.append(f'{prefix} declined' + (f': {words}' if isinstance(words, str) and words else ''))
+    elif isinstance(payload.get('ran'), dict):
+        ran = payload['ran']
+        argv = ' '.join(str(x) for x in ran['argv']) if isinstance(ran.get('argv'), list) else ''
+        out.append(f'{prefix} approved' + (f': `{argv}`' if argv else ''))
+        if isinstance(ran.get('result'), str) and ran['result']:
+            out.append('Result: ' + ran['result'])
+    else:
+        option_num = payload.get('option')
+        words = payload.get('words', '')
+        if type(option_num) is int and option_num > 0:
+            label = ''
+            if isinstance(target, dict) and isinstance(target.get('options'), list) and 1 <= option_num <= len(target['options']):
+                opt = target['options'][option_num - 1]
+                if isinstance(opt, dict) and isinstance(opt.get('label'), str):
+                    label = opt['label']
+            pick = f'Pick: {option_num}. {label}' if label else f'Pick: {option_num}'
+        elif isinstance(payload.get('secret'), list):
+            pick = 'Secret given: ' + ', '.join(str(x) for x in payload['secret'])
+        else:
+            pick = 'Answered'
+        out.append(f'{prefix} — {pick}')
+        if isinstance(words, str) and words:
+            out.append('Words: ' + words)
+    return '\n'.join(out)
+
+
+def render_report_note(note, asks_by_seq):
+    """Render one note entry as a Markdown section."""
+    kind = note['kind']
+    stamp = format_report_time(note['at'])
+    tag = '' if kind == 'note' else f' ({kind})'
+    heading = f"## Note #{note['seq']}{tag} · {note['author']} · {stamp}"
+    if kind == 'ask':
+        body = render_ask_note(asks_by_seq.get(note['seq']))
+    elif kind == 'answer':
+        body = render_answer_note(parse_note_json(note['text']), asks_by_seq)
+    else:
+        body = note['text']
+    return f'{heading}\n\n{body}'
+
+
+def _truncate_utf8(value, max_bytes):
+    if max_bytes <= 0:
+        return '', len(value.encode('utf-8'))
+    encoded = value.encode('utf-8')
+    if len(encoded) <= max_bytes:
+        return value, 0
+    cut = encoded[:max_bytes].decode('utf-8', errors='ignore')
+    return cut, len(encoded) - len(cut.encode('utf-8'))
+
+
+REPORT_FINDING_REF_RE = re.compile(
+    r'\b(?:review\s+note|review\s+report|report\s+note|finding\s+note)\s+#?([1-9][0-9]*)\b', re.I)
+
+
+def find_finding_note(at_or_before, notes_by_seq, non_report_authors):
+    """Most recent substantive review report at or before cutoff (VERDICT: FINDINGS or cited by a repair/status note)."""
+    verdict_note = None
+    for note in reversed(at_or_before):
+        if (note['kind'] == 'note' and note['author'] not in non_report_authors
+                and note['text'].lstrip().startswith('VERDICT: FINDINGS')):
+            verdict_note = note
+            break
+    named_note = None
+    for note in reversed(at_or_before):
+        if note['kind'] != 'note' or note['author'] in non_report_authors:
+            continue
+        if not any(tag in note['text'] for tag in ('Repair', 'repair', 'STATUS:', 'fixed')):
+            continue
+        for match in REPORT_FINDING_REF_RE.findall(note['text']):
+            seq = int(match)
+            target = notes_by_seq.get(seq)
+            if (target is not None and target['seq'] < note['seq']
+                    and target['kind'] == 'note' and target['author'] not in non_report_authors):
+                named_note = target
+                break
+        if named_note is not None:
+            break
+    if verdict_note is not None and (named_note is None or verdict_note['seq'] >= named_note['seq']):
+        return verdict_note
+    return named_note
+
+
+def how_to_read_line(finding_note, present_notes, operator):
+    """One-line key naming present finding -> answer -> reviewer status -> recommendation seqs."""
+    non_report = REPORT_NON_REPORT_AUTHORS | {operator}
+    finding_seq = finding_note['seq'] if finding_note is not None else None
+    answer_note = None
+    status_note = None
+    rec_note = None
+    for note in present_notes:
+        seq = note['seq']
+        if finding_seq is not None and seq == finding_seq:
+            continue
+        stripped = note['text'].lstrip()
+        if note['kind'] == 'note' and note['author'] == 'yardmaster':
+            if not stripped.startswith('body changed:'):
+                if rec_note is None or 'recommend' in stripped.lower() or 'recommend' not in rec_note['text'].lower():
+                    rec_note = note
+        elif note['kind'] == 'note' and stripped.startswith(('STATUS:', 'VERDICT:')):
+            status_note = note
+        elif finding_seq is None or seq > finding_seq:
+            if (note['kind'] == 'answer'
+                    or (note['kind'] == 'note' and note['author'] not in non_report)):
+                answer_note = note
+    if finding_seq is None and status_note is None and rec_note is None:
+        return ''
+    parts = []
+    if finding_seq is not None:
+        parts.append(f'finding #{finding_seq}')
+    if answer_note is not None:
+        parts.append(f"answer #{answer_note['seq']}")
+    if status_note is not None:
+        parts.append(f"reviewer status #{status_note['seq']}")
+    if rec_note is not None:
+        parts.append(f"recommendation #{rec_note['seq']}")
+    return ' -> '.join(parts)
+
+
+def format_report_markdown(bead_id, title, stage, ask_number, question, notes, selected_notes, asks_by_seq,
+                           finding_note=None, operator='', max_bytes=REPORT_MAX_BYTES):
+    """Render the decision report Markdown document bounded by max_bytes UTF-8."""
+    head_source = ([finding_note] if finding_note is not None else []) + (selected_notes or notes)
+    head = extract_report_head(head_source)
+    one_line = lambda value: ' '.join(str(value).split())
+    base_header_lines = [
+        f'# {bead_id} · {one_line(title)}',
+        '',
+        f'- Stage: {one_line(stage) or "(unknown)"}',
+        f'- Ask: #{ask_number}',
+        f'- Question: {one_line(question)}',
+    ]
+    if head:
+        base_header_lines.append(f'- Head: `{head}`')
+
+    remaining = [n for n in selected_notes if finding_note is None or n['seq'] != finding_note['seq']]
+    finding_section = (
+        '## Finding being answered\n\n' + render_report_note(finding_note, asks_by_seq)
+        if finding_note is not None else None
+    )
+    sections = [(note, render_report_note(note, asks_by_seq)) for note in remaining]
+
+    def assemble(kept_finding, kept_sections, notice='', finding_text=None):
+        key = how_to_read_line(kept_finding, [n for n, _ in kept_sections], operator)
+        lines_out = list(base_header_lines)
+        if key:
+            lines_out.append(f'- How to read: {key}')
+        blocks = ['\n'.join(lines_out)]
+        if notice:
+            blocks.append(notice)
+        if kept_finding is not None and finding_section is not None:
+            blocks.append(finding_section if finding_text is None else finding_text)
+        if kept_sections:
+            body_text = '\n\n'.join(section for _, section in kept_sections)
+            if kept_finding is not None:
+                body_text = '## Notes since stage entry\n\n' + body_text
+            blocks.append(body_text)
+        elif kept_finding is None:
+            blocks.append('(No notes on this bead.)')
+        return '\n\n'.join(blocks) + '\n'
+
+    full = assemble(finding_note, sections)
+    if len(full.encode('utf-8')) <= max_bytes:
+        return full.encode('utf-8')
+    if not sections and finding_note is None:
+        trimmed, _ = _truncate_utf8(full, max_bytes)
+        return trimmed.encode('utf-8')
+
+    kept = list(sections)
+    kept_finding = finding_note
+    dropped = []
+
+    def drop_notice():
+        cut_bytes = sum(len(section.encode('utf-8')) for _, section in dropped)
+        seqs = sorted(note['seq'] for note, _ in dropped)
+        seq_range = f'#{seqs[0]}' if len(seqs) == 1 else f'#{seqs[0]}..#{seqs[-1]}'
+        return (f"> Truncated to {max_bytes} bytes: omitted {len(dropped)} older "
+                f"note{'s' if len(dropped) != 1 else ''} ({seq_range}, {cut_bytes} bytes); "
+                f"kept {len(kept) + (1 if kept_finding else 0)} newest note"
+                f"{'s' if (len(kept) + (1 if kept_finding else 0)) != 1 else ''}.")
+
+    while len(kept) > 1:
+        dropped.append(kept.pop(0))
+        candidate = assemble(kept_finding, kept, drop_notice())
+        if len(candidate.encode('utf-8')) <= max_bytes:
+            return candidate.encode('utf-8')
+
+    if kept_finding is not None and kept:
+        # The finding is never omitted: share the space between it and the newest note, truncating text.
+        newest_note, newest_section = kept[0]
+        finding_seq = kept_finding['seq']
+        omitted = drop_notice() if dropped else ''
+        size = lambda text: len(text.encode('utf-8'))
+        full_notice = '\n'.join(filter(None, [
+            omitted,
+            f'> Finding #{finding_seq} truncated, {size(finding_section)} bytes cut, full text in note {finding_seq}.',
+            f'> Note #{newest_note["seq"]} truncated, {size(newest_section)} bytes cut, full text in note {newest_note["seq"]}.',
+        ]))
+        budget = max_bytes - size(assemble(kept_finding, [(newest_note, '')], full_notice, finding_text='')) - 64
+        for _ in range(8):
+            nf, nn = size(finding_section), size(newest_section)
+            newest_budget = min(nn, max(budget // 2, budget - nf))
+            finding_budget = min(nf, budget - newest_budget)
+            newest_budget = min(nn, budget - finding_budget)
+            finding_text, finding_cut = _truncate_utf8(finding_section, finding_budget)
+            newest_text, newest_cut = _truncate_utf8(newest_section, newest_budget)
+            notices = [omitted]
+            if finding_cut:
+                notices.append(f'> Finding #{finding_seq} truncated, {finding_cut} bytes cut, full text in note {finding_seq}.')
+            if newest_cut:
+                notices.append(f'> Note #{newest_note["seq"]} truncated, {newest_cut} bytes cut, full text in note {newest_note["seq"]}.')
+            notice = '\n'.join(filter(None, notices))
+            if not omitted and notice:
+                notice = f'> Truncated to {max_bytes} bytes.\n' + notice
+            candidate = assemble(kept_finding, [(newest_note, newest_text)], notice, finding_text=finding_text)
+            if size(candidate) <= max_bytes:
+                return candidate.encode('utf-8')
+            budget -= size(candidate) - max_bytes + 16
+
+    single_note, single_section = kept[0] if kept else (kept_finding, finding_section)
+    omitted_prefix = ''
+    if dropped:
+        cut_bytes = sum(len(section.encode('utf-8')) for _, section in dropped)
+        seqs = sorted(note['seq'] for note, _ in dropped)
+        seq_range = f'#{seqs[0]}' if len(seqs) == 1 else f'#{seqs[0]}..#{seqs[-1]}'
+        omitted_prefix = (f"omitted {len(dropped)} older note{'s' if len(dropped) != 1 else ''} "
+                          f"({seq_range}, {cut_bytes} bytes); ")
+    single_seq = single_note['seq']
+    key = how_to_read_line(None, [single_note], operator)
+    hdr_lines = list(base_header_lines) + ([f'- How to read: {key}'] if key else [])
+    hdr = '\n'.join(hdr_lines)
+    cut_note_bytes = len(single_section.encode('utf-8'))
+    for _ in range(3):
+        notice = (f"> Truncated to {max_bytes} bytes: {omitted_prefix}"
+                  f"truncated note #{single_seq} by {cut_note_bytes} bytes.")
+        avail = max_bytes - len((hdr + '\n\n' + notice + '\n\n\n').encode('utf-8'))
+        body_cut, actual_cut = _truncate_utf8(single_section, avail)
+        candidate = hdr + '\n\n' + notice + '\n\n' + body_cut + '\n'
+        if actual_cut == cut_note_bytes and len(candidate.encode('utf-8')) <= max_bytes:
+            return candidate.encode('utf-8')
+        cut_note_bytes = actual_cut
+    notice = (f"> Truncated to {max_bytes} bytes: {omitted_prefix}"
+              f"truncated note #{single_seq} by {cut_note_bytes} bytes.")
+    avail = max_bytes - len((hdr + '\n\n' + notice + '\n\n\n').encode('utf-8'))
+    body_cut, _ = _truncate_utf8(single_section, avail)
+    final_cut, _ = _truncate_utf8(hdr + '\n\n' + notice + '\n\n' + body_cut + '\n', max_bytes)
+    return final_cut.encode('utf-8')
+
+
 class RunAsks:
     table = 'run_asks'
 
@@ -2158,6 +2519,22 @@ class RunAsks:
                 db.execute('INSERT OR REPLACE INTO deliveries VALUES (?,?,?)', (key, fingerprint, canonical(receipt)))
             return floor
 
+    def _validate_events(self, events, bead_id, limit, context, suffix=''):
+        if not isinstance(events, list) or len(events) > limit:
+            raise NativeError(f'invalid native {context} Events response' + suffix)
+        previous = 0
+        for event in events:
+            required = {'seq', 'id', 'bead', 'kind', 'actor', 'at'}
+            if (not isinstance(event, dict) or not required <= set(event) or set(event) - required - {'data'}
+                    or type(event['seq']) is not int or not previous < event['seq'] < 2**64
+                    or event['id'] != str(event['seq']) or event['bead'] != bead_id
+                    or any(not isinstance(event[field], str) or not event[field]
+                           for field in ('kind', 'actor', 'at'))
+                    or not isinstance(event.get('data', {}), dict)):
+                raise NativeError(f'invalid native {context} Events row' + suffix)
+            previous = event['seq']
+        return events
+
     def require_depot_cutover(self, bead_id, ask):
         run = ask.get('run')
         if not isinstance(run, dict) or not depot_pack(run.get('pack')):
@@ -2166,20 +2543,10 @@ class RunAsks:
         limit = 64
         while True:
             # Core returns the newest bead events in ascending sequence order.
-            events = self.client.call('Events', [bead_id, limit])
-            if not isinstance(events, list) or len(events) > limit:
-                raise NativeError('invalid native depot creation Events response' + FALLBACK)
-            previous, found = 0, []
+            events = self._validate_events(
+                self.client.call('Events', [bead_id, limit]), bead_id, limit, 'depot creation', FALLBACK)
+            found = []
             for event in events:
-                required = {'seq', 'id', 'bead', 'kind', 'actor', 'at'}
-                if (not isinstance(event, dict) or not required <= set(event) or set(event) - required - {'data'}
-                        or type(event['seq']) is not int or not previous < event['seq'] < 2**64
-                        or event['id'] != str(event['seq']) or event['bead'] != bead_id
-                        or any(not isinstance(event[field], str) or not event[field]
-                               for field in ('kind', 'actor', 'at'))
-                        or not isinstance(event.get('data', {}), dict)):
-                    raise NativeError('invalid native depot creation Events row' + FALLBACK)
-                previous = event['seq']
                 data = event.get('data', {})
                 if event['kind'] == 'noted' and data.get('note') == ask['ask']:
                     if (set(data) != {'note'} or type(data['note']) is not int
@@ -2318,16 +2685,21 @@ class RunAsks:
         if row.get('kind') == 'decision':
             buttons = [[dict(text=f"Choose {index}", callback_data=f"askcard:{row['id']}:pick{index}:{row['turn']}")]
                        for index, option in enumerate(row['options'], 1)]
-            return buttons + [[dict(text=label, callback_data=f"askcard:{row['id']}:{action}:{row['turn']}")
-                               for label, action in [('Later', 'later'), ('✕ Decline', 'decline')]]]
+            return buttons + [
+                [dict(text=label, callback_data=f"askcard:{row['id']}:{action}:{row['turn']}")
+                 for label, action in [('Later', 'later'), ('✕ Decline', 'decline')]],
+                [dict(text='📄 Report', callback_data=f"askcard:{row['id']}:report:{row['turn']}")],
+            ]
+        report_row = [dict(text='📄 Report', callback_data=f"runask:{row['id']}:report")]
         if row.get('general') and (row.get('uncertain') or row.get('native_expired')):
-            return [[dict(text='✕ Decline', callback_data=f"runask:{row['id']}:decline")]]
+            return [[dict(text='✕ Decline', callback_data=f"runask:{row['id']}:decline")], report_row]
         actions = [('Cancel', 'cancel')] if row.get('pending') else [(f"✓ Approve in {self.config['yard']}", 'approve')]
         actions.append(('✕ Decline', 'decline'))
         buttons = [[dict(text=label, callback_data=f"runask:{row['id']}:{action}") for label, action in actions]]
         if (row.get('pending') or {}).get('nonce'):
             buttons.append([dict(text=f"✓ Confirm ask {row['ask']}",
                                  callback_data=f"runask:{row['id']}:confirm:{row['pending']['nonce']}")])
+        buttons.append(report_row)
         return buttons
 
     def confirm_step(self, row, ask):
@@ -2417,7 +2789,7 @@ class RunAsks:
     def card(self, bead, ask, kind, proposal):
         """(plain, html, bundle) of a new card; one Telegram cannot show whole raises a FALLBACK error."""
         if kind == 'decision':
-            if len(ask.get('options') or []) + 2 > self.bridge.COMMAND_KEYBOARD_MAX_BUTTONS:
+            if len(ask.get('options') or []) + 3 > self.bridge.COMMAND_KEYBOARD_MAX_BUTTONS:
                 raise NativeError('ask_card_too_many_options' + FALLBACK)
             return (*render_decision(self.config, bead, ask), None)
         if 'general' in ask['run']:
@@ -2732,7 +3104,7 @@ class RunAsks:
         return True
 
     def callback(self, update_id, query):
-        match = re.fullmatch(r'(runask|askcard):([0-9a-f]{24}):(approve|decline|cancel|confirm|later|pick[1-9][0-9]{0,3})(?::([0-9a-f]{16}|0|[1-9][0-9]{0,18}))?', query.get('data', ''))
+        match = re.fullmatch(r'(runask|askcard):([0-9a-f]{24}):(approve|decline|cancel|confirm|later|report|pick[1-9][0-9]{0,3})(?::([0-9a-f]{16}|0|[1-9][0-9]{0,18}))?', query.get('data', ''))
         notice = 'Native card not authorized'
         try:
             with self.lock():
@@ -2752,18 +3124,18 @@ class RunAsks:
                 if match[1] != ('askcard' if decision else 'runask'):
                     return
                 if decision:
-                    if action not in ('later', 'decline') and not (action.startswith('pick') and 1 <= int(action[4:]) <= len(row['options'])):
+                    if action not in ('later', 'decline', 'report') and not (action.startswith('pick') and 1 <= int(action[4:]) <= len(row['options'])):
                         return
                 elif action == 'confirm':
                     if not re.fullmatch(r'[0-9a-f]{16}', match[4] or ''):
                         return
-                elif match[4] is not None or action not in ('approve', 'decline', 'cancel'):
+                elif match[4] is not None or action not in ('approve', 'decline', 'cancel', 'report'):
                     return
                 if not self.authorized_message(row, query['message']):
                     if not decision:
                         return
                     notice = RECONCILE
-                    if not self.reconcile_callback(row, query['message'], int(match[4]) if match[4] is not None else None):
+                    if action == 'report' or not self.reconcile_callback(row, query['message'], int(match[4]) if match[4] is not None else None):
                         return
                 input_turn = None
                 if decision:
@@ -2772,6 +3144,13 @@ class RunAsks:
                         notice = 'Native card message binding ambiguous'
                         return
                     input_turn = bindings[0][1]
+                if action == 'report':
+                    if row['binding'] != self.binding():
+                        raise NativeError('run_ask_wrong_yard_or_pairing')
+                    if decision and (input_turn is None or match[4] is None or int(match[4]) != input_turn):
+                        return
+                    notice = self.send_report(row, query['message']['message_id'], update_id)
+                    return
                 ask = self.ensure(row)
                 if not self.claim_update(update_id):
                     notice = 'Already handled'
@@ -2821,6 +3200,138 @@ class RunAsks:
             notice = str(error)
         finally:
             self.bridge._answer_callback(update_id, query['id'], notice[:180], key=f'runask:{update_id}:answer')
+
+    def validate_notes(self, raw_notes, bead_id):
+        if not isinstance(raw_notes, list):
+            raise NativeError('invalid native Notes response')
+        out = []
+        for item in raw_notes:
+            if (not isinstance(item, dict) or type(item.get('seq')) is not int or item['seq'] <= 0
+                    or not isinstance(item.get('kind'), str) or not item['kind']
+                    or (item.get('bead') is not None and item['bead'] != bead_id)):
+                raise NativeError('invalid native Notes row')
+            out.append(dict(
+                seq=item['seq'], kind=item['kind'],
+                author=text(item.get('author'), 'note.author'),
+                text=text(item.get('text'), 'note.text', controls=True).replace('\r\n', '\n'),
+                at=text(item.get('at'), 'note.at'),
+            ))
+        out.sort(key=lambda item: item['seq'])
+        return out
+
+    def report_events(self, bead_id, entry_seq, notes_by_seq, non_report_authors):
+        limit = 64
+        while True:
+            events = self._validate_events(
+                self.client.call('Events', [bead_id, limit]), bead_id, limit, 'report')
+            noted_at_or_before = {
+                event['data']['note'] for event in events
+                if event['seq'] <= entry_seq and event['kind'] == 'noted'
+                and type(event.get('data', {}).get('note')) is int}
+            has_report = any(
+                seq in notes_by_seq and notes_by_seq[seq]['kind'] == 'note'
+                and notes_by_seq[seq]['author'] not in non_report_authors
+                for seq in noted_at_or_before)
+            if has_report or not events or len(events) < limit or limit >= 8192:
+                if events and events[0]['seq'] > entry_seq and not noted_at_or_before:
+                    return None
+                return noted_at_or_before
+            limit *= 2
+
+    def select_report_notes(self, notes, ask_number, bead_id):
+        asks_by_seq = {}
+        notes_by_seq = {}
+        for note in notes:
+            notes_by_seq[note['seq']] = note
+            if note['kind'] == 'ask':
+                parsed = parse_note_json(note['text'])
+                if parsed is not None:
+                    asks_by_seq[note['seq']] = parsed
+        ask_meta = asks_by_seq.get(ask_number) or {}
+        non_report_authors = REPORT_NON_REPORT_AUTHORS | {self.config['yardr_operator']}
+        entry_seq = ask_meta.get('entry')
+        cutoff_seqs = None
+        if type(entry_seq) is int and entry_seq > 0:
+            cutoff_seqs = self.report_events(bead_id, entry_seq, notes_by_seq, non_report_authors)
+        if cutoff_seqs is None:
+            at_or_before = [note for note in notes if note['seq'] <= ask_number]
+        else:
+            at_or_before = [note for note in notes if note['seq'] in cutoff_seqs]
+        start_seq = None
+        for note in reversed(at_or_before):
+            if note['kind'] == 'note' and note['author'] not in non_report_authors:
+                start_seq = note['seq']
+                break
+        if start_seq is None:
+            for note in reversed(at_or_before):
+                if note['kind'] == 'note':
+                    start_seq = note['seq']
+                    break
+        if start_seq is None:
+            if ask_number in notes_by_seq:
+                start_seq = ask_number
+            elif notes:
+                start_seq = notes[0]['seq']
+        selected = [note for note in notes if start_seq is not None and note['seq'] >= start_seq]
+        finding_note = find_finding_note(at_or_before, notes_by_seq, non_report_authors)
+        return selected, asks_by_seq, ask_meta, finding_note
+
+    def build_report(self, bead_id, ask_number):
+        verify_operator(self.client, self.config)
+        bead = self.client.call('Bead', dict(bead=bead_id, viewer=self.config['yardr_operator']))
+        if not isinstance(bead, dict) or bead.get('id') != bead_id or not isinstance(bead.get('asks'), list):
+            raise NativeError('invalid native Bead response')
+        found = [a for a in bead['asks'] if isinstance(a, dict) and a.get('ask') == ask_number]
+        if len(found) != 1:
+            raise NativeError('run_ask_not_found')
+        ask = found[0]
+        notes = self.validate_notes(self.client.call('Notes', [bead_id]), bead_id)
+        selected, asks_by_seq, ask_meta, finding_note = self.select_report_notes(notes, ask_number, bead_id)
+        stage = bead.get('stage') or ask_meta.get('stage') or ''
+        title = text(bead.get('title'), 'bead.title')
+        question = text(ask.get('question'), 'question')
+        return format_report_markdown(
+            bead_id, title, stage, ask_number, question, notes, selected, asks_by_seq,
+            finding_note=finding_note, operator=self.config['yardr_operator'])
+
+    def send_report(self, row, message_id, update_id):
+        b = self.bridge
+        safe_bead = re.sub(r'[^A-Za-z0-9._-]', '_', row['bead'])
+        filename = f"{safe_bead}-ask-{row['ask']}.md"
+        key = f"runask:{row['id']}:report:{message_id}:{update_id}"
+        identity = dict(purpose='ask_report', row=row['id'], bead=row['bead'], ask=row['ask'],
+                        message_id=message_id, update_id=update_id, conversation=row['conversation'])
+        extra = {} if self.thread(row) is None else dict(message_thread_id=self.thread(row))
+        yard_error = []
+
+        def deliver(pending):
+            try:
+                content = self.build_report(row['bead'], row['ask'])
+            except NativeError as error:
+                yard_error.append(error)
+                return b.not_sent()
+            with tempfile.TemporaryDirectory(prefix='ask-report-') as tmpdir:
+                Path(tmpdir).chmod(0o700)
+                path = Path(tmpdir) / filename
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    os.write(fd, content)
+                finally:
+                    os.close(fd)
+                return b._deliver_attachment(
+                    dict(kind='document', path=str(path)), '', message_id, pending,
+                    extra=extra, text_fallback=False)
+
+        receipt = b._reserve_and_deliver(key, identity, deliver)
+        if receipt.get('delivered') is True:
+            return 'Report sent'
+        if yard_error:
+            reason = self.decide_error(yard_error[0])
+        else:
+            reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
+        self.decide_notice(f'{key}:error', f"Could not send report for {row['bead']}#{row['ask']}: {reason}",
+                           self.thread(row), (message_id, row['conversation']))
+        return f'Report not sent: {reason}'
 
     def reply(self, update_id, message):
         reply = message.get('reply_to_message')

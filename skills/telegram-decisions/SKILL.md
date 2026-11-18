@@ -137,9 +137,31 @@ Supported proposals and their mechanics:
   bundle. See [Source-add declaration and command review](../../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
 - Source-kind `pack apply <absolute-directory> --sha256 <digest>` or embedded
   `pack apply <name>`. See [Source pack bundles](../../bridge/OPERATIONS.md#source-pack-bundles).
-- Refused: `skill add`; depot-kind pack plans; secret/setup/identity/depot_push
+- Refused: the removed specific `skill add` payload; depot-kind pack plans; secret/setup/identity/depot_push
   payloads; parameter inputs; crew-add prompts; unfamiliar YAML/metadata or
   carried payloads outside the supported bundles.
+
+Native general cards use the same `run_ask` grant and `/decide`. The real
+operator must already have enabled `general_cards` in a terminal; only the
+native yardmaster can file verbatim `--run-word`/`G:` words. Do not try to
+enable it by card or substitute chat-button authority. Specific cards keep
+precedence. Public `5dc0bfca`/`52e22d57` need no fork endpoint; a command they
+lack relays native failure.
+
+General review is one complete document with every escaped argv word,
+rune/UTF-8 byte counts and a bound compact strong-code card. Read all words,
+then Approve and Confirm within 60 seconds. Native one-hour expiry is a
+separate core check; the only public expiry fact is its local-time sentence.
+File operands are unchecked references: no captured bytes/hash or file
+staleness guarantee. No rollback is shown, and output goes to the asker.
+Do not put secrets on a card. A general `skill add` is this unchecked
+contract, never the removed captured skill card. Optional local commands
+remain optional.
+
+Delivery uncertainty, lost approval replies and restarts never authorize
+refiling or command replay. Relay canonical pending, output/failure or
+UNKNOWN; independently inspect unknown effects before seeking a fresh
+human decision. See [native general cards](../../bridge/OPERATIONS.md#native-general-cards).
 
 Use the yard cards or a terminal for refused proposals. Invalid source packs
 return `run_ask_invalid_source_pack_use_terminal` with

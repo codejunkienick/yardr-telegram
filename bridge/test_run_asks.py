@@ -1,5 +1,6 @@
 """Native paths through the bridge, a framed Unix RPC and fake Telegram."""
 import copy
+import fcntl
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -51,6 +52,23 @@ def proposal():
                 run=dict(argv=['depot', 'test', 'web'], command='yardr depot test web', description='Set its test',
                          does=['current: make test', 'proposed: sh scripts/test.sh'],
                          back='propose the old command', back_by='an operator'))
+
+
+def general_proposal(words=None):
+    words = ['version'] if words is None else words
+    command = 'yardr ' + ' '.join("'" + w.replace("'", "'\\''") + "'" if '[' in w or ']' in w else w for w in words)
+    does = ['The yard has not checked this command: approving runs it as typed, as the operator.',
+            'No way back is shown: nothing here says how to undo it.',
+            'It is good until 12:34:56.', 'What the command prints is told to the asker.']
+    for i, w in enumerate(words, 1):
+        shown = w if len(w) <= 128 else w[:64] + f'…[+{len(w)-128} cut]…' + w[-64:]
+        if w.removeprefix('--set=').startswith(('log=', 'prompt=')):
+            shown += ' (not read by the yard)'
+        does.append(f'{i}: ({len(w)}) {shown}')
+    return dict(proposal(), asker='yardmaster', run=dict(argv=words[:], general=words[:], command=command,
+        description='a yardr command no card fits, shown whole and unchecked', does=does, back=''),
+        weight=[{'class': 'code', 'line': 'brings a program the yard will run: '
+                 'a yardr command no card fits, shown whole and unchecked: ' + ' '.join(command.split())}])
 
 
 def decision():
@@ -4703,9 +4721,10 @@ class NativeTests(NativeCase):
     def bundle_document_delivery(self):
         original = self.bridge.request_multipart
         failures = ('transient', 'ambiguous', 'size', 'missing-size', 'boolean-size', 'rejected', 'crash-after-receipt')
-        for extension, failure in ((ext, failure) for ext in ('.md', '.txt') for failure in failures):
-            with self.subTest(document_failure=failure, extension=extension):
-                self.reset_native(pack_proposal())
+        for extension, failure, factory in ((ext, failure, factory) for factory in (pack_proposal, general_proposal)
+                                            for ext in ('.md', '.txt') for failure in failures):
+            with self.subTest(document_failure=failure, extension=extension, payload=factory.__name__):
+                self.reset_native(factory())
                 if extension == '.txt':
                     with patch.object(self.bridge.run_asks, 'send_card', return_value=self.bridge.not_sent()):
                         self.assertFalse(self.create()['delivered'])
@@ -5188,7 +5207,76 @@ class NativeTests(NativeCase):
         self.assertFalse(self.create()['delivered'])
         self.assertEqual(self.sent_count, 0)
 
+    def exercise_general_review(self):
+        words = ['skill', 'add', '/synthetic/unread.md', 'long spaced café 雪 😀 " <>& ` ' * 12, '', 'prompt=/synthetic/prompt.md']
+        base = general_proposal(words)
+        self.reset_native(copy.deepcopy(base))
+        self.assertTrue(self.create()['delivered'])
+        self.assertEqual(n.queue_kind(queue_entry(base)), ('run', True))
+        self.assertEqual(len(self.documents), 1)
+        review = self.documents[-1][2].decode()
+        for i, word in enumerate(words, 1):
+            self.assertIn(f'Word {i} · {len(word)} runes · {len(word.encode("utf-8"))} UTF-8 bytes', review)
+            self.assertIn('\n' + json.dumps(word, ensure_ascii=True) + '\n', review)
+        card = b.html_visible_text(self.calls[-1][1]['text'])[0]
+        self.assertIn('not captured, hashed or reviewed file bytes', card)
+        self.assertIn('good until 12:34:56', card)
+        self.assertNotIn('exactly-once', card)
+        self.press()
+        self.assertEqual(self.writes(), [])
+        self.assertIn('complete verbatim argv in review-', self.edits()[-1]['text'])
+        self.press('confirm', uid=41)
+        self.assertEqual(len(self.writes()), 1)
+        self.assertTrue(self.writes()[0][1]['weighed'])
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.press(uid=42)
+        self.assertEqual(len(self.writes()), 1)
+        drifted = copy.deepcopy(base)
+        drifted['run']['general'][3] += ' changed'
+        drifted['run']['argv'][3] += ' changed'
+        self.assert_bound_source_change_stales(base, drifted)
+        self.reset_native(copy.deepcopy(base))
+        self.assertTrue(self.create()['delivered'])
+        delivered = self.sent_count
+        self.assertTrue(self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='general-repost'))['delivered'])
+        self.assertEqual(self.sent_count, delivered)
+        self.native.ask = dict(copy.deepcopy(base), ask=8)
+        collision = self.bridge.api_run_ask(dict(bead='sample-1', ask=8, key='native-1'))
+        self.assertFalse(collision['delivered'])
+        self.assertEqual(collision['reason'], 'idempotency_key_conflict')
+        self.assertEqual(self.sent_count, delivered)
+
+        mutations = [
+
+            lambda a: a['run'].update(general=None), lambda a: a['run'].update(general=[]),
+            lambda a: a['run'].update(general='version'), lambda a: a['run'].update(argv=['version']),
+            lambda a: a['run'].update(command='yardr harmless'), lambda a: a['run'].update(description='checked'),
+            lambda a: a['run'].update(back='undo'), lambda a: a['run'].update(back_by='pat'),
+            lambda a: a['run'].update(carried=[]), lambda a: a['run'].update(seen={}),
+            lambda a: a.update(weight=[]), lambda a: a['weight'][0].update(line='safe'),
+            lambda a: a['run']['does'].__setitem__(2, 'It is good until 99:99:99.'),
+            lambda a: a['run']['does'].__setitem__(4, '1: (5) other'),
+            lambda a: a['run']['does'].append('new unreviewed field'),
+            lambda a: a['run']['general'].__setitem__(2, '\ud800'),
+        ]
+        for mutate in mutations:
+            changed = copy.deepcopy(base)
+            mutate(changed)
+            self.reset_native(changed)
+            receipt = self.create()
+            self.assertFalse(receipt['delivered'], receipt)
+            self.assertEqual((self.sent_count, self.writes()), (0, []))
+            self.assertEqual(n.queue_kind(queue_entry(changed)), ('terminal-only run', False))
+        for key in ('source', 'pack', 'group', 'crew', 'skill'):
+            self.reset_native(general_proposal([key, 'add', 'unknown local-only command']))
+            self.assertTrue(self.create()['delivered'], key)
+        self.reset_native(copy.deepcopy(base))
+        with patch.object(n, 'PACK_DOCUMENT_BYTES', 1):
+            self.assertFalse(self.create()['delivered'])
+        self.assertEqual((self.sent_count, self.writes()), (0, []))
+
     def test_upstream_run_rows_show_whole_or_refuse_before_send(self):
+        self.exercise_general_review()
         for name in UPSTREAM_WHOLE:
             with self.subTest(row=name):
                 ask = upstream_proposal(name)
@@ -5328,7 +5416,7 @@ class NativeTests(NativeCase):
                 self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
 
     def test_bundle_drift_rechecks_during_transport_retry_and_repost(self):
-        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal, general_proposal):
             with self.subTest(payload=factory.__name__):
                 original = self.bridge.request
                 multipart = self.bridge.request_multipart
@@ -5379,7 +5467,7 @@ class NativeTests(NativeCase):
                 self.bridge.request_multipart = multipart
 
     def test_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
-        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal, general_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.assertTrue(self.create()['delivered'])
@@ -5500,6 +5588,70 @@ class NativeTests(NativeCase):
                     self.native.mode = None
                     self.bridge.run_asks.refresh()
                     self.assertEqual(self.row()['state'], 'approved')
+
+        for mode in ('lost-commit', 'lost-open', 'lost-unreadable', 'refused'):
+            self.reset_native(general_proposal())
+            self.assertTrue(self.create()['delivered'])
+            self.press()
+            self.native.mode = mode
+            self.press('confirm', uid=50)
+            self.assertEqual(len(self.writes()), 1)
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+            self.bridge.run_asks.refresh()
+            self.press(uid=51)
+            self.assertEqual(len(self.writes()), 1)
+            if mode == 'lost-open':
+                self.assertIn('UNKNOWN approval', self.row()['display']['footer'])
+                self.assertNotIn('approve', str(self.row()['display']['keyboard']))
+                row = self.row()
+                delayed_cancel = dict(update_id=54, callback_query=dict(
+                    id='delayed-cancel', data=f"runask:{row['id']}:cancel",
+                    message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                                 **{'from': dict(id=999, is_bot=True)}),
+                    **{'from': dict(id=123, is_bot=False)}))
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                telegram = self.bridge.telegram
+                def queued_cancel(method, body, timeout=15):
+                    if method == 'getUpdates':
+                        return 200, dict(ok=True, result=[delayed_cancel])
+                    return telegram(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=queued_cancel):
+                    self.bridge.poll_once()  # Refresh UNKNOWN before draining the old Cancel.
+                    self.assertEqual(self.row()['display']['footer'], n.GENERAL_UNKNOWN)
+                    answers = [body['text'] for url, body in self.calls if url.endswith('/answerCallbackQuery')]
+                    self.assertEqual(answers[-1], n.GENERAL_UNKNOWN[:180])
+                    self.bridge.poll_once()  # Replaying Cancel cannot clear the fence or submit again.
+                self.assertTrue(self.row()['uncertain'])
+                self.assertIsNone(self.row()['pending'])
+                self.assertEqual(self.native.ask['state'], 'open')
+                self.assertEqual([method for method, _ in self.writes()], ['ApproveAsk'])
+                self.assertEqual(self.row()['display']['footer'], n.GENERAL_UNKNOWN)
+                self.assertEqual(self.row()['display']['keyboard'], row['display']['keyboard'])
+                self.native.mode = 'refused'
+                self.press('decline', uid=52)
+                self.assertTrue(self.row()['uncertain'])
+                self.press(uid=53)
+                self.assertEqual(len(self.writes()), 2)  # One approval and its refused decline; no second approval.
+                self.assertNotIn('approve', str(self.row()['display']['keyboard']))
+            self.native.mode = None
+
+        self.reset_native(general_proposal())
+        self.assertTrue(self.create()['delivered'])
+        self.press()
+        rpc = self.bridge.run_asks.client.call
+        def crash_before_send(method, args):
+            if method == 'ApproveAsk':
+                raise RuntimeError('synthetic process crash after durable intent')
+            return rpc(method, args)
+        with patch.object(self.bridge.run_asks.client, 'call', side_effect=crash_before_send):
+            with self.assertRaises(RuntimeError):
+                self.press('confirm', uid=50)
+        self.assertEqual(self.writes(), [])
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.run_asks.refresh()
+        self.assertIn('UNKNOWN approval outcome', self.row()['display']['footer'])
+        self.press(uid=51)
+        self.assertEqual(self.writes(), [])
 
     def test_pending_settlement_long_results_and_outcome_edits(self):
         self.assertTrue(self.create_decision()['delivered'])
@@ -7236,9 +7388,285 @@ class RealNativeTests(BridgeTestCase):
         server, home, command, env = testyardr.start(root, binary)
         try:
             # No skill add card here, so every build runs it.
-            self.exercise_source_limit_and_trust(binary, root, home, command, env)
+            client, cli, _ = self.exercise_source_limit_and_trust(binary, root, home, command, env)
+            server = self.exercise_general_native(binary, root, home, command, env, server, client, cli)
         finally:
             testyardr.stop(server)
+
+    def exercise_general_native(self, binary, root, home, command, env, server, client, cli):
+        probe = subprocess.run(command + ['settings', 'get', 'general_cards'], env=env, cwd=root,
+                               capture_output=True, text=True, timeout=20)
+        if probe.returncode:
+            self.assertIn('no setting', probe.stderr)
+            print('Native general cards: absent on old core; ordinary run already passed')
+            return server
+        cli('user', 'add', 'yardmaster')
+        updates = iter(range(60000, 61000))
+        def current(number):
+            return next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == number)
+        def filing(words, actor='yardmaster', extra_env=None):
+            args = ['--actor', actor, 'bead', 'ask', 'sample-1', 'Review this synthetic general command?',
+                    '--to', 'pat', '--context', 'Isolated native general-card fixture']
+            for word in words:
+                args += ['--run-word', word]
+            return subprocess.run(command + args, env=dict(env, **(extra_env or {})), cwd=root,
+                                  capture_output=True, text=True, timeout=20)
+        def propose(words):
+            result = filing(words)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+        def poll(batch):
+            telegram = self.bridge.telegram
+            def fetched(method, body, timeout=15):
+                return (200, dict(ok=True, result=batch)) if method == 'getUpdates' else telegram(method, body, timeout)
+            with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                self.bridge.poll_once()
+        def event(row, action='approve'):
+            if action == 'confirm':
+                action += ':' + self.bridge.run_asks.get(row['id'])['pending']['nonce']
+            return dict(update_id=next(updates), callback_query=dict(id='general-callback',
+                data=f"runask:{row['id']}:{action}", message=dict(message_id=row['message_id'],
+                    message_thread_id=7, is_topic_message=True, chat=dict(id=123, type='private'),
+                    **{'from': dict(id=999, is_bot=True)}), **{'from': dict(id=123, is_bot=False)}))
+        def publish(ask):
+            receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='general-' + str(ask['ask']), topic='City'))
+            self.assertTrue(receipt['delivered'], receipt)
+            return self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', ask['ask']))
+        def finish(ask, timeout=15):
+            deadline = time.monotonic() + timeout
+            while True:
+                value = current(ask['ask'])
+                if value.get('ran', {}).get('result') != n.PENDING and value.get('ran'):
+                    poll([])
+                    return value
+                self.assertLess(time.monotonic(), deadline, 'native general carry did not settle')
+                time.sleep(.02)
+
+        # The real operator opts in only in this throwaway home; this is not remote bootstrap evidence.
+        off = filing(['version'])
+        self.assertNotEqual(off.returncode, 0)
+        self.assertIn('general run cards are off', off.stderr)
+        cli('settings', 'set', 'general_cards', 'true')
+        refused = filing(['version'], actor='proposer')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('yardmaster', refused.stderr)
+        for words in (['source', 'set', 'tgbridge', 'calls_per_hour=59'],
+                      ['settings', 'set', 'general_cards', 'true']):
+            self.assertNotEqual(filing(words).returncode, 0)
+        dispatcher = open(home / 'daemon.lock', 'w')
+        self.addCleanup(dispatcher.close)
+        fcntl.flock(dispatcher, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        dispatcher.write(f'{os.getpid()} {testyardr.process_start(os.getpid())}\n')
+        dispatcher.flush()
+        before_authority = len(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'])
+        for runner in ('exec', 'herdr'):
+            group = 'general-' + runner
+            settings = ['--set', 'cmd=/bin/false', '--set', 'dir=' + str(root)] if runner == 'exec' else ['--set', 'kind=codex']
+            cli('group', 'add', group, '--runner', runner, *settings)
+            cli('bead', 'create', 'Synthetic authority boundary', '--id', group)
+            session = client.call('Claim', [group, group, 'new', 'pat', []])
+            starting = filing(['version'], extra_env={'YARDR_SESSION': session['id']})
+            self.assertNotEqual(starting.returncode, 0)
+            self.assertIn('starting', starting.stderr)
+            pane = subprocess.Popen([sys.executable, '-u', '-c',
+                'import json,subprocess,sys\n'
+                'request=json.loads(sys.stdin.readline())\n'
+                'result=subprocess.run(request["command"],env=request["env"],capture_output=True,text=True,timeout=20)\n'
+                'print(json.dumps({"code":result.returncode,"error":result.stderr}),flush=True)\n'
+                'sys.stdin.readline()\n'], env=env, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            try:
+                handle = {'pid': pane.pid, 'start': testyardr.process_start(pane.pid)} if runner == 'exec' else {
+                    'shell_pid': pane.pid, 'shell_start': testyardr.process_start(pane.pid)}
+                client.call('MarkRunning', [session['id'], handle])
+                args = command + ['--actor', 'yardmaster', 'bead', 'ask', 'sample-1', 'Synthetic pane refusal?',
+                    '--to', 'pat', '--context', 'Synthetic isolation', '--run-word', 'version']
+                pane.stdin.write(json.dumps(dict(command=args, env=env)) + '\n')
+                pane.stdin.flush()
+                reply = json.loads(pane.stdout.readline())
+                self.assertNotEqual(reply['code'], 0)
+                self.assertIn("bead's agent", reply['error'])
+            finally:
+                testyardr.stop(pane)
+                pane.stdin.close()
+                pane.stdout.close()
+            client.call('EndSession', [session['id'], 'failed', 'Synthetic authority check complete'])
+            client.call('MarkStopped', [session['id']])
+        self.assertEqual(len(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks']), before_authority)
+        self.config['topics'] = (dict(name='City', agent='yardmaster'),)
+        self.store.record_topic('City', 7, 'created')
+        old_bridge = self.bridge
+        self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=old_bridge.request,
+                               request_multipart=old_bridge.request_multipart)
+        self.bridge.hook_secret = None
+        words = ['bead', 'create', 'Synthetic café 雪 😀 long spaced word ' * 7, '--id', 'general-once']
+        ask = propose(words)
+        self.assertIn('cut', '\n'.join(ask['run']['does']))
+        row = publish(ask)
+        document = self.documents[-1][2].decode()
+        for word in words:
+            self.assertIn('\n' + json.dumps(word, ensure_ascii=True) + '\n', document)
+        self.assertEqual(self.documents[-1][0]['message_thread_id'], '7')
+        listed, buttons = self.bridge.run_asks.decide_list()
+        self.assertIn('sample-1#' + str(ask['ask']), listed)
+        self.assertEqual(self.bridge.run_asks.decide_open('sample-1', ask['ask'], '123/7')[1][0], row['message_id'])
+        for change in ('topic', 'user', 'bot', 'chat', 'message'):
+            wrong = event(row)
+            query = wrong['callback_query']
+            if change == 'topic': query['message']['message_thread_id'] = 8
+            if change == 'user': query['from']['id'] = 124
+            if change == 'bot': query['message']['from']['id'] = 998
+            if change == 'chat': query['message']['chat']['id'] = 124
+            if change == 'message': query['message']['message_id'] += 1
+            poll([wrong])
+            self.assertIsNone(self.bridge.run_asks.get(row['id'])['pending'])
+        poll([event(row, 'confirm:0000000000000000')])
+        self.assertEqual(current(ask['ask'])['state'], 'open')
+        poll([event(row)])
+        armed = self.bridge.run_asks.get(row['id'])['pending']
+        expired = event(row, 'confirm')
+        with patch.object(self.bridge.run_asks, 'now', return_value=armed['expires'] + 1):
+            poll([expired])
+        self.assertEqual(current(ask['ask'])['state'], 'open')
+        poll([event(row)])
+        confirmation = event(row, 'confirm')
+        # Lose the reply only after the stock native handler has durably accepted.
+        rpc = self.bridge.run_asks.client.call
+        def lost(method, args):
+            value = rpc(method, args)
+            if method == 'ApproveAsk':
+                raise n.RPCAmbiguous('synthetic lost approval reply')
+            return value
+        with patch.object(self.bridge.run_asks.client, 'call', side_effect=lost):
+            poll([confirmation])
+        settled = finish(ask)
+        self.assertFalse(settled['ran'].get('failed', False), settled)
+        self.assertEqual(settled['ran']['argv'], words)
+        self.assertEqual(client.call('GetBead', ['general-once'])['title'], words[2])
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        poll([confirmation, event(row)])
+        settled_again = finish(ask)
+        self.assertEqual(settled_again['ran'], settled['ran'])
+        events = client.call('Events', ['general-once', 100])
+        self.assertEqual(sum(e['kind'] == 'created' for e in events), 1)
+        self.assertIn(settled['ran']['result'].strip(), self.bridge.run_asks.get(row['id'])['display']['footer'])
+        # An unchecked command from a local-only family must reach native validation on stock core.
+        unread = root / 'unchecked-skill.md'
+        unread.write_text('Invalid synthetic skill before review.\n')
+        bad = propose(['skill', 'add', str(unread)])
+        bad_row = publish(bad)
+        self.assertNotIn(unread.read_text().strip(), self.documents[-1][2].decode())
+        unread.write_text('Invalid synthetic skill changed after review.\n')
+        poll([event(bad_row)]); poll([event(bad_row, 'confirm')])
+        failed = finish(bad)
+        self.assertTrue(failed['ran']['failed'])
+        self.assertIn(failed['ran']['result'], self.bridge.run_asks.get(bad_row['id'])['display']['footer'])
+        # Switching off stops filings, without revoking a stored decision.
+        stored = propose(['version'])
+        stored_row = publish(stored)
+        cli('settings', 'set', 'general_cards', 'false')
+        self.assertNotEqual(filing(['version']).returncode, 0)
+        poll([event(stored_row)]); poll([event(stored_row, 'confirm')])
+        self.assertFalse(finish(stored)['ran'].get('failed', False))
+        cli('settings', 'set', 'general_cards', 'true')
+        for boundary in ('crash', 'timeout'):
+            entered, release = threading.Event(), threading.Event()
+            invocations = []
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *_):
+                    pass
+                def do_GET(self):
+                    invocations.append(self.path)
+                    entered.set()
+                    release.wait(150)
+                    try:
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(b'{"synthetic":true}')
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+            httpd = testports.bind_test_server(Handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            try:
+                source = root / ('general-' + boundary + '.yaml')
+                source.write_text('name: general' + boundary + '\nbase: http://127.0.0.1:' + str(httpd.server_address[1])
+                    + '\ncalls:\n  slow:\n    kind: read\n    params:\n      q: {type: string}\n'
+                    + '    request: {method: GET, path: /synthetic, query: {q: \"{q}\"}}\n')
+                cli('source', 'add', str(source))
+                target = propose(['call', 'general' + boundary, 'slow', 'q=synthetic?'])
+                target_row = publish(target)
+                poll([event(target_row)]); poll([event(target_row, 'confirm')])
+                self.assertTrue(entered.wait(10), 'native general command did not reach isolated HTTP fixture')
+                if boundary == 'crash':
+                    # Capture this server's children by pid before a hard crash, then stop only those identities.
+                    children = []
+                    for line in subprocess.check_output(['ps', '-A', '-o', 'pid=', '-o', 'ppid='], text=True).splitlines():
+                        child, parent = map(int, line.split())
+                        if parent == server.pid:
+                            children.append((child, testyardr.process_start(child)))
+                    server.kill()
+                    server.wait(timeout=10)
+                    release.set()
+                    for child, start in children:
+                        try:
+                            if testyardr.process_start(child) == start:
+                                os.kill(child, 15)
+                        except (ProcessLookupError, FileNotFoundError):
+                            pass
+                    server = testyardr.restart(root, binary, home, command, env)
+                    self.addCleanup(testyardr.stop, server)
+                    self.bridge.run_asks = n.RunAsks(self.bridge)
+                failed = finish(target, timeout=145)
+                self.assertTrue(failed['ran']['failed'])
+                if boundary == 'crash':
+                    self.assertEqual(failed['ran']['result'], n.GENERAL_STOPPED)
+                    self.assertIn('UNKNOWN command outcome', self.bridge.run_asks.get(target_row['id'])['display']['footer'])
+                else:
+                    self.assertRegex(failed['ran']['result'].lower(), 'timeout|timed out|deadline')
+                poll([event(target_row)]); poll([])
+                self.assertEqual(invocations, ['/synthetic?q=synthetic%3F'])
+            finally:
+                release.set()
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=10)
+        fixture = testyardr.general_store_fixture(root)
+        if fixture is not None:
+            for boundary in ('expire', 'claim'):
+                target = propose(['bead', 'create', 'Never automatically invoked', '--id', 'general-' + boundary])
+                target_row = publish(target) if boundary == 'claim' else None
+                testyardr.stop(server)
+                try:
+                    result = subprocess.run([str(fixture), str(home), boundary, 'sample-1', str(target['ask'])],
+                                            env=env, cwd=root, text=True, capture_output=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                finally:
+                    server = testyardr.restart(root, binary, home, command, env)
+                    self.addCleanup(testyardr.stop, server)
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                if boundary == 'expire':
+                    target = current(target['ask'])
+                    target_row = publish(target)
+                    poll([event(target_row)]); poll([event(target_row, 'confirm')])
+                    self.assertEqual(current(target['ask'])['state'], 'open')
+                    expired_row = self.bridge.run_asks.get(target_row['id'])
+                    self.assertTrue(expired_row['native_expired'])
+                    self.assertIn('remains open', expired_row['display']['footer'])
+                    self.assertNotIn('approve', str(expired_row['display']['keyboard']))
+                else:
+                    failed = finish(target)
+                    self.assertTrue(failed['ran']['failed'])
+                    self.assertIn('whether it finished is not known', failed['ran']['result'])
+                    self.assertIn('UNKNOWN command outcome', self.bridge.run_asks.get(target_row['id'])['display']['footer'])
+                    poll([event(target_row)])
+                with self.assertRaises(n.RPCRefused):
+                    client.call('GetBead', ['general-' + boundary])
+        else:
+            print('Native general durable expiry/claim fixtures: set TGBRIDGE_TEST_YARDR_SOURCE for the unchanged candidate source')
+        print('Native general: real opt-in/operator/socket, bead/exec/starting refusal, full long Unicode argv document, City /decide, '
+              'origin/confirmation gates, lost approval reply, native success/failure, hard-crash UNKNOWN and HTTP timeout/one invocation, replay/one creation; '
+              + ('native expiry-open and claimed-prior-boot unknown/no invocation' if fixture else 'basic binary slice'))
+        return server
 
     def test_real_native_decision_decline_without_held_works(self):
         binary = testyardr.binary()

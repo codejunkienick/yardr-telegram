@@ -135,6 +135,17 @@ and cancelled cards. These are test fixtures, not a live Telegram chat.
 A review bundle arrives as one document with the complete proposal,
 files and diffs, followed by one compact approval card bound to it.
 
+Native **general cards** also use `run_ask` and `/decide`. The complete
+document shows each verbatim argv word as an escaped JSON string with rune
+and UTF-8 byte counts, even when native prose shortens a long word. These
+commands are unchecked: file operands are not captured or stale-bound,
+no rollback is shown, and output goes to the asker. Approval requires
+Approve then Confirm within 60 seconds; the core separately enforces its
+one-hour expiry. Only the native local-time expiry sentence is public.
+See [general-card operation and recovery](bridge/OPERATIONS.md#native-general-cards).
+This works on unmodified public `5dc0bfca` and `52e22d57`; it does not add
+commands absent from those cores or make v0.17.0 an installable release.
+
 [View the synthetic review document and compact approval card](docs/images/review-bundle.png).
 
 Synthetic offline HTML capture: one review document and its approval
@@ -164,7 +175,7 @@ for the outstanding contracts and required passing check.
 - The [yard-local skill setup](yardr/SETUP.md#the-crews-skills-shell),
   `yardr skill add` and crew/group `skills=` are fork-only; skip that section
   and its skill upgrade/rollback steps on public core. The bridge carries no
-  `skill add` card. Basic SETUP steps 1–11 omit native home/operator and
+  specific captured `skill add` card. Basic SETUP steps 1–11 omit native home/operator and
   native-card grants.
 - Optional native cards require the per-build contracts in the
   [capability table](docs/public-readiness.md#capabilities-and-grants).
@@ -190,8 +201,8 @@ for the outstanding contracts and required passing check.
   sha256sum, and network access to clone whisper.cpp and download the
   models (`transcriber/setup.sh --settings <file>`; about 600 MB).
 
-Native run cards exclude unsupported depot forms and summary plans, `crew add`,
-`depot push`, `skill add`, secret/setup/identity operations and
+Specific native run cards exclude unsupported depot forms and summary plans, `crew add`,
+`depot push`, the removed specific `skill add` payload, secret/setup/identity operations and
 parameter input; use the full native client for those.
 
 ## Adopt in a yard

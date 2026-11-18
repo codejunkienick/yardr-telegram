@@ -74,7 +74,7 @@ The rows live only here; SKILL.md holds none.
 Native run approval: `bridge/run_asks.py` (`validate`, `run_scope`,
 `RunAsks.send_card`, `callback`, `reply`, `decide`, `settle`, `refresh`);
 `bridge/OPERATIONS.md`, “Complete review bundles”; `yardr/SETUP.md`,
-“Skill copies (shell)”. `skill add` refuses before any send; a stored row
+“Skill copies (shell)”. Specific `skill add` refuses before any send; a stored specific row
 lists terminal-only in `/decide`; coverage is in `bridge/test_run_asks.py`
 and `bridge/test_decide.py`.
 
@@ -93,3 +93,15 @@ bundle digest are named on the card. Existing ledger rows retain their
 original delivery shape. `bridge/test_run_asks.py` checks real native-store capture, complete
 document bytes, confirmation order, drift, replay and legacy resumption;
 `scripts/preview_run_asks.py --pack --dense-bundle` is synthetic presentation.
+
+General cards: `bridge/run_asks.py` (`validate_general`, `general_bundle`,
+`general_command`, `general_shown`, `RPCExpired`, `RunAsks.confirm_step`,
+`RunAsks.decide`, `run_outcome`); `bridge/OPERATIONS.md`, “Native general
+cards”; `yardr/SETUP.md`, “Skill copies (shell)”.
+`bridge/test_run_asks.py` drives actual stock/local socket/store and
+production polling with fake Telegram, and `bridge/testyardr.py` builds
+the separate offline store-boundary fixture when candidate source is given.
+General is checked before specific argv families; it does not restore the
+removed captured skill contract. `scripts/preview_run_asks.py --general`
+shows synthetic complete word review, strong card/confirmation, /decide
+and native pending/final result.

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 import testyardr  # noqa: E402
 from test_bridge import BridgeTestCase, write_settings  # noqa: E402
-from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, pack_proposal, source_proposal, proposal  # noqa: E402
+from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, pack_proposal, source_proposal, proposal, general_proposal  # noqa: E402
 
 n = b.run_asks
 OPS = 7
@@ -336,6 +336,23 @@ class DecideTests(DecideCase):
             self.assertEqual(self.bridge.run_asks.get(row['id']), armed)
             self.assertEqual(len(self.edits()), edit_count)
             self.assertEqual(self.writes(), [])
+
+        self.restart()
+        self.native.beads['general-1'] = dict(id='general-1', title='Unchecked words', asks=[general_proposal()])
+        body, _ = self.listing(uid=1000)
+        self.assertIn('run · general-1#7', body['text'])
+        self.command('/decide general-1#7', 1001)
+        card = self.sends()[-1]
+        self.assertIn('Unchecked general command', card['text'])
+        self.assertIn('review-', card['text'])
+        self.assertEqual(len(self.documents), 1)
+        general_row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'general-1')
+        self.tap(f"runask:{general_row['id']}:approve", general_row['message_id'], 1002)
+        self.assertEqual(self.writes(), [])
+        self.restart()
+        armed = self.bridge.run_asks.get(general_row['id'])
+        self.tap(f"runask:{armed['id']}:confirm:{armed['pending']['nonce']}", armed['message_id'], 1003)
+        self.assertEqual(len(self.writes()), 1)
 
     def test_stale_selection_reports_the_canonical_outcome_and_never_reopens(self):
         body, list_id = self.listing()

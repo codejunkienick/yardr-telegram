@@ -112,3 +112,44 @@ def aligned(home):
     except ValueError:
         return False
     return status == 200 and answer == NO_SUCH_METHOD
+
+
+def general_store_fixture(root):
+    """Build a separate offline fixture against an unchanged candidate source, when supplied."""
+    source = os.environ.get('TGBRIDGE_TEST_YARDR_SOURCE')
+    if not source:
+        return None
+    source = Path(source)
+    if not source.is_absolute() or not (source / 'go.mod').is_file():
+        raise AssertionError('TGBRIDGE_TEST_YARDR_SOURCE must name the absolute candidate source directory')
+    fixture = root / 'store-fixture'
+    fixture.mkdir()
+    mod = (source / 'go.mod').read_text().replace('module yardr.dev/yardr\n', 'module yardr.dev/yardr/telegram-fixture\n', 1)
+    (fixture / 'go.mod').write_text(mod + '\nrequire yardr.dev/yardr v0.0.0\nreplace yardr.dev/yardr => ' + str(source) + '\n')
+    shutil.copyfile(source / 'go.sum', fixture / 'go.sum')
+    shutil.copyfile(Path(__file__).parent / 'fixtures/general/store_fixture.go', fixture / 'main.go')
+    binary = fixture / 'fixture'
+    goroot = subprocess.check_output(['go', 'env', 'GOROOT'], cwd=source, text=True).strip()
+    result = subprocess.run(['nice', '-n10', str(Path(goroot) / 'bin/go'), 'build', '-mod=mod', '-o', str(binary), '.'],
+                            cwd=fixture, env=dict(os.environ, GOPROXY='off', GOSUMDB='off', GOTOOLCHAIN='local'),
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise AssertionError('synthetic native store fixture did not build: ' + result.stderr)
+    return binary
+
+
+def restart(root, binary, home, command, env):
+    """Restart the same isolated store without creating or altering its home."""
+    server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.connect(str(home / 'yard.sock'))
+            return server
+        except OSError:
+            if server.poll() is not None or time.monotonic() > deadline:
+                stop(server)
+                raise AssertionError('isolated native server did not restart')
+            time.sleep(.02)

@@ -326,10 +326,10 @@ bindings and delivery history.
 
 ### Skill copies (shell)
 
-The bridge carries no `skill add` card: on the fork, the operator refreshes
-skill copies with `yardr skill add` in a terminal, as [The crew's skills](#the-crews-skills-shell)
-says. A stored `skill add` ask refuses before any send; a `/decide` row for one
-is terminal-only, decided in the yard.
+Specific captured `skill add` cards refuse. Fork skills: [setup](#the-crews-skills-shell).
+For unchecked General on public `5dc0bfca`/`52e22d57`, see [operator opt-in,
+complete words, expiry and recovery](../bridge/OPERATIONS.md#native-general-cards).
+No remote bootstrap or live activation is implied.
 
 ### Source declarations and command files
 

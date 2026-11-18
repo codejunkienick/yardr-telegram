@@ -66,6 +66,10 @@ class RPCStale(RPCRefused):
     pass
 
 
+class RPCExpired(RPCRefused):
+    pass
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
 
@@ -160,6 +164,11 @@ class YardSocketClient:
                             and error['code'] == 'error' and error['message'] == 'no such method ' + method):
                         raise RPCUnsupported('ask_card_requires_guarded_core' + FALLBACK)
                     code = error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
+                    if (method == 'ApproveAsk' and code == 'error'
+                            and re.fullmatch(rf"ask {arguments.get('ask')} was good until (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] "
+                                             r"and that time has passed: the general card has expired\. Nothing ran\. "
+                                             r"Decline it; it is asked again if it is still wanted\.", error['message'])):
+                        raise RPCExpired('Native general card expired; nothing ran. Native ask remains open; decline it.', code)
                     if (method == 'ApproveAsk' and code == 'error'
                             and (error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (
                                 ' was written when the source ', ' was written from another declaration of the source ',
@@ -321,6 +330,95 @@ def run_scope(run):
 
 
 RUN_KNOWN = {'argv', 'command', 'description', 'does', 'back', 'back_by', 'carried', 'pack', 'ask'}
+GENERAL_DESCRIPTION = 'a yardr command no card fits, shown whole and unchecked'
+GENERAL_WARNINGS = [
+    'The yard has not checked this command: approving runs it as typed, as the operator.',
+    'No way back is shown: nothing here says how to undo it.',
+    'What the command prints is told to the asker.',
+]
+GENERAL_FILES = ('File operands are not captured, hashed or reviewed file bytes. Changes to files or yard state '
+                 'do not make this general card stale; native expiry still applies.')
+GENERAL_UNKNOWN = ('UNKNOWN approval outcome. Independently inspect the yard and command effects. '
+                   'If still wanted, request a fresh human decision on a fresh native ask; never replay this command automatically.')
+GENERAL_STOPPED = 'the yard stopped while this ran; whether it finished is not known. Ask again if it is still wanted.'
+
+
+def general_command(words):
+    # Upstream typedWords only quotes square brackets; argv below is the unambiguous review.
+    return 'yardr ' + ' '.join("'" + word.replace("'", "'\\''") + "'" if '[' in word or ']' in word else word for word in words)
+
+
+def general_shown(word):
+    # Letters removes leading note-file marks; the separately escaped word retains them.
+    rest = word.lstrip()
+    leading = word[:len(word) - len(rest)]
+    while rest.startswith('◆'):
+        rest = rest[1:]
+        if rest.lstrip().startswith('◆'):
+            rest = rest.lstrip()
+    shown = leading + rest
+    if len(shown) > 128:
+        shown = shown[:64] + f'…[+{len(shown) - 128} cut]…' + shown[-64:]
+    if word.removeprefix('--set=').startswith(('log=', 'prompt=')):
+        shown += ' (not read by the yard)'
+    return shown
+
+
+def validate_general(ask):
+    run = ask['run']
+    def fail():
+        raise NativeError('invalid native general card' + FALLBACK)
+    if (set(run) - {'argv', 'general', 'command', 'description', 'does', 'back', 'back_by'}
+            or not {'argv', 'general', 'command', 'description', 'does', 'back'} <= set(run)):
+        fail()
+    words = run['general']
+    if not isinstance(words, list) or not words or not all(isinstance(w, str) for w in words):
+        fail()
+    if not words[0] or words[0].startswith('-') or words[0] == 'yardr':
+        fail()
+    for word in words:
+        try:
+            word.encode('utf-8')
+        except UnicodeError:
+            fail()
+        if any(unicodedata.category(c) in {'Cc', 'Cf', 'Cs', 'Zl', 'Zp'} for c in word):
+            fail()
+    command = general_command(words)
+    if (run['argv'] != words or run['command'] != command or run['description'] != GENERAL_DESCRIPTION
+            or run['back'] != '' or run.get('back_by', '') != ''):
+        fail()
+    does = run['does']
+    if (not isinstance(does, list) or len(does) != len(words) + 4 or does[:2] != GENERAL_WARNINGS[:2]
+            or not isinstance(does[2], str)
+            or not re.fullmatch(r'It is good until (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\.', does[2])
+            or does[3] != GENERAL_WARNINGS[2]
+            or does[4:] != [f'{i}: ({len(word)}) {general_shown(word)}' for i, word in enumerate(words, 1)]):
+        fail()
+    expected = [{'class': 'code', 'line': 'brings a program the yard will run: '
+                 + ' '.join((GENERAL_DESCRIPTION + ': ' + command).split())}]
+    if ask.get('weight') != expected:
+        fail()
+    return words
+
+
+def general_bundle(config, bead, ask, proposal):
+    words = validate_general(ask)
+    run = ask['run']
+    review = 'Native Does (complete quoted lines):\n' + '\n'.join(json.dumps(line, ensure_ascii=True) for line in run['does'])
+    snapshot = ('## Complete verbatim argv\n\n' + review_fact('File boundary', GENERAL_FILES)
+                + '\n\nOne JSON string per word, in order; JSON escapes preserve every Unicode scalar. '
+                'Decode each string and encode UTF-8 to recover its exact bytes. No shell parsing is used.\n\n')
+    for index, word in enumerate(words, 1):
+        snapshot += (f'Word {index} · {len(word)} runes · {len(word.encode("utf-8"))} UTF-8 bytes\n\n'
+                     + review_code(json.dumps(word, ensure_ascii=True)) + '\n\n')
+    snapshot += review_fact('Native weight', ask['weight'][0]['line'])
+    # The complete native weight is in the document; the compact warning must fit too.
+    compact = dict(ask, weight=[{'class': 'code', 'line': GENERAL_DESCRIPTION}])
+    return review_bundle(config, bead, compact, proposal, 'Unchecked general command', review,
+        [*GENERAL_WARNINGS[:2], run['does'][2] + ' Native local time only; no public date or timezone.',
+         GENERAL_WARNINGS[2], GENERAL_FILES, f'Complete argv: {len(words)} words in the bound document above.'], snapshot)
+
+
 GROUP_ROWS = (['group', 'add'], ['group', 'set'])
 # Upstream's stored forms: group add's --set keys and group set's words, each in the order the yard writes them.
 GROUP_KEYS = {'add': ('cmd', 'dir', 'kind', 'args', 'prompt', 'worktrees'), 'set': ('prompt', 'cmd', 'preset', 'model', 'effort')}
@@ -636,6 +734,8 @@ def validate_run_card(ask):
     if any(ask.get(key) is not None for key in ('secret', 'setup', 'identity', 'depot_push')):
         raise NativeError('ask_not_run_proposal' + FALLBACK)
     run, weight = ask['run'], ask.get('weight', [])
+    if 'general' in run:
+        return validate_general(ask)
     # A group card's prompt text may ride beside it; parse_group holds it to the text the card shows.
     group = isinstance(run.get('argv'), list) and run['argv'][:2] in GROUP_ROWS
     if set(run) - (RUN_KNOWN | ({'role'} if group else set())):
@@ -853,6 +953,8 @@ def run_outcome(ask):
         footer = label + ': ' + text(ask['run'].get('command'), 'run.command') + '\n' + result
         if pending_reason:
             footer += '\n' + pending_reason
+        if 'general' in ask['run'] and ran.get('failed') and result == GENERAL_STOPPED:
+            footer += '\nUNKNOWN command outcome. Independently inspect effects before requesting a fresh human decision; never replay automatically.'
         return state, footer
     words = text(ask.get('words', ''), 'words')
     return state, '✕ ' + ('Taken back by ' + text(ask.get('by'), 'by') if state == 'taken back' else 'Declined') + ': ' + words
@@ -2153,7 +2255,8 @@ class RunAsks:
         if 'run' not in ask:
             value.update(options=ask['options'], recommend=ask.get('recommend', 0), why=ask.get('why', ''),
                          about=ask.get('about', []), since=ask['since'])
-        if 'run' not in ask or ask['run'].get('argv', [])[:2] in (['source', 'add'], ['pack', 'apply'], *GROUP_ROWS):
+        if ('run' not in ask or 'general' in ask['run']
+                or ask['run'].get('argv', [])[:2] in (['source', 'add'], ['pack', 'apply'], *GROUP_ROWS)):
             try:
                 home = Path(self.config['yardr_home'])
                 if validate_home(home) != home:
@@ -2217,6 +2320,8 @@ class RunAsks:
                        for index, option in enumerate(row['options'], 1)]
             return buttons + [[dict(text=label, callback_data=f"askcard:{row['id']}:{action}:{row['turn']}")
                                for label, action in [('Later', 'later'), ('✕ Decline', 'decline')]]]
+        if row.get('general') and (row.get('uncertain') or row.get('native_expired')):
+            return [[dict(text='✕ Decline', callback_data=f"runask:{row['id']}:decline")]]
         actions = [('Cancel', 'cancel')] if row.get('pending') else [(f"✓ Approve in {self.config['yard']}", 'approve')]
         actions.append(('✕ Decline', 'decline'))
         buttons = [[dict(text=label, callback_data=f"runask:{row['id']}:{action}") for label, action in actions]]
@@ -2229,10 +2334,14 @@ class RunAsks:
         prefix = f"Confirm ask {row['ask']} on {row['bead']}: runs "
         suffix = f' · Tap Confirm within {CONFIRM_SECONDS} s, or Cancel.'
         command = ask['run']['command']
+        if 'general' in ask['run']:
+            command = 'the complete verbatim argv in review-' + row['proposal'] + '.md'
         available = 4096 - units(row['plain'] + '\n' + prefix + suffix)
         if available < 1:
             raise NativeError('run_ask_confirmation_too_large' + FALLBACK)
         if units(command) > available:
+            if 'general' in ask['run']:
+                raise NativeError('run_ask_confirmation_too_large' + FALLBACK)
             command = short(command, available)
         return self.display(row, prefix + command + suffix)
 
@@ -2275,6 +2384,8 @@ class RunAsks:
                 row = dict(id=ident, binding=binding, bead=bead_id, ask=number, conversation=conversation,
                            proposal=proposal, plain=plain, html=card, weighty=bool(ask.get('weight')),
                            state='open', pending=None, message_id=None, silent=silent, revision=0)
+                if isinstance(ask.get('run'), dict) and 'general' in ask['run']:
+                    row['general'] = True
                 if kind == 'decision':
                     row.update(kind=kind, options=ask.get('options') or [], turn=ask['turn'],
                                initial_turn=ask['turn'], generations=[])
@@ -2309,6 +2420,8 @@ class RunAsks:
             if len(ask.get('options') or []) + 2 > self.bridge.COMMAND_KEYBOARD_MAX_BUTTONS:
                 raise NativeError('ask_card_too_many_options' + FALLBACK)
             return (*render_decision(self.config, bead, ask), None)
+        if 'general' in ask['run']:
+            return general_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] == ['source', 'add']:
             return source_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] == ['pack', 'apply']:
@@ -2672,7 +2785,11 @@ class RunAsks:
                 elif action == 'cancel':
                     row['pending'] = None
                     self.save(row)
-                    notice = 'Cancelled; nothing ran'
+                    notice = (GENERAL_UNKNOWN if row.get('general') and row.get('uncertain')
+                              else 'Cancelled; nothing ran')
+                    self.display(row, notice)
+                elif row.get('general') and action in ('approve', 'confirm') and (row.get('uncertain') or row.get('native_expired')):
+                    notice = 'Native general card expired; native ask remains open.' if row.get('native_expired') else GENERAL_UNKNOWN
                     self.display(row, notice)
                 elif action == 'confirm':
                     pending = row.get('pending')
@@ -2781,12 +2898,15 @@ class RunAsks:
         if ask['state'] != 'open':
             self.settle(row, ask)
             return 'Ask is ' + ask['state']
+        if row.get('general') and action == 'approve' and (row.get('uncertain') or row.get('native_expired')):
+            return 'Native general card expired; native ask remains open.' if row.get('native_expired') else GENERAL_UNKNOWN
         decision = row.get('kind') == 'decision'
         if decision:
             self.require_generations(row)
             if turn is None or ask['turn'] != turn:
                 self.settle(row, ask)
                 return 'Ask changed; answer the newer card'
+        was_uncertain = row.get('uncertain', False)
         row.update(pending=None, uncertain=True)
         self.save(row)
         args = dict(bead=row['bead'], ask=row['ask'], actor=self.config['yardr_operator'])
@@ -2819,6 +2939,14 @@ class RunAsks:
             if row['state'] == 'stale':
                 return 'run_ask_stale_proposal'
         refused = known_open and isinstance(refusal, RPCRefused)
+        if row.get('general'):
+            if refused:
+                row.update(uncertain=was_uncertain if action == 'decline' else False,
+                           native_expired=row.get('native_expired', False) or isinstance(refusal, RPCExpired))
+                self.save(row)
+            footer = str(refusal) if refused and not row.get('uncertain') else GENERAL_UNKNOWN
+            self.display(row, footer)
+            return footer
         if refused and isinstance(refusal, RPCStale) and ask['run']['argv'][:2] in (['source', 'add'], ['pack', 'apply']):
             row.update(state='stale', pending=None, uncertain=False)
             self.save(row)
@@ -2862,6 +2990,9 @@ class RunAsks:
                     continue
                 try:
                     ask = self.ensure(row)
+                    if row.get('general') and row.get('uncertain') and ask['state'] == 'open':
+                        self.display(row, GENERAL_UNKNOWN)
+                        continue
                     if not self.settle(row, ask) and row.get('pending'):
                         pending, now = row['pending'], self.now()
                         legacy = 'nonce' not in pending

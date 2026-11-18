@@ -15,6 +15,50 @@ keys. The installation instructions apply after the
 [public-core release gate](#public-core-release-gate) closes. A newer upstream
 main is not the tested core. See [the upstream proposal](design/upstream-proposal.md).
 
+## General-card source capability
+
+This source adds delivery of the upstream General contract already present
+on exact **unmodified** public `5dc0bfca62ac118f7e7533fcf8125faa09481eee`
+and frozen supported `52e22d570cfff58bae725e6df53c047bd63ff4a6`.
+The local comparison substrate is reviewed core
+`b751afc9a018c77e066d302675a84320c8ac69e5`; its stricter filing refusals
+and same-boot completion-persistence fixes are separate local divergences,
+not requirements imposed on those public binaries. Old installed-core
+candidate `bd7f54b4484321ce618c5224a9e419f3c9b94b55` lacks general filing;
+ordinary cards must keep working without it.
+
+The bridge uses existing `run_ask`, `/decide`, native Bead/UserAsks and
+ApproveAsk, paired private-topic routing, full document delivery and nonce
+confirmation. It requires no skill/patch/bootstrap endpoint. Native general
+words can name a command absent from the core; that is shown as unchecked
+argv and its native validation failure is relayed. This does not establish
+optional skill/topic/repo-patch capabilities on public core.
+
+Complete word review shows JSON strings with UTF-8 byte/rune identity even
+where native Does shortens words. File operands are never represented as
+captured/reviewed bytes or stale-bound files. The core's independent
+one-hour expiry exposes only a local-time sentence publicly. Expired refusal
+leaves the native ask open; unknown completion after a claimed operation's
+restart requires independent inspection and a fresh human decision, never
+automatic replay. See [operation and rollback](../bridge/OPERATIONS.md#native-general-cards).
+
+Native test setup opts in as the actual operator in an isolated home. It
+proves neither remote bootstrap nor any live setting write. Source is not
+installed, activated, published or live. The existing **public-source / not
+installable-release** gate remains: v0.17.0 lacks merged prerequisites and
+cannot inherit a capability claim from either main-branch pin. Installation,
+activation/authority, rollback and harmless live `version` usability checks
+belong to the instance operator after separate review.
+
+For boundary fixtures, set `TGBRIDGE_TEST_YARDR_SOURCE` to the absolute,
+unchanged source of the named candidate. Tests build a separate offline
+fixture in their temporary home, never modify or rebuild that candidate,
+and age a synthetic stored deadline or claim a synthetic operation before
+restart. Without source, the real binary delivery/execution slice still
+runs and reports the omitted offline boundaries. Runtime fixtures use fake
+Telegram, isolated native Unix sockets/stores, durable SQLite, free loopback
+ports and synthetic content only.
+
 ## Portable installation
 
 Follow [SETUP](../yardr/SETUP.md) for a clean install, using the fictional
@@ -242,8 +286,9 @@ strings alone do not establish capability.
 The basic slice uses SETUP steps 1–11 without native home/operator or
 native-card grants. Public builds lack `skill add` and `skills=`: skip the
 crew-skills section and associated skill install/upgrade/rollback steps.
-The bridge carries no skill card; skill asks refuse before send with a
-terminal-only `/decide` line. Optional native keys and per-call grants belong
+The bridge carries no captured skill card; specific skill asks refuse before
+send with a terminal-only `/decide` line. An unchecked native General may
+name that command, but public cores still lack the command itself. Optional native keys and per-call grants belong
 on one primary bridge per yard, under the operator's authority.
 
 Source/pack repair `757c340` trusts canonical native Does prose while retaining
@@ -275,9 +320,9 @@ old ask-number markers require explicit recapture at activation. Earlier asks
 remain blocked across keys and `/decide`, without inventing refusal history.
 See [activation](../yardr/SETUP.md#depot-pack-imports-and-activation).
 
-Native run cards exclude embedded/bare/URL/summary depot plans, `--yes` and
+Specific native run cards exclude embedded/bare/URL/summary depot plans, `--yes` and
 hand-edited overwrites or unresolved inputs, `crew add`,
-`depot push`, `skill add`, secret/setup/identity operations and
+`depot push`, the removed specific `skill add` payload, secret/setup/identity operations and
 parameter input; use the full native client for those. Unknown/oversized
 cards refuse whole. Ordinary asks have no operation/weight/file payload.
 Siding mutations support only

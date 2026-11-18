@@ -16,6 +16,47 @@ def document_card(document):
                 + '<details><summary>Open complete document</summary><pre>' + escape(raw.decode()).replace('\r', '&#13;') + '</pre></details>')
 
 
+def general_cards():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests, general_proposal, n
+    import json
+    case = NativeTests()
+    case.setUp()
+    cards = []
+    def capture(label, body, group='states'):
+        controls = ''.join('<div class="buttons">' + ''.join('<button>' + escape(item['text']) + '</button>'
+                           for item in row) + '</div>' for row in body.get('reply_markup', {}).get('inline_keyboard', []))
+        cards.append('<section class="' + group + '"><h2>' + escape(label) + '</h2><article><div class="body">'
+                     + body['text'] + '</div>' + controls + '</article></section>')
+    try:
+        words = ['bead', 'create', 'Synthetic café 雪 😀 with spaces ' + 'complete word review ' * 6, '--id', 'synthetic-created']
+        case.native.ask = general_proposal(words)
+        case.config['yard'] = 'example'
+        if not case.create()['delivered']:
+            raise RuntimeError('synthetic general card refused')
+        review = '<b>Complete verbatim argv · bound review document</b>\n'
+        for index, word in enumerate(words, 1):
+            review += f'\nWord {index} · {len(word)} runes · {len(word.encode())} UTF-8 bytes\n<pre>' + escape(json.dumps(word, ensure_ascii=True)) + '</pre>'
+        review += '\n' + escape(n.GENERAL_FILES) + '\n\nNative Does excerpt (shortened upstream):\n' + escape(case.native.ask['run']['does'][6])
+        capture('Complete word review · no shortened approval', dict(text=review), 'bundle')
+        capture('Strong code card · document delivered first', case.calls[-1][1])
+        case.press()
+        capture('Approve arms Confirm · 60 seconds', case.edits()[-1])
+        case.native.mode = 'carrying'
+        case.press('confirm', uid=50)
+        capture('Native approval recorded · carry pending', case.edits()[-1])
+        case.native.ask['ran'].update(result='created synthetic-created\n')
+        case.bridge.run_asks.refresh()
+        capture('Final canonical result · no replay', case.edits()[-1])
+        case.native.ask['state'] = 'open'
+        listing, keyboard = case.bridge.run_asks.decide_list()
+        capture('/decide · canonical run entry', dict(text=escape(listing), reply_markup=dict(inline_keyboard=keyboard)))
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
 def bundle_cards(source=False, pack=False):
     # Drive the real bridge state machine with the existing offline transports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
@@ -409,6 +450,8 @@ def main():
          '✕ approved, failed: yardr source set example calls_per_hour=60\nThe synthetic external operation failed')
     if len(sys.argv) == 1:
         cards += confirmation_cards()
+    if '--general' in sys.argv:
+        cards = general_cards()
     if '--confirm' in sys.argv:
         cards = confirmation_cards()
     if '--source' in sys.argv:
@@ -436,6 +479,8 @@ def main():
         heading = 'Explicit Markdown · actual emitted HTML'
     if '--depot' in sys.argv:
         heading = 'Native depot pack · complete document and approval states'
+    if '--general' in sys.argv:
+        heading = 'Unchecked native general command · complete word review and decision'
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}

@@ -2574,10 +2574,84 @@ for declaration installation, explicit `yardr source grant tgbridge run_ask
 contains no grants; builder/secretary/blanket grants are not required.
 
 
+### Native general cards
+
+A general card may name `skill add` on a core that offers that command;
+this does not restore the removed captured skill card or add optional skill
+commands to public core.
+
+A core that exposes `RunAsked.general` can deliver its existing unchecked
+contract through `run_ask` and `/decide`. Tested source pins are unmodified
+public `5dc0bfca62ac118f7e7533fcf8125faa09481eee` and
+`52e22d570cfff58bae725e6df53c047bd63ff4a6`, plus reviewed local
+`b751afc9a018c77e066d302675a84320c8ac69e5`. No local skill, patch or
+bootstrap RPC is required. An older core without general cards continues
+to serve ordinary cards. The local core retains its separately reviewed
+filing refusals and persistence fixes; stock compatibility does not claim
+its looser refusal policy is identical.
+
+The actual operator must enable `general_cards` in that yard's terminal;
+it defaults off. Only the native yardmaster may file verbatim `--run-word`
+or `G:` words. A matching specific card still takes precedence. Turning
+the setting off stops new filings without revoking existing work. The
+bridge never enables it and cannot bootstrap it by card on stock core.
+
+The bridge checks General/argv identity, the full native command,
+Description, every Does sentence and numbered word, empty rollback and
+strong code weight before dispatching any command family. Unknown fields,
+malformed Unicode, invisible controls/format characters and inconsistent
+prose refuse whole. General words are not parsed as a local skill or patch
+contract. A command missing from the executing core relays native failure.
+
+One complete Markdown document precedes the compact strong-code card.
+Every word is shown completely as an escaped JSON string with rune and
+UTF-8 byte counts, including empty words, spaces, quotes and Unicode.
+Decode each string and encode UTF-8 to recover the exact argv. Native Does
+may shorten words over 128 runes; it is retained as canonical prose beside
+the complete word review. The card binds the document name, size, SHA-256
+and proposal digest, and delivery must be confirmed before controls appear.
+The existing 50 MiB document bound and compact text bounds refuse the whole
+proposal, with no shortened approval. The document hash identifies the
+review document, **never the contents of a file operand**.
+
+Approving runs the unchecked words as the operator in the same native
+home. No file operands are captured or hashed; edits to files or yard
+state do not make this card stale. No rollback is promised. Command output
+is told to the asker, so never propose credentials or sensitive output.
+The core supplies its usual no-shell/closed-stdin, two-minute execution
+bound and 64 KiB stdout cap. Python never executes these commands.
+
+Approve arms the existing nonce-bound Confirm for 60 seconds. Its footer
+names the complete argv review document instead of shortening a command.
+The native one-hour expiry is independent: public Bead/UserAsks exposes
+only `It is good until HH:MM:SS.` in the core's local time, with no public
+Seen/deadline date or timezone. The bridge invents none. It re-fetches
+before approval and reconciles a native expired refusal by disabling
+approval while explicitly leaving the native ask open for decline.
+
+Canonical pending, exact success output and validation/timeout failure
+are relayed. An older boot's claimed general operation settles failed with
+unknown completion after restart, without being rerun. The bridge adds an
+UNKNOWN explanation while preserving that native result. A consumed
+confirmation and durable uncertain intent also survive a bridge restart:
+a lost response is reconciled from native state, and a still-open uncertain
+ask cannot be approved again through that card. Independently inspect
+command effects before requesting a fresh human decision on a fresh ask.
+No callback replay, new delivery key or restart automatically files a new
+ask or retries command execution; exactly-once completion is not promised.
+
+Keep the SQLite ledger, review documents and native carry records across
+updates or rollback. A downgrade must understand those records; unknown
+work must never be replayed. Source landing is not installation or live
+activation. The instance operator owns reviewed installation, pairing,
+per-call grants, terminal opt-in and a harmless `version` acceptance card
+in the configured private topic. This source change performs none of those
+live actions. Offline presentation: `python3 -B scripts/preview_run_asks.py --general`.
+
 ### Complete review bundles
 
-The bridge no longer cards `skill add`: the operator adds skills with
-`yardr skill add` in a terminal, and assigning them stays the operator's. A stored `skill add`
+The bridge refuses the removed specific `skill add` card: the operator adds skills with
+`yardr skill add` in a terminal, and assigning them stays the operator's. A stored specific `skill add`
 ask refuses before any send with a terminal-only `/decide` line; use
 Footplate or the yard cards.
 

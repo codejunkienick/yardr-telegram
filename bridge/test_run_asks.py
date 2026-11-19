@@ -1808,11 +1808,14 @@ class NativeTests(NativeCase):
                     recovered = [g for g in current['generations'] if g['turn'] == turn]
                     self.assertEqual(len(recovered), 1)
                     self.assertEqual(recovered[0]['message_id'], original['message_id'])
-                    self.assertEqual(len(cards()), count + int(state.startswith('reopened')))
+                    self.assertEqual(len(cards()), count + int(state.startswith('reopened') or state == 'proposal-changed'))
                     if state not in ('open', 'unreadable'):
                         retired = [body for body in self.edits() if body['message_id'] == original['message_id']]
                         self.assertTrue(retired)
                         self.assertEqual(retired[-1]['reply_markup']['inline_keyboard'], [])
+                    if state == 'proposal-changed':
+                        self.assertIn(n.REPLACED_PROPOSAL, retired[-1]['text'])
+                        self.assertIn('Changed question', cards()[-1]['text'])
                     if state.startswith('reopened'):
                         self.assertIn('Re-presented', retired[-1]['text'])
                         self.assertIn('newer card', self.calls[-1][1]['text'])
@@ -2052,6 +2055,251 @@ class NativeTests(NativeCase):
             self.assertFalse(any(m in ('AnswerAsk', 'AnswerAskExpected') for m, _, _ in replaced.calls))
         finally:
             replaced.close()
+
+    def test_ordinary_stale_decision_card_reissues_once_and_keeps_stale_refused(self):
+        self.config['topics'] = (dict(name='ops', agent='yardmaster'),)
+        self.store.record_topic('ops', 19, 'created')
+        self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY',
+                               request=self.bridge.request, request_multipart=self.bridge.request_multipart)
+        self.bridge.hook_secret = None
+        self.bridge.sleep = lambda _: None
+
+        def cards():
+            return [body for url, body in self.calls if url.endswith('/sendMessage')
+                    and body.get('reply_markup', {}).get('inline_keyboard')]
+
+        def tap(row, action='pick1', uid=100):
+            query = dict(id=f'q-{uid}', data=f"askcard:{row['id']}:{action}:{row['turn']}",
+                         message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                                      **{'from': dict(id=999, is_bot=True)}),
+                         **{'from': dict(id=123, is_bot=False)})
+            if row['conversation'] != '123':
+                query['message'].update(is_topic_message=True, message_thread_id=int(row['conversation'].rsplit(':', 1)[1]))
+            self.bridge.inbound(dict(update_id=uid, callback_query=query))
+
+        def reply_to(row, text, uid=200):
+            message = dict(message_id=uid, text=text, chat=dict(id=123, type='private'),
+                           reply_to_message=dict(message_id=row['message_id']),
+                           **{'from': dict(id=123, is_bot=False)})
+            if row['conversation'] != '123':
+                message.update(is_topic_message=True, message_thread_id=int(row['conversation'].rsplit(':', 1)[1]))
+            self.bridge.inbound(dict(update_id=uid, message=message))
+
+        # 1. Stale on bead title, about bead stage/title, or home identity -> one fresh card, stale refused.
+        for cause in ('title', 'about', 'home_identity'):
+            with self.subTest(cause=cause):
+                self.reset_native(decision())
+                self.native.bead = dict(id='sample-1', title='Initial title')
+                self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, topic='ops', silent=True, key='k1'))['delivered'])
+                stale_row = self.bridge.run_asks.rows()[0]
+                if cause == 'title':
+                    self.native.bead['title'] = 'Updated title'
+                elif cause == 'about':
+                    self.native.ask['about'][0]['stage'] = 'review'
+                else:
+                    previous = self.home.with_name(f'prev-{cause}')
+                    self.home.rename(previous)
+                    self.home.mkdir(mode=0o700)
+                    replaced = NativeSocket(self.home)
+                    replaced.bead = dict(id='sample-1', title='Initial title')
+                    replaced.ask = decision()
+                    self.addCleanup(replaced.close)
+                    self.native = replaced
+
+                tap(stale_row, 'pick1', uid=101)
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(len(cards()), 2)
+                self.assertTrue(all(c.get('disable_notification') is True for c in cards()))
+                self.assertEqual(cards()[-1].get('message_thread_id'), 19)
+                if cause == 'title':
+                    self.assertIn('Updated title', cards()[-1]['text'])
+                elif cause == 'about':
+                    self.assertIn('related-1 · Related &lt;work&gt; · review', cards()[-1]['text'])
+
+                retired = [e for e in self.edits() if e['message_id'] == stale_row['message_id']]
+                self.assertTrue(retired)
+                self.assertIn(n.REPLACED_PROPOSAL, retired[-1]['text'])
+                self.assertNotIn('use Footplate or the yard cards', retired[-1]['text'])
+                self.assertEqual(retired[-1]['reply_markup']['inline_keyboard'], [])
+
+                # Stale tap & reply stay refused; repeated refresh/replay/create send no duplicate.
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                tap(stale_row, 'pick2', uid=102)
+                reply_to(stale_row, '1 stale', uid=103)
+                receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, topic='ops', silent=True, key='k1'))
+                self.assertTrue(receipt['delivered'])
+                self.assertEqual(len(cards()), 2)
+                self.assertEqual(self.writes(), [])
+
+                fresh_row = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+                self.assertNotEqual(fresh_row['id'], stale_row['id'])
+                self.assertEqual(int(receipt['message_id']), fresh_row['message_id'])
+                tap(fresh_row, 'pick2', uid=104)
+                self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0,
+                                                                           actor='pat', option=2, words='', weighed=False))])
+                self.assertEqual(self.bridge.run_asks.get(fresh_row['id'])['state'], 'answered')
+
+        # 2. Second proposal change (P0 -> P1 -> P2) and ask_close(ask_key=...) resolve to active card.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Title 0')
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-chain'))['delivered'])
+        row0 = self.bridge.run_asks.rows()[0]
+        self.native.bead['title'] = 'Title 1'
+        self.bridge.run_asks.refresh()
+        row1 = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertNotEqual(row1['id'], row0['id'])
+        self.native.bead['title'] = 'Title 2'
+        self.bridge.run_asks.refresh()
+        row2 = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertNotEqual(row2['id'], row1['id'])
+        self.assertEqual(len(cards()), 3)
+        self.assertIn('Title 2', cards()[-1]['text'])
+        self.native.ask.update(state='answered', option=1, words='closed externally', turn=1)
+        close = self.bridge.api_ask_close(dict(ask_key='k-chain', decision='ignored'))
+        self.assertTrue(close['delivered'])
+        self.assertEqual(self.bridge.run_asks.get(row2['id'])['state'], 'answered')
+        self.assertEqual(len(cards()), 3)
+
+        # 3. Ask answered, declined, taken back, or put aside before re-issue -> zero fresh cards.
+        for terminal in ('answered', 'declined', 'taken back', 'put aside'):
+            with self.subTest(before_reissue=terminal):
+                self.reset_native(decision())
+                self.native.bead = dict(id='sample-1', title='Before')
+                self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-term'))['delivered'])
+                row0 = self.bridge.run_asks.rows()[0]
+                self.native.bead['title'] = 'After'
+                self.native.ask.update(state=terminal, option=1, words='done', by='proposer')
+                self.bridge.run_asks.refresh()
+                self.assertEqual(len(cards()), 1)
+                self.assertEqual(self.bridge.run_asks.get(row0['id'])['state'], 'stale')
+                self.assertIn('use Footplate or the yard cards', self.edits()[-1]['text'])
+
+        # 4. Restart between marking stale and posting -> exact 1 fresh card when open, 0 when closed meanwhile.
+        for outcome_before_restart in ('open', 'answered', 'declined', 'taken back'):
+            with self.subTest(restart_between_mark_and_post=outcome_before_restart):
+                self.reset_native(decision())
+                self.native.bead = dict(id='sample-1', title='Before restart')
+                self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-crash'))['delivered'])
+                row0 = self.bridge.run_asks.rows()[0]
+                self.native.bead['title'] = 'After restart'
+                class CrashBetweenMarkAndPost(BaseException):
+                    pass
+                with patch.object(self.bridge.run_asks, '_reissue_decision', side_effect=CrashBetweenMarkAndPost):
+                    with self.assertRaises(CrashBetweenMarkAndPost):
+                        self.bridge.run_asks.refresh()
+                marked = self.bridge.run_asks.get(row0['id'])
+                self.assertEqual(marked['state'], 'stale')
+                self.assertTrue(marked.get('replaced_by'))
+                self.assertIsNone(self.bridge.run_asks.get(marked['replaced_by']))
+                self.assertEqual(len(cards()), 1)
+
+                if outcome_before_restart != 'open':
+                    self.native.ask.update(state=outcome_before_restart, option=1, words='resolved', by='proposer')
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                self.bridge.run_asks.refresh()
+                self.bridge.run_asks.refresh()
+                if outcome_before_restart == 'open':
+                    self.assertEqual(len(cards()), 2)
+                    fresh = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+                    self.assertNotEqual(fresh['id'], row0['id'])
+                    self.assertIn(n.REPLACED_PROPOSAL, self.edits()[-1]['text'])
+                    tap(row0, 'pick1', uid=110)
+                    self.assertEqual(self.writes(), [])
+                    tap(fresh, 'pick1', uid=111)
+                    self.assertEqual(len(self.writes()), 1)
+                else:
+                    self.assertEqual(len(cards()), 1)
+                    self.assertIsNone(self.bridge.run_asks.get(row0['id']).get('replaced_by'))
+                    self.assertIn('use Footplate or the yard cards', self.edits()[-1]['text'])
+
+        # 5. Oversized new title (FALLBACK) -> no fresh card, stale directs to Footplate.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Short')
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-big'))['delivered'])
+        row0 = self.bridge.run_asks.rows()[0]
+        self.native.bead['title'] = 'X' * 3500
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.assertIsNone(self.bridge.run_asks.get(row0['id']).get('replaced_by'))
+        self.assertIn('use Footplate or the yard cards', self.edits()[-1]['text'])
+
+        # 6. Run cards keep today's stale refusal without re-issuing.
+        self.reset_native(proposal())
+        self.native.bead = dict(id='sample-1', title='Run title 1')
+        self.assertTrue(self.create()['delivered'])
+        run_row = self.row()
+        self.native.bead['title'] = 'Run title 2'
+        self.press('approve', uid=120)
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.row()['state'], 'stale')
+        self.assertIn('Proposal changed; use Footplate or the yard cards', self.edits()[-1]['text'])
+        self.assertEqual(self.writes(), [])
+
+        # 7. A digest value that recurs posts one further fresh card, never re-linking a retired row.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Title 0')
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-cycle'))['delivered'])
+        cycle0 = self.bridge.run_asks.rows()[0]
+        self.native.bead['title'] = 'Title 1'
+        self.bridge.run_asks.refresh()
+        cycle1 = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertNotEqual(cycle1['id'], cycle0['id'])
+        self.native.bead['title'] = 'Title 2'
+        self.bridge.run_asks.refresh()
+        cycle2 = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertNotEqual(cycle2['id'], cycle1['id'])
+        self.assertEqual(len(cards()), 3)
+        self.native.bead['title'] = 'Title 1'
+        self.bridge.run_asks.refresh()
+        cycle3 = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertEqual(len(cards()), 4)
+        self.assertIn('Title 1', cards()[-1]['text'])
+        self.assertNotIn(cycle3['id'], (cycle0['id'], cycle1['id'], cycle2['id']))
+        # The replacement chain stays acyclic and ends at the open head.
+        seen, head = [], self.bridge.run_asks.get(cycle0['id'])
+        while head is not None and head['id'] not in seen:
+            seen.append(head['id'])
+            head = self.bridge.run_asks.get(head['replaced_by']) if head.get('replaced_by') else None
+        self.assertEqual(seen, [cycle0['id'], cycle1['id'], cycle2['id'], cycle3['id']])
+        self.assertIsNone(self.bridge.run_asks.get(cycle3['id']).get('replaced_by'))
+        self.assertEqual(
+            self.bridge.run_asks.resolve_row(self.bridge.run_asks.get(
+                self.bridge.run_asks.ident('sample-1', 7)))['id'], cycle3['id'])
+        # Retired taps and replies stay refused; retries and restarts send nothing new.
+        tap(cycle1, 'pick1', uid=130)
+        tap(cycle2, 'pick2', uid=131)
+        reply_to(cycle1, '1 stale', uid=132)
+        self.assertEqual(self.writes(), [])
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.run_asks.refresh()
+        self.bridge.run_asks.refresh()
+        receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-cycle'))
+        self.assertTrue(receipt['delivered'])
+        self.assertEqual(len(cards()), 4)
+        self.assertEqual(self.writes(), [])
+        tap(cycle3, 'pick2', uid=133)
+        self.assertEqual(self.writes(), [('AnswerAskExpected', dict(bead='sample-1', ask=7, turn=0,
+                                                                    actor='pat', option=2, words='', weighed=False))])
+        self.assertEqual(self.bridge.run_asks.get(cycle3['id'])['state'], 'answered')
+
+        # 8. An answer racing the mark-to-post interval posts no replacement.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Before race')
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-race'))['delivered'])
+        race0 = self.bridge.run_asks.rows()[0]
+        self.native.bead['title'] = 'After race'
+        original = self.bridge.run_asks._reissue_decision
+        def answer_after_mark(row, bead=None, ask=None):
+            self.native.ask.update(state='answered', option=1, words='done', by='proposer')
+            return original(row, bead, ask)
+        with patch.object(self.bridge.run_asks, '_reissue_decision', side_effect=answer_after_mark):
+            self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.bridge.run_asks.get(race0['id'])['state'], 'stale')
+        self.assertIsNone(self.bridge.run_asks.get(race0['id']).get('replaced_by'))
+        self.assertIn('use Footplate or the yard cards', self.edits()[-1]['text'])
 
     def test_routine_render_approve_once_restart_and_canonical_close(self):
         self.native.ask.pop('turn')  # run cards still accept the older core shape
@@ -7762,6 +8010,37 @@ class RealNativeTests(BridgeTestCase):
             stored = client.call('Bead', dict(bead='decline-1', viewer='pat'))['asks'][0]
             self.assertEqual((stored['state'], stored['words']), ('declined', 'Declined in Telegram'))
             self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'declined')
+
+            # Real yardr: advancing an --about bead or retitling the bead makes the decision card stale
+            # while the native ask stays open; the bridge re-issues one fresh card and answers via turn guard.
+            cli('bead', 'create', 'Referenced bead', '--id', 'about-1')
+            cli('bead', 'create', 'Stale reissue bead', '--id', 'reissue-1')
+            subprocess.run([command[0], '--home', str(home), '--actor', 'proposer', 'bead', 'ask', 'reissue-1',
+                            'Pick one?', '--to', 'pat', '--context', 'Real stale reissue check',
+                            '--option', 'First: Pick first.', '--option', 'Second: Pick second.',
+                            '--about', 'about-1'], env=env, cwd=root, check=True, stdout=subprocess.DEVNULL)
+            reissue_ask = client.call('Bead', dict(bead='reissue-1', viewer='pat'))['asks'][0]
+            self.assertTrue(self.bridge.api_ask_card(dict(bead='reissue-1', ask=reissue_ask['ask'], key='reissue-real'))['delivered'])
+            stale_row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'reissue-1')
+            cli('bead', 'advance', 'about-1', '--to', 'review')
+            stale_tap = dict(id='reissue-stale', data=f"askcard:{stale_row['id']}:pick1:{reissue_ask['turn']}",
+                             message=dict(message_id=stale_row['message_id'], chat=dict(id=123, type='private'),
+                                          **{'from': dict(id=999, is_bot=True)}),
+                             **{'from': dict(id=123, is_bot=False)})
+            self.bridge.inbound(dict(update_id=501, callback_query=stale_tap))
+            self.assertEqual(client.call('Bead', dict(bead='reissue-1', viewer='pat'))['asks'][0]['state'], 'open')
+            fresh_row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'reissue-1' and r['state'] == 'open')
+            self.assertNotEqual(fresh_row['id'], stale_row['id'])
+            edits = [body for url, body in self.calls if url.endswith('/editMessageText')]
+            self.assertIn(n.REPLACED_PROPOSAL, edits[-1]['text'])
+            self.assertIn('about-1 · Referenced bead · review', fresh_row['plain'])
+            fresh_tap = dict(id='reissue-fresh', data=f"askcard:{fresh_row['id']}:pick2:{fresh_row['turn']}",
+                             message=dict(message_id=fresh_row['message_id'], chat=dict(id=123, type='private'),
+                                          **{'from': dict(id=999, is_bot=True)}),
+                             **{'from': dict(id=123, is_bot=False)})
+            self.bridge.inbound(dict(update_id=502, callback_query=fresh_tap))
+            after = client.call('Bead', dict(bead='reissue-1', viewer='pat'))['asks'][0]
+            self.assertEqual((after['state'], after.get('option'), after['turn']), ('answered', 2, reissue_ask['turn'] + 1))
         finally:
             testyardr.stop(server)
 

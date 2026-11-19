@@ -661,6 +661,28 @@ class DecideTests(DecideCase):
         self.assertEqual(n.RunAsks(other_bridge).rows(), [])
         self.assertFalse([c for c in other.calls if c[0] not in ('GetUser', 'UserAsks', 'Bead')])
 
+    def test_stale_decision_card_replaces_and_reopens_cleanly_in_decide(self):
+        self.command('/decide sample-1#7', 1)
+        stale_row = self.bridge.run_asks.rows()[0]
+        self.native.beads['sample-1']['title'] = 'Retitled sample'
+        # /decide while the card was stale re-issues one fresh card and retires the stale one.
+        self.command('/decide sample-1#7', 2)
+        self.assertIn('Retitled sample', self.sends()[-1]['text'])
+        self.assertIn(n.REPLACED_PROPOSAL, self.edits()[-1]['text'])
+        fresh_row = next(r for r in self.bridge.run_asks.rows() if r['bead'] == 'sample-1' and r['state'] == 'open')
+        self.assertNotEqual(fresh_row['id'], stale_row['id'])
+        # Subsequent /decide selection sees the fresh card is already open.
+        self.command('/decide sample-1#7', 3)
+        self.assertEqual(self.sends()[-1]['text'], 'The card for sample-1#7 is already open.')
+        self.assertEqual(self.sends()[-1]['reply_parameters'], {'message_id': fresh_row['message_id']})
+
+        # Run card stale in /decide keeps today's refusal.
+        self.command('/decide run-1#3', 4)
+        self.native.beads['run-1']['title'] = 'Retitled run'
+        self.bridge.run_asks.refresh()
+        self.command('/decide run-1#3', 5)
+        self.assertIn('run_ask_stale_proposal', self.sends()[-1]['text'])
+
 
 class DecideNamespaceTests(BridgeTestCase):
     def native_settings(self, extra='', native=True):

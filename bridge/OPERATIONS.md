@@ -3140,6 +3140,26 @@ Ordinary rows lacking generation bindings refuse as unconfirmed; these
 unreleased rows have no upgrade path.
 Run rows retain their existing ledger upgrade and edit behavior.
 
+When an ordinary decision card's proposal digest changes (such as a bead title,
+a referenced `about` bead's stage or title, or home identity) while the native
+ask remains open, the bridge marks the stale card refused
+(`run_ask_stale_proposal`), posts at most one replacement card per
+`(ask, proposal digest)` with the current content and turn (honoring the
+original conversation and silent setting), and edits the stale card without
+controls to `"Proposal changed; replaced by a newer card"` (or directs to
+Footplate or the yard cards if the replacement cannot be shown or confirmed).
+Taps and replies on the stale card remain refused, and the fresh card answers
+through the same `seq` and `turn` guards. The replacement is issued per
+staleness event: a digest value that recurs (such as a title reverted to an
+earlier value) posts one further fresh card, scoped by the row it replaces,
+so retries and restarts converge on one card and replacement chains stay
+acyclic; a retired row is never re-linked or re-presented. Canonical state is
+re-read before posting, so if the ask is already answered, declined, taken
+back, or put aside before the replacement is issued (including across a
+restart between marking stale and posting), no replacement card is posted.
+Run cards keep `"Proposal changed; use Footplate or the yard cards"`
+without automatic replacement.
+
 An ordinary decision delivered by Telegram can lose its send response. Its
 saved receipt remains `ambiguous_delivery_requires_manual_reconciliation`;
 repeating `ask_card`, including after recovery, keeps that receipt for the

@@ -34,6 +34,8 @@ REPORT_NON_REPORT_AUTHORS = frozenset({'yard', 'yardmaster'})
 PENDING = 'approved, to be carried out'
 UNCERTAIN = 'the yard did not answer; read the card again'
 FALLBACK = '; use Footplate or the yard cards'
+STALE_PROPOSAL = 'Proposal changed' + FALLBACK
+REPLACED_PROPOSAL = 'Proposal changed; replaced by a newer card'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
          'NextStages', 'GetBead', 'Head', 'Events', 'Notes')
@@ -2565,6 +2567,40 @@ class RunAsks:
     def ident(self, bead_id, number):
         return digest(dict(binding=self.binding(), bead=bead_id, ask=number))[:24]
 
+    def reissue_ident(self, bead_id, number, proposal):
+        """Return the deterministic row id for one (ask, proposal digest) replacement."""
+        return digest(dict(binding=self.binding(), bead=bead_id, ask=number, proposal=proposal))[:24]
+
+    def reissue_target(self, row, proposal):
+        """Return the deterministic replacement id for one staleness event.
+
+        The base id names one (ask, proposal digest). A digest value that
+        recurs would collide with its own retired row, so scope that event
+        by its predecessor row: retries of the same event converge on one
+        card, and replacement chains stay acyclic.
+        """
+        reissue_id = self.reissue_ident(row['bead'], row['ask'], proposal)
+        if reissue_id == row['id']:
+            return digest(dict(binding=self.binding(), bead=row['bead'], ask=row['ask'],
+                               proposal=proposal, predecessor=row['id']))[:24]
+        existing = self.get(reissue_id)
+        if existing is None or (existing.get('state') == 'open'
+                                and existing.get('proposal') == proposal):
+            return reissue_id
+        return digest(dict(binding=self.binding(), bead=row['bead'], ask=row['ask'],
+                           proposal=proposal, predecessor=row['id']))[:24]
+
+    def resolve_row(self, row):
+        """Follow any replaced_by chain to the newest decision row."""
+        seen = set()
+        while row and row.get('replaced_by') and row['id'] not in seen:
+            seen.add(row['id'])
+            nxt = self.get(row['replaced_by'])
+            if nxt is None:
+                break
+            row = nxt
+        return row
+
     def rows(self):
         with self.store.connect() as db:
             rows = [json.loads(row[0]) for row in db.execute('SELECT data FROM ' + self.table)]
@@ -2581,7 +2617,10 @@ class RunAsks:
 
     def save(self, row):
         with self.store.connect() as db:
-            db.execute('INSERT OR REPLACE INTO ' + self.table + ' VALUES (?,?)', (row['id'], canonical(row)))
+            db.execute(
+                'INSERT INTO ' + self.table + ' VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
+                (row['id'], canonical(row)),
+            )
 
     def recover_generation(self, row):
         if (row.get('kind') == 'decision' and isinstance(row.get('generations'), list)
@@ -2634,8 +2673,156 @@ class RunAsks:
             value['home_identity'] = [info.st_dev, info.st_ino]
         return digest(value)
 
+    def _retirement_pending(self, row, footer):
+        if row.get('kind') != 'decision':
+            return False
+        gen = self.generation(row, row['turn'])
+        if gen is None:
+            return False
+        desired = dict(footer=footer, keyboard=[])
+        if gen.get('display') != desired:
+            return True
+        edit_key = f"runask:{row['id']}:turn:{gen['turn']}:revision:{gen['revision']}:edit"
+        receipt = self.store.saved_receipt(edit_key)
+        return receipt is None or (
+            receipt.get('delivered') is False
+            and (receipt.get('metadata') or {}).get('reason') == 'transport_unavailable_not_sent'
+        )
+
+    def _retire_replaced(self, row, next_row=None):
+        if row.get('kind') != 'decision':
+            return
+        gen = self.generation(row, row['turn'])
+        if gen is None:
+            return
+        has_card = next_row is not None and bool(next_row.get('generations'))
+        footer = (REPLACED_PROPOSAL if has_card else
+                  'The current ask is unavailable in Telegram; use Footplate or the yard cards'
+                  if next_row is not None else STALE_PROPOSAL)
+        if self._retirement_pending(row, footer):
+            self.display(row, footer, [], gen)
+
+    def _restore_active(self, row):
+        """Edit a revived card back to its active controls after retirement."""
+        gen = self.generation(row, row['turn'])
+        if gen is None or gen.get('display') is None:
+            return
+        if gen.get('display') != dict(footer='', keyboard=self.keyboard(row)):
+            self.display(row, '', None, gen)
+
+    def _reissue_decision(self, row, bead=None, ask=None):
+        if row.get('kind') != 'decision':
+            return None
+        if bead is None or ask is None:
+            verify_operator(self.client, self.config)
+        # Re-read canonical state: a caller snapshot may predate an answer,
+        # decline, take-back or put-aside racing the mark-to-post interval.
+        bead, ask = self.fetch(row['bead'], row['ask'], 'decision')
+        if ask['state'] != 'open':
+            if row.get('replaced_by'):
+                row.pop('replaced_by', None)
+                self.save(row)
+            self._retire_replaced(row, None)
+            return None
+        proposal = self.proposal(bead, ask, row['conversation'])
+        reissue_id = self.reissue_target(row, proposal)
+        existing = self.get(reissue_id)
+        if existing is not None:
+            if existing.get('state') != 'open' or existing.get('proposal') != proposal:
+                # Same event retried after its card closed: revive it as the
+                # active head with current content, never re-present retired.
+                try:
+                    plain, card, _ = self.card(bead, ask, 'decision', proposal)
+                except NativeError as error:
+                    if not str(error).endswith(FALLBACK):
+                        raise
+                    if row.get('replaced_by'):
+                        row.pop('replaced_by', None)
+                        self.save(row)
+                    self._retire_replaced(row, None)
+                    return None
+                existing.update(proposal=proposal, plain=plain, html=card,
+                                options=list(ask.get('options') or []),
+                                weighty=bool(ask.get('weight')),
+                                state='open', pending=None, uncertain=False)
+                existing.pop('replaced_by', None)
+                self.save(existing)
+                self.present_decision(existing, ask)
+                self._restore_active(existing)
+            if row.get('replaced_by') != reissue_id:
+                row['replaced_by'] = reissue_id
+                self.save(row)
+            self._retire_replaced(row, self.resolve_row(existing))
+            return existing
+        try:
+            plain, card, _ = self.card(bead, ask, 'decision', proposal)
+        except NativeError as error:
+            if not str(error).endswith(FALLBACK):
+                raise
+            if row.get('replaced_by'):
+                row.pop('replaced_by', None)
+                self.save(row)
+            self._retire_replaced(row, None)
+            return None
+        new_row = dict(
+            id=reissue_id,
+            binding=row['binding'],
+            bead=row['bead'],
+            ask=row['ask'],
+            conversation=row['conversation'],
+            proposal=proposal,
+            plain=plain,
+            html=card,
+            weighty=bool(ask.get('weight')),
+            state='open',
+            pending=None,
+            message_id=None,
+            silent=row['silent'],
+            revision=0,
+            kind='decision',
+            options=ask.get('options') or [],
+            turn=ask['turn'],
+            initial_turn=ask['turn'],
+            generations=[],
+            replaces=row['id'],
+        )
+        row['replaced_by'] = reissue_id
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute(
+                'INSERT INTO ' + self.table + ' VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
+                (row['id'], canonical(row)),
+            )
+            db.execute(
+                'INSERT INTO ' + self.table + ' VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
+                (new_row['id'], canonical(new_row)),
+            )
+        self.present_decision(new_row, ask)
+        self._retire_replaced(row, new_row)
+        return new_row
+
+    def _key_conflicts(self, db, key):
+        return bool(
+            db.execute('SELECT 1 FROM deliveries WHERE key=?', (key,)).fetchone()
+            or db.execute('SELECT 1 FROM asks WHERE ask_id=?', (self.bridge._ask_id_for_key(key),)).fetchone()
+        )
+
+    def _mark_stale(self, row, bead=None, ask=None, current_proposal=None):
+        """Retire a stale row, re-issuing one replacement decision card if the ask is still open."""
+        if row.get('kind') == 'decision' and ask is not None and ask['state'] == 'open':
+            reissue_id = self.reissue_target(row, current_proposal)
+            row.update(pending=None, state='stale', replaced_by=reissue_id)
+            self.save(row)
+            return self._reissue_decision(row, bead, ask)
+        row.update(pending=None, state='stale')
+        self.save(row)
+        self.display(row, STALE_PROPOSAL, [])
+        return None
+
     def ensure(self, row):
         if row['state'] == 'stale':
+            if row.get('kind') == 'decision' and row.get('replaced_by') and self.get(row['replaced_by']) is None:
+                self._reissue_decision(row)
             raise NativeError('run_ask_stale_proposal')
         if row['binding'] != self.binding():
             raise NativeError('run_ask_wrong_yard_or_pairing')
@@ -2674,10 +2861,9 @@ class RunAsks:
                 # The skill card is removed, not unreadable: keep the row and its message.
                 raise
             bead, ask = None, None
-        if ask is None or self.proposal(bead, ask, row['conversation']) != row['proposal']:
-            row.update(pending=None, state='stale')
-            self.save(row)
-            self.display(row, 'Proposal changed; use Footplate or the yard cards', [])
+        current_proposal = None if ask is None else self.proposal(bead, ask, row['conversation'])
+        if ask is None or current_proposal != row['proposal']:
+            self._mark_stale(row, bead, ask, current_proposal)
             raise NativeError('run_ask_stale_proposal')
         return ask
 
@@ -2732,23 +2918,45 @@ class RunAsks:
                 self.require_depot_cutover(bead_id, ask)
             with self.store.connect() as db:
                 saved = db.execute('SELECT id,request FROM run_ask_keys WHERE key=?', (key,)).fetchone()
-            if saved and saved[1] != request:
-                raise NativeError('idempotency_key_conflict')
+                if saved and saved[1] != request:
+                    raise NativeError('idempotency_key_conflict')
+                if self._key_conflicts(db, key):
+                    raise NativeError('idempotency_key_conflict')
             proposal = self.proposal(bead, ask, conversation)
             ident = self.ident(bead_id, number)
             row = self.get(ident)
             if row:
+                if kind == 'decision':
+                    row = self.resolve_row(row)
                 if row.get('kind', 'run') != kind:
                     raise NativeError('idempotency_key_conflict')
-                if row['state'] == 'stale':
-                    raise NativeError('run_ask_stale_proposal')
-                if row['proposal'] != proposal:
-                    raise NativeError('run_ask_stale_proposal')
-                if (row['message_id'] is None and ask['state'] != 'open'
-                        and (kind != 'decision' or not self.unconfirmed_receipt(row))):
-                    raise NativeError('run_ask_not_open')
                 if row['silent'] != silent:
                     raise NativeError('idempotency_key_conflict')
+                if kind == 'decision':
+                    if row['conversation'] != conversation:
+                        raise NativeError('run_ask_stale_proposal')
+                    if row['state'] == 'stale' or row['proposal'] != proposal:
+                        if row['state'] != 'stale':
+                            row = self._mark_stale(row, bead, ask, proposal)
+                        elif ask['state'] == 'open':
+                            row = self._reissue_decision(row, bead, ask)
+                        else:
+                            if row.get('replaced_by'):
+                                row.pop('replaced_by', None)
+                                self.save(row)
+                            self._retire_replaced(row, None)
+                            row = None
+                        if row is None:
+                            raise NativeError('run_ask_stale_proposal')
+                    elif row['message_id'] is None and ask['state'] != 'open' and not self.unconfirmed_receipt(row):
+                        raise NativeError('run_ask_not_open')
+                else:
+                    if row['state'] == 'stale':
+                        raise NativeError('run_ask_stale_proposal')
+                    if row['proposal'] != proposal:
+                        raise NativeError('run_ask_stale_proposal')
+                    if row['message_id'] is None and ask['state'] != 'open':
+                        raise NativeError('run_ask_not_open')
             else:
                 if ask['state'] != 'open':
                     raise NativeError('run_ask_not_open')
@@ -2769,11 +2977,13 @@ class RunAsks:
                     row['bundle'] = bundle
             with self.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if (db.execute('SELECT 1 FROM deliveries WHERE key=?', (key,)).fetchone()
-                        or db.execute('SELECT 1 FROM asks WHERE ask_id=?', (self.bridge._ask_id_for_key(key),)).fetchone()):
+                if self._key_conflicts(db, key):
                     raise NativeError('idempotency_key_conflict')
                 db.execute('INSERT OR IGNORE INTO run_ask_keys VALUES (?,?,?)', (key, ident, request))
-                db.execute('INSERT OR REPLACE INTO ' + self.table + ' VALUES (?,?)', (row['id'], canonical(row)))
+                db.execute(
+                    'INSERT INTO ' + self.table + ' VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
+                    (row['id'], canonical(row)),
+                )
             if kind == 'decision':
                 receipt = self.present_decision(row, ask) if ask['state'] == 'open' else self.settle(row, ask)
                 # Callback proof binds the card without rewriting its original send receipt.
@@ -3473,7 +3683,7 @@ class RunAsks:
             if ask_key is not None:
                 with self.store.connect() as db:
                     found = db.execute('SELECT id FROM run_ask_keys WHERE key=?', (ask_key,)).fetchone()
-                row = self.get(found[0]) if found else None
+                row = self.resolve_row(self.get(found[0])) if found else None
             else:
                 found = [r for r in self.rows() if any(mid == message_id for mid, _ in self.message_bindings(r))]
                 if len(found) > 1:
@@ -3495,8 +3705,9 @@ class RunAsks:
         if self.client is None:
             return
         with self.lock():
+            binding = self.binding()
             for row in self.rows():
-                if (row['binding'] != self.binding() or row['state'] == 'stale'
+                if (row['binding'] != binding or row['state'] == 'stale'
                         or (row['message_id'] is None and row.get('kind') != 'decision')):
                     continue
                 try:
@@ -3511,6 +3722,19 @@ class RunAsks:
                             row['pending'] = None
                             self.save(row)
                             self.display(row, LEGACY_CONFIRM_ENDED if legacy else CONFIRM_EXPIRED)
+                except NativeError:
+                    continue
+            for row in self.rows():
+                if row['binding'] != binding or row.get('kind') != 'decision' or row['state'] != 'stale':
+                    continue
+                if not row.get('replaced_by'):
+                    continue
+                try:
+                    target = self.get(row['replaced_by'])
+                    if target is None:
+                        self._reissue_decision(row)
+                    else:
+                        self._retire_replaced(row, self.resolve_row(target))
                 except NativeError:
                     continue
 
@@ -3557,7 +3781,7 @@ class RunAsks:
         """Whether selecting entry opens a card: one already sent, or one that renders whole now."""
         if not entry['shown']:
             return False
-        if self.card_message(self.get(self.ident(entry['bead'], entry['ask']))):
+        if self.card_message(self.resolve_row(self.get(self.ident(entry['bead'], entry['ask'])))):
             return True
         kind = card_kind(entry)
         try:
@@ -3570,7 +3794,7 @@ class RunAsks:
         return True
 
     def card_message(self, row):
-        if row is None:
+        if row is None or row.get('state') == 'stale':
             return None
         if row.get('kind') == 'decision':
             generation = self.generation(row, row['turn'])
@@ -3586,7 +3810,7 @@ class RunAsks:
         if not self.showable(entry):
             return f"{label} is a {entry['kind']} ask a Telegram card cannot show whole; use Footplate or the yard cards.", None
         ident = self.ident(bead_id, number)
-        row = self.get(ident)
+        row = self.resolve_row(self.get(ident))
         kind, silent = card_kind(entry), False
         if row:
             # A card already sent keeps its own conversation, silence and kind, never relocated.
@@ -3600,7 +3824,7 @@ class RunAsks:
             if str(error) != 'run_ask_not_open':
                 raise
             return self.decide_closed(bead_id, number), None
-        after = self.card_message(self.get(ident))
+        after = self.card_message(self.resolve_row(self.get(ident)))
         if receipt.get('delivered') is not True:
             reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
             return f'The card for {label} is not confirmed sent ({reason}); nothing was answered.', None

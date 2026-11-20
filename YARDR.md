@@ -261,6 +261,15 @@ with the daemon's `session_nudged` outcome, or unknown after ten minutes.
 No crew call or grant; a core without the row files none and nothing is sent.
 See [the yard's nudge cards](bridge/OPERATIONS.md#the-yards-nudge-cards).
 
+The operator can also nudge with their own words: `/nudge <target>
+[words]` in the paired chat, or a reply with words to a nudge card, opens a
+confirm card showing the target, its current status and the exact line, and
+the tap on its Nudge button calls core `NudgeSession` once as the operator,
+with the outcome relayed on the card the same way. The command is
+typed-only and stays out of the Telegram menu; a core without the method
+answers not-supported and writes nothing.
+See [nudging with your own words](bridge/OPERATIONS.md#nudging-with-your-own-words).
+
 
 The bridge carries no `skill add` card: a `skill add` ask refuses before any
 send, and a `/decide` row for one is terminal-only. On the fork's skill core

@@ -171,6 +171,8 @@ class YardSocketClient:
                         raise RPCUnsupported('ask_card_requires_guarded_core' + FALLBACK)
                     if method == 'SkillDigest' and error['code'] == 'error' and error['message'] == 'no such method SkillDigest':
                         raise RPCUnsupported('run_ask_skill_cards_unavailable; this yard has no skill topic' + FALLBACK)
+                    if method == 'NudgeSession' and error['code'] == 'error' and error['message'] == 'no such method NudgeSession':
+                        raise RPCUnsupported('native_nudge_unavailable; this yard has no session nudge')
                     code =error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
                     if (method == 'ApproveAsk' and code == 'error'
                             and re.fullmatch(rf"ask {arguments.get('ask')} was good until (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] "

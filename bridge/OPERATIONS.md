@@ -957,6 +957,34 @@ switch, stop `<INSTANCE_UNIT>`, run `<INSTANCE_ROOT>/current/install.sh
 --settings <INSTANCE_SETTINGS> --root <INSTANCE_ROOT> --rollback`, restart
 `<INSTANCE_UNIT>`, and run `<INSTANCE_ROOT>/bin/telegram-bridge set-commands`.
 
+### /nudge
+
+`/nudge <session|crew member|bead> [words]` lets the paired user, as the
+yard's operator, nudge a stuck session or crew member with their own words.
+It opens a confirm card drawn from canonical state: the target and its
+current status (the `GetCrew` read or the `ListSessions` list over the
+socket), the exact line shown whole (the core default line when no words are
+given), and Nudge and Cancel buttons. A reply with words to a nudge card
+(the yard's own, below) opens the same confirm card, with that card's target.
+
+A verified tap (`verify_operator`, sender, chat, topic, message binding,
+claimed once) calls core `NudgeSession` as the operator, one write; Cancel
+writes nothing. Text is passed as given, never interpolated into a shell. A
+chat message alone never nudges: only the tap on the confirm card does. The
+outcome is relayed as in the card child below: the daemon's
+`session_nudged` matched on the request id, told once as a reply on the
+card, unknown after ten minutes.
+
+**Native capability and baseline.** `/nudge` requires a core serving
+`NudgeSession` (operator-only, socket-only). At command time the bridge
+probes it with an empty call, which a supporting core refuses in validation
+and an older core answers `no such method`: the latter is classified like
+`RPCUnsupported`, and `/nudge` answers that this yard's core has no session
+nudge, with nothing written. `/nudge` is typed-only and stays out of the
+Telegram menu on every core, so an unsupported core never advertises it. No
+grant, setting or service is added; the ledger gains the `typed_nudges`
+table.
+
 ## Asks
 
 An ask is a message with tap-to-answer buttons: the paired user taps
@@ -2620,6 +2648,28 @@ card is sent and nothing is logged. No grant, setting or service is added;
 the ledger gains the `nudge_cards` table. The plain `session_harness_error`
 tell is untouched. Source landing installs nothing: the bridge's deploy and a
 core with the yard-filed card are each the operator's.
+
+### Nudging with your own words
+
+`/nudge <target> [words]` (see `### /nudge` under `## Native yard
+commands`) opens a confirm card for a session id, a crew member's name or a
+bead with exactly one live session; a reply with words to a nudge card above
+does the same, with that card's target (a conversation's card, whose argv
+carries `--for user`, nudges that conversation). The card shows the target, its
+current status and the exact line, and only the tap on its Nudge button
+writes: one `NudgeSession` call as the operator. Wrong user, chat or topic,
+a replay and a double tap each write at most once (the core's standing
+request refuses a second); Cancel writes nothing. Over-long text is refused
+before any call.
+
+The outcome is relayed as in the card above, matched on the request id
+instead of the ask: the daemon's `session_nudged` told once as a reply on
+the confirm card, unknown after ten minutes, with the same resend and
+unreadable rules. The `typed_nudges` ledger table carries the confirm rows;
+`scripts/preview_typed_nudge.py` renders the card and its replies as
+synthetic captures. A core without the method answers the command
+not-supported and writes nothing; plain chat messages still go to the hook
+as mail, unchanged.
 
 
 ### Native general cards

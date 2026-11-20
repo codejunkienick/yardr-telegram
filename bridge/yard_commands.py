@@ -47,6 +47,15 @@ def mayor_model_alias(mayor):
     return dict(name='mayor_model', description='Use /switch_model', menu=False,
                 callback_prefix=MAYOR_MODEL_PREFIX, native=NATIVE_MAYOR_MODEL, timeout=mayor['timeout'])
 
+# The native /nudge command: typed-only, never in the Telegram menu, so a
+# core without the session nudge never advertises it. Callbacks carry
+# nudge:<token>:nudge and nudge:<token>:cancel under NUDGE_PREFIX.
+NATIVE_NUDGE = 'nudge'
+NUDGE_PREFIX = 'nudge:'
+NUDGE_TIMEOUT = 30
+NUDGE_COMMAND = dict(name='nudge', description='Nudge an agent with your own words',
+                     menu=False, callback_prefix=NUDGE_PREFIX, native=NATIVE_NUDGE, timeout=NUDGE_TIMEOUT)
+
 # The yardr child may print this much stdout before its group is killed; its
 # reports are small, and anything past it is unreadable, never truncated.
 YARDR_OUTPUT_MAX_BYTES = 4 * 1024 * 1024

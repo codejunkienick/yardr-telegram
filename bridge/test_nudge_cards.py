@@ -390,12 +390,13 @@ class NudgeCardTests(NudgeCase):
     def test_refresh_runs_after_the_run_cards_and_before_the_updates(self):
         order = []
         for name, target in (('run_asks', self.bridge.run_asks), ('nudge_cards', self.bridge.nudge_cards),
+                             ('typed_nudge', self.bridge.typed_nudge),
                              ('siding_cards', self.bridge.siding_cards), ('model_switch', self.bridge.model_switch)):
             patch.object(target, 'refresh', side_effect=lambda name=name: order.append(name)).start()
         self.addCleanup(patch.stopall)
         with patch.object(self.bridge, 'drain', side_effect=lambda updates: order.append('drain')):
             self.poll()
-        self.assertEqual(order, ['run_asks', 'nudge_cards', 'siding_cards', 'drain', 'model_switch'])
+        self.assertEqual(order, ['run_asks', 'nudge_cards', 'typed_nudge', 'siding_cards', 'drain', 'model_switch'])
 
     def test_the_preview_renders_the_card_and_its_replies_as_synthetic(self):
         result = subprocess.run([sys.executable, '-B', str(Path(__file__).resolve().parents[1] / 'scripts/preview_nudge_cards.py')],

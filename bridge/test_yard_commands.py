@@ -823,10 +823,12 @@ class SettingsQuotaCase(unittest.TestCase):
         self.assertEqual(settings.config['yardr_bin'], str(self.stub))
         self.assertEqual(settings.config['yardr_quota'],
                          dict(timeout=30, groups=(), machine_login=True, machine=False))
-        (entry,) = [command for command in settings.config['commands']
-                     if command.get('native')]
-        self.assertEqual(entry, dict(name='quota', description='Usage limits and time to each reset',
+        quota, nudge = [command for command in settings.config['commands']
+                        if command.get('native')]
+        self.assertEqual(quota, dict(name='quota', description='Usage limits and time to each reset',
                                      menu=True, callback_prefix='quota:', native='quota', timeout=30))
+        self.assertEqual(nudge['name'], 'nudge')
+        self.assertFalse(nudge['menu'])
 
     def test_table_with_explicit_keys(self):
         settings = b.load_settings(self.settings(

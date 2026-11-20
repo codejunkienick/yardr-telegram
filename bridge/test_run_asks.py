@@ -414,6 +414,11 @@ class NativeSocket:
         # The standing skill trees SkillDigest reads; a name not here is absent.
         self.skill_trees = {}
         self.stale = ''
+        # The crew and sessions a session nudge reads; the nudge requests it wrote.
+        self.crew = {}
+        self.sessions = []
+        self.nudges = {}
+        self.nudge_seq = 0
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -515,6 +520,21 @@ class NativeSocket:
                             self.wfile.write(b'not a rollback')
                         return
                     result = dict(bead='sample-1', ask=7, result='stored operation applied') if method == 'ApproveAsk' else None
+                elif method == 'GetCrew':
+                    member = owner.crew.get(args.get('name')) if isinstance(args, dict) else None
+                    if member is None:
+                        self.reply({'error': {'code': 'not-found', 'message': 'no such crew member'}})
+                        return
+                    result = dict(member)
+                elif method == 'ListSessions':
+                    result = [dict(item) for item in owner.sessions]
+                elif method == 'NudgeSession':
+                    if owner.mode == 'no-nudge-method':
+                        self.reply({'error': {'code': 'error', 'message': 'no such method NudgeSession'}})
+                        return
+                    result = owner.nudge(args, self)
+                    if result is None:
+                        return
                 else:
                     self.reply({'error': {'code': 'not-found', 'message': 'unknown method'}})
                     return
@@ -557,6 +577,68 @@ class NativeSocket:
         if self.beads is None:
             return self.ask
         return next(a for a in self.beads[args['bead']]['asks'] if a['ask'] == args['ask'])
+
+    def nudge(self, args, handler):
+        """One NudgeSession write, as the core answers it: the resolved line,
+        or a refused error with the core's code. A standing request refuses a
+        second; text '' types the core default line."""
+        import unicodedata
+        target = args.get('target') if isinstance(args, dict) else None
+        user = args.get('user', '') if isinstance(args, dict) else ''
+        text = args.get('text', '') if isinstance(args, dict) else None
+        session = next((item for item in self.sessions if item['id'] == target), None)
+        member = self.crew.get(target)
+        live = [item for item in self.sessions if item['bead'] == target and item['state'] == 'running']
+        if session is not None:
+            if user:
+                handler.reply({'error': {'code': 'error',
+                                         'message': '--for names a crew member\u2019s conversation'}})
+                return None
+            if session['state'] != 'running':
+                handler.reply({'error': {'code': 'error', 'message': 'only a running session is nudged'}})
+                return None
+            key, journal = 'session:' + session['id'], session['bead']
+        elif member is not None:
+            if not member.get('live', True):
+                handler.reply({'error': {'code': 'error', 'message': 'only a running session is nudged'}})
+                return None
+            if user:
+                key, journal = 'crew:' + target + ':for:' + user, member['journal']
+            else:
+                key, journal = 'crew:' + target, member['journal']
+        elif len(live) == 1:
+            session = live[0]
+            key, journal = 'session:' + session['id'], session['bead']
+        elif live:
+            handler.reply({'error': {'code': 'error', 'message': 'name several sessions'}})
+            return None
+        else:
+            handler.reply({'error': {'code': 'not-found', 'message': 'no such session, crew member or bead'}})
+            return None
+        if key in self.nudges:
+            handler.reply({'error': {'code': 'conflict', 'message': 'a nudge stands already'}})
+            return None
+        if not isinstance(text, str):
+            handler.reply({'error': {'code': 'error', 'message': 'words are not text'}})
+            return None
+        if len(text) > 1000:
+            handler.reply({'error': {'code': 'error', 'message': 'words are too long'}})
+            return None
+        if any(unicodedata.category(char) in ('Cc', 'Zl', 'Zp') for char in text):
+            handler.reply({'error': {'code': 'error', 'message': 'words are not one line'}})
+            return None
+        line = text or 'yardr: the operator asks you to go on where you stopped.'
+        self.nudge_seq += 1
+        ident = f'synthetic-nudge-{self.nudge_seq}'
+        self.nudges[key] = dict(id=ident, text=line, journal=journal)
+        result = dict(id=ident, text=line, by='pat', at='2026-11-20T12:00:00Z', state='asked')
+        if session is not None:
+            result.update(session=session['id'], bead=session['bead'])
+        elif user:
+            result.update(crew=target, user=user)
+        else:
+            result.update(crew=target)
+        return result
 
     def queue(self, args):
         # The core's UserAsks: open asks to the name, oldest first, decided beside them.

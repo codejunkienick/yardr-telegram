@@ -122,9 +122,14 @@ sys.modules['model_switch'] = model_switch
 _nudge_spec = importlib.util.spec_from_file_location('nudge_cards', Path(__file__).resolve().with_name('nudge_cards.py'))
 nudge_cards = importlib.util.module_from_spec(_nudge_spec)
 _nudge_spec.loader.exec_module(nudge_cards)
+sys.modules['nudge_cards'] = nudge_cards
 _siding_spec = importlib.util.spec_from_file_location('siding_cards', Path(__file__).resolve().with_name('siding_cards.py'))
 siding_cards = importlib.util.module_from_spec(_siding_spec)
 _siding_spec.loader.exec_module(siding_cards)
+_nudge_words_spec = importlib.util.spec_from_file_location('typed_nudge', Path(__file__).resolve().with_name('typed_nudge.py'))
+typed_nudge = importlib.util.module_from_spec(_nudge_words_spec)
+_nudge_words_spec.loader.exec_module(typed_nudge)
+sys.modules['typed_nudge'] = typed_nudge
 voice_transcribe = importlib.util.module_from_spec(_transcriber_spec)
 _transcriber_spec.loader.exec_module(voice_transcribe)
 SETTINGS_ENV = 'TELEGRAM_BRIDGE_SETTINGS'
@@ -1183,6 +1188,7 @@ class Bridge:
         self.publish_lock = threading.Lock()
         self.run_asks = run_asks.RunAsks(self)
         self.nudge_cards = nudge_cards.NudgeCards(self)
+        self.typed_nudge = typed_nudge.TypedNudge(self)
         self.siding_cards = siding_cards.SidingCards(self)
         self.model_switch = model_switch.ModelSwitch(self)
         self.stop = threading.Event()
@@ -2141,7 +2147,8 @@ class Bridge:
             # An unbound yard home (validate_home) is no siding update: log it, write nothing, keep polling.
             self._log(f'siding reply not bound (update {self._update_id(update)}): {error}')
             siding = False
-        if siding or self.run_asks.reply(self._update_id(update), message):
+        if siding or self.run_asks.reply(self._update_id(update), message) or self.typed_nudge.reply(
+                self._update_id(update), message):
             return
         found = self._match_command(text) if forward is None and attachment is None and isinstance(text, str) else None
         if found is not None and found[0] is self.DECIDE_COMMAND:
@@ -2905,6 +2912,8 @@ class Bridge:
         came from, when there is one."""
         if command.get('native') == yard_commands.NATIVE_MAYOR_MODEL:
             return self.model_switch.command(update_id, payload, query_id, thread_id)
+        if command.get('native') == yard_commands.NATIVE_NUDGE:
+            return self.typed_nudge.command(update_id, payload, query_id, thread_id)
         name = command['name']
         data = json.dumps(payload).encode()  # ASCII: a lone surrogate in chat text cannot break it
         try:
@@ -2977,6 +2986,10 @@ class Bridge:
             return
         elif data.startswith(self.DECIDE_CALLBACK_PREFIX) and self.native_decide():
             self.run_asks.decide_callback(update_id, query)
+            return
+        elif (data.startswith(yard_commands.NUDGE_PREFIX)
+              and self.commands.get('nudge', {}).get('native') == yard_commands.NATIVE_NUDGE):
+            self.typed_nudge.callback(update_id, query)
             return
         elif data.startswith(self.ASK_CALLBACK_PREFIX):
             self.inbound_ask(update_id, query, data)
@@ -4691,6 +4704,7 @@ class Bridge:
         self.record_poll_ok()
         self.run_asks.refresh()
         self.nudge_cards.refresh()
+        self.typed_nudge.refresh()
         self.siding_cards.refresh()
         self.drain(data['result'])
         self.model_switch.refresh()
@@ -5369,9 +5383,10 @@ def _command_settings(data, menu, native=False, mayor_model=False):
     if not isinstance(entries, list) or len(entries) > MENU_MAX or any(not isinstance(e, dict) for e in entries):
         raise SettingsError(f'settings: command must be a list of at most {MENU_MAX} [[command]] tables')
     menu_names = {name for name, _ in menu}
-    reserved = (RESERVED_COMMANDS + (('decide',) if native else ())
+    reserved = (RESERVED_COMMANDS + (('decide',) if native else ()) + (('nudge',) if native else ())
                 + (('mayor_model', 'switch_model') if mayor_model else ()))
     prefixes = (Bridge.RESERVED_CALLBACK_PREFIXES + ((Bridge.DECIDE_CALLBACK_PREFIX,) if native else ())
+                + ((yard_commands.NUDGE_PREFIX,) if native else ())
                 + ((yard_commands.MAYOR_MODEL_PREFIX,) if mayor_model else ()))
     commands = []
     for index, item in enumerate(entries, 1):
@@ -5520,6 +5535,8 @@ def load_settings(path, home=None):
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
     if native and any(name == 'decide' for name, _ in menu_entries):
         raise SettingsError('settings: [[menu]] /decide clashes with the native /decide the bridge owns with [yardr] home and operator')
+    if native and any(name == 'nudge' for name, _ in menu_entries):
+        raise SettingsError('settings: [[menu]] /nudge clashes with the native /nudge the bridge owns with [yardr] home and operator')
 
     # The native /quota ([yardr.quota] turns it on): it needs native [yardr]
     # home and operator. A [[menu]] or [[command]] quota, or a [[command]]
@@ -5569,6 +5586,7 @@ def load_settings(path, home=None):
     city_commands = _command_settings(data, menu_entries, bool(native), mayor_model=mayor is not None)
 
     natives = (((dict(yard_commands.QUOTA_COMMAND, timeout=quota['timeout']),) if quota is not None else ())
+               + ((yard_commands.NUDGE_COMMAND,) if native else ())
                + ((yard_commands.mayor_model_command(mayor), yard_commands.mayor_model_alias(mayor)) if mayor is not None else ()))
     if natives:
         shown = (len(menu_entries) + sum(1 for command in city_commands if command['menu']) + bool(native)

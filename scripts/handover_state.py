@@ -59,6 +59,7 @@ LATER = {
     'siding_fold_cards': ('id', 'data'),
     'siding_cards': ('id', 'data'),
     'nudge_cards': ('id', 'data'),
+    'typed_nudges': ('token', 'value'),
     'mayor_model_taps': ('update_id', 'pick', 'crew', 'state', 'at'),
     'model_selectors': ('token', 'update_id', 'value'),
     'model_operations': ('token', 'owner', 'active', 'value'),

@@ -14,6 +14,13 @@ sees and does, not how the code is organised.
   replies on the card with the nudge's outcome (typed, refused, expired or
   unknown). A core without that card sends nothing new.
 
+- Typed `/nudge`: the operator nudges a session or crew member with their
+  own words. `/nudge <target> [words]`, or a reply with words to a nudge
+  card, opens a confirm card with the target, its status and the exact line;
+  the tap calls core `NudgeSession` once, and the outcome is relayed on the
+  card. Typed-only, never in the menu; a core without the method answers
+  not-supported and nothing is written.
+
 - Fork-only skill administration cards: on a skill core with their card
   rows, `skill rm <name> [--force]` and a group's or crew member's
   `skills=[…]` / `--unset skills` arrive as one review document and a card

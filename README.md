@@ -158,6 +158,12 @@ yardmaster: Approve asks the daemon to type one line into the stuck agent,
 and the outcome comes back as a reply on the card. A core without that
 feature files no card, and none is sent. See [the yard's nudge cards](bridge/OPERATIONS.md#the-yards-nudge-cards).
 
+The operator can also nudge with their own words: `/nudge <target>
+[words]`, or a reply with words to a nudge card, opens a confirm card, and
+the tap calls core `NudgeSession` once, with the outcome relayed on the
+card. Typed-only, never in the menu; a core without the method answers
+not-supported. See [nudging with your own words](bridge/OPERATIONS.md#nudging-with-your-own-words).
+
 ## Prerequisites
 
 This is public source for review. The setup steps below require a

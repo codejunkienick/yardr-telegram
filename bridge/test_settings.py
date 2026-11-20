@@ -390,9 +390,10 @@ class MayorModelSettingsTests(unittest.TestCase):
 
     def test_no_table_keeps_a_command_mayor_model(self):
         settings = b.load_settings(self.settings(extra=self.command(callback_prefix='mayor-model:')))
-        (entry,) = settings.config['commands']
+        entry, nudge = settings.config['commands']
         self.assertEqual((entry['name'], entry['handler'], entry['callback_prefix']),
                          ('mayor_model', str(self.stub), 'mayor-model:'))
+        self.assertEqual(nudge['name'], 'nudge')
         self.assertNotIn('native', entry)
         self.assertNotIn('yardr_mayor_model', settings.config)
         self.assertNotIn('yardr_bin', settings.config)
@@ -431,7 +432,8 @@ class MayorModelSettingsTests(unittest.TestCase):
             dict(id='opus', label='Opus high', kind='claude', model='opus', args=('--effort', 'high'),
                  env_file='/srv/yard/crew-yardmaster.env', effort='high')))
         self.assertEqual(settings.config['yardr_bin'], str(self.stub))
-        entry, alias = settings.config['commands']
+        nudge, entry, alias = settings.config['commands']
+        self.assertEqual(nudge['name'], 'nudge')
         self.assertFalse(alias['menu'])
         self.assertEqual(alias['name'], 'mayor_model')
         self.assertEqual(entry, dict(name='switch_model', description='Show the mayor model, tap to switch it',
@@ -457,7 +459,7 @@ class MayorModelSettingsTests(unittest.TestCase):
         path = self.settings(self.PICKS, menu=False)
         path.write_text(path.read_text() + '\n[yardr.quota]\n')
         settings = b.load_settings(path)
-        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'switch_model', 'mayor_model'])
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'nudge', 'switch_model', 'mayor_model'])
 
     def test_migration_clashes_are_refused(self):
         fix = r'delete the \[\[(command|menu)\]\] .+ table'
@@ -475,7 +477,7 @@ class MayorModelSettingsTests(unittest.TestCase):
                     b.load_settings(self.settings(self.PICKS, extra=extra))
         # A prefix that no mayor-model: press starts with is no clash.
         settings = b.load_settings(self.settings(self.PICKS, extra=self.command('mayor', callback_prefix='mayor:')))
-        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['mayor', 'switch_model', 'mayor_model'])
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['mayor', 'nudge', 'switch_model', 'mayor_model'])
 
     def test_command_settings_reserve_the_prefix(self):
         data = dict(command=[dict(name='other', description='x', handler=str(self.stub), callback_prefix='mayor-model:')])
@@ -667,7 +669,7 @@ class ExampleSettingsTests(unittest.TestCase):
                 loaded['mayor_model'] |= set(data['yardr']['mayor_model'])
                 loaded['picks'] |= set(data['yardr']['mayor_model']['picks'][0])
                 self.assertEqual([command['name'] for command in settings.config['commands'] if 'native' in command],
-                                 ['quota', 'switch_model', 'mayor_model'])
+                                 ['quota', 'nudge', 'switch_model', 'mayor_model'])
                 loaded['bot'] |= set(data['bot'])
                 loaded['menu'] |= set(data['menu'][0])
                 loaded['command'] |= set(data['command'][0])

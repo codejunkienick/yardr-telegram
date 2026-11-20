@@ -3617,6 +3617,7 @@ class Bridge:
         conversation = self._api_conversation(request)
         fmt = request.get('format')
         format_fallback_reason = None
+        auto_html_error = None
         if fmt is None or fmt == '':  # null and "" are auto; any other value is checked below
             fmt = 'auto'
         if fmt == 'auto':
@@ -3624,8 +3625,9 @@ class Bridge:
             if fmt == 'plain' and ('<' in text or '&' in text):
                 if has_allowed_tag(text):
                     _, error = html_visible_text(text)
-                    return self._api_answer(self.receipt(reason=error or 'invalid_html'), conversation)
-                format_fallback_reason = 'invalid_html'
+                    auto_html_error = error or 'invalid_html'
+                else:
+                    format_fallback_reason = 'invalid_html'
         if fmt not in ('plain', 'html', 'markdown'):
             raise ApiError('format must be plain, html, markdown or auto')
         body = dict(conversation=conversation, idempotency_key=key, text=text)
@@ -3660,6 +3662,20 @@ class Bridge:
                 body['attachment'] = files[0]
             else:
                 body['attachments'] = files
+        if auto_html_error is not None:
+            # Replay a saved receipt for this key and body before refusing, so retries across the upgrade do not hide delivered or unconfirmed sends.
+            saved = None if self.store is None else self.store.saved_delivery(key)
+            if saved is not None:
+                fingerprint_body = body
+                if 'keyboard' in body:
+                    rows, kb_error = self._publish_keyboard(body['keyboard'])
+                    if not kb_error:
+                        fingerprint_body = dict(body, keyboard=rows)
+                if saved[0] != self.delivery_fingerprint(fingerprint_body):
+                    return self._api_answer(self.receipt(reason='idempotency_key_conflict'), conversation)
+                if not resendable(saved[1]):
+                    return self._api_answer(saved[1], conversation)
+            return self._api_answer(self.receipt(reason=auto_html_error), conversation)
         return self._api_answer(self.publish(body, format_fallback_reason=format_fallback_reason), conversation)
 
     TELL_TITLE_MAX = 250

@@ -387,17 +387,62 @@ class YardApiTests(BridgeTestCase):
             restored = b.Bridge(self.config, b.Store(self.path, 0), 'SECRET', 'CAPABILITY',
                                 request=self.transport)
             port = self.start_callback_server(bridge=restored)
-            self.assertEqual(self.api_call(port, '/v1/send', dict(request)), (200, expected))
-            refused = dict(delivered=False, conversation='123', reason='html_text_not_escaped',
-                           failure_kind='permanent')
-            for replay_format in ('auto', None, ''):
+            for replay_format in ('plain', 'auto', None, ''):
                 replay = dict(request, format=replay_format)
-                self.assertEqual(self.api_call(port, '/v1/send', replay), (200, refused))
+                self.assertEqual(self.api_call(port, '/v1/send', replay), (200, expected))
             self.assertEqual(self.api_call(port, '/v1/send', dict(request, text='another body')),
                              (200, dict(delivered=False, conversation='123',
                                  reason='idempotency_key_conflict', failure_kind='permanent')))
             self.assertEqual(self.store.saved_delivery(request['key'])[0], fingerprint)
             self.assertEqual(len(self.telegram_calls()), 1)
+
+        for label, key, text, saved_receipt, expected_answer, refusal_reason in (
+                ('legacy_invalid_html_fallback', 'legacy-auto-tag', '<b>X:</b> Nudge: <words>',
+                 dict(delivered=True, message_id='55', format_fallback_reason='invalid_html'),
+                 dict(delivered=True, message_id='55', conversation='123',
+                      delivered_format='plain', format_fallback_reason='invalid_html'),
+                 'html_tag_not_allowed'),
+                ('legacy_pre_fallback_metadata', 'legacy-auto-amp', '<code>echo ready && echo done</code>',
+                 dict(delivered=True, message_id='56'),
+                 dict(delivered=True, message_id='56', conversation='123'),
+                 'html_text_not_escaped')):
+            with self.subTest(legacy=label):
+                self.calls.clear()
+                identity = dict(conversation=self.bridge.conversation, idempotency_key=key, text=text)
+                fingerprint = b.Bridge.delivery_fingerprint(identity)
+                with self.store.connect() as db:
+                    db.execute('INSERT INTO deliveries VALUES (?, ?, ?)',
+                               (key, fingerprint, json.dumps(saved_receipt)))
+                for replay_format in ('auto', None, ''):
+                    replay = dict(key=key, text=text, format=replay_format)
+                    self.assertEqual(self.call('/v1/send', replay), (200, expected_answer))
+                self.assertEqual(self.call('/v1/posted', dict(key=key)),
+                                 (200, dict(message_id=saved_receipt['message_id'])))
+                self.assertEqual(self.call('/v1/send', dict(key=key, text='<b>X:</b> Nudge: &lt;words&gt;')),
+                                 (200, dict(delivered=False, conversation='123',
+                                     reason='idempotency_key_conflict', failure_kind='permanent')))
+                self.assertEqual(self.call('/v1/send', dict(key=key, text='<b>other</b> <words>')),
+                                 (200, dict(delivered=False, conversation='123',
+                                     reason='idempotency_key_conflict', failure_kind='permanent')))
+                fresh_key = f'fresh-{key}'
+                self.assertEqual(self.call('/v1/send', dict(key=fresh_key, text=text)),
+                                 (200, dict(delivered=False, conversation='123',
+                                     reason=refusal_reason, failure_kind='permanent')))
+                self.assertIsNone(self.store.saved_receipt(fresh_key))
+                self.assertEqual(len(self.telegram_calls()), 0)
+
+        with self.subTest(legacy='ambiguous'):
+            key, text = 'legacy-auto-ambiguous', '<b>X:</b> Nudge: <words>'
+            fingerprint = b.Bridge.delivery_fingerprint(
+                dict(conversation=self.bridge.conversation, idempotency_key=key, text=text))
+            with self.store.connect() as db:
+                db.execute('INSERT INTO deliveries VALUES (?, ?, ?)',
+                           (key, fingerprint, json.dumps(
+                               self.bridge.receipt(reason='ambiguous_delivery_requires_manual_reconciliation'))))
+            self.assertEqual(self.call('/v1/send', dict(key=key, text=text)),
+                             (200, dict(delivered=False, conversation='123',
+                                 reason='ambiguous_delivery_requires_manual_reconciliation',
+                                 failure_kind='permanent')))
 
         invalid = dict(text='<code>echo ready && echo done</code>', key='explicit-invalid', format='html')
         before = len(self.telegram_calls())

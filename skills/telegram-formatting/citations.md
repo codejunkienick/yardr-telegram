@@ -30,7 +30,7 @@ The rows live only here; SKILL.md holds none.
 | pack | yardr/tgbridge.yaml | attachment:   { type: string, pattern: "^/", max: 4096, optional: true } | attachment= sends one file |
 | pack | bridge/bridge.py | def _api_answer(receipt, conversation=None): | --json prints delivered, message_id, reason |
 | pack | bridge/bridge.py | answer.update(delivered_format='plain', format_fallback_reason=receipt['format_fallback_reason']) | confirmed fallback results name plain delivery and its reason |
-| pack | bridge/bridge.py | def has_allowed_tag(text): | auto refuses invalid HTML holding an allowed tag, naming its html_* rule |
+| pack | bridge/bridge.py | def has_allowed_tag(text): | auto refuses invalid HTML holding an allowed tag on a key with no saved delivery, naming its html_* rule |
 | pack | bridge/bridge.py | format_fallback_reason = 'invalid_html' | auto without an allowed tag still sends invalid HTML as plain text |
 | pack | bridge/test_yard_api.py | test_format_auto_is_the_default_and_sends_html_only_for_valid_markup | unescaped && inside code is refused (html_text_not_escaped); &amp;&amp; sends formatted |
 | pack | yardr/tgbridge.yaml | idempotency: Idempotency-Key | the yard sends each call with a key |

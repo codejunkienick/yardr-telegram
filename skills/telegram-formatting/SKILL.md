@@ -146,7 +146,8 @@ as "Before you send" says.
   message: plain, or one `<pre>` block, with nothing else in it, so it can be copied whole.
 - The limits count the visible text (tags removed, entities decoded): 4096 UTF-16 units for a message,
   1024 for a caption.
-- A refusal sends and reserves nothing: fix the escaping and resend under the same key.
+- A refusal on a key with no saved delivery sends and reserves nothing: fix the escaping and resend under the
+  same key; a key with a saved delivery for that body replays its receipt instead.
 - If Telegram itself cannot parse the markup, the bridge sends the same text once without formatting under the
   same key; the receipt says `format_fallback_reason`, recorded in the delivery ledger and message log.
 - A result with `delivered_format: plain` and `format_fallback_reason`

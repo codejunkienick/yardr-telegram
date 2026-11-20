@@ -165,7 +165,7 @@ hear:
   by: identity
 
 thread:
-  formats: [markdown]
+  formats: [markdown, html]
   reply:  [tgbridge/thread, reply]
   posted: [tgbridge/thread, posted]
   read:   [tgbridge/thread, read]

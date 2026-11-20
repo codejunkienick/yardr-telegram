@@ -12,7 +12,7 @@ The rows live only here; SKILL.md holds none.
 | pack | YARDR.md | The yard keeps at most 500 characters of a delivery's text | the inbox keeps 500 characters |
 | pack | yardr/tgbridge.yaml | read:   [tgbridge/thread, read] | yardr thread show reads it whole |
 | pack | yardr/tgbridge/thread | payload = {'conversation': thread, 'text': given.get('body') or '', 'key': key, 'format': 'auto'} | yardr reply answers in the delivery's own conversation, format auto |
-| pack | bridge/bridge.py | def auto_format(text): | valid HTML goes formatted, anything else plain |
+| pack | bridge/bridge.py | def auto_format(text): | valid HTML goes formatted, else plain for the api_send check below |
 | pack | yardr/tgbridge/thread | payload['attachments'] = files | --file sends files with the reply |
 | pack | bridge/bridge.py | def infer_attachment_kind(path): | pictures as photos, anything else as documents |
 | pack | yardr/tgbridge.yaml | posted: [tgbridge/thread, posted] | a reply run again finds the first one |
@@ -30,8 +30,9 @@ The rows live only here; SKILL.md holds none.
 | pack | yardr/tgbridge.yaml | attachment:   { type: string, pattern: "^/", max: 4096, optional: true } | attachment= sends one file |
 | pack | bridge/bridge.py | def _api_answer(receipt, conversation=None): | --json prints delivered, message_id, reason |
 | pack | bridge/bridge.py | answer.update(delivered_format='plain', format_fallback_reason=receipt['format_fallback_reason']) | confirmed fallback results name plain delivery and its reason |
-| pack | bridge/bridge.py | format_fallback_reason = 'invalid_html' | auto sends invalid HTML as plain text with tags visible |
-| pack | bridge/test_yard_api.py | test_format_auto_is_the_default_and_sends_html_only_for_valid_markup | unescaped && inside code falls back; &amp;&amp; sends formatted |
+| pack | bridge/bridge.py | def has_allowed_tag(text): | auto refuses invalid HTML holding an allowed tag, naming its html_* rule |
+| pack | bridge/bridge.py | format_fallback_reason = 'invalid_html' | auto without an allowed tag still sends invalid HTML as plain text |
+| pack | bridge/test_yard_api.py | test_format_auto_is_the_default_and_sends_html_only_for_valid_markup | unescaped && inside code is refused (html_text_not_escaped); &amp;&amp; sends formatted |
 | pack | yardr/tgbridge.yaml | idempotency: Idempotency-Key | the yard sends each call with a key |
 | pack | bridge/bridge.py | key = request.get('key') or key_header | key=<key> wins over the yard's key |
 | pack | bridge/bridge.py | idempotency key reused for a different request | same key, same body; an escaped correction after confirmed fallback needs a fresh key as a new send, duplicating the delivered content |
@@ -67,8 +68,9 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/bridge.py | telegram_html_parse_rejected_400 | one plain fallback, same key |
 | pack | bridge/markdown.py | def render(source, source_max_units): | pure bounded CommonMark display conversion |
 | pack | bridge/bridge.py | def formatted_text(text, fmt): | generated HTML uses the existing validator |
-| pack | yardr/tgbridge.yaml | formats: [markdown] | explicit ordinary reply capability |
+| pack | yardr/tgbridge.yaml | formats: [markdown, html] | explicit reply capabilities; the pack apply is the operator's step |
 | pack | yardr/tgbridge/thread | fmt = given.get('format', 'auto') | explicit mode, legacy auto when omitted |
+| pack | yardr/tgbridge/thread | fmt not in ('markdown', 'html') | the reply adapter accepts markdown or html when supplied |
 | pack | docs/formatting.md | ## Rendering policy | supported subset, whitespace and evidence boundaries |
 | pack | vendor/README.md | # Pinned Markdown runtime | pins, notices and offline packaging |
 | pack | bridge/bridge.py | def _log_sent(self, conversation, request, receipt): | the message log records the send |

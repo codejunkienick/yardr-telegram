@@ -12,6 +12,13 @@ If prime lists several Telegram sources, match the delivery or this crew’s
 subscription; the chat id alone cannot distinguish two bots. Ask the
 coordinator if the destination is unclear.
 
+## Before you send
+
+- Escape every `&`, `<` and `>` as `&amp;`, `&lt;`, `&gt;` in all text, placeholders like `<words>` and shell `&&` included.
+- Send formatted text with explicit HTML (`yardr reply <seq> --format html`, or `yardr call <source> send format=html … --json` until the refreshed pack lands), which refuses invalid HTML naming the rule.
+- Read every send result (`yardr call` exits 0 even when `"delivered": false`; `yardr reply` writes refusals to stderr); never pipe or redirect output to `/dev/null`. Check `"delivered": true` in `yardr call <source> send … --json` (and `reason` when `false`); on refusal, fix by the named `reason` and resend, never drop the message.
+- Without a format (`auto`), valid HTML goes formatted, invalid HTML holding an allowed tag is refused the same way, and text with no tag goes plain.
+
 The selected bridge reaches the operator's private chat (`YARDR.md` and
 `bridge/OPERATIONS.md` in the pack repository). An inbound message is a delivery: the operator's word.
 The inbox keeps 500 characters; when it ends in `…`, read it whole with `yardr thread show <seq>`.
@@ -28,8 +35,7 @@ yardr reply <seq> "<the answer>"
 ```
 
 - The answer lands where the delivery came from: the same topic, or the main chat (General).
-- Without `--format`, valid Telegram HTML ("Formatting" below) is sent formatted. Invalid HTML is never
-  refused for an HTML rule: it goes as plain text, tags and all. Check nesting before replying. Explicit
+- Without `--format`, the send follows "Before you send": check nesting before replying. Explicit
   Markdown is available with `yardr reply <seq> --format markdown <text>` (or `-` for stdin), when the
   installed core supports explicit reply formats and the operator has installed the reviewed bridge and
   applied its source pack.
@@ -57,7 +63,7 @@ yardr call <source> send text="$(cat body.html)" topic=<topic> format=html silen
 - `topic=<name>` posts into a configured topic by its exact name (`general` is the main chat); use
   `conversation=<id>` from the delivery for a topic the operator created ("Topics" below). With neither
   it goes to the main chat.
-- `format=auto` is the default (HTML when the text is valid HTML), `html` refuses text that is not,
+- `format=auto` is the default and follows "Before you send", `html` refuses text that is not,
   `plain` sends tags as text. `format=markdown` explicitly renders the subset below; auto never detects
   Markdown fences.
 - `silent=true` for a message that needs no action: something landed, a review passed, a merge, a status,
@@ -115,8 +121,8 @@ A reaction is a one-emoji acknowledgement on the operator's message, not a reply
 
 ## Formatting (Telegram HTML)
 
-The operator reads on a phone. Format anything longer than two lines as Telegram HTML: `yardr reply` and
-`format=auto` send valid HTML formatted, and `format=html` refuses anything that is not.
+The operator reads on a phone. Format anything longer than two lines as Telegram HTML, escaped and sent
+as "Before you send" says.
 
 - Tags: `<b>`, `<i>`, `<u>`, `<s>`, `<code>`, `<pre>`, `<a href="https://...">`, `<blockquote>`,
   `<blockquote expandable>` and `<tg-spoiler>`, lowercase, attributes in double quotes. `<strong>` and
@@ -140,15 +146,14 @@ The operator reads on a phone. Format anything longer than two lines as Telegram
   message: plain, or one `<pre>` block, with nothing else in it, so it can be copied whole.
 - The limits count the visible text (tags removed, entities decoded): 4096 UTF-16 units for a message,
   1024 for a caption.
-- If Telegram cannot parse the markup, the bridge sends the same text once without formatting under the
-  same key; the receipt says `format_fallback_reason`. The bridge's delivery ledger and message log
-  record it.
-- A send result with `delivered_format: plain` and `format_fallback_reason`
-  means plain delivery, never formatted success (`invalid_html` leaves tags
-  visible). Immediately correct escaping of `&`, `<`, `>` in the same content
-  and send the corrected version as a new message under a fresh key, accepting
+- A refusal sends and reserves nothing: fix the escaping and resend under the same key.
+- If Telegram itself cannot parse the markup, the bridge sends the same text once without formatting under the
+  same key; the receipt says `format_fallback_reason`, recorded in the delivery ledger and message log.
+- A result with `delivered_format: plain` and `format_fallback_reason`
+  means plain delivery, never formatted success. Send the corrected version
+  as a new message under a fresh key, accepting
   one duplicate of the delivered content. Other same-key/ledger rules above
-  still apply. Shell `&&` inside `<code>` needs `&amp;&amp;`.
+  still apply.
 
 ### Explicit Markdown
 

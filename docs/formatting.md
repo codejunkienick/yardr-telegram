@@ -18,7 +18,7 @@ caption only on its first item, and no keyboard. Markdown fetches no images.
 
 Ordinary replies require a core with the explicit reply-format contract
 (verified installed core `0035b8c13e27`) and the reviewed source declaration
-with `thread.formats: [markdown]`. The thread command receives the original
+with `thread.formats: [markdown, html]`. The thread command receives the original
 `body` and `format: markdown`, with the existing thread/parent/key/files.
 An old core or undeclared mode refuses before sending. Mail and peer notes
 do not accept this flag. Installing the core alone does not activate this
@@ -27,9 +27,10 @@ its instance's rendered source pack using [SETUP](../yardr/SETUP.md).
 
 No defaults change. Without `--format`, core keeps its historical trimming,
 wire body and key lookup; the bridge thread adapter still selects `auto`.
-API/source `auto` chooses only HTML or plain. Literal Markdown fences remain
-literal under auto, including its existing HTML/entity detection within a
-fence. Direct bridge CLI/publish and command actions still default to plain.
+API/source `auto` sends HTML when the text is valid, refuses invalid HTML
+holding an allowed tag with its html_* rule, and sends the rest plain.
+Literal Markdown fences remain literal under auto, including its existing
+HTML/entity detection within a fence. Direct bridge CLI/publish and command actions still default to plain.
 Unknown modes and non-text Markdown sources refuse whole.
 
 ## Rendering policy

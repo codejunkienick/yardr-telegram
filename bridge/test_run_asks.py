@@ -8486,19 +8486,21 @@ class RealNativeTests(BridgeTestCase):
             source = '<code>echo ready && echo done</code>'
             result = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
                                     'key=native-format-fallback', '--json'))
-            self.assertEqual(result, dict(delivered=True,
-                message_id=self.store.saved_receipt('native-format-fallback')['message_id'], conversation='123',
-                delivered_format='plain', format_fallback_reason='invalid_html'))
-            self.assertEqual(self.calls[-1][1]['text'], source)
-            self.assertNotIn('parse_mode', self.calls[-1][1])
+            self.assertEqual(result, dict(delivered=False, conversation='123',
+                reason='html_text_not_escaped', failure_kind='permanent'))
+            self.assertEqual(len(self.calls), before)
+            self.assertIsNone(self.store.saved_receipt('native-format-fallback'))
             again = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
                                    'key=native-format-fallback', '--json'))
             self.assertEqual(again, result)
-            self.assertEqual(self.store.saved_receipt('native-format-fallback')['format_fallback_reason'],
-                             'invalid_html')
-            again = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
+            self.assertEqual(len(self.calls), before)
+            plain_result = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
                                    'key=native-format-fallback', 'format=plain', '--json'))
-            self.assertEqual(again, result)
+            self.assertEqual(plain_result, dict(delivered=True,
+                message_id=self.store.saved_receipt('native-format-fallback')['message_id'],
+                conversation='123'))
+            self.assertEqual(self.calls[-1][1]['text'], source)
+            self.assertNotIn('parse_mode', self.calls[-1][1])
             self.assertEqual(len(self.calls), before + 1)
             result = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
                                     'key=native-explicit-plain', 'format=plain', '--json'))
@@ -8506,8 +8508,9 @@ class RealNativeTests(BridgeTestCase):
                 message_id=self.store.saved_receipt('native-explicit-plain')['message_id'], conversation='123'))
             again = json.loads(cli('call', 'mdbridge', 'send', 'text=' + source,
                                    'key=native-explicit-plain', 'format=auto', '--json'))
-            self.assertEqual(again, result)
-            self.assertEqual(len(self.calls), before + 2)
+            self.assertEqual(again, dict(delivered=False, conversation='123',
+                reason='html_text_not_escaped', failure_kind='permanent'))
+            self.assertEqual(len(self.calls), before + 1)
             result = json.loads(cli('call', 'mdbridge', 'send', 'text=```\necho legacy\n```', '--json'))
             self.assertTrue(result['delivered'])
             self.assertEqual(self.calls[-1][1]['text'], '```\necho legacy\n```')
@@ -8516,10 +8519,16 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual(self.calls[-1][1]['text'], '```\necho reply\n```')
             self.assertNotIn('parse_mode', self.calls[-1][1])
             before = len(self.calls)
-            refused = subprocess.run(command + ['reply', str(delivery), '--crew', 'writer', '--format', 'html', 'same'],
+            refused = subprocess.run(command + ['reply', str(delivery), '--crew', 'writer', '--format', 'rich', 'same'],
                                      env=env, cwd=root, text=True, capture_output=True, timeout=20)
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn('format', refused.stderr)
+            self.assertEqual(len(self.calls), before)
+            html_refused = subprocess.run(command + ['reply', str(delivery), '--crew', 'writer', '--format', 'html',
+                                                     'Nudge: <words>'],
+                                          env=env, cwd=root, text=True, capture_output=True, timeout=20)
+            self.assertNotEqual(html_refused.returncode, 0)
+            self.assertIn('html_tag_not_allowed', html_refused.stderr)
             self.assertEqual(len(self.calls), before)
 
             captured = []

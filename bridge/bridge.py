@@ -433,6 +433,15 @@ def auto_format(text):
     return 'plain' if error else 'html'
 
 
+_ALLOWED_TAG_RE = re.compile(r'</?(?:' + '|'.join(HTML_TAGS) + r')(?=[\s>/])')
+
+
+def has_allowed_tag(text):
+    """True when the text holds at least one allowed Telegram tag, opening
+    or closing, whatever surrounds it: `<b>`, `</b>`, `<a href="...">`."""
+    return _ALLOWED_TAG_RE.search(text) is not None
+
+
 def html_visible_text(text):
     """Validate Telegram HTML; return (visible text, None) or (None, reason).
 
@@ -3613,6 +3622,9 @@ class Bridge:
         if fmt == 'auto':
             fmt = auto_format(text)
             if fmt == 'plain' and ('<' in text or '&' in text):
+                if has_allowed_tag(text):
+                    _, error = html_visible_text(text)
+                    return self._api_answer(self.receipt(reason=error or 'invalid_html'), conversation)
                 format_fallback_reason = 'invalid_html'
         if fmt not in ('plain', 'html', 'markdown'):
             raise ApiError('format must be plain, html, markdown or auto')

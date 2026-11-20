@@ -132,14 +132,17 @@ class ThreadTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.bridge.requests[-1][2], {'conversation': '123', 'text': '  **Ready**\n',
                          'key': 'md1', 'format': 'markdown', 'attachments': ['/synthetic/shot.png']})
-        for fmt in ('html', 'plain', 'auto', 'unknown', None, [], False):
+        html = run(THREAD, ['reply'], dict(explicit, format='html'), self.env)
+        self.assertEqual(html.returncode, 0, html.stderr)
+        self.assertEqual(self.bridge.requests[-1][2]['format'], 'html')
+        for fmt in ('plain', 'auto', 'unknown', None, [], False):
             result = run(THREAD, ['reply'], dict(explicit, format=fmt), self.env)
             self.assertEqual(result.returncode, 1)
-            self.assertIn('format must be markdown', result.stderr)
+            self.assertIn('format must be markdown or html', result.stderr)
         result = run(THREAD, ['reply'], dict(explicit, body=5), self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn('body must be text', result.stderr)
-        self.assertEqual(len(self.bridge.requests), 2)
+        self.assertEqual(len(self.bridge.requests), 3)
 
     def test_reply_carries_files_as_attachments(self):
         self.bridge.answers['/v1/send'] = (200, {'delivered': True, 'message_id': '78'})

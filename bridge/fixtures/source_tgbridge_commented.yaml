@@ -204,7 +204,7 @@ hear:
 # read is the bridge's message log, each message whole (the yard keeps
 # 500 characters of a delivery).
 thread:
-  formats: [markdown]
+  formats: [markdown, html]
   reply:  [tgbridge/thread, reply]      # in  {thread, parent, body, key, files?}  out {id}
   posted: [tgbridge/thread, posted]     # in  {thread, key}                       out {id} or {}
   read:   [tgbridge/thread, read]       # in  {thread}                            out {messages: [...]}

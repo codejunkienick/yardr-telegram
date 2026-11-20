@@ -60,8 +60,8 @@ def reply(given):
     if not isinstance(thread, str) or not thread or not isinstance(key, str) or not key:
         fail('reply needs thread and key')
     fmt = given.get('format', 'auto')
-    if 'format' in given and fmt != 'markdown':
-        fail('reply format must be markdown when supplied')
+    if 'format' in given and fmt not in ('markdown', 'html'):
+        fail('reply format must be markdown or html when supplied')
     body = given.get('body', '')
     if not isinstance(body, str):
         fail('reply body must be text')

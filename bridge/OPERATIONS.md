@@ -1238,9 +1238,10 @@ The `telegram-formatting` skill is the writer's guide.
 On the command line it is an explicit opt-in; without it nothing changes for
 a caller or its ledger rows. The yard API's `format` defaults to `auto`, and
 `yardr reply` without `--format` sends `auto`: HTML when the body holds a `<` or `&` and
-is valid under the rules below, plain text otherwise, so `auto` never
-refuses a body for an HTML rule, and one with a stray `<` goes as the words
-it is. `pin --format` takes `plain`, `html` or `markdown`.
+is valid under the rules below, refused with its html_* rule when it holds
+an allowed tag but is not valid, plain text otherwise, so only a body with
+no tag and a stray `<` goes as the words it is. `pin --format` takes `plain`,
+`html` or `markdown`.
 
 - Allowed tags, lowercase, attribute values in double quotes: `b`, `strong`,
   `i`, `em`, `u`, `s`, `code`, `pre` (a `<code class="language-x">` directly

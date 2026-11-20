@@ -334,13 +334,28 @@ class YardApiTests(BridgeTestCase):
             (dict(text='a & b; echo "$x" && ls < input'), None, True),
             (dict(text='<b>done</b>', format=None), 'HTML', False),
             (dict(text='<b>done</b>', format=''), 'HTML', False),
-            (dict(text='<code>echo ready && echo done</code>'), None, True),
-            (dict(text='<code>echo ready && echo done</code>', format='auto'), None, True),
-            (dict(text='<code>echo ready && echo done</code>', format=None), None, True),
-            (dict(text='<code>echo ready && echo done</code>', format=''), None, True),
+            (dict(text='a < b'), None, True),
             (dict(text='<code>echo ready && echo done</code>', format='plain'), None, False),
             (dict(text='<code>echo ready &amp;&amp; echo done</code>'), 'HTML', False),
         ]
+        refused = [
+            (dict(text='<code>echo ready && echo done</code>'), 'html_text_not_escaped'),
+            (dict(text='<code>echo ready && echo done</code>', format='auto'), 'html_text_not_escaped'),
+            (dict(text='<code>echo ready && echo done</code>', format=None), 'html_text_not_escaped'),
+            (dict(text='<code>echo ready && echo done</code>', format=''), 'html_text_not_escaped'),
+            (dict(text='<b>X:</b> Nudge: <words>'), 'html_tag_not_allowed'),
+            (dict(text='<b>X:</b> Nudge: <words>', format='auto'), 'html_tag_not_allowed'),
+        ]
+        for index, (body, reason) in enumerate(refused):
+            with self.subTest(body=body):
+                before = len(self.telegram_calls())
+                request = dict(body, key=f'refuse-{index}')
+                status, answer = self.call('/v1/send', request)
+                self.assertEqual(status, 200)
+                self.assertEqual(answer, dict(delivered=False, conversation='123', reason=reason,
+                                              failure_kind='permanent'))
+                self.assertEqual(self.call('/v1/send', request), (200, answer))
+                self.assertEqual(len(self.telegram_calls()), before)
         for index, (body, parse_mode, fallback) in enumerate(cases):
             with self.subTest(body=body):
                 self.calls.clear()
@@ -359,30 +374,30 @@ class YardApiTests(BridgeTestCase):
                 self.assertEqual(self.call('/v1/send', request), (200, answer))
                 self.assertEqual(len(self.telegram_calls()), 1)
 
-        for first_format, fallback in (('plain', False), ('auto', True)):
-            with self.subTest(first_format=first_format):
-                self.calls.clear()
-                request = dict(key='format-replay-' + first_format, format=first_format,
-                               text='<code>echo ready && echo done</code>')
-                expected = dict(delivered=True, message_id='77', conversation='123')
-                if fallback:
-                    expected.update(delivered_format='plain', format_fallback_reason='invalid_html')
-                self.assertEqual(self.call('/v1/send', request), (200, expected))
-                identity = dict(conversation=self.bridge.conversation, idempotency_key=request['key'],
-                                text=request['text'])
-                fingerprint = b.Bridge.delivery_fingerprint(identity)
-                self.assertEqual(self.store.saved_delivery(request['key'])[0], fingerprint)
-                restored = b.Bridge(self.config, b.Store(self.path, 0), 'SECRET', 'CAPABILITY',
-                                    request=self.transport)
-                port = self.start_callback_server(bridge=restored)
-                for replay_format in ('plain', 'auto', None, ''):
-                    replay = dict(request, format=replay_format)
-                    self.assertEqual(self.api_call(port, '/v1/send', replay), (200, expected))
-                self.assertEqual(self.api_call(port, '/v1/send', dict(request, text='another body')),
-                                 (200, dict(delivered=False, conversation='123',
-                                     reason='idempotency_key_conflict', failure_kind='permanent')))
-                self.assertEqual(self.store.saved_delivery(request['key'])[0], fingerprint)
-                self.assertEqual(len(self.telegram_calls()), 1)
+        with self.subTest(first_format='plain'):
+            self.calls.clear()
+            request = dict(key='format-replay-plain', format='plain',
+                           text='<code>echo ready && echo done</code>')
+            expected = dict(delivered=True, message_id='77', conversation='123')
+            self.assertEqual(self.call('/v1/send', request), (200, expected))
+            identity = dict(conversation=self.bridge.conversation, idempotency_key=request['key'],
+                            text=request['text'])
+            fingerprint = b.Bridge.delivery_fingerprint(identity)
+            self.assertEqual(self.store.saved_delivery(request['key'])[0], fingerprint)
+            restored = b.Bridge(self.config, b.Store(self.path, 0), 'SECRET', 'CAPABILITY',
+                                request=self.transport)
+            port = self.start_callback_server(bridge=restored)
+            self.assertEqual(self.api_call(port, '/v1/send', dict(request)), (200, expected))
+            refused = dict(delivered=False, conversation='123', reason='html_text_not_escaped',
+                           failure_kind='permanent')
+            for replay_format in ('auto', None, ''):
+                replay = dict(request, format=replay_format)
+                self.assertEqual(self.api_call(port, '/v1/send', replay), (200, refused))
+            self.assertEqual(self.api_call(port, '/v1/send', dict(request, text='another body')),
+                             (200, dict(delivered=False, conversation='123',
+                                 reason='idempotency_key_conflict', failure_kind='permanent')))
+            self.assertEqual(self.store.saved_delivery(request['key'])[0], fingerprint)
+            self.assertEqual(len(self.telegram_calls()), 1)
 
         invalid = dict(text='<code>echo ready && echo done</code>', key='explicit-invalid', format='html')
         before = len(self.telegram_calls())

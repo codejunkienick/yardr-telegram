@@ -94,7 +94,8 @@ key from a failure; a malformed request answers 400 and a bad secret 403.
 | `GET /v1/health` | | `{ok, bot, last_poll_ok}` |
 
 `format: auto` sends Telegram HTML when the text is valid under the
-bridge's HTML subset and holds at least one tag or entity, and plain text
+bridge's HTML subset and holds at least one tag or entity, refuses invalid
+HTML holding an allowed tag with its html_* rule, and sends plain text
 otherwise; a parse Telegram rejects is sent once more as plain text, as
 with `html`.
 

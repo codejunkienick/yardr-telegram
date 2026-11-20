@@ -179,6 +179,13 @@ class NativeAdoptionTests(BridgeTestCase):
                     self.assertEqual(sends[-1]['text'], '<b>Ready</b> <code>&lt;raw&gt;</code>')
                     self.assertEqual([body for path, body in requests if path == '/v1/send'][-1]['format'],
                                      'markdown')
+                    sent_before = len([body for url, body in self.calls if url.endswith('/sendMessage')])
+                    html_broken = cli('reply', str(seq), '--crew', 'writer', '--format', 'html',
+                                      '<b>Rosalina:</b> Nudge: <words>', ok=False)
+                    self.assertNotEqual(html_broken.returncode, 0)
+                    self.assertIn('html_tag_not_allowed', html_broken.stderr)
+                    self.assertEqual(len([body for url, body in self.calls if url.endswith('/sendMessage')]),
+                                     sent_before)
                     shown = cli('thread', 'show', str(seq)).stdout
                     self.assertIn(full_text, shown)
                     self.assertIn('Adoption reply', shown)
@@ -187,7 +194,7 @@ class NativeAdoptionTests(BridgeTestCase):
 
                     declaration = pack / 'tgbridge.yaml'
                     original = declaration.read_text()
-                    declaration.write_text(original.replace('  formats: [markdown]\n', ''))
+                    declaration.write_text(original.replace('  formats: [markdown, html]\n', ''))
                     try:
                         cli('pack', 'apply', str(pack), '--yes')
                         before = len(requests), len(self.calls)

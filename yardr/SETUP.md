@@ -1317,7 +1317,7 @@ The host-wide voice-transcribe link remains the operator's choice as above.
 Install only the reviewed merged checkout with the existing installer, then
 check the installed release and follow its `next:` line. Apply `<root>/pack`
 using step 5, retaining the selected source alias and existing env-file binding.
-The declaration adds `thread.formats: [markdown]`; core `0035b8c13e27` or a
+The declaration adds `thread.formats: [markdown, html]`; core `0035b8c13e27` or a
 compatible explicit reply-format transport is required. The core alone does
 not activate the source capability. No new grants, settings or Python installs
 are needed for formatting. The release includes pinned parser packages and

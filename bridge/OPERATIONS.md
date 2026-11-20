@@ -2481,7 +2481,12 @@ its `model=` card on the aligned build alone (upstream refuses the ask). A
 build is read from its running server, not its version: `POST /call/RecordSkillAdded`
 with `{}` answering `no such method RecordSkillAdded` means aligned or upstream, and
 any other answer means pre-alignment (`bridge/testyardr.py`); a pre-alignment build
-refuses the empty call on its skill name and writes nothing.
+refuses the empty call on its skill name and writes nothing. That probe is
+historical: it decides alignment and nothing else. An optional feature is
+asked for by its own method (`testyardr.serves`): the skill card test skips,
+with its reason, on a core that serves no `SkillDigest` (public `5dc0bfca`,
+`52e22d57`) or whose CLI has no skill card rows (`c5642561`), and runs on a
+skill core with the rows (`5dedfc56`).
 
 Wire references: `YARDR.md` (the hook's body and the yard API) and
 `<repo>/yardr/tgbridge.yaml` (the source the yard reaches the bridge
@@ -2649,10 +2654,66 @@ per-call grants, terminal opt-in and a harmless `version` acceptance card
 in the configured private topic. This source change performs none of those
 live actions. Offline presentation: `python3 -B scripts/preview_run_asks.py --general`.
 
+### Native skill administration cards
+
+Fork-only and capability-qualified: these cards exist only on a core with the
+optional skill topic and its card rows (yardr local `5dedfc56` and later, not
+installed or active until the operator installs it). Unmodified public
+`5dc0bfca`/`52e22d57` and the installed `c5642561` refuse to file them, so
+the bridge never sees one there; ordinary, general, source, pack and group
+cards are unaffected.
+
+History, plainly: on November 12/13 the single-file `skill add` install card
+was dropped (`c809c2d`) and adding skills became the operator's alone in a
+terminal. The skill core since restores self-service: the operator, users
+and crew add or replace a whole skill directly with `yardr skill add <dir>`
+(`c5642561`; bead, exec and starting panes are refused). That needs no
+source, grant or card, so the old add card stays absent, and a stored one
+still refuses before any send.
+
+What stays the operator's is removal and assignment. A user or crew member
+proposes one with `yardr bead ask … --run 'skill rm <name> [--force]'` or
+`--run 'group|crew set <name> skills=[…]'` / `--unset skills`; the bridge
+delivers it through the existing `run_ask` grant and `/decide`:
+
+- The card must be exactly the core's contract: argv, command, description,
+  every Does sentence, holder lists (after = before without the skill;
+  holders only with `--force`), tree digests, sessions lines, take-back and
+  the `code` weight for newly given skills. Anything else, including an older
+  fork's skill card, refuses whole with the fallback and lists terminal-only.
+- Before sending, the bridge reads `SkillDigest` for every skill the card
+  names and requires the tree the card shows. A core without the method
+  refuses as `run_ask_skill_cards_unavailable`; a moved tree refuses as
+  `run_ask_skill_tree_moved` (ask again). It never falls back to files.
+- One review document (manifest, every native sentence quoted, untrusted
+  `SKILL.md` descriptions fenced) precedes the compact card: command, tree,
+  every holder's list before -> after with its sessions, or the target's list
+  before -> after with each named tree. Every skill card arms Approve, then
+  Confirm within 60 seconds, even a routine one: a removal has no way back on
+  a card (a removed tree is added again only with `yardr skill add <dir>`).
+- Only the paired operator's taps count; the core holds the approval to the
+  tree, holders and the target's definition (`Defined`) again. Its stale
+  refusal retires the card ("Stale skill proposal; nothing ran"); the ask
+  stays open for a decline and a fresh ask.
+- A removal is carried out by the server under operation `card-…`: the card
+  shows the canonical pending, then the receipt naming the operation, tree
+  and each holder taken off, or the failure. An assignment shows the core's
+  `saved` lines. Lost replies, replays and restarts reconcile from `Bead`.
+- A general card naming `skill rm` or a skills change in any form refuses
+  (`run_ask_skill_general_refused`): the specific card is the only door.
+
+Audit lives in the core: `skill_removed` names the card as `proposal`
+(`<bead>#<ask>`) with the before tree and every holder change; `group_set`
+and `crew_defined` carry `skills` before/after and `skills_audit` with the
+proposal and each named tree. Rollback: a removal is reversed by adding the
+tree again; an assignment by its shown take-back, the operator's. Keep the
+ledger and core recovery records across bridge or core rollback. Offline
+presentation: `python3 -B scripts/preview_run_asks.py --skill`.
+
 ### Complete review bundles
 
-The bridge refuses the removed specific `skill add` card: the operator adds skills with
-`yardr skill add` in a terminal, and assigning them stays the operator's. A stored specific `skill add`
+The bridge refuses the removed specific `skill add` card (see above): skills
+are added directly with `yardr skill add`. A stored specific `skill add`
 ask refuses before any send with a terminal-only `/decide` line; use
 Footplate or the yard cards.
 

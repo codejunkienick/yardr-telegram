@@ -91,16 +91,12 @@ def stop(server):
         server.wait(timeout=10)
 
 
-def aligned(home):
-    """True for an aligned or upstream build: its server has no RecordSkillAdded method, which the alignment dropped.
-
-    A pre-alignment build refuses the empty probe on its skill name, so it writes nothing. Any other answer,
-    including one that is not JSON, means pre-alignment.
-    """
+def _probe(home, request):
+    """(status, decoded JSON answer or None) of one raw request to the isolated server."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(10)
         sock.connect(str(home / 'yard.sock'))
-        sock.sendall(PROBE)
+        sock.sendall(request)
         response = http.client.HTTPResponse(sock)
         try:
             response.begin()
@@ -108,10 +104,33 @@ def aligned(home):
         finally:
             response.close()
     try:
-        answer = json.loads(body)
+        return status, json.loads(body)
     except ValueError:
-        return False
+        return status, None
+
+
+def aligned(home):
+    """True for an aligned or upstream build: its server has no RecordSkillAdded method, which the alignment dropped.
+
+    A pre-alignment build refuses the empty probe on its skill name, so it writes nothing. Any other answer,
+    including one that is not JSON, means pre-alignment. This is historical: it says nothing of an optional
+    feature a build adds or lacks since, which serves() asks about by the feature's own method.
+    """
+    status, answer = _probe(home, PROBE)
     return status == 200 and answer == NO_SUCH_METHOD
+
+
+def serves(home, method):
+    """Whether the isolated server serves the read method at all: a feature probe, not a version or alignment test.
+
+    The empty call refuses its missing arguments on a build that has the method, and a build without it answers
+    no such method; anything else fails the test, since neither says what the build offers.
+    """
+    status, answer = _probe(home, (f'POST /call/{method} HTTP/1.1\r\nHost: localhost\r\nX-Yardr-Connection: tgbridge\r\n'
+                                   'Content-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}').encode())
+    if status != 200 or not isinstance(answer, dict) or not answer.keys() & {'error', 'result'}:
+        raise AssertionError(f'native feature probe of {method} answered neither its method nor its absence')
+    return answer != {'error': {'code': 'error', 'message': 'no such method ' + method}}
 
 
 def general_store_fixture(root):

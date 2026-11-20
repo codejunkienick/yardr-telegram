@@ -137,6 +137,12 @@ Supported proposals and their mechanics:
   bundle. See [Source-add declaration and command review](../../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
 - Source-kind `pack apply <absolute-directory> --sha256 <digest>` or embedded
   `pack apply <name>`. See [Source pack bundles](../../bridge/OPERATIONS.md#source-pack-bundles).
+- Fork-only `skill rm <name> [--force]` and group/crew `skills=[…]` /
+  `--unset skills`, on a skill core with their card rows: the card shows the
+  tree digest and every holder's or the target's list before -> after; both
+  always take Approve, then Confirm. A core without the skill topic reports
+  them unavailable. Skills themselves are added directly with `yardr skill
+  add`, never by card. See [skill administration cards](../../bridge/OPERATIONS.md#native-skill-administration-cards).
 - Refused: the removed specific `skill add` payload; depot-kind pack plans; secret/setup/identity/depot_push
   payloads; parameter inputs; crew-add prompts; unfamiliar YAML/metadata or
   carried payloads outside the supported bundles.
@@ -155,7 +161,8 @@ separate core check; the only public expiry fact is its local-time sentence.
 File operands are unchecked references: no captured bytes/hash or file
 staleness guarantee. No rollback is shown, and output goes to the asker.
 Do not put secrets on a card. A general `skill add` is this unchecked
-contract, never the removed captured skill card. Optional local commands
+contract, never the removed captured skill card; a general `skill rm` or
+skills change refuses, since its own card is the only door. Optional local commands
 remain optional.
 
 Delivery uncertainty, lost approval replies and restarts never authorize

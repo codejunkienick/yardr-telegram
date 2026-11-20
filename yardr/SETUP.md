@@ -1207,8 +1207,8 @@ tgbridge` reads it from there.
 Fork-only: public core lacks `skill add` and `skills=`. Skip this section and
 all related skill install, upgrade and rollback steps on public core.
 
-The operator runs the four adds below to copy this instance's skills into
-the yard's own home.
+The operator (on a direct-add core, also a user or crew member) runs the
+four adds below to copy this instance's skills into the yard's own home.
 Keep `YARDR_HOME` explicitly set to this yard as above:
 
 ```sh
@@ -1223,7 +1223,7 @@ These are copies under `$YARDR_HOME/skills/<name>`, independent of the
 checkout and the install root. The operator gives the names to the intended
 crew or groups with `yardr crew set <crew> skills=...` or
 `yardr group set <group> skills=...`,
-keeping their other skill names in the list. A crew member reads the new
+keeping their other names (or approves a [skills card](../bridge/OPERATIONS.md#native-skill-administration-cards)). A crew member reads the new
 skills at its next session (`yardr crew restart <crew>`); groups use them
 at their next session too.
 
@@ -1232,8 +1232,8 @@ relevant `run_ask`, `ask_card` or `siding_card` per-call grants (steps 12–14).
 Message writers keep `telegram-formatting`, `telegram-attachments` and
 `telegram-voice-transcripts` as appropriate. Adding a skill grants no call access.
 
-After an install or rollback, the operator refreshes this yard's copies
-from its active release by repeating the four `skill add` commands.
+After an install or rollback, refresh this yard's copies from its active
+release by repeating the four `skill add` commands.
 They replace the copies only in the selected yard; copies in another yard
 stay as they are, and removing this instance's root does not break another
 yard's skills.
@@ -1279,8 +1279,8 @@ yardr pack check <root>/pack        # where it shows a change, apply as above
 
 It verifies `previous` against its `SHA256SUMS`, swaps `current` and
 `previous`, and returns `<root>/pack` to that release's own. A second
-`--rollback` goes forward again. On the fork, the operator refreshes skill
-copies with the `skill add` commands above for that release.
+`--rollback` goes forward again. On the fork, refresh skill
+copies as above for that release.
 
 Undoing this first move, when there is no previous release (`--rollback`
 says so and names `service.previous`):

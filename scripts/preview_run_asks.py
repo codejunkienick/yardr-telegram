@@ -57,6 +57,67 @@ def general_cards():
     return cards
 
 
+def skill_cards(names):
+    # The real bridge path over the skill-core fixtures; the core's carry receipt words for the outcome.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests, SKILL_STALE, SKILL_TREES, skill_proposal
+    case = NativeTests()
+    case.setUp()
+    cards = []
+    def capture(label, body, group='states'):
+        controls = ''.join('<div class="buttons">' + ''.join('<button>' + escape(item['text']) + '</button>'
+                           for item in row) + '</div>' for row in body.get('reply_markup', {}).get('inline_keyboard', []))
+        reply = body.get('reply_parameters', {}).get('message_id')
+        navigation = f'<div class="navigation">Reply to message {reply}</div>' if reply else ''
+        cards.append('<section class="' + group + '"><h2>' + escape(label) + '</h2><article>' + navigation
+                     + '<div class="body">' + body['text'] + '</div>' + controls + '</article></section>')
+    receipts = dict(skill_rm='skill spare removed (operation card-5f0c3a1d9e7b2c4a6f8e0d1b3a5c7e9f, tree ' + SKILL_TREES['spare'] + ')',
+                    skill_rm_force='skill notes removed (operation card-0123456789abcdef0123456789abcdef, tree ' + SKILL_TREES['notes'] + ')\n'
+                    'taken off crew member clerk: notes -> (none)\ntaken off group builders: notes,triage -> triage\n'
+                    'taken off group web/reviewers: notes -> (none)',
+                    skills_crew_set='crew member clerk saved\n  skills: [notes] -> [notes,spare,triage]',
+                    skills_group_unset='group web/reviewers saved\n  skills: [notes] -> (dropped)')
+    try:
+        for name in names:
+            case.reset_native(skill_proposal(name))
+            case.config['yard'] = 'example'
+            case.native.bead = dict(id='sample-1', title='Synthetic skill administration')
+            if not case.create()['delivered']:
+                raise RuntimeError('synthetic skill card refused')
+            kind = 'removal' if name.startswith('skill_rm') else 'assignment'
+            capture(f'{name} · complete review document first', document_card(case.documents[-1]), 'bundle')
+            capture(f'{name} · bound {kind} card', [body for url, body in case.calls if url.endswith('/sendMessage')][-1])
+            case.press()
+            capture(f'{name} · Approve arms Confirm · nothing written', case.edits()[-1])
+            if name == 'skill_rm_force':
+                case.native.mode, case.native.stale = 'stale', SKILL_STALE
+                case.press('confirm', uid=51)
+                capture('skill_rm_force · holders or tree moved · stale, nothing ran', case.edits()[-1])
+                case.reset_native(skill_proposal(name))
+                case.create()
+                case.press()
+            case.native.mode = 'carrying' if kind == 'removal' else None
+            case.press('confirm', uid=52)
+            if kind == 'removal':
+                capture(f'{name} · approval recorded · server carries it out', case.edits()[-1])
+                case.native.ask['ran'] = dict(argv=case.native.ask['run']['argv'], result=receipts[name])
+            else:
+                case.native.ask['ran']['result'] = receipts[name]
+            case.bridge.run_asks.refresh()
+            capture(f'{name} · canonical outcome · operation and tree', case.edits()[-1])
+        case.reset_native(skill_proposal('skills_group_set'))
+        case.native.ask['state'] = 'open'
+        listing, keyboard = case.bridge.run_asks.decide_list()
+        capture('/decide · skill card listed as a run card', dict(text=escape(listing), reply_markup=dict(inline_keyboard=keyboard)))
+        case.native.mode = 'no-skill-topic'
+        reason = case.create()['reason']
+        capture('Core without the skill topic · refused before send', dict(text=escape(reason)))
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
 def bundle_cards(source=False, pack=False):
     # Drive the real bridge state machine with the existing offline transports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
@@ -452,6 +513,8 @@ def main():
         cards += confirmation_cards()
     if '--general' in sys.argv:
         cards = general_cards()
+    if '--skill' in sys.argv:
+        cards = skill_cards(('skill_rm_force', 'skill_rm', 'skills_crew_set', 'skills_group_unset'))
     if '--confirm' in sys.argv:
         cards = confirmation_cards()
     if '--source' in sys.argv:
@@ -481,6 +544,8 @@ def main():
         heading = 'Native depot pack · complete document and approval states'
     if '--general' in sys.argv:
         heading = 'Unchecked native general command · complete word review and decision'
+    if '--skill' in sys.argv:
+        heading = 'Optional skill administration · removal and assignment cards (fork-only skill core)'
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}

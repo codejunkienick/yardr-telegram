@@ -255,12 +255,14 @@ and polling reconciles settlements and outcome edits. Long results split
 into bounded ledger-backed messages without truncating the canonical text.
 
 
-The bridge carries no `skill add` card: the operator adds skills with
-`yardr skill add` in a terminal, and assigning them stays the operator's. A
-`skill add` ask refuses before any send, and a `/decide` row for one is
-terminal-only. See
-[the bundle scope](bridge/OPERATIONS.md#complete-review-bundles)
-and [skill copies](yardr/SETUP.md#skill-copies-shell).
+The bridge carries no `skill add` card: a `skill add` ask refuses before any
+send, and a `/decide` row for one is terminal-only. On the fork's skill core
+the operator, users and crew add skills directly with `yardr skill add`
+(no card or grant). Removing a skill and a group's or crew member's
+`skills=` stay the operator's; on a skill core with their card rows a user or
+crew member proposes them on [skill administration cards](bridge/OPERATIONS.md#native-skill-administration-cards),
+which the operator approves here with Approve, then Confirm. Public core has
+none of this. See [skill copies](yardr/SETUP.md#skill-copies-shell).
 
 Native `source add <file>` reviews complete declarations, relative programs,
 replacement diffs and inventory before controls. Loose declarations fit 8192

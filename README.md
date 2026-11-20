@@ -175,7 +175,10 @@ for the outstanding contracts and required passing check.
 - The [yard-local skill setup](yardr/SETUP.md#the-crews-skills-shell),
   `yardr skill add` and crew/group `skills=` are fork-only; skip that section
   and its skill upgrade/rollback steps on public core. The bridge carries no
-  specific captured `skill add` card. Basic SETUP steps 1–11 omit native home/operator and
+  specific captured `skill add` card: the fork's skill core lets the operator,
+  users and crew add skills directly. Its optional
+  [skill removal and assignment cards](bridge/OPERATIONS.md#native-skill-administration-cards)
+  are fork-only too; public core reports them unavailable. Basic SETUP steps 1–11 omit native home/operator and
   native-card grants.
 - Optional native cards require the per-build contracts in the
   [capability table](docs/public-readiness.md#capabilities-and-grants).
@@ -288,8 +291,10 @@ The skills are the shared base set, written for any yard and any bot,
 naming no yard, person or product. On the aligned fork, the operator copies
 them from its installed release with `yardr skill add` into that yard's home.
 Public core lacks `skill add` and `skills=`; skip these steps, including
-skill refresh after upgrades/rollbacks.
-Giving the names to crew or groups stays the operator's. See [the crew's skills](yardr/SETUP.md#the-crews-skills-shell)
+skill refresh after upgrades/rollbacks. On the fork's skill core users and
+crew may add or refresh them too (dropped on November 12/13, restored
+since); removing one and giving the names to crew or groups stay the
+operator's, in a terminal or by approving a skill card. See [the crew's skills](yardr/SETUP.md#the-crews-skills-shell)
 for setup and refresh after an install or rollback. Harness skill folders
 such as `~/.claude/skills` are shared by all yards on the host; keep
 instance-specific links out of them.

@@ -199,3 +199,17 @@ plan changes that standing source and retains its read grant: aligned core
 discloses the grant, public-main does not and must refuse. Each capture was
 compared against a fresh native run and resulting bytes/configuration;
 only the same fictional root, ask number and timestamp are stabilized.
+
+# Native skill administration fixtures
+
+`skill_rm.json`, `skill_rm_force.json`, `skills_group_set.json`,
+`skills_group_narrow.json`, `skills_group_unset.json`, `skills_crew_set.json`
+and `skills_crew_unset.json` are Bead asks captured from an isolated yard of
+the fork's skill core (`5dedfc56`), filed by a user: a removal of an unheld
+skill, a forced removal held by a crew member and two groups (one named with
+a slash), a group given a new skill (weighty), narrowed and unset, and a crew
+member given two new skills and unset. The skills `notes`, `spare` and
+`triage` each hold a `SKILL.md` (one description with HTML, quotes and
+non-ASCII text) and one helper file, so their tree digests are fixed. Only
+the temp root (`/synthetic`), ask number and timestamp are stabilized.
+Public cores and the earlier skill core `c5642561` cannot file them.

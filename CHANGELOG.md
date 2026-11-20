@@ -6,6 +6,16 @@ sees and does, not how the code is organised.
 
 ## [Unreleased]
 
+### Added
+
+- Fork-only skill administration cards: on a skill core with their card
+  rows, `skill rm <name> [--force]` and a group's or crew member's
+  `skills=[…]` / `--unset skills` arrive as one review document and a card
+  showing the tree digest and every holder's or the target's skills before
+  and after; Approve, then Confirm. A core without the skill topic reports
+  them unavailable; a general card naming them refuses. Skills are still
+  added directly with `yardr skill add`, now by users and crew too.
+
 ### Changed
 
 - Public compatibility now names the tested core revision and v0.17.0,

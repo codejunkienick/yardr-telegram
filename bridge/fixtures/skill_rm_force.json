@@ -1,0 +1,36 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Synthetic: skill rm notes --force?",
+  "context": [
+    "Synthetic context for skill_rm_force"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "skill",
+      "rm",
+      "notes",
+      "--force"
+    ],
+    "command": "yardr skill rm notes --force",
+    "description": "Remove a skill from the yard",
+    "does": [
+      "removes the skill notes from the yard: its directory /synthetic/yard/skills/notes and all 2 entries of its tree.",
+      "Its tree now is b6c70591f58c469fea5c9ea084bacd3b0d9ec3b3a3162604599b825afdb0d026.",
+      "Its description: Write release notes <b>&amp;</b> \"quotes\" café 🙂",
+      "The crew member clerk is given the skills notes now, and will be given no skills.",
+      "No session of the crew member clerk runs now.",
+      "The group builders is given the skills notes, triage now, and will be given the skills triage.",
+      "No session of the group builders runs now.",
+      "The group web/reviewers is given the skills notes now, and will be given no skills.",
+      "No session of the group web/reviewers runs now.",
+      "The yard's server carries the removal out after the approval, as one operation that takes the skill off its holders and records skill_removed together; the tree and holders are held to these again first."
+    ],
+    "back": ""
+  }
+}

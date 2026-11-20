@@ -316,6 +316,21 @@ UPSTREAM_WHOLE = ('user_role', 'device_rm', 'hook_add', 'hook_add_table', 'hook_
 UPSTREAM_FALLBACK = ('device_pair', 'hook_add_ask')
 
 
+# The skill administration cards of the optional skill core, by fixture (captured as the group ones are).
+SKILL_FIXTURES = ('skill_rm', 'skill_rm_force', 'skills_group_set', 'skills_group_narrow', 'skills_group_unset',
+                  'skills_crew_set', 'skills_crew_unset')
+SKILL_TREES = dict(notes='b6c70591f58c469fea5c9ea084bacd3b0d9ec3b3a3162604599b825afdb0d026',
+                   spare='c076730f322ba90219e75ce3a0993211a3f7c62a833039c4889e2635a4575679',
+                   triage='029da9a013d8f66219876cae30d0ed1ef457154e155cb5de4cb13184acbd6fd5')
+SKILL_STALE = ('ask 7 was written when the skill notes had another tree: it was replaced since. '
+               'Nothing ran. Decline it; it is asked again if it is still wanted.')
+
+
+def skill_proposal(name):
+    # Captured from Bead on an isolated skill core (5dedfc56); only the temp root, ask number and time stabilized.
+    return json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
+
+
 def upstream_proposal(name):
     # Captured from Bead on isolated aligned and upstream builds; only the temp
     # root (/synthetic), ask number, timestamp and device date are stabilized.
@@ -395,6 +410,9 @@ class NativeSocket:
         self.raw_events = None
         self.raw_notes = None
         self.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
+        # The standing skill trees SkillDigest reads; a name not here is absent.
+        self.skill_trees = {}
+        self.stale = ''
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -412,6 +430,11 @@ class NativeSocket:
                     result = owner.user
                 elif method == 'GetGroup':
                     result = owner.group
+                elif method == 'SkillDigest':
+                    if owner.mode == 'no-skill-topic':
+                        self.reply({'error': {'code': 'error', 'message': 'no such method SkillDigest'}})
+                        return
+                    result = owner.skill_trees.get(args['name'], 'absent')
                 elif method == 'Bead':
                     if owner.mode == 'unreadable':
                         self.send_error(503)
@@ -462,6 +485,9 @@ class NativeSocket:
                     replacing = method == 'AnswerAsk' and target['state'] == 'answered' and target.get('options')
                     if (target['state'] != 'open' and not replacing) or owner.mode == 'refused':
                         self.reply({'error': {'code': 'conflict', 'message': 'refused'}})
+                        return
+                    if owner.mode == 'stale' and method == 'ApproveAsk':
+                        self.reply({'error': {'code': 'error', 'message': owner.stale}})
                         return
                     if owner.mode != 'lost-open':
                         target['turn'] = target.get('turn', 0) + 1
@@ -605,6 +631,7 @@ class NativeCase(BridgeTestCase):
         self.native.raw_notes = None
         self.native.user = dict(name='pat', role='operator', identities={'tgbridge': {'id': '123'}})
         self.native.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
+        self.native.skill_trees = dict(SKILL_TREES)
         self.calls.clear()
         self.sent_count = 0
         self.documents.clear()
@@ -5259,6 +5286,170 @@ class NativeTests(NativeCase):
         self.assertEqual(self.sent_count, 0)
 
 
+    def test_skill_cards_review_whole_and_confirm_before_any_write(self):
+        for name in SKILL_FIXTURES:
+            with self.subTest(fixture=name):
+                ask = skill_proposal(name)
+                self.reset_native(copy.deepcopy(ask))
+                self.assertEqual(n.queue_kind(queue_entry(ask)), ('run', True))
+                self.assertTrue(self.create()['delivered'])
+                row = self.row()
+                # The document goes first, then the one card replying to it, after each tree is read from the yard.
+                sent = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(len(self.documents), 1)
+                self.assertEqual(sent[0]['reply_parameters']['message_id'], row['bundle']['document']['message_id'])
+                named = sorted({word for line in ask['run']['does'] for word in SKILL_TREES if f'kill {word}' in line})
+                self.assertEqual(sorted(a['name'] for m, a, _ in self.native.calls if m == 'SkillDigest'), named)
+                self.assertTrue(all(c == 'tgbridge' for m, _, c in self.native.calls if m == 'SkillDigest'))
+                review = self.bundle_review(row)
+                facts, contents, _ = review_parts(review)
+                # Every native sentence arrives whole and quoted; SKILL.md descriptions only as fenced file content.
+                self.assertEqual([value for label, value in contents if label == 'Native Does (complete quoted lines):'],
+                                 ask['run']['does'])
+                for line in ask['run']['does']:
+                    self.assertNotIn(line, facts)
+                card = b.html_visible_text(sent[0]['text'])[0]
+                self.assertIn(ask['run']['command'], card)
+                for skill, tree in SKILL_TREES.items():
+                    if skill in named:
+                        self.assertIn(tree, card)
+                        self.assertIn(tree, next(fact for fact in facts if fact.startswith('Manifest:')))
+                for line in ask['run']['does']:
+                    holder = re.fullmatch(r'The (.+) is given (.+) now, and will be given (.+)\.', line)
+                    if holder:
+                        lists = [value.removeprefix('the skills ') if value != 'no skills' else '(none)' for value in holder.groups()[1:]]
+                        self.assertIn(f'{holder[1]}: {lists[0]} -> {lists[1]}', card)
+                for item in ask.get('weight', []):
+                    self.assertIn('WEIGHTY · code: ' + item['line'], card)
+                if name.startswith('skill_rm'):
+                    self.assertIn(n.SKILL_RM_NO_BACK, card)
+                    self.assertIn('Description (untrusted SKILL.md text): "', card)
+                # Routine or weighty, Approve only arms Confirm; Confirm writes once, weighed.
+                self.assertTrue(row['weighty'])
+                self.press()
+                self.assertEqual(self.writes(), [])
+                self.assertIn('Confirm ask 7 on sample-1: runs ' + ask['run']['command'], b.html_visible_text(self.edits()[-1]['text'])[0])
+                self.press('confirm', uid=41)
+                self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='sample-1', ask=7, actor='pat', weighed=True, values={}))])
+                self.assertEqual(self.row()['state'], 'approved')
+
+        # A carried removal relays the canonical pending, then the operation and tree the server names.
+        ask = skill_proposal('skill_rm_force')
+        self.reset_native(copy.deepcopy(ask))
+        self.assertTrue(self.create()['delivered'])
+        self.native.mode = 'carrying'
+        self.press()
+        self.press('confirm', uid=41)
+        self.assertIn('⏳ approved, to be carried out: yardr skill rm notes --force', b.html_visible_text(self.edits()[-1]['text'])[0])
+        receipt = ('skill notes removed (operation card-0123456789abcdef0123456789abcdef, tree ' + SKILL_TREES['notes'] + ')\n'
+                   'taken off group builders: notes,triage -> triage')
+        self.native.ask['ran'] = dict(argv=ask['run']['argv'], result=receipt)
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.run_asks.refresh()
+        self.assertIn('✓ approved, ran: yardr skill rm notes --force\n' + receipt, b.html_visible_text(self.edits()[-1]['text'])[0])
+        failed = 'skill notes was not removed: the owner settled operation card-0123 as failed: the tree moved.'
+        self.native.ask['ran'] = dict(argv=ask['run']['argv'], result=failed, failed=True)
+        self.bridge.run_asks.refresh()
+        self.assertIn('✕ approved, failed: yardr skill rm notes --force\n' + failed, b.html_visible_text(self.edits()[-1]['text'])[0])
+        self.assertEqual(len(self.writes()), 1)
+
+    def test_skill_cards_refuse_unknown_shapes_unserved_cores_moved_trees_and_stale_approval(self):
+        def refused(ask, marker, listed=True):
+            self.reset_native(copy.deepcopy(ask))
+            result = self.create()
+            self.assertFalse(result['delivered'], result)
+            self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+            self.assertIn(marker, result['reason'])
+            self.assertEqual((self.sent_count, self.documents, self.writes(), self.bridge.run_asks.rows()), (0, [], [], []))
+            if listed:
+                self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
+
+        # Every sentence, word and field is the core's own: one changed, missing or added refuses the whole card.
+        for name in SKILL_FIXTURES:
+            base = skill_proposal(name)
+            changes = [('extra line', lambda run: run['does'].append('An unfamiliar native sentence.'))]
+            for at in range(len(base['run']['does'])):
+                changes += [(f'line {at} changed', lambda run, at=at: run['does'].__setitem__(at, run['does'][at][:-1] + ';')),
+                            (f'line {at} dropped', lambda run, at=at: run['does'].pop(at)),
+                            (f'line {at} broken', lambda run, at=at: run['does'].__setitem__(at, run['does'][at].replace(' ', '\n', 1)))]
+            changes += [('command', lambda run: run.__setitem__('command', run['command'] + ' ')),
+                        ('description', lambda run: run.__setitem__('description', 'Remove a group')),
+                        ('back', lambda run: run.__setitem__('back', 'yardr skill add /synthetic/old')),
+                        ('back_by', lambda run: run.__setitem__('back_by', 'anyone')),
+                        ('seen', lambda run: run.__setitem__('seen', {'skill notes': '0' * 64}))]
+            for label, change in changes:
+                with self.subTest(fixture=name, change=label):
+                    ask = copy.deepcopy(base)
+                    change(ask['run'])
+                    # A description is SKILL.md text: any words of one line are the yard's to show, quoted.
+                    line = base['run']['does'][int(label.split()[1])] if label.startswith('line') else ''
+                    if (label.endswith('changed') and re.match(r'Its description: |Skill \S+: tree [0-9a-f]{64}\. ', line)
+                            or label.endswith('dropped') and line.startswith('Its description: ')):
+                        self.assertTrue(validate_accepts(ask))
+                        continue
+                    refused(ask, 'run_ask_unknown_payload' if label == 'seen' else 'invalid native skill card')
+        for name, change in (('skill_rm_force', lambda ask: ask['run']['argv'].pop()),
+                             ('skill_rm_force', lambda ask: ask['run']['does'].__setitem__(3, ask['run']['does'][3].replace('no skills', 'the skills notes'))),
+                             ('skill_rm_force', lambda ask: ask['run']['does'].__setitem__(slice(5, 7), ask['run']['does'][3:5])),
+                             ('skills_group_set', lambda ask: ask.pop('weight')),
+                             ('skills_group_narrow', lambda ask: ask.__setitem__('weight', skill_proposal('skills_group_set')['weight'])),
+                             ('skills_crew_set', lambda ask: ask['run']['argv'].__setitem__(3, 'skills=[spare,notes]')),
+                             ('skills_group_set', lambda ask: ask['run']['argv'].__setitem__(3, 'skills=[notes,spare] effort=high'))):
+            with self.subTest(fixture=name, change='argv/holders/weight'):
+                ask = skill_proposal(name)
+                change(ask)
+                refused(ask, 'invalid native skill card')
+
+        # An older fork's skill rm card (no tree or holder binding) is no card of this contract.
+        old = dict(proposal(), run=dict(argv=['skill', 'rm', 'notes'], command='yardr skill rm notes', description='Remove a skill',
+                                        does=['skill notes: removed'], back='', back_by='only the operator'))
+        refused(old, 'invalid native skill card')
+
+        # A core without the skill topic serves no card of this family; one whose trees moved since refuses until asked again.
+        ask = skill_proposal('skills_group_set')
+        self.reset_native(copy.deepcopy(ask))
+        self.native.mode = 'no-skill-topic'
+        result = self.create()
+        self.assertFalse(result['delivered'])
+        self.assertIn('run_ask_skill_cards_unavailable', result['reason'])
+        self.assertTrue(result['reason'].endswith(n.FALLBACK))
+        self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+        for skill in ('notes', 'spare', 'triage'):
+            with self.subTest(moved=skill):
+                self.reset_native(copy.deepcopy(ask))
+                self.native.skill_trees[skill] = 'absent' if skill == 'spare' else '1' * 64
+                result = self.create()
+                self.assertFalse(result['delivered'])
+                self.assertIn('run_ask_skill_tree_moved', result['reason'])
+                self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+
+        # Known skill administration never rides a general card, in any form.
+        for words in (['skill', 'rm', 'notes'], ['skill', '--json', 'rm', 'notes', '--force'], ['group', 'set', 'g', 'skills=[notes]'],
+                      ['group', '--json', 'set', 'g', '--set', 'skills=[]'], ['crew', 'set', 'c', '--unset', 'skills'],
+                      ['crew', 'set', 'c', '--unset=skills'], ['group', 'set', 'g', 'effort=high', 'skills=[a]']):
+            with self.subTest(general=words):
+                refused(general_proposal(words), 'run_ask_skill_general_refused')
+        for words in (['skill', 'add', '/synthetic/dir'], ['group', 'set', 'g', 'effort=high'], ['crew', 'set', 'c', '--unset', 'model']):
+            with self.subTest(general=words):
+                self.assertTrue(validate_accepts(general_proposal(words)))
+
+        # The yard's stale refusal at approval retires the card: nothing ran, no control remains.
+        for name in ('skill_rm_force', 'skills_crew_set'):
+            with self.subTest(stale=name):
+                self.reset_native(skill_proposal(name))
+                self.assertTrue(self.create()['delivered'])
+                self.native.mode, self.native.stale = 'stale', SKILL_STALE
+                self.press()
+                self.press('confirm', uid=41)
+                self.assertEqual(len(self.writes()), 1)
+                self.assertEqual(self.native.ask['state'], 'open')
+                self.assertEqual(self.row()['state'], 'stale')
+                self.assertEqual(self.edits()[-1]['reply_markup'], {'inline_keyboard': []})
+                self.assertIn('Stale skill proposal; nothing ran.', b.html_visible_text(self.edits()[-1]['text'])[0])
+                self.press(uid=42)
+                self.assertEqual(len(self.writes()), 1)
+
     def test_group_bundle_reviews_whole_card_before_controls_and_refuses_unsupported(self):
         for name in GROUP_FIXTURES:
             with self.subTest(fixture=name):
@@ -9472,6 +9663,225 @@ class RealNativeTests(BridgeTestCase):
         self.assertEqual(settled['state'], 'answered')
         self.assertFalse(settled['ran'].get('failed'), settled['ran'])
         self.assertEqual(client.call('GetSource', ['synthetic-ten'])['declaration'], decl)
+
+    def test_real_native_skill_cards_remove_and_assign_once_through_their_bindings(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        server, home, command, env = testyardr.start(root, binary)
+        try:
+            # Fork-only: a core without the skill topic, or one before its card rows, has no card of this family.
+            if not testyardr.serves(home, 'SkillDigest'):
+                self.skipTest('fork-only skill administration cards: this core serves no skill topic (no SkillDigest)')
+            client = n.YardSocketClient(home, 'tgbridge')
+
+            def cli(*args, actor='pat', ok=True):
+                result = subprocess.run(command[:-1] + [actor, *args], env=env, cwd=root, text=True, capture_output=True, timeout=30)
+                if ok:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                return result
+
+            def skill(name, text):
+                folder = root / 'skills-in' / name
+                (folder / 'helper').mkdir(parents=True, exist_ok=True)
+                (folder / 'SKILL.md').write_text(f'---\nname: {name}\ndescription: {text}\n---\nSynthetic body.\n')
+                (folder / 'helper' / 'run.sh').write_text('echo synthetic\n')
+                cli('skill', 'add', str(folder))
+                return client.call('SkillDigest', {'name': name})
+
+            cli('settings', 'set', 'operator', 'pat')
+            cli('settings', 'set', 'default_kind', 'codex')
+            source = root / 'synthetic.yaml'
+            source.write_text('name: tgbridge\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\n'
+                              'hook:\n  bodies: unique\n  verify:\n    scheme: secret\n    signature: {header: X-Secret}\n  normalize: [/bin/false]\n')
+            cli('source', 'add', str(source))
+            cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+            cli('user', 'add', 'proposer')
+            cli('bead', 'create', 'Synthetic skill administration', '--id', 'sample-1')
+            trees = {name: skill(name, text) for name, text in (('notes', 'Write <b>release</b> notes "quoted" café 🙂'),
+                                                                 ('spare', 'A spare skill'), ('triage', 'Sort new beads'))}
+            cli('group', 'add', 'builders', '--runner', 'herdr', '--set', 'kind=claude')
+            cli('group', 'add', 'web/reviewers', '--runner', 'herdr', '--set', 'kind=claude')
+            cli('crew', 'add', 'clerk', '--dir', str(root), '--on=', '--set', 'kind=codex')
+            cli('group', 'set', 'builders', 'skills=[notes,triage]')
+            cli('group', 'set', 'web/reviewers', 'skills=[notes]')
+            cli('crew', 'set', 'clerk', 'skills=[notes]')
+
+            def propose(run):
+                result = cli('bead', 'ask', 'sample-1', 'Synthetic: ' + run + '?', '--to', 'pat', '--context', 'Isolated skill card',
+                             '--run', run, actor='proposer', ok=False)
+                if result.returncode and '--run takes a command of the list' in result.stderr:
+                    self.skipTest('fork-only skill administration cards: this skill core predates their card rows')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
+
+            def current(number):
+                return next(a for a in client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'] if a['ask'] == number)
+
+            def events(kind):
+                return client.call('EventsOfKind', [kind, 1000]) or []
+
+            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+            ids = iter(range(77, 900))
+            def telegram(url, body, *args, **kwargs):
+                status, response = self.transport(url, body, *args, **kwargs)
+                if url.endswith('/sendMessage'):
+                    response['result']['message_id'] = next(ids)
+                elif url.endswith('/editMessageText'):
+                    response = dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
+                return status, response
+            self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+            self.bridge.hook_secret = None
+            self.documents = []
+            self.sent_count = 10000
+            self.bridge.request_multipart = lambda *args, **kwargs: NativeCase.pack_transport(self, *args, **kwargs)
+            updates = iter(range(70000, 71000))
+
+            def poll(batch):
+                fetch = self.bridge.telegram
+                def fetched(method, body, timeout=15):
+                    return (200, dict(ok=True, result=batch)) if method == 'getUpdates' else fetch(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                    self.bridge.poll_once()
+
+            def event(row, action='approve'):
+                if action == 'confirm':
+                    action += ':' + self.bridge.run_asks.get(row['id'])['pending']['nonce']
+                return dict(update_id=next(updates), callback_query=dict(id='skill-callback', data=f"runask:{row['id']}:{action}",
+                    message=dict(message_id=row['message_id'], chat=dict(id=123, type='private'), **{'from': dict(id=999, is_bot=True)}),
+                    **{'from': dict(id=123, is_bot=False)}))
+
+            def publish(ask):
+                receipt = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='skill-' + str(ask['ask'])))
+                self.assertTrue(receipt['delivered'], receipt)
+                row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', ask['ask']))
+                self.assertTrue(row['weighty'])
+                self.assertEqual(self.documents[-1][2].decode(), row['bundle']['document']['text'])
+                return row
+
+            def finish(ask, timeout=15):
+                deadline = time.monotonic() + timeout
+                while (value := current(ask['ask'])).get('ran', {}).get('result') in (None, n.PENDING):
+                    self.assertLess(time.monotonic(), deadline, 'native skill carry did not settle')
+                    time.sleep(.02)
+                poll([])
+                return value
+
+            def footer(row):
+                return self.bridge.run_asks.get(row['id'])['display']['footer']
+
+            # Removal: the card shows the standing tree and every holder, and is listed and opened by /decide.
+            removal = propose('skill rm notes --force')
+            row = publish(removal)
+            card = b.html_visible_text(self.calls[-1][1]['text'])[0]
+            self.assertIn('tree ' + trees['notes'], card)
+            for holder, after in (('crew member clerk', '(none)'), ('group builders', 'triage'), ('group web/reviewers', '(none)')):
+                self.assertIn(holder + ': notes' + (', triage' if holder == 'group builders' else '') + ' -> ' + after, card)
+            listed, _ = self.bridge.run_asks.decide_list()
+            self.assertIn(f"run · sample-1#{removal['ask']}", listed)
+            self.assertEqual(self.bridge.run_asks.decide_open('sample-1', removal['ask'], '123')[1][0], row['message_id'])
+
+            # Spoofed taps, a forged nonce and an expired confirmation write nothing.
+            for change in ('user', 'bot', 'chat', 'message'):
+                wrong = event(row)
+                query = wrong['callback_query']
+                if change == 'user': query['from']['id'] = 124
+                if change == 'bot': query['message']['from']['id'] = 998
+                if change == 'chat': query['message']['chat']['id'] = 124
+                if change == 'message': query['message']['message_id'] += 1
+                poll([wrong])
+                self.assertIsNone(self.bridge.run_asks.get(row['id'])['pending'])
+            poll([event(row, 'confirm:0000000000000000')])
+            poll([event(row)])
+            armed = self.bridge.run_asks.get(row['id'])['pending']
+            expired = event(row, 'confirm')
+            with patch.object(self.bridge.run_asks, 'now', return_value=armed['expires'] + 1):
+                poll([expired])
+            # The poll's refresh retires the expired confirmation before its update drains; neither runs anything.
+            self.assertIn(n.CONFIRM_EXPIRED, [body['text'].rpartition('\n')[2] for url, body in self.calls if url.endswith('/editMessageText')])
+            self.assertIsNone(self.bridge.run_asks.get(row['id'])['pending'])
+            self.assertEqual((current(removal['ask'])['state'], events('skill_removed')), ('open', []))
+
+            # Holders changed since the card: the yard refuses the approval, nothing is removed, the card retires.
+            cli('group', 'set', 'web/reviewers', '--unset', 'skills')
+            poll([event(row)]); poll([event(row, 'confirm')])
+            self.assertEqual((current(removal['ask'])['state'], self.bridge.run_asks.get(row['id'])['state']), ('open', 'stale'))
+            self.assertEqual((client.call('SkillDigest', {'name': 'notes'}), events('skill_removed')), (trees['notes'], []))
+            self.assertIn('Stale skill proposal; nothing ran.', footer(row))
+
+            # A tree replaced since the card refuses the same way.
+            moved = propose('skill rm spare')
+            moved_row = publish(moved)
+            trees['spare'] = skill('spare', 'A spare skill, replaced')
+            poll([event(moved_row)]); poll([event(moved_row, 'confirm')])
+            self.assertEqual((current(moved['ask'])['state'], self.bridge.run_asks.get(moved_row['id'])['state']), ('open', 'stale'))
+            self.assertEqual(client.call('SkillDigest', {'name': 'spare'}), trees['spare'])
+
+            # A fresh removal whose approval reply is lost: canonical state settles it, the server carries it out once.
+            removal = propose('skill rm notes --force')
+            row = publish(removal)
+            poll([event(row)])
+            confirmation = event(row, 'confirm')
+            rpc = self.bridge.run_asks.client.call
+            def lost(method, args):
+                value = rpc(method, args)
+                if method == 'ApproveAsk':
+                    raise n.RPCAmbiguous('synthetic lost approval reply')
+                return value
+            with patch.object(self.bridge.run_asks.client, 'call', side_effect=lost):
+                poll([confirmation])
+            settled = finish(removal)
+            self.assertFalse(settled['ran'].get('failed', False), settled)
+            receipt = settled['ran']['result']
+            self.assertRegex(receipt, rf"^skill notes removed \(operation card-[0-9a-f]{{32}}, tree {trees['notes']}\)\n")
+            self.assertIn(receipt, footer(row))
+            # Restart and replay: a new bridge state machine reconciles from the yard and writes nothing again.
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+            poll([confirmation, event(row)])
+            removed = events('skill_removed')
+            self.assertEqual(len(removed), 1)
+            data = removed[0]['data']
+            self.assertEqual((data['name'], data['before'], data['after'], data['proposal'], data['actor']),
+                             ('notes', trees['notes'], 'absent', f"sample-1#{removal['ask']}", 'pat'))
+            self.assertEqual(sorted((h['holder'], h['before'], h['after']) for h in data['holders']),
+                             [('crew member clerk', ['notes'], []), ('group builders', ['notes', 'triage'], ['triage'])])
+            self.assertEqual(client.call('SkillDigest', {'name': 'notes'}), 'absent')
+            print('Skill removal receipt:', json.dumps(dict(ran=receipt, event=data), sort_keys=True))
+
+            # Assignment: the card binds the target's definition and each tree; a config set since stales it.
+            stale = propose('group set builders skills=[spare,triage]')
+            stale_row = publish(stale)
+            cli('group', 'set', 'builders', 'effort=high')
+            poll([event(stale_row)]); poll([event(stale_row, 'confirm')])
+            self.assertEqual((current(stale['ask'])['state'], self.bridge.run_asks.get(stale_row['id'])['state']), ('open', 'stale'))
+            self.assertEqual(client.call('GetGroup', ['builders'])['config'].get('skills'), ['triage'])
+            for run, target in (('group set builders skills=[spare,triage]', ('GetGroup', ['builders'], 'group_set')),
+                                ('crew set clerk skills=[triage]', ('GetCrew', ['clerk'], 'crew_defined'))):
+                ask = propose(run)
+                row = publish(ask)
+                before = len(events(target[2]))
+                poll([event(row)])
+                self.assertEqual(len(events(target[2])), before)
+                poll([event(row, 'confirm')])
+                self.assertEqual(current(ask['ask'])['state'], 'answered')
+                self.assertIn('✓ approved, ran: ' + ask['run']['command'], footer(row))
+                written = events(target[2])[before:]
+                self.assertEqual(len(written), 1)
+                audit = written[0]['data']
+                self.assertEqual(audit['skills_audit']['proposal'], f"sample-1#{ask['ask']}")
+                print('Skill assignment receipt:', json.dumps(dict(run=run, ran=current(ask['ask'])['ran']['result'], event=audit), sort_keys=True))
+                self.assertEqual(audit['skills']['after'], ['spare', 'triage'] if target[2] == 'group_set' else ['triage'])
+            # The store keeps the key as the terminal's word, a list or its bracketed text alike.
+            self.assertIn(client.call('GetGroup', ['builders'])['config']['skills'], (['spare', 'triage'], '[spare,triage]'))
+            declined = propose('group set web/reviewers skills=[triage]')
+            row = publish(declined)
+            poll([event(row, 'decline')])
+            self.assertEqual(current(declined['ask'])['state'], 'declined')
+            print('Native skill cards: real SkillDigest/Bead/ApproveAsk/carry, /decide, spoofed taps, expired confirmation, '
+                  'stale holders/tree/config, lost approval reply, restart replay, removal and assignment receipts')
+        finally:
+            testyardr.stop(server)
 
     def test_real_native_group_add_and_set_apply_once_through_their_gates(self):
         binary = testyardr.binary()

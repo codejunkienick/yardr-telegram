@@ -1,0 +1,33 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Synthetic: crew set clerk --unset skills?",
+  "context": [
+    "Synthetic context for skills_crew_unset"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "crew",
+      "set",
+      "clerk",
+      "--unset",
+      "skills"
+    ],
+    "command": "yardr crew set clerk --unset skills",
+    "description": "Change some settings of a crew member and keep the rest",
+    "does": [
+      "changes the skills the crew member clerk is given: what yardr names in its agents' briefs and primes and hands them with yardr skill show, and nothing else of it.",
+      "It is given the skills notes now.",
+      "It will be given no skills: the skills key is unset.",
+      "Skill notes: tree b6c70591f58c469fea5c9ea084bacd3b0d9ec3b3a3162604599b825afdb0d026. Write release notes <b>&amp;</b> \"quotes\" café 🙂",
+      "No session of the crew member clerk runs now."
+    ],
+    "back": "yardr crew set clerk 'skills=[notes]'",
+    "back_by": "only the operator"
+  }
+}

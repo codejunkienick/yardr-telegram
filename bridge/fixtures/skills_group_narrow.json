@@ -1,0 +1,33 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Synthetic: group set builders skills=[triage]?",
+  "context": [
+    "Synthetic context for skills_group_narrow"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "group",
+      "set",
+      "builders",
+      "skills=[triage]"
+    ],
+    "command": "yardr group set builders 'skills=[triage]'",
+    "description": "Change some settings of a group and keep the rest",
+    "does": [
+      "changes the skills the group builders is given: what yardr names in its agents' briefs and primes and hands them with yardr skill show, and nothing else of it.",
+      "It is given the skills notes, triage now.",
+      "It will be given the skills triage.",
+      "Skill notes: tree b6c70591f58c469fea5c9ea084bacd3b0d9ec3b3a3162604599b825afdb0d026. Write release notes <b>&amp;</b> \"quotes\" café 🙂",
+      "Skill triage: tree 029da9a013d8f66219876cae30d0ed1ef457154e155cb5de4cb13184acbd6fd5. Sort new beads",
+      "No session of the group builders runs now."
+    ],
+    "back": "yardr group set builders 'skills=[notes,triage]'",
+    "back_by": "only the operator"
+  }
+}

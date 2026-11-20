@@ -1,6 +1,10 @@
 """Missing cores skip optional native tests; incompatible supplied cores fail."""
+import http.server
+import json
 from pathlib import Path
+import socketserver
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +37,45 @@ class NativeFixtureTests(unittest.TestCase):
                         self.assertEqual(read.call_args.args[0][-4:], ['crew', 'switch', 'capabilities', '--json'])
                     finally:
                         case.doCleanups()
+
+    def test_feature_probe_names_one_method_and_refuses_unknown_answers(self):
+        answers = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                raw = answers[self.path.removeprefix('/call/')]
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+
+        with tempfile.TemporaryDirectory(prefix='fp') as root:
+            server = Server(str(Path(root) / 'yard.sock'), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                answers.update(SkillDigest=json.dumps({'error': {'code': 'error', 'message': 'skill name "": invalid'}}).encode(),
+                               Absent=json.dumps({'error': {'code': 'error', 'message': 'no such method Absent'}}).encode(),
+                               Other=json.dumps({'error': {'code': 'error', 'message': 'no such method SkillDigest'}}).encode(),
+                               Garbled=b'PRIVATE', Empty=b'{}')
+                self.assertTrue(testyardr.serves(Path(root), 'SkillDigest'))
+                self.assertFalse(testyardr.serves(Path(root), 'Absent'))
+                # Another method's absence is no answer about this one.
+                self.assertTrue(testyardr.serves(Path(root), 'Other'))
+                for method in ('Garbled', 'Empty'):
+                    with self.assertRaisesRegex(AssertionError, 'answered neither'):
+                        testyardr.serves(Path(root), method)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
 
 
 if __name__ == '__main__':

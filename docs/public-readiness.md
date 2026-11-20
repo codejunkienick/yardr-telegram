@@ -59,6 +59,19 @@ runs and reports the omitted offline boundaries. Runtime fixtures use fake
 Telegram, isolated native Unix sockets/stores, durable SQLite, free loopback
 ports and synthetic content only.
 
+## Skill administration card capability
+
+Two separate claims. First, the ordinary bridge, adoption and existing
+native paths keep passing on exact unmodified public `5dc0bfca` and frozen
+`52e22d57`: those cores serve no `SkillDigest` and refuse to file skill
+cards, and the skill card test skips with that reason. Second, the skill
+removal and `skills=` assignment cards themselves are **fork-only** until
+upstream accepts every core contract they need (the skill topic, its card
+rows, `Defined` incarnations and carried removal). They are proven only on
+the local skill core `5dedfc56`, which is source, not installed or active.
+Neither claim makes v0.17.0 compatible: its missing release prerequisites
+above still stand. See [skill administration cards](../bridge/OPERATIONS.md#native-skill-administration-cards).
+
 ## Portable installation
 
 Follow [SETUP](../yardr/SETUP.md) for a clean install, using the fictional
@@ -243,7 +256,8 @@ normal use through the declared source requires its application first.
 | Embedded/directory source-pack run cards | Native fresh/orphan cases PASS; replacements missing grants disclosure REFUSED [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; complete native carried review; no invented directory snapshot |
 | [Complete depot directory-pack review](../bridge/OPERATIONS.md#depot-pack-bundles) | Native bounded first/reapply/object plans PASS; missing replacement grants REFUSED [H] | Not tested for this depot slice | Same `run_ask`; explicit operator activation watermark; aligned `aadbbd841b1c` and pinned public `52e22d57` fixtures |
 | `/quota`, `/switch_model` (`/mayor_model` migration alias) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1` (`crew switch capabilities --json`), not present on `52e22d57` (refuses before mutation) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1`, not present on `v0.17.0` | `/switch_model` verified on landed core `bd7f54b4` (`NativeSwitchTests` [F], `crew_handoff_switch v1`); local core is not a public release; resolve/supersede pending switches before core downgrade |
-| skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only operator terminal workflow; no skill card/grant |
+| skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only: direct `skill add` (operator, users, crew; no card/grant) |
+| [Skill removal and assignment cards](../bridge/OPERATIONS.md#native-skill-administration-cards) | Unavailable: no `SkillDigest`, filing refused; test skips classified [I] | Unavailable [I] | Fork-only skill core `5dedfc56`+ (not installed); same `run_ask`; operator Approve+Confirm |
 
 Evidence locations (the named tests use fake Telegram and isolated real native
 RPC/store where stated):
@@ -276,6 +290,10 @@ RPC/store where stated):
   `RealNativeTests.test_real_native_depot_pack_apply_once`: actual native store,
   bridge ledger and production poll order; complete document, routine/weighted
   carry, source/API cutover, stale state, crashes and one execution under replay.
+- [I] [bridge/test_run_asks.py](../bridge/test_run_asks.py),
+  `RealNativeTests.test_real_native_skill_cards_remove_and_assign_once_through_their_bindings`
+  (runs on `5dedfc56`; skips with its reason elsewhere) and
+  `NativeTests.test_skill_cards_*` (fake core: every fixture, refusals, unavailable core).
 
 Long polling, topics, buttons/menu/add-ons, typing, media, silent replies and
 optional local transcription are bridge features covered by its offline
@@ -286,8 +304,11 @@ strings alone do not establish capability.
 The basic slice uses SETUP steps 1–11 without native home/operator or
 native-card grants. Public builds lack `skill add` and `skills=`: skip the
 crew-skills section and associated skill install/upgrade/rollback steps.
-The bridge carries no captured skill card; specific skill asks refuse before
-send with a terminal-only `/decide` line. An unchecked native General may
+The bridge carries no captured skill add card; such asks refuse before
+send with a terminal-only `/decide` line. Skill removal and assignment
+cards are a separate optional fork-only family: a public core cannot file
+them and serves no `SkillDigest`, so the bridge would report them
+unavailable without touching any other card. An unchecked native General may
 name that command, but public cores still lack the command itself. Optional native keys and per-call grants belong
 on one primary bridge per yard, under the operator's authority.
 

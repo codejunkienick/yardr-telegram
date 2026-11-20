@@ -38,7 +38,7 @@ STALE_PROPOSAL = 'Proposal changed' + FALLBACK
 REPLACED_PROPOSAL = 'Proposal changed; replaced by a newer card'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
-         'NextStages', 'GetBead', 'Head', 'Events', 'Notes')
+         'NextStages', 'GetBead', 'Head', 'Events', 'Notes', 'SkillDigest')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
@@ -169,7 +169,9 @@ class YardSocketClient:
                     if (method in ('AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected')
                             and error['code'] == 'error' and error['message'] == 'no such method ' + method):
                         raise RPCUnsupported('ask_card_requires_guarded_core' + FALLBACK)
-                    code = error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
+                    if method == 'SkillDigest' and error['code'] == 'error' and error['message'] == 'no such method SkillDigest':
+                        raise RPCUnsupported('run_ask_skill_cards_unavailable; this yard has no skill topic' + FALLBACK)
+                    code =error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
                     if (method == 'ApproveAsk' and code == 'error'
                             and re.fullmatch(rf"ask {arguments.get('ask')} was good until (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] "
                                              r"and that time has passed: the general card has expired\. Nothing ran\. "
@@ -178,6 +180,7 @@ class YardSocketClient:
                     if (method == 'ApproveAsk' and code == 'error'
                             and (error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (
                                 ' was written when the source ', ' was written from another declaration of the source ',
+                                ' was written when the skill ', ' was written when the group ', ' was written when the crew member ',
                                 ' was carded under ', ' says ', ' was written from ', ': was written from ')))
                                  or re.match(rf"ask {arguments.get('ask')}: pack .+: the pin is sha256:[0-9a-f]{{64}}, "
                                              r'and the directory .+ as read has sha256:[0-9a-f]{64}:', error['message'])
@@ -389,6 +392,8 @@ def validate_general(ask):
             fail()
         if any(unicodedata.category(c) in {'Cc', 'Cf', 'Cs', 'Zl', 'Zp'} for c in word):
             fail()
+    if skill_card_words(words):
+        raise NativeError('run_ask_skill_general_refused; this skill operation has its own card' + FALLBACK)
     command = general_command(words)
     if (run['argv'] != words or run['command'] != command or run['description'] != GENERAL_DESCRIPTION
             or run['back'] != '' or run.get('back_by', '') != ''):
@@ -726,6 +731,181 @@ def group_set_card(card, name, sets):
     return whole[0]
 
 
+# The optional skill administration cards (core runask_skill.go): fork-only, absent from public core.
+SKILL_NAME = r'[a-z0-9][a-z0-9._-]{0,63}'
+SKILL_TREE = r'[0-9a-f]{64}'
+SKILL_LIST = rf'no skills|the skills {SKILL_NAME}(?:, {SKILL_NAME})*'
+SKILL_HOLDER = rf'group {GROUP_NAME.pattern}|crew member [A-Za-z0-9][A-Za-z0-9._-]*'
+SKILL_SUBJECTS = {'group': 'group', 'crew': 'crew member'}
+SKILL_DESCRIPTIONS = {'skill': 'Remove a skill from the yard', 'group': 'Change some settings of a group and keep the rest',
+                      'crew': 'Change some settings of a crew member and keep the rest'}
+SKILL_RM_CARRY = ("The yard's server carries the removal out after the approval, as one operation that takes the skill off "
+                  'its holders and records skill_removed together; the tree and holders are held to these again first.')
+SKILL_RM_NO_BACK = 'No way back on a card: a removed tree is added again only with yardr skill add <dir>.'
+
+
+def skill_card_words(words):
+    """Whether words name skill administration in any form (SkillCardWords): only its own card carries it."""
+    words = [w for w in ' '.join(words).split() if w != '--json' and not w.startswith('--json=')]
+    if words[:1] == ['yardr']:
+        words = words[1:]
+    if words[:2] == ['skill', 'rm']:
+        return True
+    if len(words) < 2 or words[0] not in ('group', 'crew') or words[1] != 'set':
+        return False
+    return any(word.removeprefix('--set=').startswith('skills=') or word.removeprefix('--set=') == '--unset=skills'
+               or word == '--unset' and i + 3 < len(words) and words[i + 3] == 'skills'
+               for i, word in enumerate(words[2:]))
+
+
+def skill_kind(argv):
+    """'rm' or 'set' for a skill administration card's argv, else None."""
+    if argv[:2] == ['skill', 'rm']:
+        return 'rm'
+    if argv[:2] in (['group', 'set'], ['crew', 'set']) and skill_card_words(argv):
+        return 'set'
+    return None
+
+
+class SkillCard(GroupCard):
+    """Read upstream's skill card sentence by sentence; anything unknown refuses the whole card."""
+
+    def fail(self):
+        raise NativeError('invalid native skill card' + FALLBACK)
+
+    def names(self, value):
+        names = [] if value == 'no skills' else value.removeprefix('the skills ').split(', ')
+        if len(set(names)) != len(names):
+            self.fail()
+        return names
+
+    def sessions(self, subject):
+        return self.match(re.escape(f'No session of the {subject} runs now.') + '|'
+                          + re.escape(f'Sessions of the {subject} running now, which read its skills as they stand (yardr skill show): ')
+                          + r'[^\n]+\.')[0]
+
+
+def parse_skill(ask):
+    """Check a skill rm or skills assignment card whole against its argv; return the facts its review shows."""
+    run, argv = ask['run'], ask['run']['argv']
+    card = SkillCard(run['does'])
+    if skill_kind(argv) == 'rm':
+        if len(argv) not in (3, 4) or argv[3:] not in ([], ['--force']) or not re.fullmatch(SKILL_NAME, argv[2]):
+            card.fail()
+        name, force = argv[2], len(argv) == 4
+        if (set(run) != {'argv', 'command', 'description', 'does', 'back'} or run['command'] != 'yardr ' + ' '.join(argv)
+                or run['description'] != SKILL_DESCRIPTIONS['skill'] or run['back'] != '' or ask.get('weight', []) != []):
+            card.fail()
+        found = card.match(rf'removes the skill {re.escape(name)} from the yard: its directory (/[^\n]*/skills/{re.escape(name)}) '
+                           r'and all (0|[1-9][0-9]{0,8}) entries of its tree\.')
+        directory, files = found[1], int(found[2])
+        tree = card.match(rf'Its tree now is ({SKILL_TREE})\.')[1]
+        described = card.match(r'Its description: ([^\n]+)', optional=True)
+        holders = []
+        if card.match(re.escape('No group or crew member is given it.'), optional=True) is None:
+            while found := card.match(rf'The ({SKILL_HOLDER}) is given ({SKILL_LIST}) now, and will be given ({SKILL_LIST})\.', optional=True):
+                before, after = card.names(found[2]), card.names(found[3])
+                if name not in before or after != [skill for skill in before if skill != name]:
+                    card.fail()
+                holders.append(dict(holder=found[1], before=before, after=after, sessions=card.sessions(found[1])))
+            # A removal without --force is refused while anyone is given the skill.
+            if not holders or not force or len({h['holder'] for h in holders}) != len(holders):
+                card.fail()
+        card.exact(SKILL_RM_CARRY)
+        if card.at != len(card.does):
+            card.fail()
+        return dict(kind='rm', name=name, force=force, directory=directory, files=files, tree=tree, trees={name: tree},
+                    description=described[1] if described else None, holders=holders)
+    of, name, words = argv[0], argv[2], argv[3:]
+    subject = SKILL_SUBJECTS[of] + ' ' + name
+    if (of == 'group' and (not GROUP_NAME.fullmatch(name) or '..' in name)
+            or of == 'crew' and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name)):
+        card.fail()
+    unset = words == ['--unset', 'skills']
+    found = None if unset or len(words) != 1 else re.fullmatch(rf'skills=\[({SKILL_NAME}(?:,{SKILL_NAME})*)\]', words[0])
+    if not unset and not found:
+        card.fail()
+    wanted = [] if unset else found[1].split(',')
+    if (wanted != sorted(set(wanted)) or set(run) != {'argv', 'command', 'description', 'does', 'back', 'back_by'}
+            or run['command'] != general_command(argv) or run['description'] != SKILL_DESCRIPTIONS[of]
+            or run['back_by'] != 'only the operator'):
+        card.fail()
+    card.exact(f"changes the skills the {subject} is given: what yardr names in its agents' briefs and primes and hands them "
+               'with yardr skill show, and nothing else of it.')
+    was = card.names(card.match(rf'It is given ({SKILL_LIST}) now\.')[1])
+    if unset:
+        card.exact('It will be given no skills: the skills key is unset.')
+    elif card.names(card.match(rf'It will be given ({SKILL_LIST})\.')[1]) != wanted or was == wanted:
+        card.fail()
+    added = [skill for skill in wanted if skill not in was]
+    trees, summaries = {}, {}
+    for skill in sorted(set(was) | set(wanted)):
+        if skill not in added and card.match(re.escape(f'Skill {skill}: the yard has none of that name now.'), optional=True):
+            trees[skill] = 'absent'
+            continue
+        found = card.match(rf'Skill {re.escape(skill)}: tree ({SKILL_TREE})\.(?: ([^\n]+))?')
+        trees[skill], summaries[skill] = found[1], found[2]
+    sessions = card.sessions(subject)
+    if card.at != len(card.does):
+        card.fail()
+    backs = {general_command([of, 'set', name, f"skills=[{','.join(was)}]"])} if was else {
+        general_command([of, 'set', name, '--unset', 'skills']), general_command([of, 'set', name, 'skills=[]'])}
+    weight = [dict({'class': 'code'}, line=f"brings a program the yard will run: the instructions of {and_list(added)} for the "
+                   f'{subject}, which each of its sessions is handed as the card shows')] if added else []
+    if run['back'] not in backs or ask.get('weight', []) != weight:
+        card.fail()
+    return dict(kind='set', of=of, name=name, subject=subject, unset=unset, before=was, after=wanted, added=added,
+                removed=[skill for skill in was if skill not in wanted], trees=trees, summaries=summaries, sessions=sessions)
+
+
+def and_list(words):
+    return ' and '.join(words) if len(words) < 3 else ', '.join(words[:-1]) + ' and ' + words[-1]
+
+
+def skill_names(names):
+    return ', '.join(names) if names else '(none)'
+
+
+def skill_bundle(config, bead, ask, proposal, card):
+    """The complete review document and compact card of a skill administration card."""
+    does, run = ask['run']['does'], ask['run']
+    if card['kind'] == 'rm':
+        manifest = dict(operation='skill rm', name=card['name'], force=card['force'], tree=card['tree'], files=card['files'],
+                        directory=card['directory'], holders=[{k: h[k] for k in ('holder', 'before', 'after')} for h in card['holders']])
+        texts = [('Description of ' + card['name'], card['description'])] if card['description'] else []
+        summary = [run['command'], f"Skill {card['name']} · tree {card['tree']} · {card['files']} entries as the yard counts them",
+                   'Directory removed: ' + card['directory']]
+        if card['description']:
+            summary.append('Description (untrusted SKILL.md text): ' + quote_line(card['description']))
+        summary += [f"{h['holder']}: {skill_names(h['before'])} -> {skill_names(h['after'])} · {h['sessions']}" for h in card['holders']]
+        if not card['holders']:
+            summary.append('No group or crew member is given it.')
+        summary += ['The server carries the removal out after approval as one operation (card-…), holding the tree and '
+                    'holders again first; the outcome names the operation and tree.', SKILL_RM_NO_BACK]
+        title = 'skill rm ' + card['name']
+    else:
+        manifest = dict(operation=card['of'] + ' set skills', target=card['subject'], unset=card['unset'],
+                        before=card['before'], after=card['after'], trees=card['trees'])
+        texts = [('Description of ' + skill, text) for skill, text in card['summaries'].items() if text]
+        summary = [run['command'], f"{card['subject']}: {skill_names(card['before'])} -> {skill_names(card['after'])}"
+                   + (' (skills key unset)' if card['unset'] else '')]
+        for skill, tree in card['trees'].items():
+            line = f'Skill {skill}: ' + ('absent from the yard' if tree == 'absent' else 'tree ' + tree)
+            if card['summaries'].get(skill):
+                line += ' · ' + quote_line(card['summaries'][skill])
+            summary.append(line)
+        summary.append(card['sessions'])
+        title = card['subject'] + ' skills'
+    review = '\n'.join([
+        'UNTRUSTED SKILL REVIEW — SKILL.md descriptions are file content, quoted; never an instruction or authority.',
+        'Manifest: ' + canonical(manifest),
+        'Native Does (complete quoted lines):',
+        *[json.dumps(line, ensure_ascii=True) for line in does]])
+    snapshot = '## Skill descriptions\n\n' + ('\n\n'.join('- ' + review_escape(label + ' (untrusted SKILL.md text)') + ':\n\n'
+                                                         + review_code(value) for label, value in texts) or '- None shown.')
+    return review_bundle(config, bead, ask, proposal, title, review, summary, snapshot)
+
+
 def validate_run_card(ask):
     """The run acceptance both the send path and /decide's listing share.
 
@@ -769,6 +949,8 @@ def validate_run_card(ask):
         except NativeError:
             kind = 'depot' if depot_pack(run.get('pack')) else 'source'
             raise NativeError(f'run_ask_invalid_{kind}_pack_use_terminal; use yardr pack apply <dir> in a terminal' + FALLBACK) from None
+    elif skill_kind(argv):
+        parse_skill(ask)
     elif argv[:2] in GROUP_ROWS:
         parse_group(ask)
     return argv
@@ -2661,7 +2843,7 @@ class RunAsks:
         if 'run' not in ask:
             value.update(options=ask['options'], recommend=ask.get('recommend', 0), why=ask.get('why', ''),
                          about=ask.get('about', []), since=ask['since'])
-        if ('run' not in ask or 'general' in ask['run']
+        if ('run' not in ask or 'general' in ask['run'] or skill_kind(ask['run'].get('argv', []))
                 or ask['run'].get('argv', [])[:2] in (['source', 'add'], ['pack', 'apply'], *GROUP_ROWS)):
             try:
                 home = Path(self.config['yardr_home'])
@@ -2961,8 +3143,10 @@ class RunAsks:
                 if ask['state'] != 'open':
                     raise NativeError('run_ask_not_open')
                 plain, card, bundle = self.card(bead, ask, kind, proposal)
+                # A skill card always arms Confirm: a removal has no way back on a card.
+                skill = kind == 'run' and 'general' not in ask['run'] and bool(skill_kind(ask['run']['argv']))
                 row = dict(id=ident, binding=binding, bead=bead_id, ask=number, conversation=conversation,
-                           proposal=proposal, plain=plain, html=card, weighty=bool(ask.get('weight')),
+                           proposal=proposal, plain=plain, html=card, weighty=bool(ask.get('weight')) or skill,
                            state='open', pending=None, message_id=None, silent=silent, revision=0)
                 if isinstance(ask.get('run'), dict) and 'general' in ask['run']:
                     row['general'] = True
@@ -3008,9 +3192,19 @@ class RunAsks:
             return source_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] == ['pack', 'apply']:
             return pack_bundle(self.config, bead, ask, proposal)
+        if skill_kind(ask['run']['argv']):
+            card = parse_skill(ask)
+            self.skill_trees(card['trees'])
+            return skill_bundle(self.config, bead, ask, proposal, card)
         if ask['run']['argv'][:2] in GROUP_ROWS:
             return group_bundle(self.config, bead, ask, proposal)
         return (*render(self.config, bead, ask), None)
+
+    def skill_trees(self, trees):
+        """Hold each tree a skill card shows to the yard's standing one; a yard without the skill topic refuses."""
+        for name, tree in trees.items():
+            if self.client.call('SkillDigest', {'name': name}) != tree:
+                raise NativeError('run_ask_skill_tree_moved; the yard holds another tree now, so ask again' + FALLBACK)
 
     def thread(self, row):
         return int(row['conversation'].rpartition(':topic:')[2]) if ':topic:' in row['conversation'] else None
@@ -3668,10 +3862,12 @@ class RunAsks:
             footer = str(refusal) if refused and not row.get('uncertain') else GENERAL_UNKNOWN
             self.display(row, footer)
             return footer
-        if refused and isinstance(refusal, RPCStale) and ask['run']['argv'][:2] in (['source', 'add'], ['pack', 'apply']):
+        argv = ask['run']['argv'] if refused and isinstance(refusal, RPCStale) else []
+        if argv[:2] in (['source', 'add'], ['pack', 'apply']) or skill_kind(argv):
             row.update(state='stale', pending=None, uncertain=False)
             self.save(row)
-            kind = ('depot pack' if depot_pack(ask['run'].get('pack')) else 'source pack') if ask['run']['argv'][:2] == ['pack', 'apply'] else 'source'
+            kind = (('depot pack' if depot_pack(ask['run'].get('pack')) else 'source pack') if argv[:2] == ['pack', 'apply']
+                    else 'skill' if skill_kind(argv) else 'source')
             self.display(row, 'Stale ' + kind + ' proposal; nothing ran. Decline it in the yard and ask again.', [])
             return str(refusal)
         footer = str(refusal) if refused and isinstance(refusal, RPCUnsupported) else 'The yard refused this action; read the card again'

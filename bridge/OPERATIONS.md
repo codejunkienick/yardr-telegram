@@ -2486,7 +2486,7 @@ historical: it decides alignment and nothing else. An optional feature is
 asked for by its own method (`testyardr.serves`): the skill card test skips,
 with its reason, on a core that serves no `SkillDigest` (public `5dc0bfca`,
 `52e22d57`) or whose CLI has no skill card rows (`c5642561`), and runs on a
-skill core with the rows (`5dedfc56`).
+skill core with the rows (`5dedfc56`, `9677728c`, `29fcd40d`).
 
 Wire references: `YARDR.md` (the hook's body and the yard API) and
 `<repo>/yardr/tgbridge.yaml` (the source the yard reaches the bridge
@@ -2657,8 +2657,13 @@ live actions. Offline presentation: `python3 -B scripts/preview_run_asks.py --ge
 ### Native skill administration cards
 
 Fork-only and capability-qualified: these cards exist only on a core with the
-optional skill topic and its card rows (yardr local `5dedfc56` and later, not
-installed or active until the operator installs it). Unmodified public
+optional skill topic and its card rows. The covered cores are yardr local
+`5dedfc56`, whose removal count reads "all N entries of its tree", and yardr
+local `9677728c` through `29fcd40d`, whose removal count reads "all N regular
+files of its tree" (the skill card code is unchanged across that range). The
+bridge accepts exactly those two sentences. A later core that changes a skill
+sentence needs its own fixture before it is named here. None is installed or
+active until the operator installs it. Unmodified public
 `5dc0bfca`/`52e22d57` and the installed `c5642561` refuse to file them, so
 the bridge never sees one there; ordinary, general, source, pack and group
 cards are unaffected.

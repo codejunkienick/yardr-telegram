@@ -62,13 +62,18 @@ ports and synthetic content only.
 ## Skill administration card capability
 
 Two separate claims. First, the ordinary bridge, adoption and existing
-native paths keep passing on exact unmodified public `5dc0bfca` and frozen
-`52e22d57`: those cores serve no `SkillDigest` and refuse to file skill
-cards, and the skill card test skips with that reason. Second, the skill
-removal and `skills=` assignment cards themselves are **fork-only** until
-upstream accepts every core contract they need (the skill topic, its card
-rows, `Defined` incarnations and carried removal). They are proven only on
-the local skill core `5dedfc56`, which is source, not installed or active.
+native paths pass on exact unmodified public `5dc0bfca` and frozen
+`52e22d57`, except the `NativeSwitchTests` failures those pins already have:
+the full gate reports 26 failures and one preview error (missing
+`crew_handoff_switch` v1), tracked in `yardr-telegram-myec`. There
+`scripts/test.sh` stops before `yardr/tests`, so run that suite on its own.
+Those cores serve no `SkillDigest` and refuse to file skill cards, and the
+skill card test skips with that reason. Second, the skill removal and
+`skills=` assignment cards themselves are **fork-only** until upstream accepts
+every core contract they need (the skill topic, its card rows, `Defined`
+incarnations and carried removal). They are proven only on the local skill
+cores `5dedfc56`, `9677728c` and `29fcd40d`, which are source, not installed or
+active.
 Neither claim makes v0.17.0 compatible: its missing release prerequisites
 above still stand. See [skill administration cards](../bridge/OPERATIONS.md#native-skill-administration-cards).
 
@@ -257,7 +262,7 @@ normal use through the declared source requires its application first.
 | [Complete depot directory-pack review](../bridge/OPERATIONS.md#depot-pack-bundles) | Native bounded first/reapply/object plans PASS; missing replacement grants REFUSED [H] | Not tested for this depot slice | Same `run_ask`; explicit operator activation watermark; aligned `aadbbd841b1c` and pinned public `52e22d57` fixtures |
 | `/quota`, `/switch_model` (`/mayor_model` migration alias) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1` (`crew switch capabilities --json`), not present on `52e22d57` (refuses before mutation) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1`, not present on `v0.17.0` | `/switch_model` verified on landed core `bd7f54b4` (`NativeSwitchTests` [F], `crew_handoff_switch v1`); local core is not a public release; resolve/supersede pending switches before core downgrade |
 | skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only: direct `skill add` (operator, users, crew; no card/grant) |
-| [Skill removal and assignment cards](../bridge/OPERATIONS.md#native-skill-administration-cards) | Unavailable: no `SkillDigest`, filing refused; test skips classified [I] | Unavailable [I] | Fork-only skill core `5dedfc56`+ (not installed); same `run_ask`; operator Approve+Confirm |
+| [Skill removal and assignment cards](../bridge/OPERATIONS.md#native-skill-administration-cards) | Unavailable: no `SkillDigest`, filing refused; test skips classified [I] | Unavailable [I] | Fork-only skill cores `5dedfc56`, `9677728c`, `29fcd40d` (not installed); same `run_ask`; operator Approve+Confirm |
 
 Evidence locations (the named tests use fake Telegram and isolated real native
 RPC/store where stated):
@@ -292,7 +297,7 @@ RPC/store where stated):
   carry, source/API cutover, stale state, crashes and one execution under replay.
 - [I] [bridge/test_run_asks.py](../bridge/test_run_asks.py),
   `RealNativeTests.test_real_native_skill_cards_remove_and_assign_once_through_their_bindings`
-  (runs on `5dedfc56`; skips with its reason elsewhere) and
+  (runs on `5dedfc56`, `9677728c` and `29fcd40d`; skips with its reason elsewhere) and
   `NativeTests.test_skill_cards_*` (fake core: every fixture, refusals, unavailable core).
 
 Long polling, topics, buttons/menu/add-ons, typing, media, silent replies and

@@ -317,8 +317,8 @@ UPSTREAM_FALLBACK = ('device_pair', 'hook_add_ask')
 
 
 # The skill administration cards of the optional skill core, by fixture (captured as the group ones are).
-SKILL_FIXTURES = ('skill_rm', 'skill_rm_force', 'skills_group_set', 'skills_group_narrow', 'skills_group_unset',
-                  'skills_crew_set', 'skills_crew_unset')
+SKILL_FIXTURES = ('skill_rm', 'skill_rm_regular_files', 'skill_rm_force', 'skills_group_set', 'skills_group_narrow',
+                  'skills_group_unset', 'skills_crew_set', 'skills_crew_unset')
 SKILL_TREES = dict(notes='b6c70591f58c469fea5c9ea084bacd3b0d9ec3b3a3162604599b825afdb0d026',
                    spare='c076730f322ba90219e75ce3a0993211a3f7c62a833039c4889e2635a4575679',
                    triage='029da9a013d8f66219876cae30d0ed1ef457154e155cb5de4cb13184acbd6fd5')
@@ -327,7 +327,8 @@ SKILL_STALE = ('ask 7 was written when the skill notes had another tree: it was 
 
 
 def skill_proposal(name):
-    # Captured from Bead on an isolated skill core (5dedfc56); only the temp root, ask number and time stabilized.
+    # Captured from Bead on an isolated skill core (5dedfc56; skill_rm_regular_files on 9677728c);
+    # only the temp root, ask number and time stabilized.
     return json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
 
 
@@ -5399,6 +5400,14 @@ class NativeTests(NativeCase):
             with self.subTest(fixture=name, change='argv/holders/weight'):
                 ask = skill_proposal(name)
                 change(ask)
+                refused(ask, 'invalid native skill card')
+        # The removal count is exactly "entries" (5dedfc56) or "regular files" (9677728c on); any other wording refuses the card.
+        for wording in ('all 2 files of its tree.', 'all 2 regular entries of its tree.', 'all 2 entries or regular files of its tree.',
+                        'all two regular files of its tree.', 'all 2 regular files of its tree; and more.'):
+            with self.subTest(fixture='skill_rm_regular_files', wording=wording):
+                ask = skill_proposal('skill_rm_regular_files')
+                self.assertIn('all 2 regular files of its tree.', ask['run']['does'][0])
+                ask['run']['does'][0] = ask['run']['does'][0].replace('all 2 regular files of its tree.', wording)
                 refused(ask, 'invalid native skill card')
 
         # An older fork's skill rm card (no tree or holder binding) is no card of this contract.

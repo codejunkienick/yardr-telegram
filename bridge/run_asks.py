@@ -796,8 +796,9 @@ def parse_skill(ask):
         if (set(run) != {'argv', 'command', 'description', 'does', 'back'} or run['command'] != 'yardr ' + ' '.join(argv)
                 or run['description'] != SKILL_DESCRIPTIONS['skill'] or run['back'] != '' or ask.get('weight', []) != []):
             card.fail()
+        # The count reads "entries" on core 5dedfc56 and "regular files" from 9677728c on: those two sentences only.
         found = card.match(rf'removes the skill {re.escape(name)} from the yard: its directory (/[^\n]*/skills/{re.escape(name)}) '
-                           r'and all (0|[1-9][0-9]{0,8}) entries of its tree\.')
+                           r'and all (0|[1-9][0-9]{0,8}) (?:entries|regular files) of its tree\.')
         directory, files = found[1], int(found[2])
         tree = card.match(rf'Its tree now is ({SKILL_TREE})\.')[1]
         described = card.match(r'Its description: ([^\n]+)', optional=True)

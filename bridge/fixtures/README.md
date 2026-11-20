@@ -213,3 +213,10 @@ member given two new skills and unset. The skills `notes`, `spare` and
 non-ASCII text) and one helper file, so their tree digests are fixed. Only
 the temp root (`/synthetic`), ask number and timestamp are stabilized.
 Public cores and the earlier skill core `c5642561` cannot file them.
+
+`skill_rm_regular_files.json` is the same unheld removal of `spare` captured
+from core `9677728c` (its removal count reads "regular files", not "entries").
+Recaptured from core `29fcd40d` it is identical, and the same setup on
+`5dedfc56` reproduces `skill_rm.json` byte for byte: the two differ only in
+that sentence. Its tree digest is the same `spare` tree, so both name one
+`SKILL_TREES` entry.

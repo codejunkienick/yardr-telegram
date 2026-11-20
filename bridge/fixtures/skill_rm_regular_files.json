@@ -1,0 +1,30 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Synthetic: skill rm spare?",
+  "context": [
+    "Synthetic context for skill_rm"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "skill",
+      "rm",
+      "spare"
+    ],
+    "command": "yardr skill rm spare",
+    "description": "Remove a skill from the yard",
+    "does": [
+      "removes the skill spare from the yard: its directory /synthetic/yard/skills/spare and all 2 regular files of its tree.",
+      "Its tree now is c076730f322ba90219e75ce3a0993211a3f7c62a833039c4889e2635a4575679.",
+      "Its description: A spare skill",
+      "No group or crew member is given it.",
+      "The yard's server carries the removal out after the approval, as one operation that takes the skill off its holders and records skill_removed together; the tree and holders are held to these again first."
+    ],
+    "back": ""
+  }
+}

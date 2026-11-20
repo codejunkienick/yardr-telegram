@@ -254,6 +254,13 @@ ambiguous writes re-read Bead, execution pending is separate from success,
 and polling reconciles settlements and outcome edits. Long results split
 into bounded ledger-backed messages without truncating the canonical text.
 
+When the core files a nudge card itself (a `yard`-asked `session nudge` run
+ask to the operator, raised with `session_harness_error`), each poll sends it
+once as a run card in the paired chat, and after Approve replies on the card
+with the daemon's `session_nudged` outcome, or unknown after ten minutes.
+No crew call or grant; a core without the row files none and nothing is sent.
+See [the yard's nudge cards](bridge/OPERATIONS.md#the-yards-nudge-cards).
+
 
 The bridge carries no `skill add` card: a `skill add` ask refuses before any
 send, and a `/decide` row for one is terminal-only. On the fork's skill core

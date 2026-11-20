@@ -2580,6 +2580,48 @@ for declaration installation, explicit `yardr source grant tgbridge run_ask
 contains no grants; builder/secretary/blanket grants are not required.
 
 
+### The yard's nudge cards
+
+On a core whose daemon files one, a harness that stops on an error (any
+reason but `not_logged_in`) gets a `yardr session nudge <target>` run ask to
+the operator, asked by `yard`, on the stuck session's bead or the crew
+member's `<name>-journal`. The core takes it back when the error spell ends.
+The yardmaster is not involved; it may be the agent that stopped.
+
+Each poll, right after the run cards' own refresh, `nudge_cards.py` reads the
+operator's `UserAsks` and sends every open run ask whose asker is `yard` and
+whose argv begins `session nudge` as an ordinary run card in the paired chat,
+through the same `create` path as `run_ask` and `/decide` (ledger key
+`nudge:<row id>`). A card already sent for that ask, by `/decide`, `run_ask`
+or an earlier poll or restart, is not sent again. A send of ours that never
+left the host is sent again under the same key on a later poll; one Telegram
+confirmed before a crash bound it is bound from its saved receipt, not sent
+again; an ambiguous one is left to the card's reconcile. Approve, Decline,
+stale, take-back and reconcile are the run card's own paths; no crew call is
+made.
+
+After an approval, each poll reads `Events` of the ask's bead, newest first
+and back to the approval's `session_nudge_requested` (or the ask's own note,
+or the journal's start), for the daemon's `session_nudged` whose `ask` is the
+card's, for ten minutes from the first poll that finds the card approved, and
+replies once on the card: `✓ Nudge typed`, or `✕ Nudge refused|expired:
+<reason>`, or `? Nudge unknown: <reason>`. With none in ten minutes, the
+journal read through, the reply says the outcome is unknown; an `Events` read
+that fails is read again next poll and is never said as unknown. The reply
+chosen is kept until its delivery is final, so one that never left the host is
+sent again unchanged; nothing is approved or nudged again. An event of
+another shape is said as unreadable. Approved cards are followed while the
+operator verifies, even when the queue is unreadable; an unreadable queue is
+logged once while it stands. A card the bridge cannot show whole is logged
+once and left to Footplate.
+
+A core without the nudge row (unmodified upstream) files no such ask: no
+card is sent and nothing is logged. No grant, setting or service is added;
+the ledger gains the `nudge_cards` table. The plain `session_harness_error`
+tell is untouched. Source landing installs nothing: the bridge's deploy and a
+core with the yard-filed card are each the operator's.
+
+
 ### Native general cards
 
 A general card may name `skill add` on a core that offers that command;

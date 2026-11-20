@@ -119,6 +119,9 @@ _switch_spec = importlib.util.spec_from_file_location('model_switch', Path(__fil
 model_switch = importlib.util.module_from_spec(_switch_spec)
 _switch_spec.loader.exec_module(model_switch)
 sys.modules['model_switch'] = model_switch
+_nudge_spec = importlib.util.spec_from_file_location('nudge_cards', Path(__file__).resolve().with_name('nudge_cards.py'))
+nudge_cards = importlib.util.module_from_spec(_nudge_spec)
+_nudge_spec.loader.exec_module(nudge_cards)
 _siding_spec = importlib.util.spec_from_file_location('siding_cards', Path(__file__).resolve().with_name('siding_cards.py'))
 siding_cards = importlib.util.module_from_spec(_siding_spec)
 _siding_spec.loader.exec_module(siding_cards)
@@ -1076,6 +1079,7 @@ class Bridge:
     }
     # sendVideoNote has no caption: the body must be empty for these kinds.
     CAPTIONLESS_KINDS = frozenset({'video_note'})
+    resendable = staticmethod(resendable)
     # sendMediaGroup: 2-10 items; photos and videos mix, documents group only
     # with documents, and voice and video notes never group.
     ALBUM_FILES = (2, 10)
@@ -1178,6 +1182,7 @@ class Bridge:
                                  conversation_id=str(config['chat_id']), kind='dm')
         self.publish_lock = threading.Lock()
         self.run_asks = run_asks.RunAsks(self)
+        self.nudge_cards = nudge_cards.NudgeCards(self)
         self.siding_cards = siding_cards.SidingCards(self)
         self.model_switch = model_switch.ModelSwitch(self)
         self.stop = threading.Event()
@@ -4685,6 +4690,7 @@ class Bridge:
             raise TransportError('Telegram poll rejected')
         self.record_poll_ok()
         self.run_asks.refresh()
+        self.nudge_cards.refresh()
         self.siding_cards.refresh()
         self.drain(data['result'])
         self.model_switch.refresh()

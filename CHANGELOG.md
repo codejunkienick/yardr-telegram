@@ -8,6 +8,12 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- The yard's nudge cards: when a core files a `session nudge` card for a
+  harness that stopped on an error, the bridge sends it once in the paired
+  chat on its own, with no yardmaster or crew call, and after Approve
+  replies on the card with the nudge's outcome (typed, refused, expired or
+  unknown). A core without that card sends nothing new.
+
 - Fork-only skill administration cards: on a skill core with their card
   rows, `skill rm <name> [--force]` and a group's or crew member's
   `skills=[…]` / `--unset skills` arrive as one review document and a card

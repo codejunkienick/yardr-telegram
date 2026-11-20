@@ -2217,8 +2217,10 @@ def queue(value):
         for key in ('bead_title', 'question', 'asker', 'topic', 'since'):
             text(row.get(key, ''), 'UserAsks.' + key)
         kind, shown = queue_kind(row)
+        # The argv of a run card shown whole, so a caller can pick its rows; None for every other kind.
+        argv = row['run']['argv'] if kind == 'run' and 'general' not in row['run'] else None
         entries.append(dict(bead=row['bead'], ask=row['ask'], title=row['bead_title'], question=row['question'],
-                            asker=row['asker'], kind=kind, shown=shown))
+                            asker=row['asker'], kind=kind, shown=shown, argv=argv))
     if len({(entry['bead'], entry['ask']) for entry in entries}) != len(entries):
         raise NativeError('invalid native UserAsks response')
     return entries
@@ -4078,7 +4080,8 @@ class RunAsks:
         return str(error)
 
     def decide_notice(self, key, value, thread, card=None):
-        b = self.bridge
+        """Send value under key, a reply to card (message id, conversation) when given; the receipts of its parts."""
+        b, receipts = self.bridge, []
         if card:
             thread = self.thread(dict(conversation=card[1]))
         for index, part in enumerate(chunks(value, 4000)):
@@ -4091,7 +4094,8 @@ class RunAsks:
                     # The quote was rejected before sending; keep the fallback under this reservation.
                     return b._deliver_text(part, None, pending, extra=extra)
                 return receipt
-            b._reserve_and_deliver(f'{key}:{index}', identity, deliver)
+            receipts.append(b._reserve_and_deliver(f'{key}:{index}', identity, deliver))
+        return receipts
 
     def decide_command(self, update_id, args, thread):
         conversation = self.bridge.decide_conversation(thread)

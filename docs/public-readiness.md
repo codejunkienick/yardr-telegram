@@ -263,6 +263,7 @@ normal use through the declared source requires its application first.
 | `/quota`, `/switch_model` (`/mayor_model` migration alias) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1` (`crew switch capabilities --json`), not present on `52e22d57` (refuses before mutation) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1`, not present on `v0.17.0` | `/switch_model` verified on landed core `bd7f54b4` (`NativeSwitchTests` [F], `crew_handoff_switch v1`); local core is not a public release; resolve/supersede pending switches before core downgrade |
 | skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only: direct `skill add` (operator, users, crew; no card/grant) |
 | [Skill removal and assignment cards](../bridge/OPERATIONS.md#native-skill-administration-cards) | Unavailable: no `SkillDigest`, filing refused; test skips classified [I] | Unavailable [I] | Fork-only skill cores `5dedfc56`, `9677728c`, `29fcd40d` (not installed); same `run_ask`; operator Approve+Confirm |
+| [The yard's nudge cards](../bridge/OPERATIONS.md#the-yards-nudge-cards) | Absent: no nudge row, the yard files no card; none sent, nothing logged [J] | Not tested | Optional local core feature (yard-filed `session nudge` run ask, `session_nudged`) until upstream accepts the row; local core `9174cd60` (not installed); same run card, operator Approve; no grant |
 
 Evidence locations (the named tests use fake Telegram and isolated real native
 RPC/store where stated):
@@ -299,6 +300,12 @@ RPC/store where stated):
   `RealNativeTests.test_real_native_skill_cards_remove_and_assign_once_through_their_bindings`
   (runs on `5dedfc56`, `9677728c` and `29fcd40d`; skips with its reason elsewhere) and
   `NativeTests.test_skill_cards_*` (fake core: every fixture, refusals, unavailable core).
+- [J] [bridge/test_nudge_cards.py](../bridge/test_nudge_cards.py), `RealNudgeTests`:
+  `test_real_native_core_without_yard_nudge_asks_sends_no_card_and_says_nothing`
+  (public `52e22d57` and local `9174cd60`) and
+  `test_real_native_nudge_card_is_sent_once_approved_once_and_its_outcome_told`
+  (local `9174cd60` with `TGBRIDGE_TEST_YARDR_SOURCE` for the daemon-write fixture;
+  skips with its reason elsewhere); `NudgeCardTests` (fake core).
 
 Long polling, topics, buttons/menu/add-ons, typing, media, silent replies and
 optional local transcription are bridge features covered by its offline

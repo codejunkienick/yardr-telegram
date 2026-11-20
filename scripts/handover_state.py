@@ -58,6 +58,7 @@ LATER = {
     'decide_ids': ('id', 'bead', 'ask'),
     'siding_fold_cards': ('id', 'data'),
     'siding_cards': ('id', 'data'),
+    'nudge_cards': ('id', 'data'),
     'mayor_model_taps': ('update_id', 'pick', 'crew', 'state', 'at'),
     'model_selectors': ('token', 'update_id', 'value'),
     'model_operations': ('token', 'owner', 'active', 'value'),

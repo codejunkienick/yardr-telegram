@@ -152,6 +152,12 @@ Synthetic offline HTML capture: one review document and its approval
 card, using fictional data. Open the image at full size to read the
 details; this is not a live Telegram chat.
 
+When a harness stops on an error and the core files a nudge card for it
+(asked by `yard`), the bridge sends that card to the paired chat without the
+yardmaster: Approve asks the daemon to type one line into the stuck agent,
+and the outcome comes back as a reply on the card. A core without that
+feature files no card, and none is sent. See [the yard's nudge cards](bridge/OPERATIONS.md#the-yards-nudge-cards).
+
 ## Prerequisites
 
 This is public source for review. The setup steps below require a

@@ -105,10 +105,14 @@ serves such topics.
 
 A reaction is a one-emoji acknowledgement on the operator's message, not a reply.
 
-- `seen` (👀 by default), when the bridge sets it, means the yard has the message: received, not read. The
-  bridge sets it by itself; you never need to.
-- Once the work a message asked for is finished or answered, react `done` (👌 by default) on that topic's
-  last message:
+- `seen` (👀 by default; 🕊 when read tracking is on) means the yard has the
+  message: landed, not yet read. With `[reactions] read` configured, the bridge
+  also sets 👀 automatically once your inbox acknowledgement passes the message's
+  `seq`; you never need to set `seen` or `read` yourself.
+- Answer with `yardr reply <seq>` (which marks 👌 done automatically when read
+  tracking is on) and ack your inbox (`yardr inbox --ack <seq>`). Once the work a
+  message asked for is finished or answered without a `yardr reply`, react `done`
+  (👌 by default) on that topic's last message:
 
   ```sh
   yardr call <source> react reaction=done topic=<the topic, or general>

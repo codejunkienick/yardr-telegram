@@ -257,20 +257,15 @@ operator = "<operator>"
 ```
 
 The home must exist, belong to the service user, and have no group/world
-write permission. Its resolved `yard.sock` is the only native endpoint;
-there is no socket override or caller-selected yard. The operator must be
-a current operator user with the current source identity, checked at every
-interaction. The same Telegram id in another yard gives no access here.
+write permission; `yard.sock` is the only native endpoint (no socket
+override). `[reactions] read` also needs `[yardr] home`. The operator
+must keep their role and source identity, checked at every interaction.
 
-After reviewed code is installed, run `install.sh --settings <file>` and
-`<root>/bin/telegram-bridge check-install`, then use the normal service
-restart for that bridge. Each release carries `run_asks.py` beside its
-`bridge.py`, which loads it from there under the service, the launcher
-and the installer alike. The unit's existing sandbox restrictions
-stay in place: no yard database/config/credential write access is added.
-`check-install` checks the socket owner/type and the actual operator mapping.
-Live settings, source apply, grants and restart belong to this operator
-step, after code review.
+After reviewed code is installed, run `install.sh --settings <file>`,
+`<root>/bin/telegram-bridge check-install`, and restart the service. The
+unit sandbox stays unchanged (no yard DB/config/credential writes);
+`check-install` verifies socket ownership and operator mapping. Settings,
+source apply, grants and restart belong to this operator step.
 
 Create a fresh native proposal, then publish its returned ask number:
 

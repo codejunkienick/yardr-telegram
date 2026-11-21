@@ -49,6 +49,9 @@ integration record pinned these calls against `11f81f38` and plain upstream
 | `AnswerAskExpected` | Public contract | Answer a decision ask at the read turn |
 | `DeferAskExpected` | Public contract | Put aside a decision ask at the read turn |
 | `DeclineAskExpected` | Public contract | Decline a decision ask at the read turn |
+| `GetCrew` | Public contract | Read a crew member's inbox cursor and journal for read-state tracking |
+| `EventsSince` | Yardr array call | Verify the hook delivery's source and recipients once per message |
+| `Events` | Yardr array call | Read a crew journal for `replied` events matching an accepted `seq` |
 | `GetBead` | Yardr array call | Read a bead for siding-card reconciliation |
 | `GetDepot` | Yardr array call | Read a depot for siding-card discovery |
 | `Groups` | Yardr array call | Find a siding group |

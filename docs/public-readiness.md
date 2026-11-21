@@ -264,6 +264,7 @@ normal use through the declared source requires its application first.
 | skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only: direct `skill add` (operator, users, crew; no card/grant) |
 | [Skill removal and assignment cards](../bridge/OPERATIONS.md#native-skill-administration-cards) | Unavailable: no `SkillDigest`, filing refused; test skips classified [I] | Unavailable [I] | Fork-only skill cores `5dedfc56`, `9677728c`, `29fcd40d` (not installed); same `run_ask`; operator Approve+Confirm |
 | [The yard's nudge cards](../bridge/OPERATIONS.md#the-yards-nudge-cards) | Absent: no nudge row, the yard files no card; none sent, nothing logged [J] | Not tested | Optional local core feature (yard-filed `session nudge` run ask, `session_nudged`) until upstream accepts the row; local core `9174cd60` (not installed); same run card, operator Approve; no grant |
+| [Read and done reactions](../bridge/OPERATIONS.md#read-and-done-from-the-yard) | Native PASS (`RealReadStateTests`, `ReadStateTests`) [K] | Not tested (covered on upstream `d4df23f3` and installed `e50e27b0`) | Read-only socket reads (`GetCrew`, `EventsSince`, `Events`); requires `[reactions] read` and `[yardr] home`; degrades off on missing/unsupported responses |
 
 Evidence locations (the named tests use fake Telegram and isolated real native
 RPC/store where stated):
@@ -306,6 +307,11 @@ RPC/store where stated):
   `test_real_native_nudge_card_is_sent_once_approved_once_and_its_outcome_told`
   (local `9174cd60` with `TGBRIDGE_TEST_YARDR_SOURCE` for the daemon-write fixture;
   skips with its reason elsewhere); `NudgeCardTests` (fake core).
+- [K] [bridge/test_read_states.py](../bridge/test_read_states.py), `ReadStateTests`
+  and `RealReadStateTests.test_real_core_transitions_races_and_degrades`:
+  accept point `seq`, duplicate delivery, `yardr inbox --ack`, `yardr reply`,
+  `react` overrides, `/v1/send` `reply_to`, typing preservation, restart key replay,
+  racing `react done`, 24 h expiry, and degrade paths.
 
 Long polling, topics, buttons/menu/add-ons, typing, media, silent replies and
 optional local transcription are bridge features covered by its offline

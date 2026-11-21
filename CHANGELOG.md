@@ -16,6 +16,14 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- Read and done message reactions (`[reactions] read`): when configured
+  with `[yardr] home`, accepted operator messages track `landed` (🕊 via
+  `seen`) → `read` (👀 once the crew member's inbox acknowledgement passes
+  the delivering hook `seq`) → `done` (👌 on `yardr reply <seq>`, `/v1/send`
+  with `reply_to`, or `react done`). Works against unmodified upstream
+  yardr (`GetCrew`, `EventsSince`, `Events`) and degrades off cleanly when
+  unavailable.
+
 - The yard's nudge cards: when a core files a `session nudge` card for a
   harness that stopped on an error, the bridge sends it once in the paired
   chat on its own, with no yardmaster or crew call, and after Approve

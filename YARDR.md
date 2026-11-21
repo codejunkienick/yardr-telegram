@@ -61,11 +61,11 @@ Content-Type: application/json
 
 The yard verifies the secret (`hook.verify.scheme: secret`), dedupes on
 `id` (`delivery: {body: id}`), normalizes it with `yardr/tgbridge/normalize`
-and routes it by subscription. A 2xx answer with a positive `seq` (a
-duplicate answers the earlier one) is the durable accept point:
-the bridge advances its cursor, sets the `seen`
-reaction and opens typing. Anything else keeps the cursor, logs why, and
-the update is tried again: another status, no `seq`, and
+and routes it by subscription. A 2xx answer with a positive `seq` (a duplicate answers the earlier one)
+is the durable accept point: the bridge advances its cursor, records the
+message (including its `read_states` row when `[reactions] read` is set),
+sets the `seen` reaction and opens typing. Anything else keeps the cursor,
+logs why, and the update is tried again: another status, no `seq`, and
 `{"dropped": true}`, which the yard answers 200 for a sender it does not
 hear.
 

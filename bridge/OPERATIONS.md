@@ -100,7 +100,7 @@ crew member with crew`.
 | `[[command]]` | no | the yard's own commands and buttons, run by its own handlers ("Commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
 | `[transcribe]` | no | voice transcription (below); off by default |
-| `[reactions]` | no | `on_accept`, `seen`, `done`: the `seen` reaction on each accepted message and the emoji `react` sets ("Reactions" below); no reaction ever without `on_accept = true` or a `react` call |
+| `[reactions]` | no | `on_accept`, `seen`, `done`, `read`: the `seen` reaction on each accepted message, optional yard-backed `read`/`done` tracking ("Reactions" below) and the emoji `react` sets; no reaction ever without `on_accept = true`, `read` or a `react` call |
 | `[typing]` | no | `seconds` (0-900, default 0): "typing..." in the chat after each accepted message until the next send, at most this long ("Typing" below); no chat action ever with 0 |
 | `[[topic]]` `name`, `crew` | no | topics of the paired chat, each its own conversation, created once by `topics` ("Topics" below); at most 50 |
 | `[auto_topics]` | no | `enabled` (default false): serve the topics the paired user creates in the chat ("Topics the user creates" below); without it only the `[[topic]]` tables are served |
@@ -2020,7 +2020,8 @@ repeat never stacks a second reaction and edits nothing the user wrote.
 | `[reactions]` key | default | meaning |
 | --- | --- | --- |
 | `on_accept` | `false` | `true` sets `seen` on each message once the yard has accepted it ("Inbound") |
-| `seen` | `"👀"` | the emoji for "the yard has the message" (received, not read) |
+| `seen` | `"👀"` | the emoji for "the yard has the message" (with `read` enabled, typically `"🕊"`) |
+| `read` | unset (off) | optional emoji set once the target crew's inbox cursor passes the message's hook `seq` (typically `"👀"`; requires `[yardr] home`) |
 | `done` | `"👌"` | the emoji for "the work this message asked for is finished or answered" |
 
 An emoji value is a non-empty string of at most 16 characters with no
@@ -2105,6 +2106,65 @@ and without the two flags `react` is exactly as above. `/v1/react` takes
 `topic` or `conversation` names (a served topic's display name included),
 else the last accepted message; with none it answers 400 `no accepted
 message to react to`.
+
+### Read and done from the yard
+
+When `[reactions] read` is set (together with `[yardr] home` and `operator`;
+recommended activation: `on_accept = true`, `seen = "🕊"`, `read = "👀"`,
+`done = "👌"`), the accept point also inserts a row in the `read_states`
+ledger table (`message_id` PK, `conversation_id`, `thread_id`, `seq`,
+`crew`, `state`, `accepted_at`, `read_at`, `done_at`, `reason`) using
+`INSERT OR IGNORE` so replayed updates keep one row. Only the existing
+accept point inserts rows; commands, ask answers, button presses and
+transcripts do not. When `read` is absent, no rows are inserted and no
+native calls are made.
+
+- **States:** `landed` (initial), `read`, and terminal `done`, `manual`,
+  `off`, `expired`. Terminal rows are never read again.
+- **Keys and locking:** `seen` still uses `reaction:<mid>:accept` (and
+  skips any row already past `landed`). Read and done transitions use
+  one helper under the reactions `flock`, re-reading the row and stepping
+  only forward (`landed -> read`, `landed|read -> done`), delivering via
+  `readstate:<mid>:read` or `readstate:<mid>:done`. `Store.sent_since`
+  ignores `readstate:*` keys so a typing window survives a read;
+  `agent_reacted` still watches only `reaction:<mid>:*`. Delivered,
+  rejected (4xx) or ambiguous responses advance the row (logged once as
+  `reaction not set (msg <id>): <reason>`); transient `not-sent` leaves
+  the row open and retries the same key next round.
+- **Round and costs:** `read_states.refresh()` runs in `poll_once` after
+  `typed_nudge.refresh()`, at most once per 60 monotonic seconds and
+  only while an open (`landed` or `read`) row exists:
+  - *Recipient check (once per message):* resolves `crew` from the
+    conversation (`_quota_agent`), then calls `EventsSince [seq-1, 1]`
+    requiring one `hook` event with that `seq`, our source and
+    `data.deliveries` naming `crew`.
+  - *Read check:* one `GetCrew {"name": crew}` per distinct crew with
+    `landed` rows; `seq <= cursor` moves `landed` to `read`.
+  - *Reply check:* runs only when `deliveries` has a row newer than the
+    stored mark whose key starts with neither `reaction:` nor
+    `readstate:`, reading `Events [journal, n]` (64 doubling to 1024,
+    validated via `run_asks._validate_events`) for each crew with open
+    rows. A `replied` event matching `data.seq`, our source and `crew`
+    moves the row to `done`. The mark advances after two rounds with no
+    newer send because `yardr reply` logs `replied` after `/v1/send`
+    returns.
+  - *Expiry:* `landed` rows older than 24 h move to `expired` without a
+    reaction.
+- **React and `/v1/send` overrides:** after a delivered `react` call
+  (inside the reactions `flock`), the `done` emoji moves an open row to
+  `done`, the `read` emoji moves `landed` to `read`, `seen` leaves it
+  unchanged, and `none` or any other emoji sets `manual` and stops
+  tracking. A delivered `/v1/send` with `reply_to` naming an open row
+  moves it to `done`.
+- **Degrade cases:** without `[yardr] home` (such as a secondary bridge),
+  loading with `reactions.read` refuses with `SettingsError` naming
+  `reactions.read`. A missing socket (`RPCUnavailable`/`RPCAmbiguous`)
+  logs once while it stands, never stalls the inbound cursor, and retries
+  next round. Missing/invalid `cursor`, `EventsSince` refusal or
+  unsupported (`no such method`), or `crew` absent from
+  `data.deliveries` moves the affected row(s) to `off` with a reason;
+  unexpected `Events` array shapes are logged once without breaking
+  polling.
 
 ## Typing
 

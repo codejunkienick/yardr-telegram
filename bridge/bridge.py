@@ -73,7 +73,7 @@ RESERVED_KEY = 'keys starting yardmail: are the bridge\'s own (whole mail)'
 # Reactions on the paired user's messages ([reactions]): none unless
 # on_accept is set or an agent asks. Telegram's reaction list has no check
 # mark, so "done" defaults to the OK hand.
-REACTIONS_KEYS = {'on_accept', 'seen', 'done'}
+REACTIONS_KEYS = {'on_accept', 'seen', 'done', 'read'}
 REACTIONS_DEFAULTS = dict(on_accept=False, seen='\U0001F440', done='\U0001F44C')
 REACTION_MAX_CHARS = 16
 # The typing indicator ([typing]): none unless seconds > 0. Telegram shows a
@@ -131,6 +131,10 @@ _nudge_words_spec = importlib.util.spec_from_file_location('typed_nudge', Path(_
 typed_nudge = importlib.util.module_from_spec(_nudge_words_spec)
 _nudge_words_spec.loader.exec_module(typed_nudge)
 sys.modules['typed_nudge'] = typed_nudge
+_read_states_spec = importlib.util.spec_from_file_location('read_states', Path(__file__).resolve().with_name('read_states.py'))
+read_states = importlib.util.module_from_spec(_read_states_spec)
+_read_states_spec.loader.exec_module(read_states)
+sys.modules['read_states'] = read_states
 _mail_spec = importlib.util.spec_from_file_location('yard_mail', Path(__file__).resolve().with_name('yard_mail.py'))
 yard_mail = importlib.util.module_from_spec(_mail_spec)
 _mail_spec.loader.exec_module(yard_mail)
@@ -942,11 +946,12 @@ class Store:
 
     def sent_since(self, mark):
         """True once the deliveries table holds a key newer than `mark` other
-        than an accept reaction: a send, edit, ask, pin, album or reaction from
-        the daemon or a CLI process, which share this ledger."""
+        than an accept or readstate reaction: a send, edit, ask, pin, album or
+        manual/agent reaction from the daemon or a CLI process, which share this
+        ledger."""
         with self.connect() as db:
             row = db.execute("SELECT 1 FROM deliveries WHERE rowid > ? AND key NOT GLOB 'reaction:[0-9]*:accept'"
-                             ' LIMIT 1', (mark,)).fetchone()
+                             " AND key NOT GLOB 'readstate:*' LIMIT 1", (mark,)).fetchone()
         return row is not None
 
 
@@ -1206,6 +1211,7 @@ class Bridge:
         self.run_asks = run_asks.RunAsks(self)
         self.nudge_cards = nudge_cards.NudgeCards(self)
         self.typed_nudge = typed_nudge.TypedNudge(self)
+        self.read_states = read_states.ReadStates(self)
         self.siding_cards = siding_cards.SidingCards(self)
         self.model_switch = model_switch.ModelSwitch(self)
         self.yard_mail = yard_mail.YardMail(self, html_visible_text, resendable)
@@ -1277,11 +1283,11 @@ class Bridge:
 
     def post_to_yard(self, body):
         """Hand one inbound entry to the yard's hook (YARDR.md, "Inbound").
-        True when the yard recorded it, new or as a duplicate of an earlier
-        delivery of the same id; every other answer raises TransportError,
-        which keeps the inbound cursor. A delivery the yard drops (a sender
-        it does not hear) raises too: a stalled cursor is visible in the
-        log, a dropped message is not."""
+        Returns the positive int seq when the yard recorded it, new or as a
+        duplicate of an earlier delivery of the same id; every other answer
+        raises TransportError, which keeps the inbound cursor. A delivery the
+        yard drops (a sender it does not hear) raises too: a stalled cursor is
+        visible in the log, a dropped message is not."""
         if not self.hook_url or not self.hook_secret:
             raise TransportError('no yard to relay to: [yardr] hook_url and hook_secret_file are required')
         status, result = self.request(self.hook_url, body, timeout=YARD_HOOK_TIMEOUT,
@@ -1293,7 +1299,7 @@ class Bridge:
                                  '(yardr user identity <user> --source <source> --id <user_id>)')
         if not isinstance(result, dict) or type(result.get('seq')) is not int or result['seq'] <= 0:
             raise TransportError('the yard has not confirmed the delivery')
-        return True
+        return result['seq']
 
     def probe(self):
         status, data = self.telegram('getMe', {})
@@ -2030,13 +2036,14 @@ class Bridge:
             'forwarded': bool(forwarded),
             'received_at': received_at,
         }
-        self.post_to_yard(body)
+        seq = self.post_to_yard(body)
         if self.store is not None:
             try:
                 self.store.log_message(conversation_id, 'in', str(provider_message_id), self.display_name, text,
                                        received_at)
             except Exception:  # noqa: BLE001 - the yard already has it; the log is a convenience
                 self._log(f'inbound message not logged (msg {provider_message_id})')
+        return seq
 
     def _relay(self, mid, provider_message_id, text, reply=None, thread_id=None, kind='message', forwarded=False):
         """Relay one message on the conversation of its topic thread
@@ -2046,26 +2053,27 @@ class Bridge:
         [auto_topics] serves, under its display name; the yard routes each by
         its subscriptions. A thread no topic is configured or recorded for
         relays on the paired chat's, labelled not configured. Any failure
-        raises and retains the cursor. Returns the conversation the yard
+        raises and retains the cursor. Returns (conversation, seq) the yard
         recorded the message on."""
         if thread_id is None:
-            self._relay_to_yard(provider_message_id, text, reply, kind=kind, forwarded=forwarded)
-            return self.conversation
+            seq = self._relay_to_yard(provider_message_id, text, reply, kind=kind, forwarded=forwarded)
+            return self.conversation, seq
         topic = self.topic_by_thread(thread_id)
         if topic is None:
             auto = self._auto_topic(thread_id)
             if auto is not None:
-                self._relay_to_yard(provider_message_id, f"[topic: {auto['display_name']}]\n{text}", reply,
-                                    auto['conversation'], auto['display_name'], kind=kind, forwarded=forwarded)
-                return auto['conversation']
-            self._relay_to_yard(provider_message_id,
-                                f'[topic: thread {thread_id} | not configured: reply lands in the main chat]\n{text}',
-                                reply, kind=kind, forwarded=forwarded)
+                seq = self._relay_to_yard(provider_message_id, f"[topic: {auto['display_name']}]\n{text}", reply,
+                                          auto['conversation'], auto['display_name'], kind=kind, forwarded=forwarded)
+                return auto['conversation'], seq
+            seq = self._relay_to_yard(
+                provider_message_id,
+                f'[topic: thread {thread_id} | not configured: reply lands in the main chat]\n{text}',
+                reply, kind=kind, forwarded=forwarded)
             self._log(f'topic thread {thread_id} not configured (msg {mid}); relayed to the main conversation')
-            return self.conversation
-        self._relay_to_yard(provider_message_id, f"[topic: {topic['name']}]\n{text}", reply,
-                            topic['conversation'], topic['name'], kind=kind, forwarded=forwarded)
-        return topic['conversation']
+            return self.conversation, seq
+        seq = self._relay_to_yard(provider_message_id, f"[topic: {topic['name']}]\n{text}", reply,
+                                  topic['conversation'], topic['name'], kind=kind, forwarded=forwarded)
+        return topic['conversation'], seq
 
     @staticmethod
     def _service_topic_name(service):
@@ -2227,8 +2235,10 @@ class Bridge:
         reply = message.get('reply_to_message', {}).get('message_id')
         if type(reply) is not int or reply <= 0 or reply == thread_id:
             reply = None  # in a topic, a reply to its root message is no reply
-        conversation = self._relay(mid, str(mid), relay_text, reply, thread_id, forwarded=forward is not None)
-        self._accepted(mid, conversation['conversation_id'], thread_id)
+        self.read_states.before_relay(mid)
+        relayed = self._relay(mid, str(mid), relay_text, reply, thread_id, forwarded=forward is not None)
+        conversation, seq = relayed if isinstance(relayed, tuple) else (relayed, None)
+        self._accepted(mid, conversation['conversation_id'], thread_id, seq)
         # The message above is now durably queued for its agent but it may be
         # quota-blocked and unable to answer it any time soon; tell the user once
         # per exhaustion episode, on the conversation the message was accepted
@@ -2252,19 +2262,21 @@ class Bridge:
     # setMessageReaction replaces the message's whole reaction list (a bot sets
     # at most one), so a repeat can never stack a second reaction.
 
-    def _accepted(self, mid, conversation_id, thread_id):
+    def _accepted(self, mid, conversation_id, thread_id, seq=None):
         """The accept point: the yard durably accepted message `mid` from the paired
         user on `conversation_id`, written in Telegram thread `thread_id`
         (None for General; a fallback relay's thread differs from its
-        conversation). Record it as the last accepted message of the chat and
-        of that conversation and, with on_accept, queue the seen reaction for
-        the worker, and with [typing] open or extend the typing window of its
-        thread. Never raises: the inbound cursor never waits on, or is
-        retained by, a reaction or a chat action."""
+        conversation), as yard event `seq`. Record it as the last accepted
+        message of the chat and of that conversation, insert its read_states
+        row when [reactions] read is set, and, with on_accept, queue the seen
+        reaction for the worker, and with [typing] open or extend the typing
+        window of its thread. Never raises: the inbound cursor never waits on,
+        or is retained by, a reaction or a chat action."""
         accepted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
             self.store.record_accepted(mid, accepted_at)
             self.store.record_accepted_in(conversation_id, mid, accepted_at)
+            self.read_states.record(mid, conversation_id, thread_id, seq)
         except Exception:  # noqa: BLE001 - the relay already succeeded
             self._log(f'accepted message not recorded (msg {mid})')
         if self.reactions['on_accept']:
@@ -2307,13 +2319,7 @@ class Bridge:
         finally:
             os.close(fd)
 
-    def set_reaction(self, message_id, emoji, key, once=False):
-        """Set one emoji reaction (None clears) on a message of the paired chat
-        under its own ledger key. With `once` (the accept reaction) a not-sent
-        attempt is saved as final, so a replayed update never sets it later,
-        and nothing is sent once a `react` call reserved one for the message:
-        None then. setMessageReaction replaces the whole list, so a late seen
-        would erase a done."""
+    def _deliver_reaction(self, message_id, emoji, key, once=False):
         body = dict(chat_id=self.config['chat_id'], message_id=int(message_id),
                     reaction=[dict(type='emoji', emoji=emoji)] if emoji else [])
 
@@ -2331,10 +2337,22 @@ class Bridge:
             except TransportError:
                 pass
             return receipt
+        return self._reserve_and_deliver(key, body, deliver)
+
+    def set_reaction(self, message_id, emoji, key, once=False):
+        """Set one emoji reaction (None clears) on a message of the paired chat
+        under its own ledger key. With `once` (the accept reaction) a not-sent
+        attempt is saved as final, so a replayed update never sets it later,
+        and nothing is sent once a `react` call reserved one for the message or
+        its read_states row is past `landed`: None then. setMessageReaction
+        replaces the whole list, so a late seen would erase a done."""
         with self._reaction_lock():
-            if once and self.store.agent_reacted(message_id):
+            if once and (self.store.agent_reacted(message_id) or self.read_states.past_landed(message_id)):
                 return None
-            return self._reserve_and_deliver(key, body, deliver)
+            receipt = self._deliver_reaction(message_id, emoji, key, once=once)
+            if not once and receipt.get('delivered') is True:
+                self.read_states.on_react(message_id, emoji)
+            return receipt
 
     # ---- typing ([typing]) -----------------------------------------------------
     # sendChatAction delivers nothing to the chat history, so it is the one
@@ -3722,7 +3740,10 @@ class Bridge:
                 if not resendable(saved[1]):
                     return self._api_answer(saved[1], conversation)
             return self._api_answer(self.receipt(reason=auto_html_error), conversation)
-        return self._api_answer(self.publish(body, format_fallback_reason=format_fallback_reason), conversation)
+        receipt = self.publish(body, format_fallback_reason=format_fallback_reason)
+        if receipt.get('delivered') is True and 'reply_to_message_id' in body:
+            self.read_states.on_reply(body['reply_to_message_id'])
+        return self._api_answer(receipt, conversation)
 
     TELL_TITLE_MAX = 250
     TELL_TEXT_MAX = 3500
@@ -4754,6 +4775,7 @@ class Bridge:
         self.run_asks.refresh()
         self.nudge_cards.refresh()
         self.typed_nudge.refresh()
+        self.read_states.refresh()
         self.siding_cards.refresh()
         self.drain(data['result'])
         self.model_switch.refresh()
@@ -5697,10 +5719,12 @@ def load_settings(path, home=None):
     if 'reactions' in data:
         reactions = dict(REACTIONS_DEFAULTS, **_table(data, 'reactions', REACTIONS_KEYS))
         _bool_setting(reactions['on_accept'], 'reactions.on_accept')
-        for name in ('seen', 'done'):
+        for name in ('seen', 'done') + (('read',) if 'read' in reactions else ()):
             if not valid_reaction_emoji(reactions[name]):
                 raise SettingsError(f'settings: reactions.{name} must be one emoji: at most '
                                     f'{REACTION_MAX_CHARS} characters, no space, letter or digit')
+        if 'read' in reactions and not native:
+            raise SettingsError('settings: reactions.read needs [yardr] home and operator together')
         config['reactions'] = reactions
     if 'typing' in data:
         typing = dict(TYPING_DEFAULTS, **_table(data, 'typing', TYPING_KEYS))

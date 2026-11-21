@@ -99,7 +99,8 @@ description = "Show the agent's status"
 # Reactions on the paired user's messages (OPERATIONS.md, "Reactions").
 # [reactions]
 # on_accept = true                          # set `seen` once the yard has a message; default false: no reaction unless an agent runs react
-# seen = "👀"                               # default 👀
+# seen = "👀"                               # default 👀 (set "🕊" when `read` is enabled)
+# read = "👀"                               # optional: mark read once the crew's inbox ack passes the hook seq (requires [yardr] home)
 # done = "👌"                               # `yardr call tgbridge react reaction=done`; default 👌 (✅ is not an allowed reaction)
 
 # "typing..." in the chat after each message the yard accepts, until the next

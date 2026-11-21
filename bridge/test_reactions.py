@@ -51,12 +51,25 @@ class ReactionSettingsTests(unittest.TestCase):
                          '\U0001F468‍\U0001F4BB')
 
     def test_a_bad_emoji_refuses_naming_its_key(self):
-        for key in ('seen', 'done'):
+        for key in ('seen', 'done', 'read'):
             for value in ('""', '"ok"', '"\U0001F44D \U0001F44D"', '"a\U0001F44D"', '"1"', '"\\u0001"',
                           '"' + '\U0001F44D' * 17 + '"', '5', 'true'):
                 with self.subTest(key=key, value=value), \
                         self.assertRaisesRegex(b.SettingsError, f'reactions.{key} must be one emoji'):
                     self.load(f'{key} = {value}\n')
+
+    def test_read_requires_yardr_home(self):
+        with self.assertRaisesRegex(b.SettingsError, r'reactions\.read'):
+            self.load('read = "\U0001F440"\n')
+
+    def test_read_loads_with_yardr_home(self):
+        home = self.root / 'yard'
+        home.mkdir(mode=0o700)
+        path = write_settings(self.root)
+        text = path.read_text().replace('[yardr]', f'[yardr]\nhome = "{home}"\noperator = "pat"')
+        path.write_text(text + '\n[reactions]\non_accept = true\nseen = "\U0001F54A"\nread = "\U0001F440"\n')
+        reactions = b.load_settings(path).config['reactions']
+        self.assertEqual(reactions, dict(on_accept=True, seen='\U0001F54A', read='\U0001F440', done=OK_HAND))
 
     def test_on_accept_must_be_a_boolean(self):
         with self.assertRaisesRegex(b.SettingsError, 'reactions.on_accept must be true or false'):

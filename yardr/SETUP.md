@@ -264,11 +264,10 @@ must keep their role and source identity, checked at every interaction.
 
 After reviewed code is installed, run `install.sh --settings <file>`,
 `<root>/bin/telegram-bridge check-install`, and restart the service. The
-unit sandbox stays unchanged (no yard DB/config/credential writes);
-`check-install` verifies socket ownership and operator mapping. Settings,
-source apply, grants and restart belong to this operator step. Live check
-for `nudge_after`: send to an idle crew without acking, wait `nudge_after` s,
-tap Nudge and check the `session_nudged` reply.
+unit sandbox stays unchanged; `check-install` verifies socket ownership and
+operator mapping. Settings, source apply, grants and restart are this operator
+step. Live check for `nudge_after`: send to an idle crew without acking, wait
+`nudge_after` s, tap Nudge and check the `session_nudged` reply.
 
 Create a fresh native proposal, then publish its returned ask number:
 
@@ -279,25 +278,13 @@ yardr bead ask <bead> "Lower this source's call limit?" \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=native-example-1
 ```
 
-The asking crew proposes the operation; the paired human approves it. A
-routine card needs one verified tap. On a weighty card, tap Approve, then
-Confirm on the same card within 60 seconds. The added line restates the
-ask, bead and command. Cancel occupies Approve's former position; Confirm
-is on its own second row. Typed numbers never approve. Cancel clears the
-confirmation; Decline records a native decline without execution. Telegram
-never asks for a device or account password.
-
-Self-contained native run asks retain their original behavior. Secret,
-setup, identity, depot-push, parameter input, carried source/pack files and
-crew-add prompt payloads are refused before sending, except the group add and
-set cards, validated `source add` declaration and relative command file
-bundles, source-kind `pack apply` and bounded depot directory-pack bundles
-described below. Approval
-controls appear only after complete review
-delivery; core checks authority and stale state before applying.
-Self-contained cards over 3500 visible UTF16 units are refused whole. Use
-Footplate or the yard cards for refused proposals; ordinary send/tell
-summaries cannot authorize an approval.
+The asking crew proposes the operation; the paired human approves it on the
+card. A routine card needs one verified tap; a weighty one takes Approve, then
+Confirm on the same card within 60 seconds. Typed numbers never approve, and
+Telegram never asks for a device or account password. Refused proposals go
+through Footplate or the yard cards; ordinary send and tell summaries never
+authorize an approval. Self-contained cards, their refusals and size limits are
+in [native run cards](../bridge/OPERATIONS.md#native-run-cards).
 
 Native `ask_close` keeps its existing selector contract:
 
@@ -306,21 +293,16 @@ yardr call tgbridge ask_close ask_key=native-example-1 decision=refresh
 # Or: message_id=<Telegram message id>, with the same decision field.
 ```
 
-For native cards the decision field is ignored: the bridge re-reads Bead,
-refuses a still-open ask, and shows only the canonical state/result. For
-ordinary chat asks it continues to carry the decision text. Taking back a
-proposal uses `yardr bead ask --take-back <bead> <ask> "<reason>"`.
+For native cards the decision field is ignored: the bridge re-reads Bead and
+shows only the canonical state. For ordinary chat asks it still carries the
+decision text. Taking back a proposal uses
+`yardr bead ask --take-back <bead> <ask> "<reason>"`.
 
-The bridge keeps send keys and confirmations in SQLite across restarts.
-It never resends an ambiguously delivered card or retries a native write
-without another verified interaction and fresh canonical read. After a
-lost response it re-reads Bead; an unresolved outcome says "the yard did
-not answer; read the card again". Approval recorded with execution pending
-is shown as "approved, to be carried out", then refreshed on polling or
-`ask_close`. Failed execution and later outcome edits remain distinct.
-Long canonical outcomes are delivered whole in bounded, keyed messages.
-Keep the ledger when moving/restarting the bridge; deleting it loses these
-bindings and delivery history.
+The bridge keeps send keys and confirmations in SQLite across restarts, and
+never resends an ambiguous card or native write without a fresh verified
+interaction. Keep the ledger when moving or restarting the bridge: deleting it
+loses these bindings and delivery history. Recovery is in
+[delivery recovery](../bridge/OPERATIONS.md#delivery-recovery).
 
 ### Skill copies (shell)
 
@@ -341,93 +323,41 @@ yardr bead ask <bead> "Add or replace this source?" \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=source-review-1
 ```
 
-The native source-add contract carries declarations, programs, inventory,
-diffs and canonical outcomes. Aligned core also discloses kept grants;
-plain upstream replacements refuse. Absolute command programs, YAML aliases/
-tags, unknown fields and oversized bundles refuse. No new grant/setting is
-needed; the release includes its pure-Python YAML reader. See
-[operations](../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
+Native review shows every declaration, program, diff and inventory line before
+the card's controls; replacements and new or changed code need Approve, then
+Confirm within 60 seconds. Refusals and bounds are in
+[source-add review](../bridge/OPERATIONS.md#source-add-declaration-and-command-review).
+No new grant or setting is needed.
 
-Open the complete document before approving: full declaration/program bytes,
-diffs/inventory/removals and exact hashes precede the bound compact card.
-Native replacements and new/changed code need Approve then Confirm within
-60 seconds; routine commandless adds use one tap. Core installs captured
-bytes even if provenance disappears. A changed standing copy is stale;
-pending, success and failed carry remain distinct. Ambiguous sends never
-resend under another key.
-
-The operator installs/activates reviewed code using the existing installer,
-`check-install` and printed restart. Inspect `preview_run_asks.py --source`
-and verify identity/outcome after activation. Rollback retains ledger,
-documents and identity/source bindings; withdraw open source cards first.
-Source landing is separate from installation and live activation.
+The operator installs and activates reviewed code with the existing installer,
+`check-install` and the printed restart, then inspects `preview_run_asks.py
+--source` and verifies identity and outcome. Rollback keeps the ledger and
+bindings; withdraw open source cards first. Source landing is separate from
+installation and live activation.
 
 ### Depot pack imports and activation
 
-Depot packs require an absolute registered-main directory, explicit matching
-`--sha256`/`--depot` and complete native plan/mappings (`git`, `dir` or no kind).
-Embedded/bare/URL/summary/`--yes`/overwrite/input forms refuse. One complete
-Markdown document discloses every object, change, consequence, text/diff/hash
-and carried source/grant; the card follows confirmed delivery. Native prose
-stays visible; public replacements missing kept grants refuse. Limits:
-40 Does lines, 256 KiB declarations, 64 KiB aggregate carried/depot file texts,
-diffs/removals and 50 MiB framed document; source per-file bounds remain.
+Depot packs need an absolute registered-main directory, an explicit matching
+`--sha256` and `--depot`, and a complete native plan and mappings. One complete
+Markdown document discloses every object, change, consequence, hash and carried
+source or grant before the card. Limits and refusals are in
+[depot pack bundles](../bridge/OPERATIONS.md#depot-pack-bundles).
 
 The operator stops the old bridge, installs reviewed code and explicitly
-records native `Head` as the global event watermark before activation.
-Only asks with a bound native creation event strictly after it can get
-controls; missing creation evidence refuses. Old ask-number markers require
-explicit recapture at activation. All earlier asks stay blocked across keys
-and `/decide`; withdraw them and propose fresh. Retain
-ledger/documents/watermark on rollback. No new setting/grant is needed.
-See [operations](../bridge/OPERATIONS.md#depot-pack-bundles) and
-[design](../docs/design/depot-pack-approvals.md) for capture, stale checks,
-one-tap/Confirm and activation/rollback. Run `preview_run_asks.py --depot`
-first; source tests do not activate a service or prove public compatibility.
+records native `Head` as the global event watermark before activation. Only
+asks with bound creation evidence after that watermark get controls; earlier
+asks stay blocked everywhere, `/decide` included, so withdraw them and propose
+fresh. Keep the ledger, documents and watermark on rollback. Run
+`preview_run_asks.py --depot` first; source tests do not activate a service or
+prove public compatibility. Old ask-number markers need explicit recapture at
+activation. Design and activation: [depot pack
+approvals](../docs/design/depot-pack-approvals.md).
 
 ### Declaration notes
 
-The comments from `tgbridge.yaml` live here so a loose source replacement
-fits upstream's 8192-byte declaration bound. Every call, parameter and YAML
-value is preserved, including the siding call's description.
-
-The bridge polls Telegram, transcribes voice notes, runs chat commands and
-keeps the delivery ledger. Both the yard's hook listener and the bridge's
-callback service use loopback. Each bot belongs to one yard on its own port;
-`install.sh` renders the source name and port into `<root>/pack`. Named bases
-remain legacy aliases for installations that selected one.
-`credential.env: TGBRIDGE_SECRET` names the callback secret without storing
-its value in the declaration. Every update carries the yard's idempotency
-key, and a retried call finds its first send in the bridge's ledger.
-
-`send.attachment` is a local path the bridge reads, like CLI `--attachment`.
-It is a string parameter because the bridge accepts JSON, rather than a
-multipart file upload. `send.key` overrides the yard's key. Ask buttons carry
-`ask:<first 16 hex of sha256(key)>:<choice>`, so callers choose the key before
-sending; without an explicit key the yard's key applies.
-
-The `notify` call tells the operator what reached their inbox, in the
-conversation named by `TGBRIDGE_CONVERSATION`: the paired chat id or
-`<chat id>:topic:<thread id>`. Register it with `yardr user key <user> tgbridge`.
-The bridge itself sends the hook secret in `X-Tgbridge-Secret`; it stays
-on this machine. Each hook entry identifies its bot, conversation and message,
-and `delivery.body: id` lets a retry find its prior relay.
-Hook keys are `chat` (paired chat id), `topic` (general or topic name), `kind`
-(message, transcript or answer), `sender` (operator Telegram id) and `thread`
-(the topic's thread id). The bridge drops other chats. Register
-`yardr user identity <user> --source tgbridge --id <Telegram user id>`;
-`hear.by: identity` then maps deliveries to `speaker=<user>`.
-
-A thread is the paired chat id or `<chat id>:topic:<thread id>`. Reply uses
-the yard's key; posted can find an answer lost after sending. Read returns
-whole messages from the bridge log; the yard's delivery keeps 500 characters.
-The command protocols are:
-
-| Command | Input | Output |
-|---|---|---|
-| `tgbridge/thread reply` | `{thread, parent, body, key, files?}` | `{id}` |
-| `tgbridge/thread posted` | `{thread, key}` | `{id}` or `{}` |
-| `tgbridge/thread read` | `{thread}` | `{messages: [...]}` |
+The declaration's comments, the thread command protocols and the hook keys are
+reference, not setup: see
+[declaration notes](../bridge/OPERATIONS.md#declaration-notes).
 
 ### Group add and set
 
@@ -445,50 +375,34 @@ yardr bead ask <bead> "Raise the drafters' effort?" --context "Effort only." \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=group-review-1
 ```
 
-`bead ask` reads the prompt file `prompt=` names (a file under the yard's
-home) and the card carries its text. `model=` rides beside another setting
-on yardr's aligned build alone; plain upstream refuses it when the ask is
-written. The bootstrap and grants are step 12's alone: `run_ask` granted to
-the crew that publishes cards, the operator user with the bridge identity,
-and the native `home`/`operator` keys. Verified against isolated aligned
-and upstream builds: the proposer needs nothing beyond `bead ask`; the
-bridge reads Bead and calls ApproveAsk/DeclineAsk on the yard socket as the
-operator, as for any run card. No new grant, setting, socket, whole-yard
-write or sandbox exception is added; the prompt file is written by the yard,
-never by the bridge.
+`bead ask` reads the prompt file `prompt=` names (under the yard's home) and
+the card carries its text. `model=` works only on yardr's aligned build. The
+proposer needs nothing beyond `bead ask`: no new grant, setting, socket or
+sandbox exception is added, and the yard writes the prompt file, never the
+bridge.
 
-The review document arrives before the card: every sentence of the card,
-and the new prompt whole as quoted lines with the SHA-256 its file is named
-by (a set's standing prompt too, as the card shows it). A group add and a
-set of a prompt, command, preset or model are weighted: Approve only opens
-the Confirm step; tap Confirm on that same card within 60 seconds. A set of
-the effort alone carries no weight and approves with one tap. A group
-changed since the card, or a prompt file that holds other text by then, is
-refused by the yard with nothing written. Env, logins, logs, peer groups and
-any other setting are not proposable and refuse before sending. Details:
+The review document arrives before the card and quotes a new prompt whole,
+with its SHA-256. A group add and a set of a prompt, command, preset or model
+are weighted: Approve only opens the Confirm step, tapped on that same card
+within 60 seconds. A set of the effort alone approves with one tap. A group
+changed since the card is refused with nothing written. Details:
 [operations](../bridge/OPERATIONS.md#native-group-add-and-set-review).
 
-Rollout: the coordinator installs the aligned yardr first, then this bridge
-as its own release copy (`install.sh --settings <file>`, `check-install`,
-the printed `next:` line; see the source update below). A group card the
-yard wrote before the alignment no longer reads whole here: it is refused
-before sending, and one already sent says "Proposal changed; use Footplate
-or the yard cards" at its next refresh or tap, so decide it in the yard.
-Rollback: `<root>/current/install.sh --settings <file> --rollback` and its
-`next:` line; open group cards then fall back to Footplate or the yard
-cards. Groups already approved stay as the yard wrote them; undo is each
-card's Back (`yardr group rm <name>`, or the `yardr group set` line it
-shows).
+Rollout: install the aligned yardr first, then this bridge as its own release
+copy (see the source update below). A group card written before the alignment
+is refused, so decide it in the yard. Rollback:
+`<root>/current/install.sh --settings <file> --rollback` and its `next:` line;
+open group cards then fall back to Footplate or the yard cards. Approved groups
+stay as the yard wrote them; undo each with its card's Back (`yardr group rm
+<name>`, or the `yardr group set` line it shows).
 
 ## 13. Ordinary native decisions (operator; optional)
 
 `ask_card` uses the same native home/operator and identity checks as step 12.
-It supports ordinary option questions, questions wanting words, and actual
-store-generated manual-stage cards. It refuses run, secret, setup, identity,
-depot-push, unknown or weighted payloads before posting. In the current core,
-ordinary weight belongs to identity mapping, which requires a different review;
-no unconditional `weighed` approval is sent. Run cards retain their existing
-bound Approve, then Confirm gate.
+It supports option questions, questions wanting words and store-generated
+manual-stage cards, and refuses run, secret, setup, identity, depot-push,
+unknown or weighted payloads before posting. Run cards keep their bound
+Approve, then Confirm gate.
 
 Ordinary cards require core `7fa0d4c75ff6` or a compatible build exposing
 `Bead.asks[].turn` and `AnswerAskExpected`, `DeferAskExpected` and
@@ -540,57 +454,23 @@ yardr call tgbridge ask_card bead=<bead> ask=<ask-number> topic=general key=deci
   --bead <bead> --ask <ask-number> --idempotency-key decision-1
 ```
 
-The human taps Choose N, or replies directly to the card with `N optional
-words`. A no-options ask takes a direct reply containing the answer. The bridge
-keeps that reply in chat. It displays every canonical option, including You
-decide only when core provides it, with every consequence, context, about-bead,
-recommendation and reason. The complete card must fit 3500 visible UTF16 units;
-otherwise nothing posts. The existing 100-button bound leaves at most 98
-options after Later/Decline; larger option sets refuse whole. Later puts it aside natively, Decline declines it,
-and neither answers or executes an operation. Polling and native ask_close
-show the canonical state, including put-aside, due/reopened, taken-back and
-later outcome edits. Generated stage choices use AnswerAskExpected: core checks stage
-authority and moves the bead, retaining optional words on the answer note.
-The client infers no stage authority from markdown or asker.
+The human taps Choose N, or replies to the card with `N optional words`; a
+no-options ask takes a plain reply. The card shows every canonical option with
+its consequences, context and recommendation, and must fit 3500 visible UTF16
+units or nothing posts; more than 98 options refuse whole. Later puts the ask
+aside and Decline declines it; neither answers or executes the operation. Stage
+choices use AnswerAskExpected, and core checks the stage authority.
 
-Every ordinary mutation names the input message's verified generation turn.
-Each message presents one open turn forever. A changed open turn sends a new
-card under a stable per-turn delivery key and retires the previous card without
-controls. Stale replies/buttons refuse even if the retirement edit fails, and
-known old-card replies stay native rather than reaching chat. A conflicting
-external answer, defer, decline or take-back writes nothing; the bridge rereads
-and presents canonical state. Confirmed sends never repeat; definitely unsent
-sends retry on refresh; ambiguous sends remain unbound until verified callback
-reconciliation, without automatic resend.
-Restart preserves generation bindings. Ordinary rows without generation
-bindings refuse as unconfirmed; ordinary cards were not previously released.
-Run/chat rows retain their existing contracts and upgrades.
+Each message presents one open turn. A changed turn sends a new card and
+retires the old one, and stale replies or buttons refuse. Confirmed sends never
+repeat. An ambiguous send is recovered only by the paired operator's tap on the
+original card, once the reviewed release is active, and only with proof that the
+card matches. Never clear the ledger or switch keys to get past it. Details:
+[ordinary native ask cards](../bridge/OPERATIONS.md#ordinary-native-ask-cards).
 
-If Telegram delivered an ordinary card but its response timed out, the paired
-operator can tap the intended action on that original card after the reviewed
-bridge release is installed and activated. The tap recovers the message id
-only when its bot, paired chat/topic, non-forwarded full text and turn keyboard
-match the row and its saved ambiguous-send fingerprint. It then takes the
-selected action only if the canonical ask is still open at that turn. Restart
-does not change this check. Replies alone cannot recover a missing id.
-
-The send receipt stays ambiguous, including identical `ask_card` calls after
-recovery; no card is resent. Before a verified tap, `ask_close` by the original
-ask key explains that the message id is unknown and asks for that tap, or a
-decision in the yard followed by manually deleting the Telegram card. After
-recovery it can edit the original message using canonical state. A tap missing
-proof explicitly directs the operator to decide in Footplate or the yard and
-delete the card manually. Use that route if the card is absent or recovery is
-refused. Never clear the ledger or switch keys to bypass ambiguity. No new
-settings, grants or migration are required; retain the ledger on rollback.
-
-`askcard:` is newly reserved for the bridge. Before upgrading, migrate any
-custom `callback_prefix` overlapping it (also shorter prefixes such as
-`askcard`) to a distinct namespace, updating the handler's generated callbacks.
-Existing messages with old handler buttons need operator reconciliation;
-do not expect those buttons to be reinterpreted as native decisions. Loading a
-colliding configuration names the reserved prefix explicitly. Existing chat
-`ask:` and native `runask:` contracts and old ledger rows remain supported.
+`askcard:` is reserved for the bridge. Before upgrading, move any custom
+`callback_prefix` that overlaps it (or a shorter prefix such as `askcard`) to a
+distinct namespace; old buttons need operator reconciliation.
 
 ### /decide
 
@@ -642,35 +522,22 @@ restart, set-commands). To go back, run
 `<root>/current/install.sh --settings <settings> --rollback` and the `next:`
 line it prints; after the first migration from a checkout unit there is no
 previous release, so restore `<root>/service.previous` over the service file
-instead. The release carries bridge/bridge.py, adjacent run_asks.py and
-yard_commands.py, the runtime assets and scripts/native_settings.py. No
-other instance needs to be available, and none is changed.
+instead.
 
-For source-pack preparation use `yardr pack check <root>/pack`
-(the check is the plan; there is no `pack plan` command). Check uses the
-installation's current bindings and accepts no source-base/source-env flags.
-The reviewed apply must explicitly retain the installation's existing
-`--source-base tgbridge=<existing-alias>` and
-`--source-env tgbridge=<existing-credential-file>` bindings. Existing named bases remain supported;
-check the resulting declaration offers run_ask and ask_card, and retains all
-existing calls, credential binding, call/update limits and grants. An isolated
-real-core test applies this pack twice with an existing named base, private
-credential file, 600/300 limits and a per-call grant, verifying preservation.
-Do not print the credential file. Live metadata checks, apply, any missing key
-setup, grants, independent install and restart belong to that instance's
-operator after review. A bridge whose unit still runs a checkout moves first,
-by [Move an existing bridge to its own installation](#move-an-existing-bridge-to-its-own-installation).
+After a pack apply, check that the declaration offers `run_ask` and `ask_card`
+and keeps its calls, credential, limits and grants. Pack check, apply and the
+bindings they keep are in [The source
+pack](#the-source-pack-crew-then-you-in-telegram-shell-fallback). A bridge whose
+unit still runs a checkout moves first, by [Move an existing bridge to its own
+installation](#move-an-existing-bridge-to-its-own-installation).
 
 ## 14. Optional native siding cards
 
 Keep this instance's existing native home/operator/source identity and
-pairing. The cards use yardr's ordinary calls: `GetDepot`, `Groups`,
-`Routes`, `Settings`, `ListBeads`, `SidingBeads`, `NextStages` and `GetBead`
-to read, the plain `FoldBeads` to fold and the plain `Advance` to release one
-bead. They exist on the aligned yardr (`11f81f38`), on plain upstream
-(`09fa95be`) and on the earlier local build (`10533b9e`); no siding guard in
-core is needed, and repository-backed flows are no different from store
-flows. A release card moves one bead on its own tap, to the stage the card
+pairing. The cards use yardr's ordinary calls (`GetDepot`, `Groups`, `Routes`,
+`Settings`, `ListBeads`, `SidingBeads`, `NextStages`, `GetBead`, `FoldBeads` and
+`Advance`), which the aligned yardr, plain upstream and the earlier local build
+all have. A release card moves one bead on its own tap, to the stage the card
 shows, and refuses a bead that changed since the card (`bridge/OPERATIONS.md`).
 
 After independent review, the operator owns installation into this
@@ -685,24 +552,20 @@ yardr source grant tgbridge siding_card --crew yardmaster
 yardr call tgbridge siding_card depot=<depot> key=<stable-card-key>
 ```
 
-These commands are exercised on an isolated source and loopback bridge. No
-blanket grant is needed. The caller can publish status; only the paired
-human's tap folds or releases, and only the exact beads shown. See
-`bridge/OPERATIONS.md` for subset replies, release cards, expiry, withdrawal,
-`fold_max`, changed beads and the undo. Enabling it creates no siding, flow, route or group.
+No blanket grant is needed: the caller publishes status, and only the paired
+human's tap folds or releases, and only the exact beads shown. Enabling it
+creates no siding, flow, route or group; `bridge/OPERATIONS.md` covers subset
+replies, release cards, expiry, `fold_max` and undo.
 
 A source commit is not an installation or activation. Before activation,
-review offline previews and the isolated integration gate. After an
-operator-owned install/restart, check the instance's configured native
-identity and a status-only request before reviewing any real action. To
-roll back, use the existing instance-root `install.sh --rollback` procedure,
-review its printed service step and restart only that instance. Keep its
-ledger, home, credentials, source bindings and grants. Siding rows live in
-their own table (`siding_fold_cards`), which the previous release never
-reads: its taps and replies on these cards run nothing, and its poll goes
-on. Cards from the previous release are retired once by this one, so after a
-rollback they stay withdrawn; request new cards. Builder validation performs no live install,
-source apply, grant, restart or Telegram action.
+review the offline previews. After the operator-owned restart, check the native
+identity and a status-only request before any real action. To roll back, use the
+instance-root `install.sh --rollback`, review its printed service step and
+restart only that instance; keep its ledger, home, credentials, source bindings
+and grants. Siding rows have their own table (`siding_fold_cards`), which the
+previous release never reads, so its taps on these cards run nothing. Cards from
+the previous release are retired once by this release, so after a rollback they
+stay withdrawn; request new cards.
 
 ## Add a second crew member's bot
 
@@ -763,18 +626,14 @@ yardr crew show secretary
    account_id = "example_secretary_bot"
    ```
 
-   `lock_dir` must be the first installation's existing lock directory
-   (its token directory by default), shared by every poller on this host.
-   Its `telegram-bot-<bot_id>.lock` separates different bots and refuses
-   another local poller of the same bot even with a different state
-   directory. Telegram 409 conflicts also stop a competing external poller
-   or webhook. Distinct lock directories cannot provide that local fence.
-   Pick an unused bridge port and unique unit/root; do not copy the first
-   bot's ledger, offset, pins or topic rows. Start with no `[[topic]]` and
-   no `[auto_topics]`. Add transcription or commands only with this
-   instance's paths and crew; external handlers must keep their own state
-   separate. Both instances may intentionally use the host's transcription
-   FIFO, models and GPU.
+   `lock_dir` must be the first installation's lock directory (its token
+   directory by default), shared by every poller on this host: its
+   `telegram-bot-<bot_id>.lock` fences each bot, and a distinct lock directory
+   cannot. Pick an unused bridge port and a unique unit and root, and copy
+   nothing of the first bot's ledger, offset, pins or topic rows. Start with no
+   `[[topic]]` and no `[auto_topics]`. Add transcription or commands only with
+   this instance's paths and crew; external handlers keep their own state
+   separate.
 
 3. From the clean landed checkout, dry-run first, then install and inspect:
 
@@ -786,12 +645,9 @@ yardr crew show secretary
    ~/.local/share/yardr-telegram/example-secretary-telegram/bin/telegram-bridge check-install
    ```
 
-   Installation does not activate a bot or restart either unit. The rendered
-   `<root>/pack/pack.yaml` names pack/source `tgsecretary`; its declaration
-   has the second port. Internal `tgbridge.yaml` and `tgbridge/` filenames
-   stay relative to this source, so their names do not collide. The default
-   `tgbridge` pack and legacy base aliases keep their meaning. New instances
-   use the rendered default base, never the primary's legacy alias.
+   Installation activates neither unit. The rendered `<root>/pack` names the
+   source `tgsecretary` with the second port; new instances use the rendered
+   default base, never the primary's legacy alias.
 
 4. Declare the new source and hook in the same yard, with their own secrets:
 
@@ -805,11 +661,9 @@ yardr crew show secretary
    yardr user identity <operator> --source tgsecretary --id <bot.user_id>
    ```
 
-   The header names remain `X-Tgbridge-Secret` and `TGBRIDGE_SECRET`;
-   the hook and source records scope their independent values. Leave the
-   primary source/hook/credential unchanged. Do not configure the operator's
-   optional `tell` address on both sources unless duplicate inbox notices
-   are wanted.
+   Leave the primary source, hook and credential unchanged. Do not configure the
+   operator's optional `tell` address on both sources unless duplicate inbox
+   notices are wanted.
 
 5. Give only this bot's callback credential to the secretary's environment.
    `yardr crew show secretary` names its existing `env_file`; preserve its
@@ -834,16 +688,13 @@ yardr crew show secretary
    it. With no daemon running the add only records the definition; the
    session starts when the daemon does.
 
-   A `yardr reply` uses its caller's environment. A crew process carries
-   the credential for its own bot; a shell operator testing replies must
-   likewise supply that bot's credential. Do not reuse the yardmaster's
-   environment for the secretary. Call grants and subscriptions are scoped
-   to the new source. Do not grant `run_ask`, `ask_card` or `siding_card`
-   on the second source. Native asks have no bot destination: enabling
-   `home`/`operator` on both would expose the same yard-wide queue, including
-   `/decide`, on both. The secondary omits them and refuses native calls,
-   while ordinary chat asks/buttons remain available. Keep native approval
-   publishing on the primary source.
+   A `yardr reply` uses its caller's credential, so a shell test must supply this
+   bot's. Do not reuse the yardmaster's environment for the secretary. Do not grant
+   `run_ask`, `ask_card` or `siding_card` on the second source: enabling
+   `home`/`operator` on both would expose the same yard-wide queue, `/decide`
+   included, on both. The secondary omits them and refuses native calls, while
+   ordinary chat asks and buttons remain available. Native approval publishing
+   stays on the primary.
 
 6. Activate only the second bot, then check both paths:
 
@@ -857,38 +708,28 @@ yardr crew show secretary
    yardr source check tgbridge
    ```
 
-   Send distinct text to each bot, then a voice note if transcription is
-   enabled. Check that only the intended crew receives each delivery;
-   `yardr thread show <seq>` and `yardr reply <seq> "<answer>"` use that
-   delivery's source even though both thread IDs equal the human's chat id.
-   The menu is bot-token scoped, pins and quota notices use that bot's
-   ledger, and its quota watcher names `crew = "secretary"`. `/decide` stays
-   on the primary. On the fork, copy the shared Telegram skills from an install
-   using [The crew's skills](#the-crews-skills-shell), then assign them to
-   the secretary; their `<source>` examples follow the reader's prime.
+   Send distinct text to each bot, then a voice note if transcription is enabled,
+   and check that only the intended crew receives each delivery. `/decide` stays
+   on the primary. On the fork, copy the shared Telegram skills with
+   [The crew's skills](#the-crews-skills-shell), then assign them to the secretary.
 
 For an upgrade, dry-run/install with this same second `--settings`, restart
 only its unit, then reapply its `<root>/pack`. Roll back its code with
 `<root>/current/install.sh --settings <second-settings> --rollback`, restart
-only the second unit and reapply that pack. On the first activation there
-is no previous release: `systemctl --user disable --now
-example-secretary-telegram.service` stops that new bot; retain its ledger
-and credentials for recovery. The primary keeps running throughout.
-Landing source code, installing a release and activating it are separate
-steps. Activation, BotFather changes, credentials, grants and subscriptions
-remain the operator's; builders prove this procedure in temporary homes.
+only the second unit and reapply that pack. On the first activation there is no
+previous release: `systemctl --user disable --now example-secretary-telegram.service`
+stops that new bot; retain its ledger and credentials for recovery. The primary
+keeps running throughout. Activation, BotFather changes, credentials, grants and
+subscriptions remain the operator's.
 
 ## Hand a bot's state to a new installation
 
-For a bot another bridge installation polls today (its previous owner, whose
-state directory may hold other programs' files too) that moves to a crew
-member's own installation from the previous section: the same bot, token and
-paired chat. Its ledger (offset, delivery keys and receipts, asks, pins,
-accepted messages), heartbeat and inbound files, queued transcript jobs
-included, move once, coherently, and nothing else of that directory does.
-`<previous settings>` and `<previous state_dir>` are the previous owner's,
-`<settings>` and `<root>` the new installation's; `$H` is
-`python3 <root>/current/scripts/handover_state.py`.
+For a bot another bridge installation polls today, moved to a crew member's own
+installation from the previous section: the same bot, token and paired chat. Only
+its ledger, heartbeat, inbound files and queued transcript jobs move, once and
+coherently; the rest of its state directory stays where it is. `<previous settings>`
+and `<previous state_dir>` are the previous owner's, `<settings>` and `<root>` the
+new installation's; `$H` is `python3 <root>/current/scripts/handover_state.py`.
 
 1. Before the freeze: install the new instance, apply its pack, key its
    source, add its hook and identity, add the crew member and subscribe it
@@ -912,35 +753,15 @@ included, move once, coherently, and nothing else of that directory does.
    $H capture --settings <settings> --from-settings <previous settings> --from <previous state_dir>
    ```
 
-   It refuses, changing nothing, when the two settings name another bot or
-   paired chat, the previous owner's heartbeat names a running bridge, a
-   bridge of this bot holds the host lock, the ledger has a hot journal
-   (start and stop the previous owner once), the ledger holds a table or
-   column it does not know or native card rows, the ledger, the heartbeat
-   or anything in the inbound tree, its root included, is a link or special
-   file, the
-   new state directory exists, even empty or as a link, or an ask is still
-   open. Answer or close open asks with the previous owner first; only when
-   that cannot be done, `--close-pending "<decision>"` archives
-   them as decided in the new copy, so a late tap relays nothing. Nothing
-   is approved for anyone. The SQLite backup reads the previous ledger
-   read-only and leaves it as it was; `<state_dir>/handover.json` records
-   its SHA-256, schema, row counts, offset, archived asks and copied files.
-   It writes only after every check has passed, into a sibling directory of
-   its own that it renames into place last; if the state directory appeared
-   meanwhile it refuses, and a run that does not finish removes only what it
-   made. Start the new bridge only after capture reports success.
+   It refuses, changing nothing, when the settings name another bot or chat, a
+   bridge is running, a ledger or file is unexpected, or an ask is still open.
+   Answer or close open asks with the previous owner first; only when that cannot
+   be done, `--close-pending "<decision>"` archives them as decided in the new
+   copy, so a late tap relays nothing. Nothing is approved for anyone. Start the
+   new bridge only after capture reports success. The refusals and the record it
+   writes are in [bridge/OPERATIONS.md](../bridge/OPERATIONS.md#hand-a-bots-state-to-a-new-installation).
 
-   A key the previous owner saved replays under the same request only where
-   the yard name and `account_id` are the same; under new names the request
-   is another payload and fails closed as `idempotency_key_conflict`. An
-   ambiguous or reserved send stays ambiguous: reconcile it in the chat, never
-   by sending again.
-
-4. Start the new unit and check it (previous section, step 6). The previous
-   owner's late button taps reach the new bridge only as callbacks on its
-   ledger's asks: archived and answered asks relay nothing again, and native
-   card data it never published is refused.
+4. Start the new unit and check it (previous section, step 6).
 
 To hand the bot back after the new installation has had traffic, never
 restore the copy the capture started from, nor `<previous state_dir>/
@@ -954,27 +775,12 @@ $H handback --settings <settings> --to <previous state_dir>
 systemctl --user enable --now <previous unit>
 ```
 
-It refuses, changing nothing, while either bridge runs, when `<settings>`
-now name another bot or paired chat than the one captured, when the
-previous ledger, the new heartbeat or anything in either inbound tree, its
-root included, is a link or special file, when the previous ledger changed since the capture (both
-owners ran: stop both and reconcile by hand; there is no tool for that), or
-when the new ledger holds a table or column it does not know or native
-card rows, or lacks a table of the previous one. It replaces the previous
-ledger's rows with the new ledger's cursor, receipts, asks, pins and
-accepted rows, in the previous schema and one transaction, keeps the
-replaced file as `.before-handback`, copies new inbound files and leaves
-exactly the new owner's queued transcript jobs. The message log stays in the
-new state directory. After a failure run it again: it records what it writes
-before its transaction, so a run that died before, inside or after that
-transaction or while copying files is finished by the next, and one that
-finds either ledger changed since, or put back as it was at capture,
-refuses. A finished handback refuses a
-second. Updates Telegram still holds go to the previous owner from the
-handed-back offset.
-
-Source tests drive both commands in temporary homes against synthetic
-ledgers; the capture, start, handback and restart above are the operator's.
+It refuses, changing nothing, while either bridge runs or either ledger changed
+since the capture (both owners ran: stop both and reconcile by hand). After a
+failure, run it again; a finished handback refuses a second. Updates Telegram
+still holds go to the previous owner from the handed-back offset. The full
+refusals are in
+[bridge/OPERATIONS.md](../bridge/OPERATIONS.md#hand-a-bots-state-to-a-new-installation).
 
 ## Move an existing bridge to its own installation
 
@@ -985,16 +791,14 @@ launchers, the pack's origin and (fork-only) yard-local skill copies. Move one
 instance at a time: no other instance is changed or needs to be running.
 The design and what it does not promise: `docs/design/independent-instances.md`.
 
-The placeholders: `<settings>` the bridge's settings file, `<unit>` its
-`unit` (`<yard>-telegram.service` by default), `<root>` its install root
-(`~/.local/share/yardr-telegram/<unit stem>` unless you pass `--root <root>`
-to every `install.sh`), `<state_dir>` its `state_dir`, `<checkout>` the
-reviewed checkout, `<alias>` the named base the source has selected, if any,
-`<credential file>` the source's env file, and `<service file>` the unit file
-the dry-run names (`$XDG_CONFIG_HOME/systemd/user/<unit>`, by default
-`~/.config/systemd/user/<unit>`). Run every `yardr` command with
-this yard's `YARDR_HOME`. On macOS the service steps are the `launchctl`
-ones in `bridge/OPERATIONS.md`, "Install and launch".
+Placeholders: `<settings>` is the bridge's settings file, `<unit>` its `unit`,
+`<root>` its install root (`~/.local/share/yardr-telegram/<unit stem>` unless you
+pass `--root <root>` to every `install.sh`), `<state_dir>` its `state_dir`,
+`<checkout>` the reviewed checkout, `<alias>` the named base the source has
+selected, if any, `<credential file>` the source's env file, and `<service file>`
+the unit file the dry-run names (`~/.config/systemd/user/<unit>` by default). Run
+every `yardr` command with this yard's `YARDR_HOME`. On macOS the service steps
+are the `launchctl` ones in `bridge/OPERATIONS.md`, "Install and launch".
 
 ### Dry-run (shell)
 
@@ -1027,14 +831,9 @@ so do not paste it anywhere. Stop and fix the settings, then dry-run again, on:
   rewrites the settings.
 
 `would create <queue directory> (mode 700)` is expected where transcription is
-on and the host's shared queue does not exist yet.
-
-The existing service file and `<root>/bin/telegram-bridge` must name this
-same settings path. Install, dry-run and rollback refuse before writing when
-either names another path, or its settings ownership cannot be read. A
-collision diagnostic names the conflicting file and both settings paths.
-Reinstalling, upgrading and rolling back with the same settings path keeps
-working.
+on and the host's shared queue does not exist yet. Install, dry-run and rollback
+refuse when the existing service file or `<root>/bin/telegram-bridge` names
+another settings path.
 
 ### Move a settings file (shell)
 
@@ -1147,26 +946,11 @@ yardr bead ask <bead> "Apply this tgbridge source pack upgrade?" \
 yardr call tgbridge run_ask bead=<bead> ask=<ask> topic=general key=pack-upgrade-1
 ```
 
-The source-kind pin is optional. The one complete document carries every
-source/program/diff/inventory/removal and native Does, with the directory
-digest; core supplies no `pack.yaml`/setup snapshot. The compact card names
-hashes/counts and kept grants after confirmed document delivery.
-
-New or changed programs require Approve, then Confirm on that same card
-within 60 seconds. The first tap writes nothing; Cancel or expiry requires
-a new Approve. A pack replacement keeping its programs can be routine and
-approve with one tap. Replies cannot approve weighted cards. The native
-server re-reads the directory at approval; changed bytes or standing state
-make the card stale with nothing run. Ask again instead of editing a proposal.
-Check the canonical ran/failed state, `source show` and `source check` after
-carrying. Credentials, selected base, limits and grants stay under native
-replacement rules. The proposal takes no binding or answering flags.
-
-The aligned build discloses kept grants at the end of each replacement
-sentence. Plain upstream omits them, so replacing source/pack cards refuse
-before sending; new sources work. Apply replacements through the terminal
-fallback there. Loose declarations fit 8192 bytes; cards fit 40 Does lines.
-The trimmed `tgbridge.yaml` has the same YAML values as its commented version.
+The review document, its approval rules and the bounds are in
+[source pack bundles](../bridge/OPERATIONS.md#source-pack-bundles). After carrying,
+check the canonical ran or failed state, `source show` and `source check`. Plain
+upstream refuses source and pack replacement cards, so apply replacements through
+the terminal fallback there.
 
 Keep the ledger/documents; ambiguous sends require reconciliation. See
 [source pack bounds and legacy retirement](../bridge/OPERATIONS.md#source-pack-bundles).
@@ -1230,16 +1014,11 @@ relevant `run_ask`, `ask_card` or `siding_card` per-call grants (steps 12–14).
 Message writers keep `telegram-formatting`, `telegram-attachments` and
 `telegram-voice-transcripts` as appropriate. Adding a skill grants no call access.
 
-After an install or rollback, refresh this yard's copies from its active
-release by repeating the four `skill add` commands.
-They replace the copies only in the selected yard; copies in another yard
-stay as they are, and removing this instance's root does not break another
-yard's skills.
-For a rollback to a release without `telegram-decisions`, refresh the three
-skills present there; the operator removes `telegram-decisions` from the
-crew's skill list, keeping its other names, then restarts that crew member.
-A source commit alone neither installs a release nor refreshes or activates
-the yard's copies.
+After an install or rollback, repeat the four `skill add` commands to refresh
+this yard's copies from its active release; a source commit alone does not. For a
+rollback to a release without `telegram-decisions`, refresh the three skills
+present there, remove `telegram-decisions` from the crew's skill list (keeping its
+other names), then restart that crew member.
 
 Harness folders such as `~/.claude/skills` and `~/.codex/skills` are shared
 by every yard using that harness on the host. Never relink an entry there

@@ -709,8 +709,11 @@ yardr crew show secretary
    ```
 
    Send distinct text to each bot, then a voice note if transcription is enabled,
-   and check that only the intended crew receives each delivery. `/decide` stays
-   on the primary. On the fork, copy the shared Telegram skills with
+   and check that only the intended crew receives each delivery. When both bots
+   share the human's chat, read each delivery with `yardr thread show <seq>` and
+   answer it with `yardr reply <seq> "<answer>"`, so the reply goes out through
+   the bot that delivered the message. `/decide` stays on the primary. On the
+   fork, copy the shared Telegram skills with
    [The crew's skills](#the-crews-skills-shell), then assign them to the secretary.
 
 For an upgrade, dry-run/install with this same second `--settings`, restart
@@ -775,8 +778,9 @@ $H handback --settings <settings> --to <previous state_dir>
 systemctl --user enable --now <previous unit>
 ```
 
-It refuses, changing nothing, while either bridge runs or either ledger changed
-since the capture (both owners ran: stop both and reconcile by hand). After a
+It refuses, changing nothing, while either bridge runs or the previous ledger
+changed since the capture (both owners ran: stop both and reconcile by hand).
+After a
 failure, run it again; a finished handback refuses a second. Updates Telegram
 still holds go to the previous owner from the handed-back offset. The full
 refusals are in

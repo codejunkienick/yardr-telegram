@@ -1233,6 +1233,62 @@ class HandoverTests(unittest.TestCase):
         print(f'Refusals: {2 * len(captures) + 4} capture and {len(handbacks) + 1} handback refusals changed '
               'neither tree; an absent destination stayed absent, one that appeared before the rename unchanged')
 
+    def test_capture_and_handback_accept_read_states_with_and_without_offer_token(self):
+        previous, old, new = self.seed()
+        ten_cols = ('message_id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL, thread_id INTEGER, '
+                    'seq INTEGER NOT NULL, crew TEXT, state TEXT NOT NULL, accepted_at REAL NOT NULL, '
+                    'read_at REAL, done_at REAL, reason TEXT')
+        eleven_cols = ten_cols + ', offer_token TEXT'
+        config = dict(bot_id=999, user_id=CHAT, chat_id=CHAT, account_id='test_bot', yard='test-city',
+                      agent='mayor', hook_url='http://127.0.0.1:9/hooks/tgmayor', hook_secret='seed',
+                      user_display_name='Pat', timezone='UTC')
+
+        for label, cols_sql, expected_len in (('without_offer_token', ten_cols, 10),
+                                              ('with_offer_token', eleven_cols, 11)):
+            with self.subTest(label):
+                case_dir = self.root / f'case-{label}'
+                case_dir.mkdir()
+                src = case_dir / 'previous'
+                shutil.copytree(previous, src)
+                with closing(sqlite3.connect(src / 'telegram-bridge.sqlite3')) as db, db:
+                    db.execute(f'CREATE TABLE read_states ({cols_sql})')
+                state = case_dir / 'state'
+                case_new = private(case_dir / 'new.toml', new.read_text().replace(
+                    f'"{self.root / "new/state"}"', f'"{state}"'))
+                captured = helper('capture', '--settings', str(case_new), '--from-settings', str(old),
+                                  '--from', str(src), '--close-pending', 'Closed at the handover')
+                self.assertEqual(captured.returncode, 0, captured.stderr)
+                b.Bridge(config, b.Store(state / 'telegram-bridge.sqlite3', 0), 'TOKEN', 'CAPABILITY',
+                         request=lambda *args, **kwargs: (200, {}), sleep=lambda seconds: None, state_dir=state)
+                handed = helper('handback', '--settings', str(case_new), '--to', str(src))
+                self.assertEqual(handed.returncode, 0, handed.stderr)
+                with closing(sqlite3.connect(src / 'telegram-bridge.sqlite3')) as db:
+                    cols = [row[1] for row in db.execute('PRAGMA table_info(read_states)')]
+                self.assertEqual(len(cols), expected_len)
+
+        # Non-empty read_states and unexpected column sets still refuse.
+        for label, sql, expected in (
+            ('unknown_9_cols', 'CREATE TABLE read_states (message_id INTEGER PRIMARY KEY, state TEXT)',
+             'ledger table read_states has unknown columns'),
+            ('unknown_12_cols', f'CREATE TABLE read_states ({eleven_cols}, surprise TEXT)',
+             'ledger table read_states has unknown columns'),
+            ('non_empty_read_states',
+             f"CREATE TABLE read_states ({ten_cols}); "
+             "INSERT INTO read_states VALUES (1, 'c', NULL, 1, 'mayor', 'landed', 1.0, NULL, NULL, NULL)",
+             'native card rows'),
+        ):
+            with self.subTest(label):
+                bad = self.root / f'bad-{label}'
+                shutil.copytree(previous, bad)
+                with closing(sqlite3.connect(bad / 'telegram-bridge.sqlite3')) as db, db:
+                    db.executescript(sql)
+                case_new = private(self.root / f'new-{label}.toml', new.read_text().replace(
+                    f'"{self.root / "new/state"}"', f'"{self.root / ("state-" + label)}"'))
+                res = helper('capture', '--settings', str(case_new), '--from-settings', str(old),
+                             '--from', str(bad), '--close-pending', 'Closed at the handover')
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn(expected, res.stderr)
+
 
 def tree(top):
     """{path: mode, SHA-256 or link target} of every entry under top, directories and top included,

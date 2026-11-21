@@ -1260,6 +1260,68 @@ class ReadStateTests(BridgeTestCase):
         self.assertEqual(self.bridge.typed_nudge.get(tok5)['state'], 'cancelled')
         self.assertEqual(self._edits()[-1]['reply_markup'], {'inline_keyboard': []})
 
+        # 6. Confirmed send saved in ledger before crash, message becomes read before recovery:
+        #    recovers card message id, cancels offer, removes buttons, refuses late tap.
+        self.native.nudge_mode = None
+        self._enable_offers(nudge_after=300, status='idle')
+        self.drain(self.update(uid=15))
+        self.wall[0] += 300
+        self.calls.clear()
+        with patch.object(self.bridge.typed_nudge, 'save', side_effect=crash_after_send):
+            self.mono[0] += 60.0
+            self.poll()
+        tok6 = self.row(15)['offer_token']
+        self.assertIsNotNone(tok6)
+        self.assertIsNone(self.bridge.typed_nudge.get(tok6)['message'])
+        self.assertEqual(len(self._sends()), 1)
+        card_mid6 = int(self.store.saved_receipt(f'typed-nudge:{tok6}:send')['message_id'])
+        self.native.crew['yardmaster']['cursor'] = self.row(15)['seq']
+        self._enable_offers(nudge_after=300, status='idle')
+        self.calls.clear()
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual(self.row(15)['state'], 'read')
+        tn6 = self.bridge.typed_nudge.get(tok6)
+        self.assertEqual(tn6['message'], card_mid6)
+        self.assertEqual(tn6['state'], 'cancelled')
+        self.assertIn('read', tn6['notice'].lower())
+        self.assertEqual(len(self._edits()), 1)
+        self.assertEqual(self._edits()[0]['message_id'], card_mid6)
+        self.assertEqual(self._edits()[0]['reply_markup'], {'inline_keyboard': []})
+        self.poll(self._tap(tok6, uid=51))
+        self.assertEqual(self._nudge_writes(), [])
+        self.assertEqual(self._answers()[-1]['text'], b.typed_nudge.ALREADY)
+
+        # 7. Confirmed send saved in ledger before crash, message becomes done before recovery:
+        #    recovers card message id, cancels offer, removes buttons, refuses late tap.
+        self.drain(self.update(uid=60))
+        self.wall[0] += 300
+        self.calls.clear()
+        with patch.object(self.bridge.typed_nudge, 'save', side_effect=crash_after_send):
+            self.mono[0] += 60.0
+            self.poll()
+        tok7 = self.row(60)['offer_token']
+        self.assertIsNotNone(tok7)
+        self.assertIsNone(self.bridge.typed_nudge.get(tok7)['message'])
+        self.assertEqual(len(self._sends()), 1)
+        card_mid7 = int(self.store.saved_receipt(f'typed-nudge:{tok7}:send')['message_id'])
+        self.native.journal_events['yardmaster-journal'].append(replied_event(502, self.row(60)['seq']))
+        self._enable_offers(nudge_after=300, status='idle')
+        self.calls.clear()
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual(self.row(60)['state'], 'done')
+        tn7 = self.bridge.typed_nudge.get(tok7)
+        self.assertEqual(tn7['message'], card_mid7)
+        self.assertEqual(tn7['state'], 'cancelled')
+        self.assertIn('answered', tn7['notice'].lower())
+        self.assertEqual(len(self._edits()), 1)
+        self.assertEqual(self._edits()[0]['message_id'], card_mid7)
+        self.assertEqual(self._edits()[0]['reply_markup'], {'inline_keyboard': []})
+        self.poll(self._tap(tok7, uid=61))
+        self.assertEqual(self._nudge_writes(), [])
+        self.assertEqual(self._answers()[-1]['text'], b.typed_nudge.ALREADY)
+
     def test_offer_disabled_when_no_nudge_method_no_native_nudge_or_no_operator(self):
         # 1. NudgeSession unsupported -> probed once, cached, logged once, no card, no write.
         self.native.nudge_mode = 'no-nudge-method'
@@ -1306,6 +1368,55 @@ class ReadStateTests(BridgeTestCase):
         self.assertEqual(self._sends(), [])
         self.assertEqual([m for m, _ in self.native.calls if m == 'NudgeSession'], [])
         self.assertEqual(len([l for l in self.logs if 'nudge offers off' in l]), 1)
+
+    def test_offer_probe_cached_when_first_offer_refuses_crew_read(self):
+        self.native.crew['secretary'] = dict(name='secretary', journal='secretary-journal',
+                                             kind='claude', model='opus', state='running', status='idle', cursor=0)
+        self.native.crew['yardmaster'].update(kind='claude', model='opus', state='running', status='idle')
+        self.restart(
+            commands=(y.NUDGE_COMMAND,),
+            reactions=dict(self.config['reactions'], nudge_after=300),
+            topics=(dict(name='ops', agent='secretary'),),
+        )
+        self.store.record_topic('ops', 44, 'created')
+        self.native.hook_events[10] = hook_event(10, deliveries={'yardmaster': 'all'})
+        self.native.hook_events[11] = hook_event(11, deliveries={'secretary': 'all'})
+        self.drain(
+            self.update(uid=10),
+            dict(update_id=11, message=dict(
+                message_id=11, text='topic msg', message_thread_id=44, is_topic_message=True,
+                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+            )),
+        )
+        self.wall[0] += 300
+        yardmaster_reads = [0]
+
+        def get_crew(args, _handler):
+            name = args.get('name')
+            if name == 'yardmaster':
+                yardmaster_reads[0] += 1
+                if yardmaster_reads[0] == 2:
+                    return 200, {'error': {'code': 'denied', 'message': 'crew read refused'}}
+            return 200, {'result': dict(self.native.crew[name])}
+
+        self.native.override['GetCrew'] = get_crew
+        self.native.calls.clear()
+        self.calls.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual([args for m, args in self.native.calls if m == 'NudgeSession'], [{}])
+        self.assertIsNone(self.row(10)['offer_token'])
+        self.assertIsNotNone(self.row(11)['offer_token'])
+        self.assertEqual(len(self._sends()), 1)
+
+        # Next round stays cached (no probe) and offers to yardmaster once GetCrew succeeds.
+        self.native.override.pop('GetCrew')
+        self.native.calls.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual([args for m, args in self.native.calls if m == 'NudgeSession'], [])
+        self.assertIsNotNone(self.row(10)['offer_token'])
+        self.assertEqual(len(self._sends()), 2)
 
     def test_nudge_after_zero_makes_only_read_bead_calls(self):
         self.native.crew['yardmaster'].update(kind='claude', model='opus', state='running', status='idle')

@@ -64,8 +64,10 @@ LATER = {
     'model_selectors': ('token', 'update_id', 'value'),
     'model_operations': ('token', 'owner', 'active', 'value'),
     'model_actions': ('update_id', 'token', 'value'),
-    'read_states': ('message_id', 'conversation_id', 'thread_id', 'seq', 'crew',
-                    'state', 'accepted_at', 'read_at', 'done_at', 'reason', 'offer_token'),
+    'read_states': (('message_id', 'conversation_id', 'thread_id', 'seq', 'crew',
+                     'state', 'accepted_at', 'read_at', 'done_at', 'reason'),
+                    ('message_id', 'conversation_id', 'thread_id', 'seq', 'crew',
+                     'state', 'accepted_at', 'read_at', 'done_at', 'reason', 'offer_token')),
     'read_states_meta': ('id', 'mark', 'pending_mark', 'pending_rounds', 'accept_mid'),
     'read_state_overrides': ('message_id', 'state', 'at'),
 }
@@ -170,7 +172,8 @@ def schema(db):
         known = ORIGINAL.get(name, LATER.get(name))
         if known is None:
             raise Refusal(f'ledger has an unknown table {name}')
-        if set(columns) != set(known):
+        accepted = known if known and isinstance(known[0], tuple) else (known,)
+        if all(set(columns) != set(variant) for variant in accepted):
             raise Refusal(f'ledger table {name} has unknown columns')
         tables[name] = columns
     if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':

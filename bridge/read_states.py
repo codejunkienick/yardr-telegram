@@ -656,23 +656,31 @@ class ReadStates:
         self._offer_step(now, crew_info, trouble)
         return trouble
 
+    def _cancel_offer(self, rs_row):
+        token = rs_row['offer_token']
+        tn = self.bridge.typed_nudge
+        tn_row = tn.get(token)
+        if tn_row is None or tn_row['state'] != 'open':
+            return
+        if tn_row.get('message') is None:
+            saved = self.store.saved_receipt(f'typed-nudge:{token}:send')
+            if saved is not None and saved.get('delivered') is True and saved.get('message_id') is not None:
+                tn_row['message'] = int(saved['message_id'])
+        notice = OFFER_NOTICES.get(rs_row['state'], OFFER_ENDED_NOTICE)
+        tn_row.update(state='cancelled', notice=notice)
+        tn.save(tn_row)
+        if tn_row.get('message') is not None:
+            tn.display(tn_row)
+
     def _close_offer_row(self, rs_row):
         token = rs_row['offer_token']
         if not token:
             return
-        tn = self.bridge.typed_nudge
         with self.ra.lock():
             latest = self.get(rs_row['message_id'])
             if latest is None or latest['state'] == 'landed' or latest['offer_token'] != token:
                 return
-            tn_row = tn.get(token)
-            if tn_row is None or tn_row['state'] != 'open':
-                return
-            notice = OFFER_NOTICES.get(latest['state'], OFFER_ENDED_NOTICE)
-            tn_row.update(state='cancelled', notice=notice)
-            tn.save(tn_row)
-            if tn_row.get('message') is not None:
-                tn.display(tn_row)
+            self._cancel_offer(latest)
 
     def close_offer(self, message_id):
         if not self.enabled or self.store is None:
@@ -695,15 +703,7 @@ class ReadStates:
         rs_row = dict(zip(FIELDS, raw))
         if rs_row['state'] == 'landed':
             return
-        tn = self.bridge.typed_nudge
-        tn_row = tn.get(token)
-        if tn_row is None or tn_row['state'] != 'open':
-            return
-        notice = OFFER_NOTICES.get(rs_row['state'], OFFER_ENDED_NOTICE)
-        tn_row.update(state='cancelled', notice=notice)
-        tn.save(tn_row)
-        if tn_row.get('message') is not None:
-            tn.display(tn_row)
+        self._cancel_offer(rs_row)
 
     def _close_stale_offers(self):
         if not self.enabled or self.store is None:
@@ -800,7 +800,7 @@ class ReadStates:
                 continue
             if self.bridge.decide_conversation(row['thread_id']) is None:
                 continue
-            if self._nudge_supported is False:
+            if not self._ensure_nudge_supported(trouble):
                 return
             token = secrets.token_urlsafe(12)
             header = f"Unread for {_format_age(now - row['accepted_at'])}"
@@ -825,20 +825,14 @@ class ReadStates:
                     tn.open_confirm(
                         0, row['crew'], words, row['thread_id'], user='',
                         token=token, reply_to=row['message_id'], header=header, silent=True,
-                        before_send=save_offer, probe=(self._nudge_supported is None),
+                        before_send=save_offer, probe=False,
                     )
-                self._nudge_supported = True
                 crews_with_open_offer.add(row['crew'])
             except n.NativeError as error:
-                if str(error) == tn.NO_SUPPORT:
-                    self._nudge_supported = False
-                    self._log_offer_off('nudge offers off: this yard core has no session nudge')
-                    return
                 tn_row = tn.get(token)
                 if tn_row is None:
                     trouble.append(f'read states offer (msg {row["message_id"]}): {error}')
                     continue
-                self._nudge_supported = True
                 receipt = self.store.saved_receipt(f'typed-nudge:{token}:send')
                 if receipt is not None and self.bridge.resendable(receipt):
                     crews_with_open_offer.add(row['crew'])

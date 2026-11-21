@@ -370,6 +370,13 @@ class TypedNudge:
                     or self.bridge.decide_conversation(thread)['conversation_id'] != row['conversation']):
                 self.answer(uid, query_id, 'That nudge button is out of date.', True)
                 return
+            if row['binding'] != self.binding_digest():
+                notice = 'That nudge card is from another yard or pairing; nothing nudged.'
+                row.update(state='refused', notice=notice)
+                self.save(row)
+                self.display(row)
+                self.answer(uid, query_id, notice, True)
+                return
             self.verify()
             if not self.ra.claim_update(uid):
                 self.answer(uid, query_id, ALREADY)

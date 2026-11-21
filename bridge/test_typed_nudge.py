@@ -201,6 +201,37 @@ class TypedCommandTests(TypedCase):
         self.poll(self.tap(row['token'], uid=55))
         self.assertEqual(len(self.writes()), 1)
 
+        uid = 60
+        for key, value in (('yard', 'other-yard'), ('yardr_source', 'other-source'),
+                           ('yardr_operator', 'other-operator')):
+            for action in ('nudge', 'cancel'):
+                uid += 10
+                with self.subTest(binding=key, action=action):
+                    self.command('/nudge yardmaster retained words', uid=uid)
+                    row = next(row for row in self.bridge.typed_nudge.rows() if row['state'] == 'open')
+                    original = self.config[key]
+                    try:
+                        self.config[key] = value
+                        self.restart()
+                        self.native.calls.clear()
+                        self.bridge.inbound(self.tap(row['token'], action, uid=uid + 1))
+                        self.assertEqual(self.native.calls, [])
+                        closed = self.bridge.typed_nudge.get(row['token'])
+                        self.assertEqual(closed['state'], 'refused')
+                        self.assertIn('another yard', closed['notice'])
+                        answer = [body for url, body in self.calls if url.endswith('/answerCallbackQuery')][-1]
+                        self.assertIn('another yard', answer['text'])
+                        self.assertTrue(answer['show_alert'])
+                        edit = [body for url, body in self.calls if url.endswith('/editMessageText')][-1]
+                        self.assertIn(closed['notice'], edit['text'])
+                        self.assertEqual(edit['reply_markup'], {'inline_keyboard': []})
+                    finally:
+                        self.config[key] = original
+                        self.restart()
+                    self.poll(self.tap(row['token'], uid=uid + 2))
+                    self.assertEqual(self.writes(), [])
+                    self.assertEqual(self.bridge.typed_nudge.get(row['token'])['state'], 'refused')
+
     def test_cancel_makes_no_write_and_takes_the_buttons_off(self):
         self.command(f'/nudge yardmaster {WORDS}')
         row = self.row()
@@ -621,6 +652,51 @@ class RealTypedNudgeTests(BridgeTestCase):
             client.call = real_call
         self.assertIn('1001 characters', self.sends()[-1]['text'])
         self.assertEqual(seen, [])
+        self.assertEqual(len(requested()), 1)
+
+        retained = []
+        for uid, action in enumerate(('nudge', 'cancel'), 60):
+            self.bridge.inbound(dict(update_id=uid, message=dict(message_id=uid, text=f'/nudge yardmaster {WORDS}',
+                                     chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)})))
+            known = {token for token, _ in retained}
+            row = next(row for row in self.bridge.typed_nudge.rows()
+                       if row['state'] == 'open' and row['token'] not in known)
+            retained.append((row['token'], action))
+
+        other = RealTypedNudgeTests(methodName=self._testMethodName)
+        other.setUp()
+        self.addCleanup(other.tearDown)
+        self.addCleanup(other.doCleanups)
+        other.start()
+        other.fixture = self.fixture
+        self.assertEqual(other.daemon('start', 'yardmaster'), [JOURNAL])
+        other.store = self.store
+        other.restart_bridge()
+        for index, (token, action) in enumerate(retained):
+            uid = 70 + index * 2
+            with self.subTest(repointed_action=action):
+                row = other.bridge.typed_nudge.get(token)
+                self.assertNotEqual(row['binding'], other.bridge.typed_nudge.binding_digest())
+                client = other.bridge.run_asks.client
+                with patch.object(client, 'call', wraps=client.call) as calls:
+                    other.poll(other.tap(uid, token, action))
+                    other.poll(other.tap(uid + 1, token))
+                writes = [call.args for call in calls.call_args_list
+                          if call.args[0] == 'NudgeSession' and call.args[1].get('target')]
+                self.assertEqual(writes, [])
+                self.assertEqual([event for event in other.client.call('Events', [JOURNAL, 200])
+                                  if event['kind'] == 'session_nudge_requested'], [])
+                self.assertEqual(other.bridge.typed_nudge.get(token)['state'], 'refused')
+                answer = [body for url, body in other.calls if url.endswith('/answerCallbackQuery')][-1]
+                self.assertIn('another yard', answer['text'])
+                edits = [body for url, body in other.calls if url.endswith('/editMessageText')]
+                self.assertIn('another yard', edits[-1]['text'])
+                self.assertEqual(edits[-1]['reply_markup'], {'inline_keyboard': []})
+
+        self.restart_bridge()
+        for uid, (token, _) in enumerate(retained, 90):
+            self.poll(self.tap(uid, token))
+            self.assertEqual(self.bridge.typed_nudge.get(token)['state'], 'refused')
         self.assertEqual(len(requested()), 1)
 
     def test_real_native_session_without_a_model_opens_its_confirm(self):

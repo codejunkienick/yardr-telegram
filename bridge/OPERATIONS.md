@@ -2660,7 +2660,8 @@ current status and the exact line, and only the tap on its Nudge button
 writes: one `NudgeSession` call as the operator. Wrong user, chat or topic,
 a replay and a double tap each write at most once (the core's standing
 request refuses a second); Cancel writes nothing. Over-long text is refused
-before any call.
+before any call. After repointing the bridge to another yard, retained
+confirm cards close on tap without a nudge write.
 
 The outcome is relayed as in the card above, matched on the request id
 instead of the ask: the daemon's `session_nudged` told once as a reply on

@@ -210,6 +210,8 @@ sees and does, not how the code is organised.
 
 ### Fixed
 
+- Retained nudge confirm cards close on tap after the bridge is repointed
+  to another yard, with no nudge written there.
 - A reply or tap on a siding card while the yard home fails its safety
   check no longer stops the bridge's poll loop: it is logged, nothing is
   written, and polling goes on. Siding reads are retried while yardr

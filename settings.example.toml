@@ -47,6 +47,11 @@ hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints
 # machine_login = true     # also show the providers read on the machine's login
 # machine = false          # also show the machine's load, swap, disk and mem
 
+# Whole mail (bridge/OPERATIONS.md, "Whole mail"): its presence makes each
+# yard tell send the operator's unread mail whole first. No keys; it needs
+# [yardr] home and operator above.
+# [yardr.mail]
+
 # The native /switch_model (bridge/OPERATIONS.md, "/switch_model"): its
 # presence turns /switch_model on (/mayor_model replies with a migration hint
 # and is absent from the menu). Requires core crew_handoff_switch v1: a tap

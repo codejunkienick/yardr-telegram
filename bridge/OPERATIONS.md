@@ -395,7 +395,7 @@ object.
 | route | body | answer |
 | --- | --- | --- |
 | `POST /v1/send` | `text`; `key`, else the `Idempotency-Key` header (required); `conversation` (an id) or `topic` (a name), default the paired chat; `format` (`auto`, `plain`, `html` or `markdown`; default `auto`); `silent`; `keyboard` (rows, or rows as a JSON string); `text_options`; `reply_to`; `attachments` (a host path, or a list of them); `attachment_kind` | `{delivered, message_id, conversation}`, with `reason` and `failure_kind` when not delivered |
-| `POST /v1/tell` | `title`, `text`, optional `link`, `conversation` or `topic` | as `/v1/send` |
+| `POST /v1/tell` | `title`, `text`, optional `link`, `conversation` or `topic` | as `/v1/send`; 503 when whole mail is unfinished ("Whole mail") |
 | `POST /v1/posted` | `key`, else the `Idempotency-Key` header | `{"message_id": "<id>"}` when the ledger holds a confirmed send under the key, else `{}` |
 | `POST /v1/read` | `conversation` or `topic`; optional `limit`, 1-200, default 50 | `{"messages": [{id, direction, from, text, at}, ...]}`, oldest first ("The message log") |
 | `POST /v1/react` | `reaction`; optional `message_id`, or `topic` or `conversation`; optional `key` | `{delivered, message_id}`, with `reason` and `failure_kind` when not delivered ("Reactions") |
@@ -417,6 +417,12 @@ object.
   path; **404** `{"error": "not found"}` for any other path.
 - **500** `{"error": "delivery unconfirmed"}` for anything unexpected: treat
   the send as ambiguous and never resend it blind ("Delivery recovery").
+- **503** `{"error": "tell unfinished; retry"}`, from `/v1/tell` only, with
+  `[yardr.mail]`: a part of a mail was not sent, the time to start one
+  had passed, a mail could not be rendered, the yard did not answer the
+  mail read, or a sender's mail is not yet read back to the window's start.
+  The yard tries the tell again and the ledger resumes it ("Whole mail"). An answer the caller is no longer there to read logs
+  `yard api answer not written`; what was sent stands in the ledger.
 
 `silent`, `text_options` and `unpin` read `true`, `"true"`, `"1"` or `1` as
 true and `false`, `"false"`, `"0"`, `0`, an empty string or no value as
@@ -432,7 +438,86 @@ line, then the text, then the link, each stripped, at most 250, 3500 and
 header, else `tell:` and 32 hex characters of the SHA-256 of the
 conversation, the text and the minute, so the same tell retried within the
 minute is sent once and the same words a minute later are a new message
-(YARDR.md: the yard tells with no key).
+(YARDR.md: the yard tells with no key). A key starting `yardmail:` is the
+bridge's own ("Whole mail"): `/v1/send`, `/v1/tell` and `send
+--idempotency-key` refuse it with a 400 or a usage error.
+
+### Whole mail
+
+The yard's notify tells the first 200 characters of one mail, and of
+several only who wrote (`3 new in your yardr inbox` / `mail from a (2),
+mail from b`). With `[yardr.mail]` in the settings (no keys; it needs
+`[yardr] home` and `operator`), each `/v1/tell` first sends the operator's
+unread mail whole:
+
+1. Read, within 3 s, over the native socket: the operator is checked as for
+   native cards, and their `notify` must be this source (else the tell is
+   sent as it came). `UserInbox` names who wrote unread mail;
+   `Conversation` with each, from the newest end, 200 letters a page, gives
+   the unread mail to the operator of the window: the last 6 hours (the yard
+   tells nothing older) and not before the first start with `[yardr.mail]`
+   (no backfill). Each sender is paged to the window's start within the
+   3 s, and what was read is kept (the ledger table `yard_mail_scan`, once
+   its mail is sent): a later tell reads only below it and what is newer,
+   never the same pages again, and a sender read through the inbox's newest
+   unread mail not at all. A sender not read that far, or not reached in
+   the 3 s, has the tell answer 503 after sending what it found; the yard's
+   retry reads the senders least lately read first, and is answered 200
+   once every sender is read through the newest unread. A sender's older
+   mail may so come after newer mail it already sent. The yard unavailable or not
+   answering is a 503 too, with nothing sent. A read the yard refuses or
+   answers in a form not understood, or an operator not verified, sends the
+   tell as before with one line `(whole mail not read: <reason>)`.
+2. Each mail, by seq, is its own message or messages to the tell's
+   conversation (today the chat itself), headed `mail from <sender> ·
+   HH:MM` in the settings' timezone (`timer from` for a timer's), with
+   `· i/n` when it takes several parts and, on part 1, `files: <names> (in
+   the yard)` for a mail with files (the files stay in the yard). The text
+   is Markdown with links; else with links as `text (destination)` (a
+   relative link refuses the first); else the text escaped, no markup. A
+   fenced block is `<pre>`, its content exact, in a list or a quote too.
+   Telegram's parse 400 sends the plain form once, as for every HTML send.
+3. Parts: whole blocks, a blank line between, up to 4096 visible units each
+   with room kept for the longest header, so a part never changes size
+   between tries. A block that alone does not fit is cut: a list or quote
+   with code around its code blocks, each still one exact `<pre>`; a code
+   block at lines into consecutive exact `<pre>` slices; any other at lines
+   of its source as plain text, resolving links to `text (destination)` so
+   reference definitions outside the block are preserved. Nothing is dropped
+   or reordered. A mail that cannot be rendered (over 99 parts, or a header
+   Telegram would refuse) is a 503.
+4. Each part goes once under the ledger key `yardmail:<seq>:<i>`; a part
+   already sent is never sent again (nor logged again). A part not sent
+   (offline, or Telegram's 429, which only mail treats as not sent) stops
+   the tell with a 503; the yard's retry resumes at that part. A part whose
+   send is unconfirmed is never resent; the next part says `· an earlier
+   part is unconfirmed`. A part Telegram refuses ends that mail. No part
+   starts after 7 s from the tell's start (the yard waits 10 s), checked
+   again once the part holds the send lock: the rest goes on the retry, as
+   not sent. One expansion runs at a time.
+5. The tell's own notice is left out only when it tells of mail alone, in
+   the yard's exact words, and every unread window mail of each sender it
+   names, read by this tell or an earlier one (the ledger table
+   `yard_mail_found`), went whole, at least as many as it counts; otherwise
+   it follows the mails (an ask among them, a failed or unconfirmed part).
+   The worst case is one line too many, never a mail lost. A
+   tell answered 503 sends no notice: the bridge cannot know the yard's
+   last try, and a mail still unread in the window goes whole with the
+   next tell that reads it.
+
+Mail enters the conversation's message log (`/v1/read`) as every send
+does, and leaves the machine whole. Mail stays unread in the yard: reading
+it in Telegram acknowledges nothing. Without `[yardr.mail]`, `/v1/tell` is
+as described above.
+
+To turn it on, on the primary bridge: add an empty `[yardr.mail]` table to
+the settings, run `<root>/bin/telegram-bridge --settings <settings> probe`
+(the first start with it: mail before is never sent), then restart the
+unit. To turn it off, remove the table and restart; the ledger and the
+start mark stay. Mail goes to the user's `TGBRIDGE_CONVERSATION`: a
+`<chat id>:topic:<thread id>` address stops working when the chat's
+threaded mode is turned off, so give the bare chat id again with `yardr
+user key <operator> tgbridge`.
 
 The daemon serves each request on its own thread. Its sends queue behind
 its `publish_lock`, and they meet the poll loop's and the command line's in

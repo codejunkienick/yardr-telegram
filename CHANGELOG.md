@@ -82,6 +82,11 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- `[yardr.mail]` sends the operator's yardr mail to Telegram whole and
+  formatted when the yard tells of it: each mail its own message (or
+  numbered parts at Telegram's limit), headed with its sender and time,
+  fenced commands as exact code blocks. Several mails told at once stay
+  apart. Off unless the table is set.
 - Native source-kind `pack apply` review through the existing `run_ask`
   grant. Directory proposals deliver one document of carried sources and the
   native digest before approval; embedded source packs use carried-source
@@ -220,6 +225,9 @@ sees and does, not how the code is organised.
 
 - Retained nudge confirm cards close on tap after the bridge is repointed
   to another yard, with no nudge written there.
+- A fenced or indented code block inside a Markdown list or quote keeps its
+  exact lines: the list indent and the `> ` prefix no longer enter it, so a
+  command (a heredoc's closing line too) copies as written.
 - A reply or tap on a siding card while the yard home fails its safety
   check no longer stops the bridge's poll loop: it is logged, nothing is
   written, and polling goes on. Siding reads are retried while yardr

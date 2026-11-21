@@ -14,6 +14,8 @@ _GROUPS = {'paragraph', 'heading', 'blockquote', 'bullet_list', 'ordered_list', 
            'strong', 'em', 's', 'link'}
 _LEAVES = {'inline', 'text', 'softbreak', 'hardbreak', 'code_inline', 'code_block', 'fence', 'hr', 'image'}
 _LANGUAGE = re.compile(r'[A-Za-z0-9_+-]{1,32}\Z')
+# markdown-it's own line normalisation, so a token's map indexes these lines.
+_NEWLINE = re.compile(r'\r\n?|\n')
 
 
 def _tree(tokens):
@@ -82,41 +84,62 @@ def _inline(nodes, *, alt=False, links=True):
 
 
 def _blocks(nodes, *, links=True, headline=False):
-    parts = []
-    for token, children in nodes:
-        kind = token.type
-        if kind in ('paragraph_open', 'heading_open'):
-            if len(children) != 1 or children[0][0].type != 'inline':
-                raise MarkdownError('markdown_block_invalid')
-            text = _inline(_tree(children[0][0].children), links=links)
-            parts.append('<b>' + text + '</b>' if headline or kind == 'heading_open' else text)
-        elif kind in ('fence', 'code_block'):
-            language = token.info.split()[0] if token.info.split() else ''
-            cls = f' class="language-{language}"' if _LANGUAGE.fullmatch(language) else ''
-            parts.append('<pre><code' + cls + '>' + escape(token.content, quote=False) + '</code></pre>')
-        elif kind == 'hr':
-            parts.append('---')
-        elif kind == 'blockquote_open':
-            parts.append('\n'.join('&gt; ' + line for line in _blocks(children, links=links, headline=headline).split('\n')))
-        elif kind in ('bullet_list_open', 'ordered_list_open'):
-            start = token.attrs.get('start', 1)
-            if type(start) is not int:
+    return '\n\n'.join(_block(token, children, links=links, headline=headline) for token, children in nodes)
+
+
+def _block(token, children, *, links=True, headline=False):
+    kind = token.type
+    if kind in ('paragraph_open', 'heading_open'):
+        if len(children) != 1 or children[0][0].type != 'inline':
+            raise MarkdownError('markdown_block_invalid')
+        text = _inline(_tree(children[0][0].children), links=links)
+        return '<b>' + text + '</b>' if headline or kind == 'heading_open' else text
+    if kind in ('fence', 'code_block'):
+        return pre(token.content, _language_class(token))
+    if kind == 'hr':
+        return '---'
+    if kind == 'blockquote_open':
+        return _prefixed(_blocks(children, links=links, headline=headline), '&gt; ', '&gt; ')
+    if kind in ('bullet_list_open', 'ordered_list_open'):
+        start = token.attrs.get('start', 1)
+        if type(start) is not int:
+            raise MarkdownError('markdown_list_invalid')
+        items = []
+        for index, (item, blocks) in enumerate(children):
+            if item.type != 'list_item_open':
                 raise MarkdownError('markdown_list_invalid')
-            items = []
-            for index, (item, blocks) in enumerate(children):
-                if item.type != 'list_item_open':
-                    raise MarkdownError('markdown_list_invalid')
-                marker = f'{start + index}. ' if kind == 'ordered_list_open' else '• '
-                lines = _blocks(blocks, links=links, headline=headline).split('\n')
-                items.append(marker + lines[0] + ''.join('\n  ' + line for line in lines[1:]))
-            parts.append('\n'.join(items))
-        else:
-            raise MarkdownError('markdown_block_token_unsupported')
-    return '\n\n'.join(parts)
+            marker = f'{start + index}. ' if kind == 'ordered_list_open' else '• '
+            items.append(_prefixed(_blocks(blocks, links=links, headline=headline), marker, '  '))
+        return '\n'.join(items)
+    raise MarkdownError('markdown_block_token_unsupported')
 
 
-def render(source, source_max_units, *, links=True, headline=False):
-    """Render bounded, scalar Unicode input; caller validates HTML and limits."""
+def _prefixed(html, first, rest):
+    """html with first before its first line and rest before each later line
+    outside a <pre>: a code block's lines, its first too, have no prefix, so
+    the code keeps its exact bytes."""
+    lines = html.split('\n')
+    out, inside = [first + lines[0]], False
+    for previous, line in zip(lines, lines[1:]):
+        opened, closed = previous.rfind('<pre>'), previous.rfind('</pre>')
+        if opened != closed:  # equal only when neither is on the line
+            inside = opened > closed
+        out.append(line if inside or line.startswith('<pre>') else rest + line)
+    return '\n'.join(out)
+
+
+def _language_class(token):
+    language = token.info.split()[0] if token.info.split() else ''
+    return f' class="language-{language}"' if _LANGUAGE.fullmatch(language) else ''
+
+
+def pre(content, cls=''):
+    """One code block as render writes it: its content escaped, nothing else."""
+    return '<pre><code' + cls + '>' + escape(content, quote=False) + '</code></pre>'
+
+
+def _parse(source, source_max_units, links):
+    """The top-level token tree of bounded, scalar Unicode input."""
     if not isinstance(source, str):
         raise MarkdownError('markdown_source_must_be_text')
     if '\0' in source or any(0xD800 <= ord(c) <= 0xDFFF for c in source):
@@ -130,7 +153,34 @@ def render(source, source_max_units, *, links=True, headline=False):
         parser.options['inline_definitions'] = True
     # Parse every destination; bridge.py applies the existing HTML link policy.
     parser.validateLink = lambda _url: True
+    return _tree(parser.parse(source))
+
+
+def render(source, source_max_units, *, links=True, headline=False):
+    """Render bounded, scalar Unicode input; caller validates HTML and limits."""
     try:
-        return _blocks(_tree(parser.parse(source)), links=links, headline=headline)
+        return _blocks(_parse(source, source_max_units, links), links=links, headline=headline)
+    except RecursionError:
+        raise MarkdownError('markdown_nesting_too_deep') from None
+
+
+def render_blocks(source, source_max_units, *, links=True):
+    """render's top-level blocks in order, each dict(html, source, code, fallback):
+    html as render writes it (render joins them with a blank line), source
+    the block's own source lines, code (content, class attribute) for a code
+    block, else None, fallback HTML with resolved links as text and destinations.
+    Same input checks and policy as render."""
+    try:
+        nodes = _parse(source, source_max_units, links)
+        lines = _NEWLINE.sub('\n', source).split('\n')
+        blocks = []
+        for token, children in nodes:
+            if not (isinstance(token.map, list) and len(token.map) == 2):
+                raise MarkdownError('markdown_block_invalid')
+            code = (token.content, _language_class(token)) if token.type in ('fence', 'code_block') else None
+            blocks.append(dict(html=_block(token, children, links=links), code=code,
+                               fallback=_block(token, children, links=False),
+                               source='\n'.join(lines[token.map[0]:token.map[1]])))
+        return blocks
     except RecursionError:
         raise MarkdownError('markdown_nesting_too_deep') from None

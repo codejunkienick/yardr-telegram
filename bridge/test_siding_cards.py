@@ -1158,7 +1158,7 @@ class SidingTests(BridgeTestCase):
         (release / 'transcriber').mkdir()
         shutil.copytree(Path(b.__file__).resolve().parents[1] / 'vendor', release / 'vendor')
         for name in ('bridge.py', 'run_asks.py', 'siding_cards.py', 'markdown.py', 'yard_commands.py', 'model_switch.py',
-                     'nudge_cards.py', 'typed_nudge.py'):
+                     'nudge_cards.py', 'typed_nudge.py', 'yard_mail.py'):
             shutil.copyfile(Path(b.__file__).with_name(name), release / 'bridge' / name)
         shutil.copyfile(Path(b.__file__).resolve().parents[1] / 'transcriber' / 'voice_transcribe.py', release / 'transcriber' / 'voice_transcribe.py')
         program = str(release / 'bridge' / 'bridge.py')

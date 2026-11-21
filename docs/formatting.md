@@ -45,9 +45,9 @@ Unmatched delimiters stay literal; an unclosed fence ends at document end.
 | ATX/Setext headings | Bold line |
 | Paragraphs | One blank line between blocks |
 | Soft/hard line breaks | LF newline |
-| Lists | `• ` or original ordered start plus sequential numbers; continuation lines indented two spaces |
+| Lists | `• ` or original ordered start plus sequential numbers; continuation lines indented two spaces, code lines not |
 | Rules | Literal `---` |
-| Quotes, including nested | Textual `> ` prefix per level on every rendered line; no nested Telegram blockquotes |
+| Quotes, including nested | Textual `> ` prefix per level on every rendered line outside code; no nested Telegram blockquotes |
 | Links/autolinks | `a href`, validated by the existing HTTP/HTTPS/TG policy; relative/mailto/unsafe destinations refuse |
 | Images | Plain alt text plus ` (destination)`; no link, download or image entity |
 | Inline code | Escaped `code` |
@@ -57,7 +57,9 @@ Unmatched delimiters stay literal; an unclosed fence ends at document end.
 Link titles and additional fence info are not displayed. Table/math delimiters
 follow normal CommonMark text rules. List items containing several blocks
 retain blank lines; nested list continuations use two spaces per level.
-Quote/list prefixes also decorate code lines within those contexts.
+Quote/list prefixes stop at code: a code block in a list or quote starts
+its own line with no prefix and keeps its exact lines, so a command stays
+copyable.
 
 Code is a display, not a byte-preserving evidence channel: CRLF and CR become
 LF before parsing. Fences retain their parsed spaces, tabs, blank lines and
@@ -81,8 +83,9 @@ Generated HTML passes the existing HTML validator and link policy. Both the
 Markdown source and generated HTML must fit the existing 16384 UTF-16 source
 cap; escaping can reach this before the visible limit. Visible text is at
 most 4096 UTF-16 units, or 1024 for captions. Astral characters count two;
-ZWJ sequences count all their units. Nothing splits, extracts a file or
-bypasses a limit. Ordinary asks must also leave room for the answer suffix;
+ZWJ sequences count all their units. In send, reply and pin nothing
+splits, extracts a file or bypasses a limit; only whole mail
+(OPERATIONS.md, "Whole mail") splits a mail into parts. Ordinary asks must also leave room for the answer suffix;
 lettered options are checked on visible text and still need buttons unless
 `text_options` is explicitly selected.
 

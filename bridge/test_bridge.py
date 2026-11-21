@@ -1428,6 +1428,13 @@ class BridgeTests(BridgeTestCase):
             ('1. one\n2. two', '1. one\n2. two', '1. one\n2. two'),
             ('3. three\n4. four\n\n---', '3. three\n4. four\n\n---', '3. three\n4. four\n\n---'),
             ('> outer\n> > inner', '&gt; outer\n&gt; \n&gt; &gt; inner', '> outer\n> \n> > inner'),
+            # Code nested in a list or a quote keeps its bytes: no indent or marker before or inside <pre>.
+            ("1. Run:\n\n   ```sh\n   cat <<'EOF'\n   value\n   EOF\n   ```\n2. done",
+             '1. Run:\n  \n<pre><code class="language-sh">cat &lt;&lt;\'EOF\'\nvalue\nEOF\n</code></pre>\n2. done',
+             "1. Run:\n  \ncat <<'EOF'\nvalue\nEOF\n\n2. done"),
+            ("> x\n>\n> ```\n> cat <<'EOF'\n> v\n> EOF\n> ```\n> after",
+             "&gt; x\n&gt; \n<pre><code>cat &lt;&lt;'EOF'\nv\nEOF\n</code></pre>\n&gt; \n&gt; after",
+             "> x\n> \ncat <<'EOF'\nv\nEOF\n\n> \n> after"),
             ('<b>literal</b> & x', '&lt;b&gt;literal&lt;/b&gt; &amp; x', '<b>literal</b> & x'),
             ('[link](https://x.y/?a=1&b=2) [tg](tg://user?id=1)', '<a href="https://x.y/?a=1&amp;b=2">link</a> <a href="tg://user?id=1">tg</a>', 'link tg'),
             ('[link][ref]\n\n[ref]: https://x.y/ "title"', '<a href="https://x.y/">link</a>', 'link'),

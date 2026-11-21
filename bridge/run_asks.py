@@ -38,7 +38,7 @@ STALE_PROPOSAL = 'Proposal changed' + FALLBACK
 REPLACED_PROPOSAL = 'Proposal changed; replaced by a newer card'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
-         'NextStages', 'GetBead', 'Head', 'Events', 'Notes', 'SkillDigest')
+         'NextStages', 'GetBead', 'Head', 'Events', 'Notes', 'SkillDigest', 'UserInbox', 'Conversation')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
@@ -212,6 +212,7 @@ def verify_operator(client, config):
             or user.get('role') != 'operator' or not isinstance(identity, dict)
             or identity.get('id') != str(config['user_id'])):
         raise NativeError('operator_not_authorized')
+    return user
 
 
 def text(value, field, controls=False):

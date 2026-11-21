@@ -85,7 +85,7 @@ key from a failure; a malformed request answers 400 and a bad secret 403.
 | route | body | answer |
 |---|---|---|
 | `POST /v1/send` | `conversation` (default the paired chat) or `topic` (a name), `text`, `key` (else the `Idempotency-Key` header), optional `format` (`plain`, `html`, `markdown`, `auto`; default `auto`), `silent`, `keyboard` (rows, or rows as a JSON string), `text_options`, `reply_to`, `attachments` (host paths), `attachment_kind` | `{delivered, message_id, conversation, reason?, failure_kind?}` |
-| `POST /v1/tell` | `conversation`, `title`, `text`, optional `link` | as `/v1/send`; plain text, the title on its own first line. The yard tells with no key, so the key is the content's hash and the minute: the same tell retried within the minute is sent once |
+| `POST /v1/tell` | `conversation`, `title`, `text`, optional `link` | as `/v1/send`; plain text, the title on its own first line. The yard tells with no key, so the key is the content's hash and the minute: the same tell retried within the minute is sent once. With `[yardr.mail]` the operator's unread mail goes whole first, and the tell answers 503 when that is unfinished, which the yard retries ([Whole mail](bridge/OPERATIONS.md#whole-mail)) |
 | `POST /v1/posted` | `key` | `{message_id}` when the ledger holds a confirmed send under the key, else `{}` |
 | `POST /v1/read` | `conversation`, optional `limit` (1-200, default 50) | `{messages: [{id, direction, from, text, at}]}`, oldest first |
 | `POST /v1/react` | `reaction` (`seen`, `done`, `none` or an emoji), optional `message_id`, `conversation` | `{delivered, message_id, reason?}` |
@@ -153,7 +153,10 @@ must likewise become `crew`. See [compatibility names and their checks](docs/pub
   [Siding status and the plain fold](bridge/OPERATIONS.md#siding-status-and-the-plain-fold)
   for `siding_card`.
 - `notify`: the `tell` call to the user's `TGBRIDGE_CONVERSATION`, so what
-  lands in the operator's inbox can reach the phone.
+  lands in the operator's inbox can reach the phone. The yard tells the
+  start of one mail, or only who wrote for several; with `[yardr.mail]` the
+  bridge reads the mail itself and sends it whole
+  ([Whole mail](bridge/OPERATIONS.md#whole-mail)).
 - `hear`: by identity, on the `sender` field: the operator's Telegram id
   is their identity in the source (`yardr user identity`), and a
   delivery carries `speaker=<user>`.

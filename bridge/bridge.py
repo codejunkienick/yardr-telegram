@@ -69,6 +69,7 @@ MESSAGE_LOG_KEEP = 500
 # The receipt of a send whose every attempt failed before sending: delivered
 # false, failure_kind transient. Its ledger row is not final.
 NOT_SENT_REASON = 'transport_unavailable_not_sent'
+RESERVED_KEY = 'keys starting yardmail: are the bridge\'s own (whole mail)'
 # Reactions on the paired user's messages ([reactions]): none unless
 # on_accept is set or an agent asks. Telegram's reaction list has no check
 # mark, so "done" defaults to the OK hand.
@@ -130,6 +131,9 @@ _nudge_words_spec = importlib.util.spec_from_file_location('typed_nudge', Path(_
 typed_nudge = importlib.util.module_from_spec(_nudge_words_spec)
 _nudge_words_spec.loader.exec_module(typed_nudge)
 sys.modules['typed_nudge'] = typed_nudge
+_mail_spec = importlib.util.spec_from_file_location('yard_mail', Path(__file__).resolve().with_name('yard_mail.py'))
+yard_mail = importlib.util.module_from_spec(_mail_spec)
+_mail_spec.loader.exec_module(yard_mail)
 voice_transcribe = importlib.util.module_from_spec(_transcriber_spec)
 _transcriber_spec.loader.exec_module(voice_transcribe)
 SETTINGS_ENV = 'TELEGRAM_BRIDGE_SETTINGS'
@@ -1012,6 +1016,11 @@ class ApiError(Exception):
     {"error": <the message>}."""
 
 
+class ApiUnavailable(Exception):
+    """A tell not finished, its rest safe to retry: HTTP 503, which the yard
+    tries again, and the ledger resumes it."""
+
+
 def _callback_handler(bridge):
     """The yard API on the loopback port (YARDR.md, "Outbound"): every
     request carries Authorization: Bearer <callback secret>, the yard
@@ -1032,11 +1041,17 @@ def _callback_handler(bridge):
 
         def _answer(self, status, value):
             payload = json.dumps(value).encode()
-            self.send_response(status)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            try:
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            except OSError:
+                # The caller has gone (a tell can outlive the yard's wait):
+                # what was sent stands in the ledger.
+                self.close_connection = True
+                bridge._log('yard api answer not written')
 
         def do_GET(self):
             if not self._authorized():
@@ -1065,6 +1080,8 @@ def _callback_handler(bridge):
                 self._answer(200, result)
             except ApiError as error:
                 self._answer(400, dict(error=str(error)))
+            except ApiUnavailable:
+                self._answer(503, dict(error='tell unfinished; retry'))
             except (ValueError, UnicodeError):
                 self._answer(400, dict(error='a JSON object is required'))
             except TransportError as error:
@@ -1191,6 +1208,7 @@ class Bridge:
         self.typed_nudge = typed_nudge.TypedNudge(self)
         self.siding_cards = siding_cards.SidingCards(self)
         self.model_switch = model_switch.ModelSwitch(self)
+        self.yard_mail = yard_mail.YardMail(self, html_visible_text, resendable)
         self.stop = threading.Event()
         self.last_heartbeat = None
         # The bot as the start probe's getMe described it; None until then.
@@ -3537,24 +3555,30 @@ class Bridge:
         except TransportError:
             return pending
 
-    def publish(self, request, format_fallback_reason=None):
+    def publish(self, request, format_fallback_reason=None, resend_on_429=False, start_by=None):
         """Send one request on the paired chat's conversation, on a
         configured, recorded topic's or on a served auto topic's, bound or
         not (OPERATIONS.md, "Topics"); any other conversation is
         recipient_not_authorized. In a topic every Telegram request of the
         send carries the topic's message_thread_id, and the receipt names the
         topic's conversation. In an auto topic a rejected file or album
-        fails with no text fallback: the user may have deleted the topic."""
+        fails with no text fallback: the user may have deleted the topic.
+        Whole mail only, outside the request: with resend_on_429 Telegram's
+        429 is saved as not sent, so the same key sends again; past start_by
+        (monotonic), checked once the send holds publish_lock, nothing is
+        sent and the send is saved as not sent."""
         conversation = request.get('conversation')
         if conversation == self.conversation:
-            receipt = self._publish(request, format_fallback_reason=format_fallback_reason)
+            receipt = self._publish(request, format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
+                                    start_by=start_by)
         else:
             topic = next((topic for topic in self._sendable_topics() if topic['conversation'] == conversation), None)
             if topic is None:
                 return self.receipt(reason='recipient_not_authorized')
             # Only served auto topics carry a display_name.
             receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic,
-                                    format_fallback_reason=format_fallback_reason)
+                                    format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
+                                    start_by=start_by)
             receipt = dict(receipt, conversation=topic['conversation'])
         self._log_sent(conversation, request, receipt)
         return receipt
@@ -3634,6 +3658,8 @@ class Bridge:
         key = request.get('key') or key_header
         if not isinstance(key, str) or not key.strip():
             raise ApiError('key is required, in the body or the Idempotency-Key header')
+        if key.startswith(yard_mail.KEY_PREFIX):
+            raise ApiError(RESERVED_KEY)
         conversation = self._api_conversation(request)
         fmt = request.get('format')
         format_fallback_reason = None
@@ -3706,7 +3732,10 @@ class Bridge:
         the title on its own first line, the link last. The yard tells with
         no key, so the key is the content's hash and the minute: a tell
         retried within the minute is sent once, and the same words a minute
-        later are a new message."""
+        later are a new message. With [yardr.mail] the operator's unread
+        mail goes whole first, and this notice only when the mail sent does
+        not cover it (OPERATIONS.md, "Whole mail"); ApiUnavailable (503)
+        when that is unfinished."""
         title, text, link = request.get('title') or '', request.get('text') or '', request.get('link') or ''
         if not all(isinstance(v, str) for v in (title, text, link)):
             raise ApiError('title, text and link must be strings')
@@ -3715,12 +3744,22 @@ class Bridge:
         body = '\n'.join(part for part in (title.strip(), text.strip(), link.strip()) if part)
         if not body:
             raise ApiError('title or text is required')
+        given = request.get('key') or key_header
+        if isinstance(given, str) and given.startswith(yard_mail.KEY_PREFIX):
+            raise ApiError(RESERVED_KEY)
         conversation = self._api_conversation(request)
-        minute = int(time.time() // 60)
-        digest = hashlib.sha256(json.dumps([conversation['conversation_id'], body, minute]).encode()).hexdigest()
-        key = request.get('key') or key_header or f'tell:{digest[:32]}'
-        return self._api_answer(self.publish(dict(conversation=conversation, idempotency_key=key, text=body)),
-                                conversation)
+
+        def notice(line=None):
+            said = body if line is None else body + '\n' + line
+            minute = int(time.time() // 60)
+            digest = hashlib.sha256(json.dumps([conversation['conversation_id'], said, minute]).encode()).hexdigest()
+            return self.publish(dict(conversation=conversation, idempotency_key=given or f'tell:{digest[:32]}', text=said))
+        if not self.yard_mail.enabled:
+            return self._api_answer(notice(), conversation)
+        try:
+            return self._api_answer(self.yard_mail.tell(conversation, title, text, notice), conversation)
+        except yard_mail.Unfinished:
+            raise ApiUnavailable() from None
 
     def api_posted(self, request, key_header=None):
         """POST /v1/posted: the message a confirmed send under `key` made, or {}."""
@@ -3881,7 +3920,8 @@ class Bridge:
                 last = None
         return dict(ok=True, bot=self.account, last_poll_ok=last)
 
-    def _publish(self, request, thread_id=None, text_fallback=True, format_fallback_reason=None):
+    def _publish(self, request, thread_id=None, text_fallback=True, format_fallback_reason=None, resend_on_429=False,
+                 start_by=None):
         key, text = request.get('idempotency_key'), request.get('text')
         if not isinstance(key, str) or not key.strip() or len(key) > 256:
             return self.receipt(reason='stable_idempotency_key_required')
@@ -4007,6 +4047,9 @@ class Bridge:
             if utf16_units(visible + '\n✓ ' + longest) > limit:
                 return self.receipt(reason='invalid_keyboard')
         def deliver(pending):
+            if start_by is not None and self.monotonic() >= start_by:
+                self._log('yardmail part not started: its time had passed')
+                return self.not_sent()
             if rows is not None:
                 # Recorded before Telegram is contacted, so a press can only
                 # ever resolve against a sent ask; the sent message id follows
@@ -4034,6 +4077,10 @@ class Bridge:
                                                    text_fallback=text_fallback)
             else:
                 receipt = self._deliver_text(text, reply, pending, plain, extra=extra or None)
+            if (resend_on_429 and receipt.get('delivered') is False
+                    and (receipt.get('metadata') or {}).get('reason') == 'telegram_rejected_not_sent_429'):
+                self._log('yardmail part rate-limited')
+                receipt = self.not_sent()
             if rows is not None and receipt.get('delivered') and receipt.get('message_id'):
                 self.store.set_ask_message(ask_ids, int(receipt['message_id']))
             if text_options and receipt.get('delivered'):
@@ -5085,7 +5132,7 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
                  'pairing_update_id', 'bot', 'menu', 'transcribe', 'crew', 'command',
                  'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
 # The yard this bridge relays to (YARDR.md, "Settings").
-YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota', 'mayor_model'}
+YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota', 'mayor_model', 'mail'}
 # The native /quota table ([yardr.quota]): its presence turns /quota on.
 YARDR_QUOTA_KEYS = {'timeout', 'groups', 'machine_login', 'machine'}
 # The native /mayor_model table ([yardr.mayor_model]) and each of its picks:
@@ -5602,6 +5649,16 @@ def load_settings(path, home=None):
                      picks=_mayor_picks(mayor_table['picks']))
         _native_clash(data, menu_entries, 'mayor_model', yard_commands.MAYOR_MODEL_PREFIX, '[yardr.mayor_model]')
         _native_clash(data, menu_entries, 'switch_model', yard_commands.MAYOR_MODEL_PREFIX, '[yardr.mayor_model]')
+    # Whole mail ([yardr.mail] turns it on, with no keys): it reads the
+    # operator's mail over the native socket.
+    mail_table = yardr.get('mail')
+    if mail_table is not None:
+        if not isinstance(mail_table, dict):
+            raise SettingsError('settings: [yardr.mail] must be a table')
+        if not native:
+            raise SettingsError('settings: [yardr.mail] needs [yardr] home and operator together')
+        if mail_table:
+            raise SettingsError(f'settings: unknown key yardr.mail.{sorted(mail_table)[0]}')
     if quota is not None or mayor is not None:
         yardr_bin = _native_bin(yardr.get('bin'))
     city_commands = _command_settings(data, menu_entries, bool(native), mayor_model=mayor is not None)
@@ -5630,6 +5687,8 @@ def load_settings(path, home=None):
         config['yardr_quota'] = quota
     if mayor is not None:
         config['yardr_mayor_model'] = mayor
+    if mail_table is not None:
+        config['yardr_mail'] = True
     # The crew member: internally the bridge's agent, as the ledger names it.
     agent = _text_setting(data.get('crew', 'yardmaster'), 'crew')
     config['agent'] = agent
@@ -6626,6 +6685,8 @@ def main():
     elif args.command in ('send', 'reply-current'):
         if not args.body_file or not args.idempotency_key:
             parser.error('send/reply-current requires --body-file and --idempotency-key (reuse the key for retries)')
+        if args.idempotency_key.startswith(yard_mail.KEY_PREFIX):
+            parser.error(RESERVED_KEY)
         conversation = _outbound_conversation(bridge, args)
         message_id = _dispatch_outbound(bridge, args, args.body_file.read_text(), conversation)
         print('Telegram delivery confirmed; message ID ' + str(message_id))

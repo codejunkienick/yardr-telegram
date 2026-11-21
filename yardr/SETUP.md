@@ -216,7 +216,8 @@ $B topics          # creates the [[topic]]s once; run each subscribe: line
 
 ## 10. Telling (shell, optional)
 
-What lands in your inbox reaches the chat, in General or a topic:
+What lands in your inbox reaches the chat, in General or a topic
+([whole mail](../bridge/OPERATIONS.md#whole-mail)):
 
 ```sh
 printf 'TGBRIDGE_CONVERSATION=%s\n' <chat id, or <chat id>:topic:<thread id>> | yardr user key <operator> tgbridge
@@ -322,7 +323,6 @@ is shown as "approved, to be carried out", then refreshed on polling or
 Long canonical outcomes are delivered whole in bounded, keyed messages.
 Keep the ledger when moving/restarting the bridge; deleting it loses these
 bindings and delivery history.
-
 
 ### Skill copies (shell)
 
@@ -553,7 +553,7 @@ and neither answers or executes an operation. Polling and native ask_close
 show the canonical state, including put-aside, due/reopened, taken-back and
 later outcome edits. Generated stage choices use AnswerAskExpected: core checks stage
 authority and moves the bead, retaining optional words on the answer note.
-There is no client-side inference of stage authority from markdown or asker.
+The client infers no stage authority from markdown or asker.
 
 Every ordinary mutation names the input message's verified generation turn.
 Each message presents one open turn forever. A changed open turn sends a new
@@ -691,7 +691,7 @@ These commands are exercised on an isolated source and loopback bridge. No
 blanket grant is needed. The caller can publish status; only the paired
 human's tap folds or releases, and only the exact beads shown. See
 `bridge/OPERATIONS.md` for subset replies, release cards, expiry, withdrawal,
-`fold_max`, changed beads and the undo. No siding, flow, route or group is created by enabling the feature.
+`fold_max`, changed beads and the undo. Enabling it creates no siding, flow, route or group.
 
 A source commit is not an installation or activation. Before activation,
 review offline previews and the isolated integration gate. After an
@@ -1292,12 +1292,12 @@ systemctl --user daemon-reload
 systemctl --user start <unit>
 ```
 
-The unit runs the checkout again, so the checkout must still be there. The
+The unit runs the checkout again, so it must still be there. The
 pack applied above still works with it (the same port or alias); apply
 `<checkout>/yardr` with the same flags only to move the recorded origin back.
 On the fork, revert skills with `yardr skill add` from
 `<checkout>/skills/<name>` for this yard.
-The host-wide voice-transcribe link remains the operator's choice as above.
+The host-wide voice-transcribe link stays the operator's choice.
 
 ### Never
 

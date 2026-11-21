@@ -6,6 +6,14 @@ sees and does, not how the code is organised.
 
 ## [Unreleased]
 
+### Fixed
+
+- Existing custom `/nudge` commands, menu entries and callback prefixes
+  overlapping `nudge:` keep loading with their original meaning. They take
+  precedence over the built-in `/nudge` and its confirm cards. Startup and
+  `check-install` explain the conflict and how to rename the custom entries
+  or change their prefixes to enable the built-in.
+
 ### Added
 
 - The yard's nudge cards: when a core files a `session nudge` card for a

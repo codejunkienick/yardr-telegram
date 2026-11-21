@@ -2,6 +2,8 @@
 fake or a real isolated core: the typed command, the reply to a nudge card,
 the verified tap's one write, and the outcome relayed on the confirm card."""
 from pathlib import Path
+import io
+import json
 import re
 import subprocess
 import sys
@@ -11,9 +13,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
+import testports  # noqa: E402
 import testyardr  # noqa: E402
 import yard_commands as y  # noqa: E402
 from test_bridge import BridgeTestCase  # noqa: E402
+from test_commands import FakeTelegram, answer, handler_script  # noqa: E402
 from test_run_asks import NativeCase  # noqa: E402
 
 n = b.run_asks
@@ -179,6 +183,13 @@ class TypedCommandTests(TypedCase):
         self.poll(self.tap(self.row()['token'], uid=40))
         ident = self.native.nudges['crew:yardmaster']['id']
         self.native.raw_events.append(nudged(33, ident, working=True, queued=True))
+        saved = self.row()
+        before = len(self.sends())
+        self.bridge.commands.clear()
+        self.poll()
+        self.assertEqual(self.row(), saved)
+        self.assertEqual(len(self.sends()), before)
+        self.bridge.commands['nudge'] = y.NUDGE_COMMAND
         self.poll()
         self.assertEqual(self.sends()[-1]['text'],
                          '\u2713 Nudge typed (the agent was working; the line is queued)')
@@ -365,40 +376,144 @@ class NudgeSettingsTests(unittest.TestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.home = self.root / 'yard'
         self.home.mkdir(mode=0o700)
+        self.enterContext(patch.dict('os.environ', dict(
+            HOME=str(self.root), PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin',
+            XDG_CONFIG_HOME=str(self.root / 'config'), XDG_STATE_HOME=str(self.root / 'state')), clear=True))
 
-    def settings(self, extra=''):
+    def settings(self, extra='', native=True):
         from test_bridge import write_settings
         path = write_settings(self.root)
         text = path.read_text()
-        marker = '\n[yardr]\n'
-        start = text.index(marker)
-        text = text[:start] + marker + 'home = "%s"\noperator = "pat"\n' % self.home + text[start + len(marker):]
+        if native:
+            marker = '\n[yardr]\n'
+            start = text.index(marker)
+            text = text[:start] + marker + 'home = "%s"\noperator = "pat"\n' % self.home + text[start + len(marker):]
         path.write_text(text + extra)
         return path
 
+    def custom(self, name, prefix):
+        keyboard = [[dict(text='Again', callback_data=(prefix or name + ':') + 'again')]]
+        handler = handler_script(self.root / 'handlers', answer(dict(type='send', text='My command', keyboard=keyboard)))
+        fields = dict(name=name, description='Mine', handler=str(handler))
+        if prefix is not None:
+            fields['callback_prefix'] = prefix
+        return '\n[[command]]\n' + ''.join(f'{key} = {json.dumps(value)}\n' for key, value in fields.items())
+
+    def make_bridge(self, settings):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(dir=self.root)))
+        fake = FakeTelegram()
+        fake.answers['setMyCommands'] = 200, dict(ok=True, result=True)
+        fake.answers['getMyCommands'] = lambda body: (200, dict(ok=True, result=fake.of('setMyCommands')[-1]['commands']))
+        config = dict(settings.config, hook_secret='TESTHOOK')
+        bridge = b.Bridge(config, b.Store(root / 'state.sqlite3', 10), 'TESTTOKEN', 'TESTSECRET',
+                          port=0, request=fake, state_dir=root)
+        return bridge, fake
+
+    def check_custom(self, settings, name, prefix):
+        bridge, fake = self.make_bridge(settings)
+        record = self.root / 'handlers' / 'record.jsonl'
+        before = len(record.read_text().splitlines()) if record.exists() else 0
+        with patch('sys.stderr', new_callable=io.StringIO):
+            bridge.inbound(dict(update_id=40, message=dict(message_id=40, text=f'/{name} {WORDS}',
+                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)})))
+            bridge.inbound(dict(update_id=41, callback_query=dict(id='q41', data=prefix + 'again',
+                message=dict(message_id=501, chat=dict(id=123, type='private')),
+                **{'from': dict(id=123, is_bot=False)})))
+        records = [json.loads(json.loads(line)['stdin']) for line in record.read_text().splitlines()]
+        self.assertEqual(len(records), before + 2)
+        self.assertEqual((records[-2]['kind'], records[-2]['command'], records[-2]['args']), ('command', name, WORDS))
+        self.assertEqual((records[-1]['kind'], records[-1]['command'], records[-1]['callback_data']),
+                         ('callback', name, prefix + 'again'))
+        self.assertEqual([body['text'] for body in fake.of('sendMessage')], ['My command', 'My command'])
+        keyboard = dict(inline_keyboard=[[dict(text='Again', callback_data=prefix + 'again')]])
+        self.assertEqual([body['reply_markup'] for body in fake.of('sendMessage')], [keyboard, keyboard])
+        self.assertEqual(fake.of('answerCallbackQuery'), [dict(callback_query_id='q41')])
+        self.assertEqual(fake.of('hook'), [])
+        self.assertEqual(bridge.typed_nudge.rows(), [])
+        self.assertNotEqual(bridge.commands.get('nudge', {}).get('native'), y.NATIVE_NUDGE)
+        shown = bridge.set_commands()
+        self.assertEqual([entry for entry in shown if entry['command'] == name], [dict(command=name, description='Mine')])
+
     def test_native_registers_a_typed_only_nudge(self):
-        settings = b.load_settings(self.settings())
-        (entry,) = [command for command in settings.config['commands'] if command['name'] == 'nudge']
-        self.assertEqual(entry['menu'], False)
-        self.assertEqual(entry['callback_prefix'], 'nudge:')
-        self.assertEqual(entry['native'], 'nudge')
+        for extra in ('', self.custom('my_nudge', 'my_nudge:'), self.custom('mine', 'nudge-other:')):
+            with self.subTest(extra=extra):
+                settings = b.load_settings(self.settings(extra))
+                (entry,) = [command for command in settings.config['commands'] if command['name'] == 'nudge']
+                self.assertEqual(entry['menu'], False)
+                self.assertEqual(entry['callback_prefix'], 'nudge:')
+                self.assertEqual(entry['native'], 'nudge')
+                self.assertNotIn('yardr_nudge_disabled', settings.config)
 
     def test_without_native_there_is_no_nudge_command(self):
         from test_bridge import write_settings
         settings = b.load_settings(write_settings(self.root))
         self.assertNotIn('nudge', [command['name'] for command in settings.config.get('commands', ())])
 
-    def test_a_command_nudge_clashes(self):
-        with self.assertRaisesRegex(b.SettingsError, r'clashes with /nudge'):
-            b.load_settings(self.settings('\n[[command]]\nname = "nudge"\ndescription = "Mine"\nhandler = "/bin/false"\n'))
+    def test_a_custom_nudge_keeps_its_handler_and_callbacks(self):
+        for prefix in (None, 'nudge:', 'custom:'):
+            with self.subTest(prefix=prefix):
+                extra = self.custom('nudge', prefix)
+                plain = b.load_settings(self.settings(extra, native=False))
+                settings = b.load_settings(self.settings(extra))
+                self.assertEqual(settings.config['commands'], plain.config['commands'])
+                self.assertIn('[[command]] /nudge', settings.config['yardr_nudge_disabled'])
+                self.assertNotIn('yardr_nudge_disabled', plain.config)
+                for loaded in (plain, settings):
+                    self.check_custom(loaded, 'nudge', prefix or 'nudge:')
 
-    def test_a_menu_nudge_clashes(self):
-        with self.assertRaisesRegex(b.SettingsError, r'\[\[menu\]\] /nudge clashes'):
-            b.load_settings(self.settings('\n[[menu]]\ncommand = "nudge"\ndescription = "Mine"\n'))
+    def test_a_custom_nudge_menu_keeps_its_description_and_mail_relay(self):
+        extra = '\n[[menu]]\ncommand = "nudge"\ndescription = "Mine"\n'
+        plain = b.load_settings(self.settings(extra, native=False))
+        settings = b.load_settings(self.settings(extra))
+        self.assertEqual(settings.config['menu'], plain.config['menu'])
+        self.assertIn('[[menu]] /nudge', settings.config['yardr_nudge_disabled'])
+        for loaded in (plain, settings):
+            with self.subTest(native='yardr_home' in loaded.config):
+                bridge, fake = self.make_bridge(loaded)
+                self.assertNotIn('nudge', bridge.commands)
+                shown = bridge.set_commands()
+                self.assertEqual([entry for entry in shown if entry['command'] == 'nudge'],
+                                 [dict(command='nudge', description='Mine')])
+                bridge.inbound(dict(update_id=40, message=dict(message_id=40, text='/nudge ' + WORDS,
+                    chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)})))
+                self.assertEqual([body['text'] for body in fake.of('hook')], ['/nudge ' + WORDS])
+                self.assertEqual(fake.of('sendMessage'), [])
+                self.assertEqual(bridge.typed_nudge.rows(), [])
 
-    def test_an_overlapping_callback_prefix_is_refused(self):
-        with self.assertRaisesRegex(b.SettingsError, r'callback_prefix overlaps'):
-            b.load_settings(self.settings('\n[[command]]\nname = "mine"\ndescription = "Mine"\nhandler = "/bin/false"\ncallback_prefix = "nudge:x"\n'))
+    def test_overlapping_custom_prefixes_keep_their_handlers_and_callbacks(self):
+        for prefix in ('n', 'nudge', 'nudge:', 'nudge:x'):
+            with self.subTest(prefix=prefix):
+                extra = self.custom('mine', prefix)
+                plain = b.load_settings(self.settings(extra, native=False))
+                settings = b.load_settings(self.settings(extra))
+                self.assertEqual(settings.config['commands'], plain.config['commands'])
+                self.assertIn('[[command]] /mine callback_prefix', settings.config['yardr_nudge_disabled'])
+                for loaded in (plain, settings):
+                    self.check_custom(loaded, 'mine', prefix)
+
+    def test_a_conflict_is_explained_once_at_startup_and_in_install_status(self):
+        cases = (self.custom('nudge', 'custom:'),
+                 '\n[[menu]]\ncommand = "nudge"\ndescription = "Mine"\n',
+                 self.custom('mine', 'nudge:x'))
+        for extra in cases:
+            with self.subTest(extra=extra):
+                settings = b.load_settings(self.settings(extra))
+                reason = settings.config['yardr_nudge_disabled']
+                self.assertIn('Built-in /nudge disabled', reason)
+                self.assertIn('Rename', reason)
+                self.assertIn('callback_prefix', reason)
+                bridge, _ = self.make_bridge(settings)
+                bridge.stop.set()
+                bridge.typing_seconds = 0
+                with patch.object(bridge, 'probe_with_retry', return_value=True), \
+                     patch('sys.stdout', new_callable=io.StringIO) as out, \
+                     patch('sys.stderr', new_callable=io.StringIO) as err:
+                    testports.run_bridge(bridge)
+                self.assertEqual(err.getvalue().splitlines(), [reason])
+                self.assertIn('Telegram bridge ready', out.getvalue())
+                self.assertEqual(out.getvalue().count(reason), 1)
+                lines = b.install_problems(settings)
+                self.assertEqual(lines.count((True, 'WARN  ' + reason)), 1)
 
 
 class RealTypedNudgeTests(BridgeTestCase):
@@ -781,6 +896,17 @@ class ReplyTests(TypedCase):
         self.poll(self.tap(row['token'], uid=80))
         self.assertEqual(self.writes()[0]['target'], 'yardmaster')
         self.assertEqual(self.writes()[0]['text'], 'go on now')
+        saved = self.bridge.typed_nudge.rows()
+        before = len(self.sends())
+        self.bridge.commands.clear()
+        self.bridge.hook_secret = 'TESTHOOK'
+        self.native.calls.clear()
+        self.reply('plain words', uid=71)
+        self.assertEqual(self.bridge.typed_nudge.rows(), saved)
+        self.assertEqual(len(self.sends()), before)
+        self.assertEqual(self.native.calls, [])
+        hooks = [body for url, body in self.calls if url == self.bridge.hook_url]
+        self.assertEqual([body['text'] for body in hooks], ['plain words'])
 
     def test_a_reply_with_overlong_words_is_refused(self):
         self.publish_card()

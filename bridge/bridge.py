@@ -2499,6 +2499,9 @@ class Bridge:
         """True when /decide and decide: buttons are the bridge's own: native [yardr] home and operator are set."""
         return bool(self.config.get('yardr_home') and self.config.get('yardr_operator'))
 
+    def native_nudge(self):
+        return self.commands.get('nudge', {}).get('native') == yard_commands.NATIVE_NUDGE
+
     def decide_conversation(self, thread_id):
         """The conversation /decide answers in: the paired chat, or a configured or served topic; None for another thread."""
         if thread_id is None:
@@ -2987,8 +2990,7 @@ class Bridge:
         elif data.startswith(self.DECIDE_CALLBACK_PREFIX) and self.native_decide():
             self.run_asks.decide_callback(update_id, query)
             return
-        elif (data.startswith(yard_commands.NUDGE_PREFIX)
-              and self.commands.get('nudge', {}).get('native') == yard_commands.NATIVE_NUDGE):
+        elif data.startswith(yard_commands.NUDGE_PREFIX) and self.native_nudge():
             self.typed_nudge.callback(update_id, query)
             return
         elif data.startswith(self.ASK_CALLBACK_PREFIX):
@@ -4719,7 +4721,11 @@ class Bridge:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            print('Telegram bridge ready; private allowlist enforced', flush=True)
+            ready = 'Telegram bridge ready; private allowlist enforced'
+            if reason := self.config.get('yardr_nudge_disabled'):
+                self._log(reason)
+                ready += '; ' + reason
+            print(ready, flush=True)
             if self.typing_seconds:
                 self._start_typing()
             failures = 0
@@ -5383,10 +5389,9 @@ def _command_settings(data, menu, native=False, mayor_model=False):
     if not isinstance(entries, list) or len(entries) > MENU_MAX or any(not isinstance(e, dict) for e in entries):
         raise SettingsError(f'settings: command must be a list of at most {MENU_MAX} [[command]] tables')
     menu_names = {name for name, _ in menu}
-    reserved = (RESERVED_COMMANDS + (('decide',) if native else ()) + (('nudge',) if native else ())
+    reserved = (RESERVED_COMMANDS + (('decide',) if native else ())
                 + (('mayor_model', 'switch_model') if mayor_model else ()))
     prefixes = (Bridge.RESERVED_CALLBACK_PREFIXES + ((Bridge.DECIDE_CALLBACK_PREFIX,) if native else ())
-                + ((yard_commands.NUDGE_PREFIX,) if native else ())
                 + ((yard_commands.MAYOR_MODEL_PREFIX,) if mayor_model else ()))
     commands = []
     for index, item in enumerate(entries, 1):
@@ -5424,6 +5429,24 @@ def _command_settings(data, menu, native=False, mayor_model=False):
         raise SettingsError(f'settings: {shown} menu entries ([[menu]] and [[command]] with menu = true); '
                             f'Telegram takes at most {MENU_MAX}' + (' (with the native /decide)' if native else ''))
     return tuple(commands)
+
+
+def _nudge_disabled_reason(commands, menu):
+    """Explain which validated custom entries keep the native /nudge off."""
+    clashes = []
+    for command in commands:
+        if command['name'] == 'nudge':
+            clashes.append('[[command]] /nudge')
+        elif (command['callback_prefix'].startswith(yard_commands.NUDGE_PREFIX)
+              or yard_commands.NUDGE_PREFIX.startswith(command['callback_prefix'])):
+            clashes.append(f"[[command]] /{command['name']} callback_prefix")
+    if any(name == 'nudge' for name, _ in menu):
+        clashes.append('[[menu]] /nudge')
+    if clashes:
+        return ('Built-in /nudge disabled by ' + ', '.join(clashes) + '. '
+                'Rename custom /nudge commands/menu entries and move overlapping callback_prefix values '
+                'away from nudge: to enable it.')
+    return None
 
 
 def _topic_settings(data, agent):
@@ -5535,8 +5558,6 @@ def load_settings(path, home=None):
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
     if native and any(name == 'decide' for name, _ in menu_entries):
         raise SettingsError('settings: [[menu]] /decide clashes with the native /decide the bridge owns with [yardr] home and operator')
-    if native and any(name == 'nudge' for name, _ in menu_entries):
-        raise SettingsError('settings: [[menu]] /nudge clashes with the native /nudge the bridge owns with [yardr] home and operator')
 
     # The native /quota ([yardr.quota] turns it on): it needs native [yardr]
     # home and operator. A [[menu]] or [[command]] quota, or a [[command]]
@@ -5584,9 +5605,10 @@ def load_settings(path, home=None):
     if quota is not None or mayor is not None:
         yardr_bin = _native_bin(yardr.get('bin'))
     city_commands = _command_settings(data, menu_entries, bool(native), mayor_model=mayor is not None)
+    nudge_reason = _nudge_disabled_reason(city_commands, menu_entries) if native else None
 
     natives = (((dict(yard_commands.QUOTA_COMMAND, timeout=quota['timeout']),) if quota is not None else ())
-               + ((yard_commands.NUDGE_COMMAND,) if native else ())
+               + ((yard_commands.NUDGE_COMMAND,) if native and nudge_reason is None else ())
                + ((yard_commands.mayor_model_command(mayor), yard_commands.mayor_model_alias(mayor)) if mayor is not None else ()))
     if natives:
         shown = (len(menu_entries) + sum(1 for command in city_commands if command['menu']) + bool(native)
@@ -5600,6 +5622,8 @@ def load_settings(path, home=None):
     config = dict(yard=yard, account_id=account, hook_url=hook_url, yardr_source=source,
                   user_display_name=_text_setting(data.get('user_display_name', 'User'), 'user_display_name'),
                   timezone=timezone, menu=tuple(menu_entries), **ids, **native)
+    if nudge_reason is not None:
+        config['yardr_nudge_disabled'] = nudge_reason
     if yardr_bin is not None:
         config['yardr_bin'] = yardr_bin
     if quota is not None:
@@ -6205,6 +6229,9 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
 
     def warn(line):
         results.append((True, f'WARN  {line}'))
+
+    if reason := settings.config.get('yardr_nudge_disabled'):
+        warn(reason)
 
     def checked_paths():
         entries = []

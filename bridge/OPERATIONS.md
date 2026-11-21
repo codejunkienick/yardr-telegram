@@ -959,6 +959,23 @@ switch, stop `<INSTANCE_UNIT>`, run `<INSTANCE_ROOT>/current/install.sh
 
 ### /nudge
 
+An existing `[[command]]` named `nudge`, a `[[menu]]` entry with
+`command = "nudge"`, or a custom `callback_prefix` overlapping `nudge:`
+takes precedence over the built-in. The settings still load and the custom
+handler, arguments, buttons and menu keep their meaning. A menu-only
+`/nudge` keeps relaying as ordinary mail. Prefix overlap includes both
+directions: `nudge:x` and `nud` each keep the built-in off.
+
+With such a conflict the bridge omits the built-in command and its confirm
+cards, including replies with words to yard-filed cards and refreshes of
+saved typed-nudge rows. Yard-filed run cards still use their own approval
+and outcome path. The bridge logs the reason once per startup, includes it
+in its ready text, and reports it as a nonfatal `check-install` warning.
+To enable the built-in, rename custom `nudge` commands/menu entries (for
+example to `my_nudge`) and move any explicit overlapping `callback_prefix`
+to a separate prefix such as `my_nudge:`. Once both the name and prefix are
+free, the next startup registers the built-in.
+
 `/nudge <session|crew member|bead> [words]` lets the paired user, as the
 yard's operator, nudge a stuck session or crew member with their own words.
 It opens a confirm card drawn from canonical state: the target and its
@@ -980,10 +997,10 @@ card, unknown after ten minutes.
 probes it with an empty call, which a supporting core refuses in validation
 and an older core answers `no such method`: the latter is classified like
 `RPCUnsupported`, and `/nudge` answers that this yard's core has no session
-nudge, with nothing written. `/nudge` is typed-only and stays out of the
-Telegram menu on every core, so an unsupported core never advertises it. No
-grant, setting or service is added; the ledger gains the `typed_nudges`
-table.
+nudge, with nothing written. The built-in `/nudge` is typed-only and stays
+out of the Telegram menu on every core, so an unsupported core never
+advertises it. No grant, setting or service is added; the ledger gains the
+`typed_nudges` table.
 
 ## Asks
 

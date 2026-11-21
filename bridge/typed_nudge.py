@@ -468,6 +468,8 @@ class TypedNudge:
     # --- a reply with words to a nudge card ---------------------------------
 
     def reply(self, update_id, message):
+        if not self.bridge.native_nudge():
+            return False
         reply = message.get('reply_to_message')
         if not isinstance(reply, dict) or type(reply.get('message_id')) is not int:
             return False
@@ -558,6 +560,8 @@ class TypedNudge:
         return None
 
     def refresh(self):
+        if not self.bridge.native_nudge():
+            return
         ra = self.ra
         if ra.client is None or not self.config.get('yardr_operator'):
             return

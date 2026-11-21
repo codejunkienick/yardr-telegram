@@ -16,6 +16,14 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- Unread-message Nudge offer (`[reactions] nudge_after`): when configured
+  with `[reactions] read` and the built-in `/nudge`, messages left at
+  `landed` (🕊) past `nudge_after` seconds while their target crew is
+  running and `idle` or `blocked` get one silent Nudge confirm card
+  replying to the message, reusing `/nudge`'s `NudgeSession` tap and
+  outcome path, closing automatically if the message is read or answered
+  first, and staying off cleanly on cores without `NudgeSession`.
+
 - Read and done message reactions (`[reactions] read`): when configured
   with `[yardr] home`, accepted operator messages track `landed` (🕊 via
   `seen`) → `read` (👀 once the crew member's inbox acknowledgement passes

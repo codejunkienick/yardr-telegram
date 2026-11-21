@@ -65,7 +65,7 @@ LATER = {
     'model_operations': ('token', 'owner', 'active', 'value'),
     'model_actions': ('update_id', 'token', 'value'),
     'read_states': ('message_id', 'conversation_id', 'thread_id', 'seq', 'crew',
-                    'state', 'accepted_at', 'read_at', 'done_at', 'reason'),
+                    'state', 'accepted_at', 'read_at', 'done_at', 'reason', 'offer_token'),
     'read_states_meta': ('id', 'mark', 'pending_mark', 'pending_rounds', 'accept_mid'),
     'read_state_overrides': ('message_id', 'state', 'at'),
 }

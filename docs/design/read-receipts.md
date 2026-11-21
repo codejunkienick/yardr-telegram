@@ -64,3 +64,27 @@ stateDiagram-v2
   landed --> off: crew not in deliveries / unsupported answer
   landed --> expired: 24 h
 ```
+
+## Unread nudge offer
+
+When `[reactions] nudge_after` (`1`–`3600` seconds) is configured together
+with `[reactions] read`, `[yardr] home`/`operator`, and the built-in `/nudge`:
+
+1. **Reuse over a second card type:** Offers open via
+   `TypedNudge.open_confirm(token=..., reply_to=mid, header=..., silent=True)`
+   and use the existing `nudge:<token>:nudge` / `cancel` callback handler,
+   operator verification, `NudgeSession` write, and `session_nudged`
+   outcome follower. No new callback prefix or grant is added.
+2. **Core capability probe:** `NudgeSession {}` is probed once per process
+   on first eligible offer; `RPCUnsupported` (`no such method`) is cached
+   and logged once, leaving upstream cores silent with zero writes.
+3. **Zero message-text leakage:** The offered line is a fixed constant naming
+   only the integer event `seq`, keeping operator message text out of the
+   card and the agent's pane.
+4. **Durability and close-on-read:** `read_states.offer_token` and the
+   `typed_nudges` row (`message = None`) are saved atomically before the
+   send under `typed-nudge:<token>:send`; a later round retries `not-sent`,
+   replays confirmed sends, and retires ambiguous sends as offered. At most
+   one offer per crew stays `open` at once, one offer per message ever, and
+   moving out of `landed` (`read`, `done`, `manual`, `expired`, `off`)
+   cancels an `open` offer under `ra.lock()` and edits away its buttons.

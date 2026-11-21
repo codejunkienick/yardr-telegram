@@ -200,6 +200,8 @@ def outcome_text(event):
 
 
 class TypedNudge:
+    NO_SUPPORT = NO_SUPPORT
+
     def __init__(self, bridge):
         self.bridge, self.store, self.config = bridge, bridge.store, bridge.config
         self.logged = None
@@ -226,10 +228,14 @@ class TypedNudge:
             row = db.execute(f'SELECT value FROM {TABLE} WHERE token=?', (token,)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def save(self, row):
-        with self.store.connect() as db:
-            db.execute(f'INSERT INTO {TABLE} VALUES (?,?) ON CONFLICT(token) DO UPDATE SET value=excluded.value',
-                       (row['token'], n.canonical(row)))
+    def save(self, row, db=None):
+        sql = f'INSERT INTO {TABLE} VALUES (?,?) ON CONFLICT(token) DO UPDATE SET value=excluded.value'
+        params = (row['token'], n.canonical(row))
+        if db is not None:
+            db.execute(sql, params)
+            return
+        with self.store.connect() as conn:
+            conn.execute(sql, params)
 
     def rows(self):
         with self.store.connect() as db:
@@ -247,21 +253,22 @@ class TypedNudge:
     def render(self, row):
         """(html, plain, keyboard) of the confirm card in the row's state."""
         line = row['words'] or DEFAULT_LINE
+        status_line = f"{row['header']} \u00b7 {row['status']}" if row.get('header') else row['status']
         if row['state'] == 'open':
-            text = [f"<b>Nudge {escape(row['title'])}?</b>", escape(row['status']),
+            text = [f"<b>Nudge {escape(row['title'])}?</b>", escape(status_line),
                     '<pre>' + escape(line) + '</pre>']
             keyboard = [[dict(text='Nudge', callback_data=f"nudge:{row['token']}:nudge"),
                          dict(text='Cancel', callback_data=f"nudge:{row['token']}:cancel")]]
         elif row['state'] == 'following':
-            text = [f"<b>Nudge {escape(row['title'])}?</b>", escape(row['status']),
+            text = [f"<b>Nudge {escape(row['title'])}?</b>", escape(status_line),
                     '<pre>' + escape(line) + '</pre>', escape(REQUESTED)]
             keyboard = []
         else:
-            text = [f"<b>Nudge {escape(row['title'])}?</b>", escape(row['status']),
+            text = [f"<b>Nudge {escape(row['title'])}?</b>", escape(status_line),
                     '<pre>' + escape(line) + '</pre>', escape(row.get('notice', ''))]
             keyboard = []
         body = '\n'.join(text)
-        return body, row['title'] + '\n' + row['status'] + '\n' + line, keyboard
+        return body, row['title'] + '\n' + status_line + '\n' + line, keyboard
 
     def display(self, row):
         """Edit the card to the row's state; best effort, logged on failure:
@@ -276,7 +283,29 @@ class TypedNudge:
                              f"{(receipt.get('metadata') or {}).get('reason')}")
         return receipt
 
-    def open_confirm(self, uid, target, words, thread, user=''):
+    def probe(self):
+        """True when NudgeSession is served, False on RPCUnsupported; raises
+        RPCUnavailable / RPCAmbiguous / NativeError otherwise."""
+        try:
+            self.client.call('NudgeSession', {})
+        except n.RPCUnsupported:
+            return False
+        except n.RPCRefused:
+            return True
+
+    def send_confirm(self, row):
+        """Send the confirm card for row under typed-nudge:<token>:send; return receipt."""
+        body, plain, keyboard = self.render(row)
+        action = dict(type='send', text=body, plain=plain, format='html',
+                      keyboard=self.bridge._command_keyboard(keyboard))
+        if row.get('reply_to') is not None:
+            action['reply_to'] = int(row['reply_to'])
+        if row.get('silent'):
+            action['silent'] = True
+        return self.bridge._command_message(f"typed-nudge:{row['token']}:send", action, row['thread'])
+
+    def open_confirm(self, uid, target, words, thread, user='', *, token=None, reply_to=None,
+                     header=None, silent=False, before_send=None, probe=True):
         """Send the confirm card for target and words; the row, saved with
         its card message. With user, the crew conversation's card. NativeError
         with a fixed reason otherwise."""
@@ -284,16 +313,15 @@ class TypedNudge:
         if conversation is None:
             raise n.NativeError('Nudge is answered in the paired private chat.')
         self.verify()
-        try:
-            self.client.call('NudgeSession', {})
-        except n.RPCUnsupported:
-            raise n.NativeError(NO_SUPPORT) from None
-        except n.RPCUnavailable:
-            raise n.NativeError(UNAVAILABLE) from None
-        except n.RPCRefused:
-            pass  # the method reads; only its validation refused, writing nothing
-        except n.NativeError:
-            raise n.NativeError(UNCERTAIN) from None
+        if probe:
+            try:
+                supported = self.probe()
+            except n.RPCUnavailable:
+                raise n.NativeError(UNAVAILABLE) from None
+            except n.NativeError:
+                raise n.NativeError(UNCERTAIN) from None
+            if not supported:
+                raise n.NativeError(NO_SUPPORT)
         found = read_crew(self.client, target, user)
         kind = 'crew'
         if found is None:
@@ -308,16 +336,22 @@ class TypedNudge:
             title = f'crew member {target} for {user}'
         else:
             title = ('crew member ' if kind == 'crew' else 'session ') + target
-        row = dict(token=secrets.token_urlsafe(12), binding=self.binding_digest(),
+        row = dict(token=token or secrets.token_urlsafe(12), binding=self.binding_digest(),
                    conversation=conversation['conversation_id'], thread=thread,
                    title=title,
                    target=target, user=user, kind=kind, status=status, words=words, journal=journal,
                    request=None, state='open', message=None, approved_at=0, told=None, notice=None)
-        self.save(row)
-        body, plain, keyboard = self.render(row)
-        receipt = self.bridge._command_message(f"typed-nudge:{row['token']}:send",
-                                               dict(type='send', text=body, plain=plain, format='html',
-                                                    keyboard=self.bridge._command_keyboard(keyboard)), thread)
+        if header is not None:
+            row['header'] = header
+        if reply_to is not None:
+            row['reply_to'] = int(reply_to)
+        if silent:
+            row['silent'] = True
+        if before_send is not None:
+            before_send(row)
+        else:
+            self.save(row)
+        receipt = self.send_confirm(row)
         if receipt.get('delivered') is not True:
             reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
             raise n.NativeError(f'Nudge card not sent: {reason}. Nothing nudged.')
@@ -378,23 +412,29 @@ class TypedNudge:
                 self.answer(uid, query_id, notice, True)
                 return
             self.verify()
-            if not self.ra.claim_update(uid):
-                self.answer(uid, query_id, ALREADY)
-                return
-            if match[2] == 'cancel':
+            with self.ra.lock():
+                self.bridge.read_states.sync_offer(row['token'])
+                row = self.get(row['token'])
+                if row is None:
+                    self.answer(uid, query_id, 'That nudge button is out of date.', True)
+                    return
+                if not self.ra.claim_update(uid):
+                    self.answer(uid, query_id, ALREADY)
+                    return
+                if match[2] == 'cancel':
+                    if row['state'] != 'open':
+                        self.answer(uid, query_id, ALREADY)
+                        return
+                    row.update(state='cancelled', notice=CANCELLED)
+                    self.save(row)
+                    self.display(row)
+                    self.answer(uid, query_id, CANCELLED)
+                    return
                 if row['state'] != 'open':
                     self.answer(uid, query_id, ALREADY)
                     return
-                row.update(state='cancelled', notice=CANCELLED)
+                row.update(state='following', approved_at=self.ra.now())
                 self.save(row)
-                self.display(row)
-                self.answer(uid, query_id, CANCELLED)
-                return
-            if row['state'] != 'open':
-                self.answer(uid, query_id, ALREADY)
-                return
-            row.update(state='following', approved_at=self.ra.now())
-            self.save(row)
             try:
                 result = self.client.call('NudgeSession', dict(
                     target=row['target'], user=row.get('user', ''), text=row['words'], clear=False,

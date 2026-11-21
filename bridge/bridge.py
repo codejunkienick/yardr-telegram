@@ -73,8 +73,9 @@ RESERVED_KEY = 'keys starting yardmail: are the bridge\'s own (whole mail)'
 # Reactions on the paired user's messages ([reactions]): none unless
 # on_accept is set or an agent asks. Telegram's reaction list has no check
 # mark, so "done" defaults to the OK hand.
-REACTIONS_KEYS = {'on_accept', 'seen', 'done', 'read'}
+REACTIONS_KEYS = {'on_accept', 'seen', 'done', 'read', 'nudge_after'}
 REACTIONS_DEFAULTS = dict(on_accept=False, seen='\U0001F440', done='\U0001F44C')
+REACTIONS_NUDGE_AFTER_MAX = 3600
 REACTION_MAX_CHARS = 16
 # The typing indicator ([typing]): none unless seconds > 0. Telegram shows a
 # chat action for at most 5 s, so the worker repeats it every 4 s; it looks
@@ -2352,7 +2353,9 @@ class Bridge:
             receipt = self._deliver_reaction(message_id, emoji, key, once=once)
             if not once and receipt.get('delivered') is True:
                 self.read_states.on_react(message_id, emoji)
-            return receipt
+        if not once and receipt.get('delivered') is True:
+            self.read_states.close_offer(message_id)
+        return receipt
 
     # ---- typing ([typing]) -----------------------------------------------------
     # sendChatAction delivers nothing to the chat history, so it is the one
@@ -2895,6 +2898,8 @@ class Bridge:
         extra = {}
         if 'keyboard' in action:
             extra['reply_markup'] = {'inline_keyboard': action['keyboard']}
+        if action.get('silent'):
+            extra['disable_notification'] = True
         method = 'sendMessage'
         if action['type'] == 'edit':
             method, extra['message_id'] = 'editMessageText', action['message_id']
@@ -2903,8 +2908,9 @@ class Bridge:
             identity['text'] = action['source']
         if action['type'] == 'send' and thread_id is not None:
             extra['message_thread_id'] = identity['message_thread_id'] = thread_id
+        reply_to = action.get('reply_to') if action['type'] == 'send' else None
         return self._reserve_and_deliver(key, identity, lambda pending: self._deliver_text(
-            action['text'], None, pending, action['plain'], method=method, extra=extra))
+            action['text'], reply_to, pending, action['plain'], method=method, extra=extra))
 
     def _answer_callback(self, update_id, query_id, text='', alert=False, key=None):
         """Answer one callback query once, under command:<update_id>:answer for
@@ -5725,6 +5731,10 @@ def load_settings(path, home=None):
                                     f'{REACTION_MAX_CHARS} characters, no space, letter or digit')
         if 'read' in reactions and not native:
             raise SettingsError('settings: reactions.read needs [yardr] home and operator together')
+        if 'nudge_after' in reactions:
+            _int_setting(reactions['nudge_after'], 'reactions.nudge_after', 0, REACTIONS_NUDGE_AFTER_MAX)
+            if reactions['nudge_after'] > 0 and 'read' not in reactions:
+                raise SettingsError('settings: reactions.nudge_after needs reactions.read')
         config['reactions'] = reactions
     if 'typing' in data:
         typing = dict(TYPING_DEFAULTS, **_table(data, 'typing', TYPING_KEYS))

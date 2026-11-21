@@ -19,6 +19,7 @@ Every reaction transition holds the reactions flock from row re-read
 through Telegram's answer and row update, stepping only forward.
 """
 import json
+import secrets
 
 import run_asks as n
 
@@ -26,7 +27,7 @@ TABLE = 'read_states'
 META_TABLE = 'read_states_meta'
 OVERRIDE_TABLE = 'read_state_overrides'
 FIELDS = ('message_id', 'conversation_id', 'thread_id', 'seq', 'crew',
-          'state', 'accepted_at', 'read_at', 'done_at', 'reason')
+          'state', 'accepted_at', 'read_at', 'done_at', 'reason', 'offer_token')
 OPEN_STATES = ('landed', 'read')
 TERMINAL_STATES = ('done', 'manual', 'off', 'expired')
 ROUND_SECONDS = 60
@@ -34,6 +35,12 @@ EXPIRE_SECONDS = 24 * 3600
 EVENTS_MIN = 64
 EVENTS_MAX = 1024
 TRANSIENT = (n.RPCUnavailable, n.RPCAmbiguous)
+OFFER_LINE = "yardr: Telegram message (event {seq}) waits unread; read with yardr inbox."
+OFFER_NOTICES = {
+    'read': 'Message read; nothing nudged.',
+    'done': 'Message answered; nothing nudged.',
+}
+OFFER_ENDED_NOTICE = 'Tracking ended; nothing nudged.'
 # A delivery row counts for the reply-check send mark only once its receipt
 # is no longer retryable: a transient not-sent attempt never left this host,
 # and its same-key retry must still trigger reply discovery when it delivers.
@@ -44,6 +51,17 @@ SETTLED_RECEIPT = (
     "AND coalesce(json_extract(receipt, '$.failure_kind'), '') = 'transient' "
     "AND coalesce(json_extract(receipt, '$.metadata.reason'), '') = 'transport_unavailable_not_sent')"
 )
+
+
+def _format_age(seconds):
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f'{hours}h {minutes}m' if minutes else f'{hours}h'
+    if minutes:
+        return f'{minutes}m {secs}s' if secs else f'{minutes}m'
+    return f'{secs}s'
 
 
 class _Off(Exception):
@@ -60,39 +78,56 @@ class ReadStates:
         self.logged = None
         self.not_set_logged = set()
         self.last_round = None
-        if self.enabled and self.store is not None:
+        self._nudge_supported = None
+        self._offer_off_logged = set()
+        if self.store is not None:
             with self.store.connect() as db:
-                db.execute(
-                    f'CREATE TABLE IF NOT EXISTS {TABLE} ('
-                    'message_id INTEGER PRIMARY KEY, '
-                    'conversation_id TEXT NOT NULL, '
-                    'thread_id INTEGER, '
-                    'seq INTEGER NOT NULL, '
-                    'crew TEXT, '
-                    'state TEXT NOT NULL, '
-                    'accepted_at REAL NOT NULL, '
-                    'read_at REAL, '
-                    'done_at REAL, '
-                    'reason TEXT)'
-                )
-                db.execute(
-                    f'CREATE TABLE IF NOT EXISTS {META_TABLE} ('
-                    'id INTEGER PRIMARY KEY CHECK (id = 1), '
-                    'mark INTEGER NOT NULL DEFAULT 0, '
-                    'pending_mark INTEGER NOT NULL DEFAULT 0, '
-                    'pending_rounds INTEGER NOT NULL DEFAULT 0, '
-                    'accept_mid INTEGER)'
-                )
-                db.execute(
-                    f'CREATE TABLE IF NOT EXISTS {OVERRIDE_TABLE} ('
-                    'message_id INTEGER PRIMARY KEY, '
-                    'state TEXT NOT NULL, '
-                    'at REAL NOT NULL)'
-                )
+                if self.enabled:
+                    db.execute(
+                        f'CREATE TABLE IF NOT EXISTS {TABLE} ('
+                        'message_id INTEGER PRIMARY KEY, '
+                        'conversation_id TEXT NOT NULL, '
+                        'thread_id INTEGER, '
+                        'seq INTEGER NOT NULL, '
+                        'crew TEXT, '
+                        'state TEXT NOT NULL, '
+                        'accepted_at REAL NOT NULL, '
+                        'read_at REAL, '
+                        'done_at REAL, '
+                        'reason TEXT, '
+                        'offer_token TEXT)'
+                    )
+                    db.execute(
+                        f'CREATE TABLE IF NOT EXISTS {META_TABLE} ('
+                        'id INTEGER PRIMARY KEY CHECK (id = 1), '
+                        'mark INTEGER NOT NULL DEFAULT 0, '
+                        'pending_mark INTEGER NOT NULL DEFAULT 0, '
+                        'pending_rounds INTEGER NOT NULL DEFAULT 0, '
+                        'accept_mid INTEGER)'
+                    )
+                    db.execute(
+                        f'CREATE TABLE IF NOT EXISTS {OVERRIDE_TABLE} ('
+                        'message_id INTEGER PRIMARY KEY, '
+                        'state TEXT NOT NULL, '
+                        'at REAL NOT NULL)'
+                    )
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone():
+                    cols = [row[1] for row in db.execute(f'PRAGMA table_info({TABLE})')]
+                    if 'offer_token' not in cols:
+                        db.execute(f'ALTER TABLE {TABLE} ADD COLUMN offer_token TEXT')
 
     @property
     def enabled(self):
         return bool(self.bridge.reactions.get('read'))
+
+    @property
+    def nudge_after(self):
+        return int(self.bridge.reactions.get('nudge_after') or 0)
+
+    def _log_offer_off(self, reason):
+        if reason not in self._offer_off_logged:
+            self._offer_off_logged.add(reason)
+            self.bridge._log(reason)
 
     @property
     def ra(self):
@@ -222,7 +257,7 @@ class ReadStates:
                     db.execute(f'DELETE FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,))
             db.execute(
                 f'INSERT OR IGNORE INTO {TABLE} (' + ', '.join(FIELDS) + ') '
-                'VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)',
+                'VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL)',
                 (mid, conversation_id, thread_id, seq, state, accepted_at, read_at, done_at),
             )
 
@@ -257,7 +292,8 @@ class ReadStates:
                 db.execute(f'UPDATE {TABLE} SET state=?, reason=? WHERE message_id=? AND state=?',
                            (new_state, reason, mid, row['state']))
                 db.execute(f'DELETE FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,))
-            return True
+        self.close_offer(mid)
+        return True
 
     def transition(self, message_id, target_state):
         """Step one message forward to `read` or `done` under the reactions
@@ -275,6 +311,7 @@ class ReadStates:
         mid = int(message_id)
         key = f'readstate:{mid}:{target_state}'
         allowed = ('landed',) if target_state == 'read' else OPEN_STATES
+        advanced = False
         with self.bridge._reaction_lock():
             row = self.get(mid)
             if row is None or row['state'] not in allowed:
@@ -309,7 +346,10 @@ class ReadStates:
                     db.execute(f'UPDATE {TABLE} SET state=?, done_at=?, reason=? WHERE message_id=?',
                                ('done', now, reason, mid))
                     db.execute(f'DELETE FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,))
-            return receipt
+            advanced = True
+        if advanced:
+            self.close_offer(mid)
+        return receipt
 
     def on_react(self, message_id, emoji):
         """Update an open row (or record a pre-registration override when
@@ -612,12 +652,211 @@ class ReadStates:
                         and mid not in pending_done_ids and mid not in attempted_done):
                     self.transition(mid, 'read')
 
+        self._close_stale_offers()
+        self._offer_step(now, crew_info, trouble)
         return trouble
+
+    def _close_offer_row(self, rs_row):
+        token = rs_row['offer_token']
+        if not token:
+            return
+        tn = self.bridge.typed_nudge
+        with self.ra.lock():
+            latest = self.get(rs_row['message_id'])
+            if latest is None or latest['state'] == 'landed' or latest['offer_token'] != token:
+                return
+            tn_row = tn.get(token)
+            if tn_row is None or tn_row['state'] != 'open':
+                return
+            notice = OFFER_NOTICES.get(latest['state'], OFFER_ENDED_NOTICE)
+            tn_row.update(state='cancelled', notice=notice)
+            tn.save(tn_row)
+            if tn_row.get('message') is not None:
+                tn.display(tn_row)
+
+    def close_offer(self, message_id):
+        if not self.enabled or self.store is None:
+            return
+        row = self.get(int(message_id))
+        if row is None or not row['offer_token'] or row['state'] == 'landed':
+            return
+        self._close_offer_row(row)
+
+    def sync_offer(self, token):
+        """Close an open offer row when called under ra.lock() if its read_states row left landed."""
+        if not self.enabled or self.store is None:
+            return
+        with self.store.connect() as db:
+            raw = db.execute(
+                'SELECT ' + ', '.join(FIELDS) + f' FROM {TABLE} WHERE offer_token=?', (token,)
+            ).fetchone()
+        if raw is None:
+            return
+        rs_row = dict(zip(FIELDS, raw))
+        if rs_row['state'] == 'landed':
+            return
+        tn = self.bridge.typed_nudge
+        tn_row = tn.get(token)
+        if tn_row is None or tn_row['state'] != 'open':
+            return
+        notice = OFFER_NOTICES.get(rs_row['state'], OFFER_ENDED_NOTICE)
+        tn_row.update(state='cancelled', notice=notice)
+        tn.save(tn_row)
+        if tn_row.get('message') is not None:
+            tn.display(tn_row)
+
+    def _close_stale_offers(self):
+        if not self.enabled or self.store is None:
+            return
+        with self.store.connect() as db:
+            rows = db.execute(
+                'SELECT ' + ', '.join(FIELDS) + f" FROM {TABLE} WHERE offer_token IS NOT NULL AND state != 'landed'"
+            ).fetchall()
+        for raw in rows:
+            rs_row = dict(zip(FIELDS, raw))
+            tn_row = self.bridge.typed_nudge.get(rs_row['offer_token'])
+            if tn_row is not None and tn_row['state'] == 'open':
+                self._close_offer_row(rs_row)
+
+    def _ensure_nudge_supported(self, trouble):
+        if self._nudge_supported is not None:
+            return self._nudge_supported
+        try:
+            supported = self.bridge.typed_nudge.probe()
+        except n.NativeError as error:
+            trouble.append(f'read states offer probe: {error}')
+            return False
+        if not supported:
+            self._nudge_supported = False
+            self._log_offer_off('nudge offers off: this yard core has no session nudge')
+            return False
+        self._nudge_supported = True
+        return True
+
+    def _retry_offer_send(self, rs_row, trouble):
+        token = rs_row['offer_token']
+        tn = self.bridge.typed_nudge
+        with self.ra.lock():
+            latest = self.get(rs_row['message_id'])
+            if latest is None or latest['state'] != 'landed' or latest['offer_token'] != token:
+                return
+            tn_row = tn.get(token)
+            if tn_row is None or tn_row['state'] != 'open' or tn_row.get('message') is not None:
+                return
+            saved = self.store.saved_receipt(f'typed-nudge:{token}:send')
+            is_new_send = saved is None or self.bridge.resendable(saved)
+            if is_new_send and not self._ensure_nudge_supported(trouble):
+                return
+            receipt = tn.send_confirm(tn_row)
+            if receipt.get('delivered') is True:
+                tn_row['message'] = int(receipt['message_id'])
+                tn.save(tn_row)
+                return
+            if self.bridge.resendable(receipt):
+                trouble.append(f'read states offer (msg {rs_row["message_id"]}): send not confirmed yet')
+                return
+            reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
+            tn_row.update(state='unknown', notice=f'Offer not sent ({reason}).')
+            tn.save(tn_row)
+            self.bridge._log(f'read states offer {token}: nudge card not sent: {reason}')
+            trouble.append(f'read states offer {token}: {reason}')
+
+    def _offer_step(self, now, crew_info, trouble):
+        if self.nudge_after <= 0:
+            return
+        if not self.bridge.native_nudge() or not self.config.get('yardr_operator'):
+            self._log_offer_off('nudge offers off: built-in /nudge or [yardr] operator unavailable')
+            return
+        if self._nudge_supported is False:
+            return
+        landed_rows = [row for row in self._open_rows() if row['state'] == 'landed']
+        if not landed_rows:
+            return
+        for row in landed_rows:
+            if row['offer_token']:
+                self._retry_offer_send(row, trouble)
+        if self._nudge_supported is False:
+            return
+        with self.store.connect() as db:
+            offered = db.execute(
+                f'SELECT crew, offer_token FROM {TABLE} WHERE offer_token IS NOT NULL AND crew IS NOT NULL'
+            ).fetchall()
+        crews_with_open_offer = set()
+        tn = self.bridge.typed_nudge
+        for crew, token in offered:
+            tn_row = tn.get(token)
+            if tn_row is not None and tn_row['state'] == 'open':
+                crews_with_open_offer.add(crew)
+
+        for row in landed_rows:
+            if row['offer_token'] is not None or not row['crew']:
+                continue
+            if now - row['accepted_at'] < self.nudge_after:
+                continue
+            if row['crew'] in crews_with_open_offer:
+                continue
+            member = crew_info.get(row['crew'])
+            if not member or member.get('state') != 'running' or member.get('status') not in ('idle', 'blocked'):
+                continue
+            if self.bridge.decide_conversation(row['thread_id']) is None:
+                continue
+            if self._nudge_supported is False:
+                return
+            token = secrets.token_urlsafe(12)
+            header = f"Unread for {_format_age(now - row['accepted_at'])}"
+            words = OFFER_LINE.format(seq=int(row['seq']))
+
+            def save_offer(tn_row, message_id=row['message_id']):
+                with self.store.connect() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    cur = db.execute(
+                        f'SELECT state, offer_token FROM {TABLE} WHERE message_id=?', (message_id,)
+                    ).fetchone()
+                    if cur is None or cur[0] != 'landed' or cur[1] is not None:
+                        raise n.NativeError('read state changed before offer')
+                    db.execute(
+                        f"UPDATE {TABLE} SET offer_token=? WHERE message_id=? AND state='landed' AND offer_token IS NULL",
+                        (tn_row['token'], message_id),
+                    )
+                    tn.save(tn_row, db=db)
+
+            try:
+                with self.ra.lock():
+                    tn.open_confirm(
+                        0, row['crew'], words, row['thread_id'], user='',
+                        token=token, reply_to=row['message_id'], header=header, silent=True,
+                        before_send=save_offer, probe=(self._nudge_supported is None),
+                    )
+                self._nudge_supported = True
+                crews_with_open_offer.add(row['crew'])
+            except n.NativeError as error:
+                if str(error) == tn.NO_SUPPORT:
+                    self._nudge_supported = False
+                    self._log_offer_off('nudge offers off: this yard core has no session nudge')
+                    return
+                tn_row = tn.get(token)
+                if tn_row is None:
+                    trouble.append(f'read states offer (msg {row["message_id"]}): {error}')
+                    continue
+                self._nudge_supported = True
+                receipt = self.store.saved_receipt(f'typed-nudge:{token}:send')
+                if receipt is not None and self.bridge.resendable(receipt):
+                    crews_with_open_offer.add(row['crew'])
+                    trouble.append(f'read states offer (msg {row["message_id"]}): send not confirmed yet')
+                    continue
+                reason = (receipt.get('metadata') or {}).get('reason') if receipt else 'delivery not confirmed'
+                tn_row.update(state='unknown', notice=f'Offer not sent ({reason}).')
+                tn.save(tn_row)
+                self.bridge._log(f'read states offer {token}: nudge card not sent: {reason}')
+                trouble.append(f'read states offer {token}: {reason}')
 
     def refresh(self):
         if not self.enabled or self.ra.client is None or not self.config.get('yardr_home'):
             return
         try:
+            if self.nudge_after > 0 and (not self.bridge.native_nudge() or not self.config.get('yardr_operator')):
+                self._log_offer_off('nudge offers off: built-in /nudge or [yardr] operator unavailable')
+            self._close_stale_offers()
             now_mono = self.bridge.monotonic()
             if self.last_round is not None and now_mono - self.last_round < ROUND_SECONDS:
                 return

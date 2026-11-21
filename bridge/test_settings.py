@@ -562,7 +562,7 @@ class ExampleSettingsTests(unittest.TestCase):
         'transcribe': {'enabled', 'whisper_cli', 'models_dir', 'model', 'language', 'vad_model', 'cpus',
                        'threads', 'timeout', 'timeout_per_minute', 'method', 'gpu_check', 'gpu',
                        'gpu_min_free_mb'},
-        'reactions': {'on_accept', 'seen', 'done', 'read'},
+        'reactions': {'on_accept', 'seen', 'done', 'read', 'nudge_after'},
         'typing': {'seconds'},
         'topic': {'name', 'crew'},
         'auto_topics': {'enabled'},

@@ -100,7 +100,7 @@ crew member with crew`.
 | `[[command]]` | no | the yard's own commands and buttons, run by its own handlers ("Commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
 | `[transcribe]` | no | voice transcription (below); off by default |
-| `[reactions]` | no | `on_accept`, `seen`, `done`, `read`: the `seen` reaction on each accepted message, optional yard-backed `read`/`done` tracking ("Reactions" below) and the emoji `react` sets; no reaction ever without `on_accept = true`, `read` or a `react` call |
+| `[reactions]` | no | `on_accept`, `seen`, `done`, `read`, `nudge_after`: the `seen` reaction on each accepted message, optional yard-backed `read`/`done` tracking and unread Nudge offer ("Reactions" below) and the emoji `react` sets; no reaction ever without `on_accept = true`, `read` or a `react` call |
 | `[typing]` | no | `seconds` (0-900, default 0): "typing..." in the chat after each accepted message until the next send, at most this long ("Typing" below); no chat action ever with 0 |
 | `[[topic]]` `name`, `crew` | no | topics of the paired chat, each its own conversation, created once by `topics` ("Topics" below); at most 50 |
 | `[auto_topics]` | no | `enabled` (default false): serve the topics the paired user creates in the chat ("Topics the user creates" below); without it only the `[[topic]]` tables are served |
@@ -1085,7 +1085,9 @@ and an older core answers `no such method`: the latter is classified like
 nudge, with nothing written. The built-in `/nudge` is typed-only and stays
 out of the Telegram menu on every core, so an unsupported core never
 advertises it. No grant, setting or service is added; the ledger gains the
-`typed_nudges` table.
+`typed_nudges` table. See also [Read and done from the yard](#read-and-done-from-the-yard)
+for automatic unread-message Nudge offer cards (`[reactions] nudge_after`),
+which reuse this same confirm card, `NudgeSession` probe and outcome path.
 
 ## Asks
 
@@ -2022,6 +2024,7 @@ repeat never stacks a second reaction and edits nothing the user wrote.
 | `on_accept` | `false` | `true` sets `seen` on each message once the yard has accepted it ("Inbound") |
 | `seen` | `"👀"` | the emoji for "the yard has the message" (with `read` enabled, typically `"🕊"`) |
 | `read` | unset (off) | optional emoji set once the target crew's inbox cursor passes the message's hook `seq` (typically `"👀"`; requires `[yardr] home`) |
+| `nudge_after` | `0` (off) | integer seconds from `0` to `3600` (`0` off); when unread past this age while the crew is `running` and `idle` or `blocked`, offers one Nudge confirm card (requires `read`) |
 | `done` | `"👌"` | the emoji for "the work this message asked for is finished or answered" |
 
 An emoji value is a non-empty string of at most 16 characters with no
@@ -2165,6 +2168,32 @@ native calls are made.
   `data.deliveries` moves the affected row(s) to `off` with a reason;
   unexpected `Events` array shapes are logged once without breaking
   polling.
+- **Unread Nudge offer (`[reactions] nudge_after`):** an integer from `0` to
+  `3600` (default `0`, off; a value above `0` without `read` refuses at load
+  naming `reactions.nudge_after`). With `nudge_after > 0`, if the built-in
+  `/nudge` is disabled (`Bridge.native_nudge()` false) or `[yardr] operator`
+  is unset, offers stay off and are logged once. Otherwise, at the end of
+  each round (after `landed -> read` transitions), a row still in `landed`
+  gets at most one offer ever when `now - accepted_at >= nudge_after`, its
+  crew's `GetCrew` is `state = "running"` with `status` `"idle"` or
+  `"blocked"`, no other offer for that crew is `open`,
+  `decide_conversation(thread_id)` is served, and `NudgeSession` is
+  supported (probed once per process with `{}` and cached on
+  `RPCUnsupported`, logged once). The offer reuses `typed_nudge.open_confirm`
+  sent silently as a reply to the operator's message, showing how long it
+  has been unread, the crew's status, a fixed constant line naming only the
+  integer event `seq` (never the operator's message text), and `Nudge` /
+  `Cancel` buttons. `read_states.offer_token` and the `typed_nudges` row
+  (`message = None`) are saved before the send under
+  `typed-nudge:<token>:send`; a later round finding `message = None` sends
+  again under that key (confirmed replays, `not-sent` retries, ambiguous
+  counts as offered and logs once). Tapping `Nudge` runs the existing
+  `nudge:<token>:nudge` path (one `NudgeSession` with `clear = false` as
+  the operator, outcome relayed on the card); `Cancel` writes nothing. If
+  the message moves to `read`, `done`, `manual`, `expired` or `off` while
+  its offer is `open`, the offer moves to `cancelled` with a notice and the
+  card is edited without buttons. With `nudge_after = 0`, rounds make
+  exactly the read-and-done calls above.
 
 ## Typing
 

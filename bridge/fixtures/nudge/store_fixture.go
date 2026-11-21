@@ -114,6 +114,12 @@ func main() {
 		// while the conversation for pat is blocked.
 		must(st.CrewStatusFor(ctx, crew, "", "idle"))
 		must(st.CrewStatusFor(ctx, crew, "pat", "blocked"))
+	case "status":
+		// Set the crew member's runtime status (working, idle, blocked, unknown).
+		if len(os.Args) < 5 {
+			panic("expected status")
+		}
+		must(st.CrewStatusFor(ctx, crew, "", os.Args[4]))
 	case "seed-session":
 		// As the yard claims a bead's session on a group with a kind but no
 		// model: ListSessions reads it with no model key.

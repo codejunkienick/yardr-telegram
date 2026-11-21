@@ -258,14 +258,17 @@ operator = "<operator>"
 
 The home must exist, belong to the service user, and have no group/world
 write permission; `yard.sock` is the only native endpoint (no socket
-override). `[reactions] read` also needs `[yardr] home`. The operator
+override). `[reactions] read` also needs `[yardr] home`; `nudge_after`
+needs `read`, built-in `/nudge`, and `NudgeSession` (off otherwise). The operator
 must keep their role and source identity, checked at every interaction.
 
 After reviewed code is installed, run `install.sh --settings <file>`,
 `<root>/bin/telegram-bridge check-install`, and restart the service. The
 unit sandbox stays unchanged (no yard DB/config/credential writes);
 `check-install` verifies socket ownership and operator mapping. Settings,
-source apply, grants and restart belong to this operator step.
+source apply, grants and restart belong to this operator step. Live check
+for `nudge_after`: send to an idle crew without acking, wait `nudge_after` s,
+tap Nudge and check the `session_nudged` reply.
 
 Create a fresh native proposal, then publish its returned ask number:
 

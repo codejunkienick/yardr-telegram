@@ -1,5 +1,6 @@
 """Read states: landed -> read -> done over fake Telegram and fake or real yardr."""
 from contextlib import closing
+from html import unescape
 import http.client
 import http.server
 import io
@@ -21,7 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 import testports  # noqa: E402
 import testyardr  # noqa: E402
+import yard_commands as y  # noqa: E402
 from test_bridge import BridgeTestCase, write_settings  # noqa: E402
+from test_typed_nudge import nudged  # noqa: E402
 
 PACK = Path(__file__).resolve().parents[1] / 'yardr'
 DOVE = '\U0001F54A'
@@ -32,7 +35,7 @@ REACTION_INVALID = (400, dict(ok=False, error_code=400, description='Bad Request
 
 
 class FakeReadYard:
-    """Minimal framed Unix RPC socket serving GetUser, EventsSince, GetCrew and Events."""
+    """Minimal framed Unix RPC socket serving GetUser, EventsSince, GetCrew, Events and NudgeSession."""
 
     def __init__(self, root):
         self.root = Path(root)
@@ -42,6 +45,8 @@ class FakeReadYard:
             'yardmaster': dict(name='yardmaster', journal='yardmaster-journal', state='idle', status='', cursor=0),
         }
         self.journal_events = {'yardmaster-journal': []}
+        self.nudges = {}
+        self.nudge_mode = None
         self.override = {}
         owner = self
 
@@ -85,6 +90,35 @@ class FakeReadYard:
                     bead, limit = args[0], args[1]
                     events = owner.journal_events.get(bead, [])
                     self._send(200, {'result': events[-limit:]})
+                    return
+                if method == 'NudgeSession':
+                    if owner.nudge_mode == 'no-nudge-method':
+                        self._send(200, {'error': {'code': 'error', 'message': 'no such method NudgeSession'}})
+                        return
+                    target = args.get('target') if isinstance(args, dict) else None
+                    if not target:
+                        self._send(200, {'error': {'code': 'error', 'message': 'target required'}})
+                        return
+                    member = owner.crew.get(target)
+                    if member is None:
+                        self._send(200, {'error': {'code': 'not-found', 'message': 'no such session, crew member or bead'}})
+                        return
+                    if member.get('state') != 'running':
+                        self._send(200, {'error': {'code': 'error', 'message': 'only a running session is nudged'}})
+                        return
+                    user = args.get('user', '') if isinstance(args, dict) else ''
+                    key = 'crew:' + target + (':for:' + user if user else '')
+                    if key in owner.nudges:
+                        self._send(200, {'error': {'code': 'conflict', 'message': 'a nudge stands already'}})
+                        return
+                    ident = f'nudge-{len(owner.nudges) + 1}'
+                    owner.nudges[key] = dict(
+                        id=ident, target=target, user=user, text=args.get('text', ''),
+                        clear=args.get('clear'), actor=args.get('actor'),
+                    )
+                    self._send(200, {'result': dict(
+                        id=ident, crew=target, user=user, text=args.get('text', ''), state='asked',
+                    )})
                     return
                 self._send(200, {'error': {'code': 'error', 'message': 'no such method ' + method}})
 
@@ -133,7 +167,9 @@ class ReadStateTests(BridgeTestCase):
         self.wall = [2000.0]
         self.next_seq = 10
         self.next_reply_seq = 500
+        self.next_sent_id = 77
         self.reaction_answer = (200, dict(ok=True, result=True))
+        self.send_answer = None
         self.logs = []
         self.config.update(
             yardr_home=str(self.yard_dir),
@@ -162,6 +198,17 @@ class ReadStateTests(BridgeTestCase):
             if seq not in self.native.hook_events:
                 self.native.hook_events[seq] = hook_event(seq)
             return 200, dict(seq=seq)
+        if url.endswith('/sendMessage'):
+            self.calls.append((url, body))
+            if isinstance(self.send_answer, Exception):
+                raise self.send_answer
+            if callable(self.send_answer):
+                return self.send_answer(body)
+            if self.send_answer is not None:
+                return self.send_answer
+            mid = self.next_sent_id
+            self.next_sent_id += 1
+            return 200, dict(ok=True, result=dict(message_id=mid, chat=dict(id=123)))
         if url.endswith('/setMessageReaction'):
             self.calls.append((url, body))
             if isinstance(self.reaction_answer, Exception):
@@ -805,6 +852,473 @@ class ReadStateTests(BridgeTestCase):
         self.assertIn(EYES, result.stdout)
         self.assertIn(OK_HAND, result.stdout)
 
+    def _sends(self):
+        return [body for url, body in self.calls if url.endswith('/sendMessage')]
+
+    def _edits(self):
+        return [body for url, body in self.calls if url.endswith('/editMessageText')]
+
+    def _answers(self):
+        return [body for url, body in self.calls if url.endswith('/answerCallbackQuery')]
+
+    def _nudge_writes(self):
+        return [args for m, args in self.native.calls if m == 'NudgeSession' and args.get('target')]
+
+    def _tap(self, token, action='nudge', uid=40, **message):
+        tn_row = self.bridge.typed_nudge.get(token)
+        base = dict(message_id=tn_row['message'], chat=dict(id=123, type='private'),
+                    **{'from': dict(id=999, is_bot=True)})
+        base.update(message)
+        return dict(update_id=uid, callback_query=dict(
+            id=f'q{uid}', data=f'nudge:{token}:{action}', message=base,
+            **{'from': dict(id=123, is_bot=False)},
+        ))
+
+    def _enable_offers(self, nudge_after=300, status='idle'):
+        self.native.crew['yardmaster'].update(kind='claude', model='opus', state='running', status=status)
+        self.restart(
+            commands=(y.NUDGE_COMMAND,),
+            reactions=dict(self.config['reactions'], nudge_after=nudge_after),
+        )
+
+    def test_nudge_after_settings_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_path = write_settings(Path(tmp))
+            base_text = base_path.read_text()
+
+            # nudge_after = 0 without read loads cleanly.
+            p0 = Path(tmp) / 'zero.toml'
+            p0.write_text(base_text + '\n[reactions]\nnudge_after = 0\n')
+            p0.chmod(0o600)
+            self.assertEqual(b.load_settings(p0).config['reactions']['nudge_after'], 0)
+
+            # nudge_after > 0 without read refuses naming reactions.nudge_after.
+            p_noread = Path(tmp) / 'noread.toml'
+            p_noread.write_text(base_text + '\n[reactions]\nnudge_after = 300\n')
+            p_noread.chmod(0o600)
+            with self.assertRaisesRegex(b.SettingsError, r'reactions\.nudge_after'):
+                b.load_settings(p_noread)
+
+            # Out of range or non-int refuses naming reactions.nudge_after.
+            for bad in (-1, 3601, 'true', '"300"'):
+                p_bad = Path(tmp) / f'bad-{bad}.toml'
+                p_bad.write_text(base_text + f'\n[reactions]\nnudge_after = {bad}\n')
+                p_bad.chmod(0o600)
+                with self.assertRaisesRegex(b.SettingsError, r'reactions\.nudge_after'):
+                    b.load_settings(p_bad)
+
+            # Valid nudge_after with read and [yardr] home/operator loads.
+            yard_home = Path(tmp) / 'yard'
+            yard_home.mkdir(mode=0o700)
+            p_ok = Path(tmp) / 'ok.toml'
+            p_ok.write_text(
+                base_text.replace('[yardr]\n', f'[yardr]\nhome = "{yard_home}"\noperator = "pat"\n')
+                + f'\n[reactions]\nread = "{EYES}"\nnudge_after = 300\n'
+            )
+            p_ok.chmod(0o600)
+            loaded = b.load_settings(p_ok)
+            self.assertEqual(loaded.config['reactions']['nudge_after'], 300)
+
+    def test_offer_threshold_boundary_crew_states_one_per_crew_and_unserved_topic(self):
+        self._enable_offers(nudge_after=300, status='idle')
+        u1 = self.update(uid=10)
+        u1['message']['text'] = 'secret operator payload'
+        self.drain(u1)
+
+        # At nudge_after - 1 s: no offer card.
+        self.wall[0] += 299
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertIsNone(self.row(10)['offer_token'])
+
+        # At nudge_after while working, stopped, or failed: no offer card.
+        self.wall[0] += 1
+        for state, status in (('running', 'working'), ('stopped', 'idle'), ('failed', 'idle'), ('running', 'unknown')):
+            self.native.crew['yardmaster']['state'] = state
+            self.native.crew['yardmaster']['status'] = status
+            self.mono[0] += 60.0
+            self.poll()
+            self.assertEqual(self._sends(), [])
+            self.assertIsNone(self.row(10)['offer_token'])
+
+        # Once running + idle: exactly one silent offer card replying to msg 10.
+        self.native.crew['yardmaster']['state'] = 'running'
+        self.native.crew['yardmaster']['status'] = 'idle'
+        self.mono[0] += 60.0
+        self.poll()
+        sends = self._sends()
+        self.assertEqual(len(sends), 1)
+        card = sends[0]
+        self.assertTrue(card.get('disable_notification'))
+        self.assertEqual(card.get('reply_parameters'), {'message_id': 10})
+        self.assertIn('<b>Nudge crew member yardmaster?</b>', card['text'])
+        self.assertIn('Unread for 5m', card['text'])
+        self.assertIn('running', card['text'])
+        self.assertIn('idle', card['text'])
+        expected_line = b.read_states.OFFER_LINE.format(seq=10)
+        self.assertIn(expected_line, unescape(card['text']))
+        self.assertLessEqual(len(expected_line), b.typed_nudge.WORDS_MAX)
+        self.assertNotIn('secret operator payload', card['text'])
+        buttons = [btn for r in card['reply_markup']['inline_keyboard'] for btn in r]
+        self.assertEqual([btn['text'] for btn in buttons], ['Nudge', 'Cancel'])
+        token1 = self.row(10)['offer_token']
+        self.assertIsNotNone(token1)
+
+        # Second unread message for same crew while offer 1 is open: no second card.
+        self.drain(self.update(uid=11))
+        self.wall[0] += 300
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(len(self._sends()), 1)
+        self.assertIsNone(self.row(11)['offer_token'])
+
+        # Unserved topic (decide_conversation is None) gets no offer even for an eligible crew.
+        self.native.crew['secretary'] = dict(name='secretary', journal='secretary-journal',
+                                             kind='claude', model='opus', state='running', status='blocked', cursor=0)
+        self.native.hook_events[12] = hook_event(12, deliveries={'yardmaster': 'all'})
+        u_unserved = dict(update_id=12, message=dict(
+            message_id=12, text='unserved topic msg', message_thread_id=99, is_topic_message=True,
+            chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+        ))
+        self.drain(u_unserved)
+        self.wall[0] += 300
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertIsNone(self.row(12)['offer_token'])
+
+        # Blocked status on another crew is eligible and opens its own offer.
+        self.restart(
+            commands=(y.NUDGE_COMMAND,),
+            reactions=dict(self.config['reactions'], nudge_after=300),
+            topics=(dict(name='ops', agent='secretary'),),
+        )
+        self.store.record_topic('ops', 44, 'created')
+        self.native.hook_events[13] = hook_event(13, deliveries={'secretary': 'all'})
+        u_topic = dict(update_id=13, message=dict(
+            message_id=13, text='topic msg', message_thread_id=44, is_topic_message=True,
+            chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+        ))
+        self.drain(u_topic)
+        self.wall[0] += 300
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertIsNotNone(self.row(13)['offer_token'])
+        self.assertEqual(self._sends()[-1].get('message_thread_id'), 44)
+        self.assertIn('blocked', self._sends()[-1]['text'])
+
+    def test_offer_tap_double_tap_replay_cancel_and_read_after_nudge(self):
+        self._enable_offers(nudge_after=300, status='idle')
+        self.drain(self.update(uid=10))
+        self.wall[0] += 300
+        self.poll()
+        token = self.row(10)['offer_token']
+        offer_mid = self.bridge.typed_nudge.get(token)['message']
+
+        # Unauthorized tap writes nothing.
+        bad_tap = self._tap(token, uid=39)
+        bad_tap['callback_query']['from'] = dict(id=124, is_bot=False)
+        self.poll(bad_tap)
+        self.assertEqual(self._nudge_writes(), [])
+
+        # Verified tap calls NudgeSession once with the fixed line; replay and double tap write nothing more.
+        self.poll(self._tap(token, uid=40))
+        self.poll(self._tap(token, uid=40), self._tap(token, uid=41))
+        writes = self._nudge_writes()
+        self.assertEqual(len(writes), 1)
+        expected_line = b.read_states.OFFER_LINE.format(seq=10)
+        self.assertEqual(writes[0], dict(target='yardmaster', user='', text=expected_line, clear=False, actor='pat'))
+
+        # Outcome event relays on the offer card.
+        ident = self.native.nudges['crew:yardmaster']['id']
+        self.native.journal_events['yardmaster-journal'].append(nudged(501, ident))
+        self.poll()
+        reply = self._sends()[-1]
+        self.assertEqual(reply['text'], '\u2713 Nudge typed')
+        self.assertEqual(reply['reply_parameters']['message_id'], offer_mid)
+
+        # Still landed after nudge -> no re-offer; then ack moves it to eyes.
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self.row(10)['offer_token'], token)
+        self.assertEqual(len(self._sends()), 2)
+        self.native.crew['yardmaster']['cursor'] = 10
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self.row(10)['state'], 'read')
+        self.assertEqual(self.reaction_emojis(), [DOVE, EYES])
+
+        # Cancel writes nothing and never re-offers.
+        self.drain(self.update(uid=45))
+        self.wall[0] += 300
+        self.mono[0] += 60.0
+        self.poll()
+        token2 = self.row(45)['offer_token']
+        self.assertIsNotNone(token2)
+        self.poll(self._tap(token2, action='cancel', uid=50))
+        self.assertEqual(len(self._nudge_writes()), 1)
+        self.assertEqual(self.bridge.typed_nudge.get(token2)['state'], 'cancelled')
+        self.assertEqual(self._edits()[-1]['reply_markup'], {'inline_keyboard': []})
+        self.mono[0] += 60.0
+        self.wall[0] += 300
+        self.poll()
+        self.assertEqual(self.row(45)['offer_token'], token2)
+        self.assertEqual(len(self._sends()), 3)
+
+    def test_offer_close_on_read_done_manual_and_expired(self):
+        self._enable_offers(nudge_after=300, status='idle')
+
+        # 1. Read before tap closes card with notice and removes buttons; late tap writes nothing.
+        self.drain(self.update(uid=10))
+        self.wall[0] += 300
+        self.poll()
+        tok1 = self.row(10)['offer_token']
+        self.native.crew['yardmaster']['cursor'] = 10
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self.row(10)['state'], 'read')
+        tn1 = self.bridge.typed_nudge.get(tok1)
+        self.assertEqual(tn1['state'], 'cancelled')
+        self.assertIn('read', tn1['notice'].lower())
+        self.assertEqual(self._edits()[-1]['reply_markup'], {'inline_keyboard': []})
+        self.poll(self._tap(tok1, uid=40))
+        self.assertEqual(self._nudge_writes(), [])
+        self.assertEqual(self._answers()[-1]['text'], b.typed_nudge.ALREADY)
+
+        # 2. Done via /v1/send reply_to closes card immediately.
+        self.drain(self.update(uid=45))
+        self.wall[0] += 300
+        self.mono[0] += 60.0
+        self.poll()
+        tok2 = self.row(45)['offer_token']
+        self.assertTrue(self.bridge.api_send(dict(text='On it.', reply_to='45', key='close-done'))['delivered'])
+        tn2 = self.bridge.typed_nudge.get(tok2)
+        self.assertEqual(tn2['state'], 'cancelled')
+        self.assertIn('answered', tn2['notice'].lower())
+        self.assertEqual(self._edits()[-1]['reply_markup'], {'inline_keyboard': []})
+        self.poll(self._tap(tok2, uid=46))
+        self.assertEqual(self._nudge_writes(), [])
+
+        # 3. Manual via react closes card even when no open rows remain.
+        self.drain(self.update(uid=50))
+        self.wall[0] += 300
+        self.mono[0] += 60.0
+        self.poll()
+        tok3 = self.row(50)['offer_token']
+        self.assertTrue(self.bridge.api_react(dict(reaction=THUMBS_UP, message_id=50, key='close-manual'))['delivered'])
+        tn3 = self.bridge.typed_nudge.get(tok3)
+        self.assertEqual(tn3['state'], 'cancelled')
+        self.assertIn('tracking ended', tn3['notice'].lower())
+        self.assertEqual(self._edits()[-1]['reply_markup'], {'inline_keyboard': []})
+
+        # 4. 24h expiry closes open offer without reaction.
+        self.drain(self.update(uid=55))
+        self.wall[0] += 300
+        self.mono[0] += 60.0
+        self.poll()
+        tok4 = self.row(55)['offer_token']
+        self.wall[0] += 24 * 3600 + 1
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self.row(55)['state'], 'expired')
+        tn4 = self.bridge.typed_nudge.get(tok4)
+        self.assertEqual(tn4['state'], 'cancelled')
+        self.assertIn('tracking ended', tn4['notice'].lower())
+        self.assertEqual(self._edits()[-1]['reply_markup'], {'inline_keyboard': []})
+
+    def test_offer_save_before_send_restart_replay_retry_and_ambiguous(self):
+        self._enable_offers(nudge_after=300, status='idle')
+
+        # 1. RequestNotSent leaves offer_token + typed_nudge (message=None) saved; next round sends once.
+        self.drain(self.update(uid=10))
+        self.wall[0] += 300
+        self.send_answer = b.RequestNotSent('connect failed', 7, 'connect')
+        self.poll()
+        tok1 = self.row(10)['offer_token']
+        self.assertIsNotNone(tok1)
+        self.assertIsNone(self.bridge.typed_nudge.get(tok1)['message'])
+        self.assertEqual(self.bridge.typed_nudge.get(tok1)['state'], 'open')
+
+        # Restart and recover Telegram: sends once under the same key.
+        self.send_answer = None
+        self._enable_offers(nudge_after=300, status='idle')
+        self.calls.clear()
+        self.poll()
+        self.assertEqual(len(self._sends()), 1)
+        self.assertIsNotNone(self.bridge.typed_nudge.get(tok1)['message'])
+        # Close msg 10 so crew is free for case 2 & 3.
+        self.native.crew['yardmaster']['cursor'] = 10
+        self.mono[0] += 60.0
+        self.poll()
+
+        # 2. Crash after confirmed delivery before message_id saved: restart replays ledger with 0 Telegram sends.
+        self.drain(self.update(uid=11))
+        self.wall[0] += 300
+        self.calls.clear()
+        orig_save = self.bridge.typed_nudge.save
+        calls_to_save = [0]
+
+        def crash_after_send(row, db=None):
+            calls_to_save[0] += 1
+            if row.get('message') is not None:
+                raise RuntimeError('simulated crash before message_id saved')
+            return orig_save(row, db=db)
+
+        with patch.object(self.bridge.typed_nudge, 'save', side_effect=crash_after_send):
+            self.mono[0] += 60.0
+            self.poll()
+        tok2 = self.row(11)['offer_token']
+        self.assertIsNotNone(tok2)
+        self.assertIsNone(self.bridge.typed_nudge.get(tok2)['message'])
+        self.assertEqual(len(self._sends()), 1)
+        # Restart and poll: ledger replays confirmed send with 0 new sendMessage calls.
+        self._enable_offers(nudge_after=300, status='idle')
+        self.calls.clear()
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertIsNotNone(self.bridge.typed_nudge.get(tok2)['message'])
+        self.native.crew['yardmaster']['cursor'] = 11
+        self.mono[0] += 60.0
+        self.poll()
+
+        # 3. Ambiguous send counts as offered, logs once, and never retries or re-offers.
+        self.drain(self.update(uid=12))
+        self.wall[0] += 300
+        self.send_answer = b.TransportError('lost answer after send')
+        self.logs.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        tok3 = self.row(12)['offer_token']
+        self.assertIsNotNone(tok3)
+        self.assertEqual(self.bridge.typed_nudge.get(tok3)['state'], 'unknown')
+        self.assertTrue(any(f'read states offer {tok3}: nudge card not sent:' in line for line in self.logs))
+        self.send_answer = None
+        self.calls.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual(self.row(12)['offer_token'], tok3)
+
+        # 4. RequestNotSent saved before restart on a core without NudgeSession:
+        #    probes once on restart and publishes zero cards; sends once if restored to fork.
+        self.drain(self.update(uid=13))
+        self.wall[0] += 300
+        self.send_answer = b.RequestNotSent('connect failed', 7, 'connect')
+        self.mono[0] += 60.0
+        self.poll()
+        tok4 = self.row(13)['offer_token']
+        self.assertIsNotNone(tok4)
+        self.assertIsNone(self.bridge.typed_nudge.get(tok4)['message'])
+
+        self.send_answer = None
+        self.native.nudge_mode = 'no-nudge-method'
+        self._enable_offers(nudge_after=300, status='idle')
+        self.calls.clear()
+        self.native.calls.clear()
+        self.logs.clear()
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual([args for m, args in self.native.calls if m == 'NudgeSession'], [{}])
+        self.assertIsNone(self.bridge.typed_nudge.get(tok4)['message'])
+        self.assertEqual(len([l for l in self.logs if 'nudge offers off' in l]), 1)
+        self.native.calls.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual([args for m, args in self.native.calls if m == 'NudgeSession'], [])
+
+        # Restoring a core with NudgeSession delivers the pending offer once; then mark read.
+        self.native.nudge_mode = None
+        self._enable_offers(nudge_after=300, status='idle')
+        self.calls.clear()
+        self.poll()
+        self.assertEqual(len(self._sends()), 1)
+        self.assertIsNotNone(self.bridge.typed_nudge.get(tok4)['message'])
+        self.native.crew['yardmaster']['cursor'] = 13
+        self.mono[0] += 60.0
+        self.poll()
+
+        # 5. Confirmed send saved in ledger before crash replays without duplicate send even after rollback.
+        self.drain(self.update(uid=14))
+        self.wall[0] += 300
+        self.calls.clear()
+        with patch.object(self.bridge.typed_nudge, 'save', side_effect=crash_after_send):
+            self.mono[0] += 60.0
+            self.poll()
+        tok5 = self.row(14)['offer_token']
+        self.assertIsNotNone(tok5)
+        self.assertIsNone(self.bridge.typed_nudge.get(tok5)['message'])
+        self.assertEqual(len(self._sends()), 1)
+        self.native.nudge_mode = 'no-nudge-method'
+        self._enable_offers(nudge_after=300, status='idle')
+        self.calls.clear()
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertIsNotNone(self.bridge.typed_nudge.get(tok5)['message'])
+        self.native.crew['yardmaster']['cursor'] = 14
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self.bridge.typed_nudge.get(tok5)['state'], 'cancelled')
+        self.assertEqual(self._edits()[-1]['reply_markup'], {'inline_keyboard': []})
+
+    def test_offer_disabled_when_no_nudge_method_no_native_nudge_or_no_operator(self):
+        # 1. NudgeSession unsupported -> probed once, cached, logged once, no card, no write.
+        self.native.nudge_mode = 'no-nudge-method'
+        self._enable_offers(nudge_after=300, status='idle')
+        self.drain(self.update(uid=10))
+        self.wall[0] += 300
+        self.native.calls.clear()
+        self.logs.clear()
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertIsNone(self.row(10)['offer_token'])
+        self.assertEqual([args for m, args in self.native.calls if m == 'NudgeSession'], [{}])
+        self.assertEqual(len([l for l in self.logs if 'nudge offers off' in l]), 1)
+        self.native.calls.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual([args for m, args in self.native.calls if m == 'NudgeSession'], [])
+        self.assertEqual(len([l for l in self.logs if 'nudge offers off' in l]), 1)
+
+        # 2. Built-in /nudge off (native_nudge() False) -> logged once, no NudgeSession, no card.
+        self.native.nudge_mode = None
+        self.native.crew['yardmaster'].update(kind='claude', model='opus', state='running', status='idle')
+        self.restart(commands=(), reactions=dict(self.config['reactions'], nudge_after=300))
+        self.native.calls.clear()
+        self.logs.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual([m for m, _ in self.native.calls if m == 'NudgeSession'], [])
+        self.assertEqual(len([l for l in self.logs if 'nudge offers off' in l]), 1)
+
+        # 3. No [yardr] operator -> logged once, no NudgeSession, no card.
+        self.restart(commands=(y.NUDGE_COMMAND,), yardr_operator=None,
+                     reactions=dict(self.config['reactions'], nudge_after=300))
+        self.native.calls.clear()
+        self.logs.clear()
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.mono[0] += 60.0
+            self.bridge.read_states.refresh()
+            self.mono[0] += 60.0
+            self.bridge.read_states.refresh()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual([m for m, _ in self.native.calls if m == 'NudgeSession'], [])
+        self.assertEqual(len([l for l in self.logs if 'nudge offers off' in l]), 1)
+
+    def test_nudge_after_zero_makes_only_read_bead_calls(self):
+        self.native.crew['yardmaster'].update(kind='claude', model='opus', state='running', status='idle')
+        self.restart(commands=(y.NUDGE_COMMAND,), reactions=dict(self.config['reactions'], nudge_after=0))
+        self.drain(self.update(uid=10))
+        self.wall[0] += 600
+        self.native.calls.clear()
+        self.poll()
+        self.assertEqual(self.native_methods(), ['EventsSince', 'GetCrew'])
+        self.assertNotIn('NudgeSession', [m for m, _ in self.native.calls])
+        self.assertEqual(self._sends(), [])
+        self.assertIsNone(self.row(10)['offer_token'])
+
 
 class RealReadStateTests(BridgeTestCase):
     def setUp(self):
@@ -895,6 +1409,8 @@ class RealReadStateTests(BridgeTestCase):
             root = Path(tmp)
             server, home, command, env, port, hook_secret, callback, worker = self._start_yard(root)
             mono = [1000.0]
+            wall = [2000.0]
+            next_sent_id = [200]
             logs = []
             rpc_calls = []
             lose_next_hook = [False]
@@ -925,6 +1441,17 @@ class RealReadStateTests(BridgeTestCase):
                             lose_next_hook[0] = False
                             raise b.TransportError('synthetic lost hook answer')
                         return status, answer
+                    if url.endswith('/sendMessage'):
+                        self.calls.append((url, body))
+                        mid = next_sent_id[0]
+                        next_sent_id[0] += 1
+                        return 200, dict(ok=True, result=dict(message_id=mid, chat=dict(id=123)))
+                    if url.endswith('/editMessageText'):
+                        self.calls.append((url, body))
+                        return 200, dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
+                    if url.endswith('/answerCallbackQuery'):
+                        self.calls.append((url, body))
+                        return 200, dict(ok=True, result=True)
                     if url.endswith('/setMessageReaction'):
                         self.calls.append((url, body))
                         if react_hook[0] is not None:
@@ -954,6 +1481,7 @@ class RealReadStateTests(BridgeTestCase):
                 br = b.Bridge(cfg, self.store, 'SECRET', 'CAPABILITY', request=make_transport(),
                               request_multipart=self.multipart_transport, request_download=self.download_transport,
                               sleep=lambda s: None, monotonic=lambda: mono[0])
+                br.run_asks.now = lambda: wall[0]
                 orig_call = br.run_asks.client.call
 
                 def spy(method, arguments):
@@ -1128,6 +1656,220 @@ class RealReadStateTests(BridgeTestCase):
                 poll(self.bridge)
                 self.assertEqual(self.bridge.read_states.get(46)['state'], 'done')
                 self.assertEqual(emojis(46), [OK_HAND])
+            finally:
+                callback.shutdown()
+                callback.server_close()
+                worker.join(timeout=5)
+                testyardr.stop(server)
+
+    def test_real_core_nudge_offer_on_fork_and_silent_on_upstream(self):
+        with tempfile.TemporaryDirectory(prefix='tgrs-nudge-', dir='/tmp') as tmp:
+            root = Path(tmp)
+            server, home, command, env, port, hook_secret, callback, worker = self._start_yard(root)
+            mono = [1000.0]
+            wall = [2000.0]
+            next_sent_id = [300]
+            logs = []
+            rpc_calls = []
+
+            def cli(*args):
+                result = subprocess.run(command + list(args), env=env, cwd=root, text=True,
+                                        capture_output=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                return result
+
+            def make_transport():
+                base = self.transport
+
+                def request(url, body, *args, **kwargs):
+                    if url == f'http://127.0.0.1:{port}/hooks/tgbridge':
+                        target = urlsplit(url)
+                        conn = http.client.HTTPConnection(target.hostname, target.port, timeout=10)
+                        try:
+                            conn.request('POST', target.path, json.dumps(body),
+                                         kwargs['headers'] | {'Content-Type': 'application/json'})
+                            resp = conn.getresponse()
+                            return resp.status, json.load(resp)
+                        finally:
+                            conn.close()
+                    if url.endswith('/sendMessage'):
+                        self.calls.append((url, body))
+                        mid = next_sent_id[0]
+                        next_sent_id[0] += 1
+                        return 200, dict(ok=True, result=dict(message_id=mid, chat=dict(id=123)))
+                    if url.endswith('/editMessageText'):
+                        self.calls.append((url, body))
+                        return 200, dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
+                    if url.endswith('/answerCallbackQuery'):
+                        self.calls.append((url, body))
+                        return 200, dict(ok=True, result=True)
+                    if url.endswith('/setMessageReaction'):
+                        self.calls.append((url, body))
+                        return 200, dict(ok=True, result=True)
+                    return base(url, body, *args, **kwargs)
+
+                return request
+
+            def make_bridge():
+                cfg = dict(
+                    self.config,
+                    agent='writer',
+                    yardr_home=str(home),
+                    yardr_socket=str(home / 'yard.sock'),
+                    yardr_operator='pat',
+                    yardr_source='tgbridge',
+                    hook_url=f'http://127.0.0.1:{port}/hooks/tgbridge',
+                    hook_secret=hook_secret,
+                    commands=(y.NUDGE_COMMAND,),
+                    reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND, nudge_after=300),
+                )
+                br = b.Bridge(cfg, self.store, 'SECRET', 'CAPABILITY', request=make_transport(),
+                              request_multipart=self.multipart_transport, request_download=self.download_transport,
+                              sleep=lambda s: None, monotonic=lambda: mono[0])
+                br.run_asks.now = lambda: wall[0]
+                orig_call = br.run_asks.client.call
+
+                def spy(method, arguments):
+                    rpc_calls.append((method, arguments))
+                    return orig_call(method, arguments)
+
+                br.run_asks.client.call = spy
+                return br
+
+            def poll(br, *updates):
+                telegram = br.telegram
+
+                def fetched(method, body, timeout=20):
+                    return (200, dict(ok=True, result=list(updates))) if method == 'getUpdates' else telegram(method, body, timeout)
+
+                with patch.object(br, 'telegram', side_effect=fetched), \
+                        patch.object(br, '_log', side_effect=logs.append):
+                    br.poll_once()
+                br.reaction_queue.join()
+
+            try:
+                has_nudge = testyardr.serves(home, 'NudgeSession')
+                br = make_bridge()
+                callback.RequestHandlerClass.bridge = br
+
+                if not has_nudge:
+                    u = self.update(uid=50)
+                    u['message']['text'] = 'upstream unread message'
+                    br.drain([u])
+                    br.reaction_queue.join()
+                    wall[0] += 300
+                    mono[0] += 60.0
+                    poll(br)
+                    sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                    self.assertEqual(sends, [])
+                    self.assertIsNone(br.read_states.get(50)['offer_token'])
+                    self.assertEqual([args for m, args in rpc_calls if m == 'NudgeSession'], [])
+                    # Even when GetCrew reports running+idle, real U refuses NudgeSession as unsupported.
+                    real_call = br.run_asks.client.call
+
+                    def idle_get_crew(method, arguments):
+                        res = real_call(method, arguments)
+                        if method == 'GetCrew' and isinstance(res, dict):
+                            res = dict(res, state='running', status='idle')
+                        return res
+
+                    br.run_asks.client.call = idle_get_crew
+                    mono[0] += 60.0
+                    poll(br)
+                    sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                    self.assertEqual(sends, [])
+                    self.assertIsNone(br.read_states.get(50)['offer_token'])
+                    self.assertEqual([args for m, args in rpc_calls if m == 'NudgeSession'], [{}])
+                    self.assertEqual(len([l for l in logs if 'nudge offers off' in l]), 1)
+                    rpc_calls.clear()
+                    mono[0] += 60.0
+                    poll(br)
+                    self.assertEqual([args for m, args in rpc_calls if m == 'NudgeSession'], [])
+                    print('Real core U (no NudgeSession):', self.binary, '0 offer cards, 0 NudgeSession writes')
+                    return
+
+                fixture = testyardr.store_fixture(root, 'nudge')
+                if fixture is None:
+                    self.skipTest('TGBRIDGE_TEST_YARDR_SOURCE names no candidate source for the daemon-write fixture')
+
+                def daemon(*args):
+                    nonlocal server
+                    testyardr.stop(server)
+                    try:
+                        res = subprocess.run([str(fixture), str(home), *args], capture_output=True, text=True, timeout=60)
+                        self.assertEqual(res.returncode, 0, res.stderr)
+                    finally:
+                        server = testyardr.restart(root, self.binary, home, command, env)
+                    return res.stdout.split()
+
+                # Real hook delivery while crew is stopped, then started+working, then idle.
+                u = self.update(uid=50)
+                u['message']['text'] = 'real fork secret text'
+                br.drain([u])
+                br.reaction_queue.join()
+                seq = br.read_states.get(50)['seq']
+
+                wall[0] += 300
+                poll(br)
+                self.assertEqual([body for url, body in self.calls if url.endswith('/sendMessage')], [])
+
+                daemon('start', 'writer')
+                daemon('status', 'writer', 'working')
+                mono[0] += 60.0
+                poll(br)
+                self.assertEqual([body for url, body in self.calls if url.endswith('/sendMessage')], [])
+
+                daemon('status', 'writer', 'idle')
+                mono[0] += 60.0
+                poll(br)
+                sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                self.assertEqual(len(sends), 1)
+                card = sends[0]
+                self.assertTrue(card.get('disable_notification'))
+                self.assertEqual(card.get('reply_parameters'), {'message_id': 50})
+                self.assertIn('Unread for 5m', card['text'])
+                self.assertIn('idle', card['text'])
+                expected_line = b.read_states.OFFER_LINE.format(seq=seq)
+                self.assertIn(expected_line, unescape(card['text']))
+                self.assertNotIn('real fork secret text', card['text'])
+
+                token = br.read_states.get(50)['offer_token']
+                self.assertIsNotNone(token)
+                tn_row = br.typed_nudge.get(token)
+                tap = dict(update_id=60, callback_query=dict(
+                    id='q60', data=f'nudge:{token}:nudge',
+                    message=dict(message_id=tn_row['message'], chat=dict(id=123, type='private'),
+                                 **{'from': dict(id=999, is_bot=True)}),
+                    **{'from': dict(id=123, is_bot=False)},
+                ))
+                poll(br, tap)
+                nudge_writes = [args for m, args in rpc_calls if m == 'NudgeSession' and args.get('target')]
+                self.assertEqual(len(nudge_writes), 1)
+                self.assertEqual(nudge_writes[0], dict(target='writer', user='', text=expected_line,
+                                                       clear=False, actor='pat'))
+                journal = br.typed_nudge.get(token)['journal']
+                ident = br.typed_nudge.get(token)['request']
+                requested = [e for e in br.run_asks.client.call('Events', [journal, 200])
+                             if e['kind'] == 'session_nudge_requested' and e['data'].get('id') == ident]
+                self.assertEqual(len(requested), 1)
+                self.assertEqual(requested[0]['data']['line'], expected_line)
+
+                daemon('finish', 'writer', 'typed', '')
+                poll(br)
+                sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
+                self.assertEqual(len(sends), 2)
+                self.assertEqual(sends[-1]['text'], '\u2713 Nudge typed')
+                self.assertEqual(sends[-1]['reply_parameters']['message_id'], tn_row['message'])
+
+                # Ack moves landed -> read (eyes) as usual.
+                cli('inbox', '--crew', 'writer', '--ack', str(seq))
+                mono[0] += 60.0
+                poll(br)
+                self.assertEqual(br.read_states.get(50)['state'], 'read')
+                emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
+                          if url.endswith('/setMessageReaction') and body['message_id'] == 50]
+                self.assertEqual(emojis, [DOVE, EYES])
+                print('Real core F (NudgeSession):', self.binary, 'offer -> tap -> session_nudged -> outcome -> read')
             finally:
                 callback.shutdown()
                 callback.server_close()

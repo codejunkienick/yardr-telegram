@@ -3387,19 +3387,28 @@ class RealReadStateTests(BridgeTestCase):
                         br_proxy.read_states.stop()
 
                 # 4. Real crew_status typing without any working reaction (👀 -> 👌).
+                # Ticks run manually on a test clock: the background worker's
+                # real-time ticks race daemon() stream reconnects and take the
+                # timer-fallback path under load, sending typing spuriously.
                 if fixture is not None:
                     work_cfg = dict(
                         cfg,
                         reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND),
                         typing=dict(seconds=600),
                     )
+                    work_mono = [3000.0]
                     br_work = b.Bridge(work_cfg, b.Store(root / 'work.sqlite3', 10), 'SECRET', 'CAPABILITY',
                                        request=make_transport(), request_multipart=self.multipart_transport,
-                                       request_download=self.download_transport, sleep=lambda s: None)
+                                       request_download=self.download_transport, sleep=lambda s: None,
+                                       monotonic=lambda: work_mono[0])
                     callback.RequestHandlerClass.bridge = br_work
                     chat_actions.clear()
+
+                    def tick():
+                        wait_until(lambda: br_work.read_states._stream_connected, timeout=5.0)
+                        br_work._typing_tick()
+
                     br_work.read_states.start()
-                    br_work._start_typing()
                     try:
                         wait_until(lambda: br_work.read_states._stream_connected, timeout=5.0)
                         daemon('start', 'writer')
@@ -3409,38 +3418,41 @@ class RealReadStateTests(BridgeTestCase):
                         cli('inbox', '--crew', 'writer', '--ack', str(seq107))
                         wait_until(lambda: br_work.read_states.get(107)['state'] == 'read'
                                    and EYES in emojis(107), timeout=limit)
+                        tick()
                         self.assertEqual(chat_actions, [])
 
                         daemon('status', 'writer', 'working')
-                        wait_until(lambda: len(chat_actions) >= 1, timeout=3.0,
-                                   msg='real crew_status working did not send typing')
+                        wait_until(lambda: (br_work.read_states._crew_status.get('writer') or {}).get('status') == 'working',
+                                   timeout=3.0, msg='real crew_status working did not arrive')
+                        tick()
+                        self.assertEqual(len(chat_actions), 1)
                         self.assertEqual(br_work.read_states.get(107)['state'], 'read')
                         self.assertEqual(emojis(107), [DOVE, EYES])
 
                         daemon('status', 'writer', 'idle')
                         wait_until(lambda: (br_work.read_states._crew_status.get('writer') or {}).get('status') == 'idle',
                                    timeout=3.0)
-                        actions_at_idle = len(chat_actions)
-                        time.sleep(1.2)
-                        self.assertEqual(len(chat_actions), actions_at_idle)
+                        work_mono[0] += b.TYPING_INTERVAL + 1.0
+                        tick()
+                        self.assertEqual(len(chat_actions), 1)
 
                         daemon('status', 'writer', 'working')
-                        wait_until(lambda: len(chat_actions) > actions_at_idle, timeout=3.0)
+                        wait_until(lambda: (br_work.read_states._crew_status.get('writer') or {}).get('status') == 'working',
+                                   timeout=3.0, msg='second real crew_status working did not arrive')
+                        tick()
+                        self.assertEqual(len(chat_actions), 2)
                         self.assertEqual(br_work.read_states.get(107)['state'], 'read')
                         env['TGBRIDGE_SECRET'] = br_work.secret
                         cli('reply', str(seq107), '--crew', 'writer', 'Done after working')
                         wait_until(lambda: br_work.read_states.get(107)['state'] == 'done'
                                    and OK_HAND in emojis(107), timeout=3.0)
-                        actions_at_done = len(chat_actions)
-                        time.sleep(1.2)
-                        self.assertEqual(len(chat_actions), actions_at_done)
+                        work_mono[0] += b.TYPING_INTERVAL + 1.0
+                        tick()
+                        self.assertEqual(len(chat_actions), 2)
                         self.assertEqual(emojis(107), [DOVE, EYES, OK_HAND])
                     finally:
                         callback.RequestHandlerClass.bridge = self.bridge
                         br_work.stop.set()
-                        br_work.typing_wake.set()
-                        if br_work.typing_worker is not None:
-                            br_work.typing_worker.join(timeout=5)
                         br_work.read_states.stop()
 
                 shown_note = f', shown={shown_elapsed:.3f}s' if shown_elapsed is not None else ''

@@ -9034,11 +9034,9 @@ class RealNativeTests(BridgeTestCase):
                 with self.subTest(source_upgrade=name):
                     legacy = root / ('legacy-pack-' + name)
                     shutil.copytree(release, legacy)
-                    declaration = legacy / 'tgbridge.yaml'
-                    legacy_text = declaration.read_text()
-                    if alias == 'custom-harbor':
-                        legacy_text = legacy_text.replace('bases:\n', 'bases:\n  ' + alias + ': ' + host + '\n', 1)
-                    declaration.write_text(legacy_text[:legacy_text.index('  run_ask:\n')] + legacy_text[legacy_text.index('  ask_close:\n'):])
+                    # Frozen historical declaration, never read from stock.
+                    fixture = 'legacy_tgbridge_custom_harbor.yaml' if alias == 'custom-harbor' else 'legacy_tgbridge_imd.yaml'
+                    shutil.copyfile(Path(__file__).with_name('fixtures') / fixture, legacy / 'tgbridge.yaml')
                     credential = root / (name + '.env')
                     credential.write_text('TGBRIDGE_SECRET=synthetic-' + name + '\n')
                     credential.chmod(0o600)
@@ -9070,7 +9068,10 @@ class RealNativeTests(BridgeTestCase):
                         self.assertEqual(client.call('GetGroup', ['humans']), before_group)
                         self.assertEqual(credential.read_text(), 'TGBRIDGE_SECRET=synthetic-' + name + '\n')
                         path = Path(instance) / 'tgbridge.yaml'
-                        path.write_text(path.read_text().replace('bases:\n', 'bases:\n  ' + alias + ': ' + host + '\n', 1))
+                        text = path.read_text()
+                        anchor = 'base: ' + rendered_host + '\n'
+                        at = text.index(anchor) + len(anchor)
+                        path.write_text(text[:at] + 'bases:\n  ' + alias + ': ' + host + '\n' + text[at:])
                     cli('pack', 'check', instance)
                     for repeat in range(2):
                         cli('pack', 'apply', instance, '--yes', *bindings)

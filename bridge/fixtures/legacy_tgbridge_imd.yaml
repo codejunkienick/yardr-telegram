@@ -1,0 +1,127 @@
+name: tgbridge
+about: The operator's Telegram chat and its topics, through the yardr-telegram bridge on this machine.
+base: http://127.0.0.1:8941
+bases:
+  imd: http://127.0.0.1:8942
+credential:
+  env: TGBRIDGE_SECRET
+  header: "Authorization: Bearer {credential}"
+idempotency: Idempotency-Key
+
+calls:
+  health:
+    kind: read
+    about: Whether the bridge is up, its bot, and its last good poll
+    request: { method: GET, path: /v1/health }
+  send:
+    kind: update
+    about: One message to the chat or one of its topics (Telegram HTML or plain, buttons, silent, one file)
+    params:
+      text:         { type: string, max: 16000 }
+      topic:        { type: string, max: 128, optional: true }
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$", optional: true }
+      format:       { type: enum, values: [auto, plain, html, markdown], optional: true }
+      silent:       { type: bool, optional: true }
+      keyboard:     { type: string, max: 8000, optional: true }
+      text_options: { type: bool, optional: true }
+      attachment:   { type: string, pattern: "^/", max: 4096, optional: true }
+      attachment_kind: { type: enum, values: [photo, video, document, voice, video_note], optional: true }
+      key:          { type: string, pattern: "^[A-Za-z0-9._:@-]{1,200}$", optional: true }
+    request:
+      method: POST
+      path: /v1/send
+      body:
+        key: "{key}"
+        text: "{text}"
+        topic: "{topic}"
+        conversation: "{conversation}"
+        format: "{format}"
+        silent: "{silent}"
+        keyboard: "{keyboard}"
+        text_options: "{text_options}"
+        attachments: "{attachment}"
+        attachment_kind: "{attachment_kind}"
+  react:
+    kind: update
+    about: React to one of the operator's messages (seen, done, none or an emoji)
+    params:
+      reaction:     { type: string, max: 16 }
+      message_id:   { type: string, pattern: "^[0-9]+$", optional: true }
+      topic:        { type: string, max: 128, optional: true }
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$", optional: true }
+    request:
+      method: POST
+      path: /v1/react
+      body: { reaction: "{reaction}", message_id: "{message_id}", topic: "{topic}", conversation: "{conversation}" }
+  pin:
+    kind: update
+    about: Keep one pinned message per slot at the top of the chat, edited in place
+    params:
+      slot:   { type: string, pattern: "^[a-z0-9_-]{1,32}$" }
+      text:   { type: string, max: 16000 }
+      format: { type: enum, values: [auto, plain, html, markdown], optional: true }
+    request:
+      method: POST
+      path: /v1/pin
+      body: { slot: "{slot}", text: "{text}", format: "{format}" }
+  unpin:
+    kind: update
+    about: Unpin one slot's message
+    params:
+      slot: { type: string, pattern: "^[a-z0-9_-]{1,32}$" }
+    request:
+      method: POST
+      path: /v1/pin
+      body: { slot: "{slot}", unpin: true }
+  ask_close:
+    kind: update
+    about: Close an open button ask with the decision made some other way
+    params:
+      decision:   { type: string, max: 200 }
+      message_id: { type: string, pattern: "^[0-9]+$", optional: true }
+      ask_key:    { type: string, max: 256, optional: true }
+    request:
+      method: POST
+      path: /v1/ask-close
+      body: { decision: "{decision}", message_id: "{message_id}", ask_key: "{ask_key}" }
+  tell:
+    kind: update
+    about: Tell the operator what landed in their inbox (the notify call)
+    params:
+      conversation: { type: string, pattern: "^[0-9]+(:topic:[0-9]+)?$" }
+      title:        { type: string, max: 250 }
+      text:         { type: string, max: 3500 }
+      link:         { type: string, max: 512, optional: true }
+    request:
+      method: POST
+      path: /v1/tell
+      body: { conversation: "{conversation}", title: "{title}", text: "{text}", link: "{link}" }
+check: health
+
+notify:
+  call: tell
+  address: { param: conversation, env: TGBRIDGE_CONVERSATION }
+  title: title
+  text: text
+  link: link
+
+
+hook:
+  verify:
+    scheme: secret
+    signature: { header: X-Tgbridge-Secret }
+    delivery: { body: id }
+  bodies: unique
+  normalize: [tgbridge/normalize]
+  keys: [chat, topic, kind, sender, thread]
+
+hear:
+  field: sender
+  by: identity
+
+thread:
+  formats: [markdown, html]
+  reply:  [tgbridge/thread, reply]
+  posted: [tgbridge/thread, posted]
+  read:   [tgbridge/thread, read]
+  files: true

@@ -198,7 +198,7 @@ class FakeYard:
             daemon_threads = True
 
         self.server = Server(str(home / 'yard.sock'), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         self.thread.start()
 
     def mail(self, text, sender='sam', at=None, **extra):
@@ -470,7 +470,7 @@ class MailTests(MailCase):
         mail = self.two_part_mail()
         self.plan = [None, not_sent, not_sent, not_sent]
         server = testports.bind_test_server(b._callback_handler(self.bridge))
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
 
@@ -607,7 +607,7 @@ class MailTests(MailCase):
                 super().do_POST()
         server = testports.bind_test_server(Gone)
         server.handle_error = lambda *args: errors.append(args)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         self.plan = [None, not_sent, not_sent, not_sent]
@@ -811,7 +811,8 @@ class RealCoreMailTests(BridgeTestCase):
                         sent.append(body)
                         return 200, dict(ok=True, result=dict(message_id=500 + len(sent), chat=dict(id=123)))
                     return self.transport(url, body, timeout)
-                self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+                self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram,
+                                       sleep=lambda _s: None)
                 self.bridge.yard_mail.since = OLD
 
                 # N1: one 4 KB mail, two fenced commands: two parts, whole, in order, exact.

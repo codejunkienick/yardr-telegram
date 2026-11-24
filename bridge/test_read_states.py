@@ -190,7 +190,7 @@ class FakeReadYard:
             daemon_threads = True
 
         self.server = Server(str(self.root / 'yard.sock'), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         self.thread.start()
 
     def push_event(self, event):
@@ -1843,7 +1843,7 @@ class RealReadStateTests(BridgeTestCase):
                         handler.rfile = original
 
             callback = testports.bind_test_server(Handler)
-            worker = threading.Thread(target=callback.serve_forever, daemon=True)
+            worker = threading.Thread(target=callback.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
             worker.start()
             pack = root / 'pack'
             b.stage_pack(b.render_pack(PACK, callback.server_address[1]), pack)
@@ -1916,7 +1916,7 @@ class RealReadStateTests(BridgeTestCase):
             def __getattr__(self, name):
                 return getattr(case.bridge, name)
         server = testports.bind_test_server(b._callback_handler(Proxy()))
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         worker.start()
         try:
             pack = root / 'secondary-pack'
@@ -2603,7 +2603,7 @@ class RealReadStateTests(BridgeTestCase):
 
                 proxy_home.mkdir(mode=0o700, exist_ok=True)
                 self.server = Server(str(proxy_home / 'yard.sock'), Handler)
-                self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
                 self.thread.start()
 
             def drop_streams(self):

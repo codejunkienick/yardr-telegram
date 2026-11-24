@@ -102,7 +102,7 @@ with open(TOP / 'lock', 'a') as lock:
     (TOP / 'state.tmp').write_text(json.dumps(state))
     os.replace(TOP / 'state.tmp', TOP / 'state.json')
 if wait:
-    time.sleep(.2)
+    time.sleep(.02)
 print(json.dumps(answer))
 print(f'{{status}} 0.001 0.002 0', end='')
 '''
@@ -164,7 +164,7 @@ def wait_for(condition, what, timeout=30):
             return value
         if time.monotonic() > deadline:
             raise AssertionError('timed out waiting for ' + what)
-        time.sleep(.05)
+        time.sleep(.01)
 
 
 def ledger_rows(path, query, args=()):
@@ -256,7 +256,7 @@ class InProcessBot:
         self.bridge.reactions['on_accept'], self.bridge.typing_seconds = False, 0
         handler = b._callback_handler(self.bridge)
         server = testports.bind_test_server(handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True).start()
         case.addCleanup(server.server_close)
         case.addCleanup(server.shutdown)
         self.port = server.server_address[1]

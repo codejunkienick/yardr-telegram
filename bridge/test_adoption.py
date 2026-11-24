@@ -60,7 +60,7 @@ class NativeAdoptionTests(BridgeTestCase):
                             handler.rfile = original
 
                 callback = testports.bind_test_server(Handler)
-                worker = threading.Thread(target=callback.serve_forever, daemon=True)
+                worker = threading.Thread(target=callback.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
                 worker.start()
                 try:
                     pack = root / 'pack'

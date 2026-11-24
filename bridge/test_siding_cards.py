@@ -26,6 +26,7 @@ class FakeSidingTests(NativeCase):
 
     def setUp(self):
         super().setUp()
+        self.bridge.sleep = lambda _: None
         self.sidings = {}
         self.paths = {}
         self.statuses = {}
@@ -120,7 +121,8 @@ class FakeSidingTests(NativeCase):
                                      [True, False] if kind == 'partial' else [False])
                     sent = [(row, self.store.saved_delivery(self.bridge.siding_cards.send_request(row)[0]))
                             for row in batch if row['message_id'] is not None]
-                    self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram)
+                    self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=telegram,
+                                           sleep=lambda _: None)
                     self.bridge.hook_secret = None
                     before = len(self.calls)
                     conflict = self.bridge.api_siding_card(dict(request, silent=False))
@@ -286,7 +288,8 @@ class SidingTests(BridgeTestCase):
         return result.stdout.strip()
 
     def restart(self):
-        self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.telegram)
+        self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.telegram,
+                               sleep=lambda _: None)
         self.bridge.hook_secret = None
         self.writes = []
         self.advances = []

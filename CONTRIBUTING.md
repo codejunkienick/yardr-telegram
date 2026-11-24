@@ -18,7 +18,7 @@ PATH it also starts an isolated native store/server and proves a stored
 operation executes once; that test skips without the binary. Its subprocesses
 use a temporary HOME/state/PATH with no YARDR variables. It needs no real
 settings file and starts no unit. It needs Python 3.11 or later, and curl for the tests that run the real curl against a loopback server (they skip without it). Extra arguments go to unittest, for
-example `sh scripts/test.sh -v`. CI runs the same suite on Ubuntu and macOS with Python 3.11 and 3.13, and Windows is covered only through the Linux job because hosted Windows runners cannot run WSL 2.
+example `sh scripts/test.sh -v`. For debugging, pass a single test file (`sh scripts/test.sh bridge/test_bridge.py`) or `--serial` (`sh scripts/test.sh --serial`, or `-j N` / `TGBRIDGE_TEST_JOBS=N` to set worker count). CI runs the same suite on Ubuntu and macOS with Python 3.11 and 3.13, and Windows is covered only through the Linux job because hosted Windows runners cannot run WSL 2.
 
 ## Settings compatibility
 

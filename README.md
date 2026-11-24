@@ -103,7 +103,10 @@ Release history: `CHANGELOG.md`.
 
 ## Testing
 
-Run `sh scripts/test.sh -v` for the offline bridge and pack suites. The
+Run `sh scripts/test.sh -v` for the offline bridge and pack suites (parallel by
+default, capped by CPU count; pass `--serial` to run serially or `-j N` /
+`TGBRIDGE_TEST_JOBS=N` to set worker count, and pass a file path such as
+`sh scripts/test.sh bridge/test_bridge.py` to run one file for debugging). The
 public CI matrix runs without a core: isolated native tests skip explicitly
 when neither `TGBRIDGE_TEST_YARDR` nor a `yardr` executable on PATH is
 available. The model-switch skip reason names `crew_handoff_switch v1`.

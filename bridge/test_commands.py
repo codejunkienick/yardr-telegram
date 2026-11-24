@@ -516,7 +516,7 @@ class LoopbackHandler:
 
         self.server = testports.bind_test_server(Handler)
         self.server.daemon_threads = True
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True).start()
         case.addCleanup(self.server.server_close)
         case.addCleanup(self.server.shutdown)
         self.url = f'http://127.0.0.1:{self.server.server_address[1]}/hook'

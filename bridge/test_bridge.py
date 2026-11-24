@@ -178,7 +178,7 @@ class BridgeTestCase(unittest.TestCase):
         if timeout is not None:
             handler.timeout = timeout
         server = testports.bind_test_server(handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -1123,7 +1123,7 @@ class BridgeTests(BridgeTestCase):
                 pass
 
         server = testports.bind_test_server(Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
         self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)
@@ -1202,7 +1202,7 @@ class BridgeTests(BridgeTestCase):
                 pass
 
         server = testports.bind_test_server(Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
         self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)

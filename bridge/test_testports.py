@@ -27,7 +27,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def _serve(server):
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
     thread.start()
     return server
 

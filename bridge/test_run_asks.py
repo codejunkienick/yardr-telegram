@@ -434,177 +434,177 @@ class NativeSocket:
             def log_message(self, *_):
                 pass
 
-            def do_POST(self):
-                args = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                method = self.path.removeprefix('/call/')
-                owner.calls.append((method, args, self.headers.get('X-Yardr-Connection')))
-                if method in ('GetUser', 'Bead') and owner.read_statuses:
-                    self.send_error(owner.read_statuses.pop(0))
-                    return
-                if method == 'GetUser':
-                    result = owner.user
-                elif method == 'GetGroup':
-                    result = owner.group
-                elif method == 'SkillDigest':
-                    if owner.mode == 'no-skill-topic':
-                        self.reply({'error': {'code': 'error', 'message': 'no such method SkillDigest'}})
-                        return
-                    result = owner.skill_trees.get(args['name'], 'absent')
-                elif method == 'RepoEditCapabilities':
-                    if owner.repo_edit_mode == 'no-capability-method':
-                        self.reply({'error': {'code': 'error', 'message': 'no such method RepoEditCapabilities'}})
-                        return
-                    if owner.repo_edit_mode == 'bad-capability':
-                        result = dict(version=99, materialize=False)
-                    elif owner.repo_edit_mode == 'v1-capability':
-                        result = dict(version=1, approval='version-digest', paths=16, text_bytes=65536,
-                                      context_bytes=8192, classes=['markdown', 'plain-text'], materialize=False)
-                    else:
-                        result = dict(owner.repo_edit_capability) if isinstance(owner.repo_edit_capability, dict) else owner.repo_edit_capability
-                elif method == 'NativeEditStatus':
-                    if owner.repo_edit_mode == 'no-status-method':
-                        self.reply({'error': {'code': 'error', 'message': 'no such method NativeEditStatus'}})
-                        return
-                    if owner.repo_edit_mode == 'status-wire-error':
-                        self.send_error(503)
-                        return
-                    bead_id = args[0] if isinstance(args, list) and args else None
-                    if bead_id not in owner.repo_edit_status:
-                        self.reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
-                        return
-                    result = dict(owner.repo_edit_status[bead_id])
-                elif method == 'Bead':
-                    if owner.mode == 'unreadable':
-                        self.send_error(503)
-                        return
-                    if owner.beads is not None and args['bead'] not in owner.beads:
-                        self.reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
-                        return
-                    result = owner.beads[args['bead']] if owner.beads is not None else dict(owner.bead, asks=[owner.ask])
-                elif method == 'UserAsks':
-                    if owner.mode == 'unreadable':
-                        self.send_error(503)
-                        return
-                    result = owner.queue(args) if owner.raw_queue is None else owner.raw_queue
-                elif method == 'Head':
-                    result = owner.event_head
-                elif method == 'Notes':
-                    if owner.mode == 'unreadable':
-                        self.send_error(503)
-                        return
-                    if owner.raw_notes is not None:
-                        result = owner.raw_notes
-                    else:
-                        bead = owner.beads_view().get(args[0])
-                        if bead is None:
-                            self.reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
-                            return
-                        result = owner.notes_for(bead)
-                elif method == 'Events':
-                    events = owner.raw_events
-                    if events is None:
-                        events = [dict(seq=100 + ask['ask'], id=str(100 + ask['ask']), bead=bead['id'],
-                                       kind='noted', actor=ask['asker'], data=dict(note=ask['ask']), at=ask['since'])
-                                  for bead in owner.beads_view().values() if bead['id'] == args[0]
-                                  for ask in bead['asks']]
-                        events.sort(key=lambda event: event['seq'])
-                    result = events[-args[1]:] if isinstance(events, list) else events
-                elif method in ('ApproveAsk', 'DeclineAsk', 'AnswerAsk', 'DeferAsk',
-                                'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected'):
-                    target = owner.target(args)
-                    if method.endswith('Expected'):
-                        if owner.mode == 'old-method':
-                            self.reply({'error': {'code': 'error', 'message': 'no such method ' + method}})
-                            return
-                        if args.get('turn') != target.get('turn'):
-                            self.reply({'error': {'code': 'conflict', 'message': 'stale turn'}})
-                            return
-                        method = method.removesuffix('Expected')
-                    replacing = method == 'AnswerAsk' and target['state'] == 'answered' and target.get('options')
-                    if (target['state'] != 'open' and not replacing) or owner.mode == 'refused':
-                        self.reply({'error': {'code': 'conflict', 'message': 'refused'}})
-                        return
-                    if owner.mode == 'stale' and method == 'ApproveAsk':
-                        self.reply({'error': {'code': 'error', 'message': owner.stale}})
-                        return
-                    if method == 'ApproveAsk' and isinstance(target.get('run'), dict) and 'repo_edit' in target['run']:
-                        payload = target['run']['repo_edit']
-                        values = args.get('values') or {}
-                        if (values.get('repo_edit_version') != str(payload['request']['version'])
-                                or values.get('repo_edit_digest') != payload['digest']):
-                            self.reply({'error': {'code': 'error', 'message': f"ask {args['ask']}: repo edit values mismatched; nothing ran"}})
-                            return
-                    if owner.mode != 'lost-open':
-                        target['turn'] = target.get('turn', 0) + 1
-                        target['state'] = {'ApproveAsk': 'answered', 'AnswerAsk': 'answered',
-                                              'DeclineAsk': 'declined', 'DeferAsk': 'put aside'}[method]
-                        target['words'] = args.get('words', 'canonical decision')
-                        if method == 'AnswerAsk':
-                            target['option'] = args['option']
-                        if method == 'DeferAsk':
-                            target['return_at'] = '2026-01-02T00:00:00Z'
-                        if method == 'ApproveAsk':
-                            if isinstance(target.get('run'), dict) and 'repo_edit' in target['run']:
-                                payload = target['run']['repo_edit']
-                                if payload['request']['version'] == 2:
-                                    reserved = owner.repo_edit_status and next(iter(owner.repo_edit_status)) or 'sample-2'
-                                    target['ran'] = dict(
-                                        argv=target['run']['argv'], result=n.PENDING,
-                                        pending_reason=f"reserved held bead {reserved}; the yard's server prepares it for review",
-                                    )
-                                else:
-                                    target['ran'] = dict(argv=target['run']['argv'], result='stored operation applied')
-                            else:
-                                target['ran'] = dict(argv=target['run']['argv'],
-                                                     result=n.PENDING if owner.mode == 'carrying' else 'stored operation applied')
-                    if owner.mode == 'lost-unreadable':
-                        owner.mode = 'unreadable'
-                        return
-                    if owner.mode == 'wire-error-commit':
-                        self.reply({'error': {'code': 'error', 'message': 'transport failed after commit'}})
-                        return
-                    if owner.mode in ('lost-commit', 'lost-open', 'invalid-commit', 'bad-request-commit'):
-                        if owner.mode in ('invalid-commit', 'bad-request-commit'):
-                            self.send_response(400 if owner.mode == 'bad-request-commit' else 502)
-                            self.end_headers()
-                            self.wfile.write(b'not a rollback')
-                        return
-                    result = dict(bead='sample-1', ask=7, result='stored operation applied') if method == 'ApproveAsk' else None
-                elif method == 'GetCrew':
-                    member = owner.crew.get(args.get('name')) if isinstance(args, dict) else None
-                    if member is None:
-                        self.reply({'error': {'code': 'not-found', 'message': 'no such crew member'}})
-                        return
-                    result = dict(member)
-                elif method == 'ListSessions':
-                    result = [dict(item) for item in owner.sessions]
-                elif method == 'NudgeSession':
-                    if owner.mode == 'no-nudge-method':
-                        self.reply({'error': {'code': 'error', 'message': 'no such method NudgeSession'}})
-                        return
-                    result = owner.nudge(args, self)
-                    if result is None:
-                        return
-                else:
-                    self.reply({'error': {'code': 'not-found', 'message': 'unknown method'}})
-                    return
-                self.reply({'result': result})
-
             def reply(self, value):
-                raw = json.dumps(value).encode()
-                if owner.mode == 'duplicate-json':
-                    raw = raw.replace(b'"result":', b'"result":null,"result":', 1)
-                self.send_response(200)
+                status, raw = owner._encode_reply(value)
+                self.send_response(status)
                 self.send_header('Content-Length', str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+
+            def do_POST(self):
+                args = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                method = self.path.removeprefix('/call/')
+                status, raw = owner.dispatch(method, args, self.headers.get('X-Yardr-Connection'))
+                if status is None:
+                    return
+                if raw is None:
+                    self.send_error(status)
+                    return
+                self.send_response(status)
+                if status == 200:
+                    self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                if raw:
+                    self.wfile.write(raw)
 
         class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             daemon_threads = True
 
         self.server = Server(str(root / 'yard.sock'), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         self.thread.start()
+
+    def _encode_reply(self, value):
+        raw = json.dumps(value).encode()
+        if self.mode == 'duplicate-json':
+            raw = raw.replace(b'"result":', b'"result":null,"result":', 1)
+        return 200, raw
+
+    def dispatch(self, method, args, connection='tgbridge'):
+        self.calls.append((method, args, connection))
+        if method in ('GetUser', 'Bead') and self.read_statuses:
+            return self.read_statuses.pop(0), None
+        if method == 'GetUser':
+            result = self.user
+        elif method == 'GetGroup':
+            result = self.group
+        elif method == 'SkillDigest':
+            if self.mode == 'no-skill-topic':
+                return self._encode_reply({'error': {'code': 'error', 'message': 'no such method SkillDigest'}})
+            result = self.skill_trees.get(args['name'], 'absent')
+        elif method == 'RepoEditCapabilities':
+            if self.repo_edit_mode == 'no-capability-method':
+                return self._encode_reply({'error': {'code': 'error', 'message': 'no such method RepoEditCapabilities'}})
+            if self.repo_edit_mode == 'bad-capability':
+                result = dict(version=99, materialize=False)
+            elif self.repo_edit_mode == 'v1-capability':
+                result = dict(version=1, approval='version-digest', paths=16, text_bytes=65536,
+                              context_bytes=8192, classes=['markdown', 'plain-text'], materialize=False)
+            else:
+                result = dict(self.repo_edit_capability) if isinstance(self.repo_edit_capability, dict) else self.repo_edit_capability
+        elif method == 'NativeEditStatus':
+            if self.repo_edit_mode == 'no-status-method':
+                return self._encode_reply({'error': {'code': 'error', 'message': 'no such method NativeEditStatus'}})
+            if self.repo_edit_mode == 'status-wire-error':
+                return 503, None
+            bead_id = args[0] if isinstance(args, list) and args else None
+            if bead_id not in self.repo_edit_status:
+                return self._encode_reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
+            result = dict(self.repo_edit_status[bead_id])
+        elif method == 'Bead':
+            if self.mode == 'unreadable':
+                return 503, None
+            if self.beads is not None and args['bead'] not in self.beads:
+                return self._encode_reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
+            result = self.beads[args['bead']] if self.beads is not None else dict(self.bead, asks=[self.ask])
+        elif method == 'UserAsks':
+            if self.mode == 'unreadable':
+                return 503, None
+            result = self.queue(args) if self.raw_queue is None else self.raw_queue
+        elif method == 'Head':
+            result = self.event_head
+        elif method == 'Notes':
+            if self.mode == 'unreadable':
+                return 503, None
+            if self.raw_notes is not None:
+                result = self.raw_notes
+            else:
+                bead = self.beads_view().get(args[0])
+                if bead is None:
+                    return self._encode_reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
+                result = self.notes_for(bead)
+        elif method == 'Events':
+            events = self.raw_events
+            if events is None:
+                events = [dict(seq=100 + ask['ask'], id=str(100 + ask['ask']), bead=bead['id'],
+                               kind='noted', actor=ask['asker'], data=dict(note=ask['ask']), at=ask['since'])
+                          for bead in self.beads_view().values() if bead['id'] == args[0]
+                          for ask in bead['asks']]
+                events.sort(key=lambda event: event['seq'])
+            result = events[-args[1]:] if isinstance(events, list) else events
+        elif method in ('ApproveAsk', 'DeclineAsk', 'AnswerAsk', 'DeferAsk',
+                        'AnswerAskExpected', 'DeferAskExpected', 'DeclineAskExpected'):
+            target = self.target(args)
+            if method.endswith('Expected'):
+                if self.mode == 'old-method':
+                    return self._encode_reply({'error': {'code': 'error', 'message': 'no such method ' + method}})
+                if args.get('turn') != target.get('turn'):
+                    return self._encode_reply({'error': {'code': 'conflict', 'message': 'stale turn'}})
+                method = method.removesuffix('Expected')
+            replacing = method == 'AnswerAsk' and target['state'] == 'answered' and target.get('options')
+            if (target['state'] != 'open' and not replacing) or self.mode == 'refused':
+                return self._encode_reply({'error': {'code': 'conflict', 'message': 'refused'}})
+            if self.mode == 'stale' and method == 'ApproveAsk':
+                return self._encode_reply({'error': {'code': 'error', 'message': self.stale}})
+            if method == 'ApproveAsk' and isinstance(target.get('run'), dict) and 'repo_edit' in target['run']:
+                payload = target['run']['repo_edit']
+                values = args.get('values') or {}
+                if (values.get('repo_edit_version') != str(payload['request']['version'])
+                        or values.get('repo_edit_digest') != payload['digest']):
+                    return self._encode_reply({'error': {'code': 'error', 'message': f"ask {args['ask']}: repo edit values mismatched; nothing ran"}})
+            if self.mode != 'lost-open':
+                target['turn'] = target.get('turn', 0) + 1
+                target['state'] = {'ApproveAsk': 'answered', 'AnswerAsk': 'answered',
+                                      'DeclineAsk': 'declined', 'DeferAsk': 'put aside'}[method]
+                target['words'] = args.get('words', 'canonical decision')
+                if method == 'AnswerAsk':
+                    target['option'] = args['option']
+                if method == 'DeferAsk':
+                    target['return_at'] = '2026-01-02T00:00:00Z'
+                if method == 'ApproveAsk':
+                    if isinstance(target.get('run'), dict) and 'repo_edit' in target['run']:
+                        payload = target['run']['repo_edit']
+                        if payload['request']['version'] == 2:
+                            reserved = self.repo_edit_status and next(iter(self.repo_edit_status)) or 'sample-2'
+                            target['ran'] = dict(
+                                argv=target['run']['argv'], result=n.PENDING,
+                                pending_reason=f"reserved held bead {reserved}; the yard's server prepares it for review",
+                            )
+                        else:
+                            target['ran'] = dict(argv=target['run']['argv'], result='stored operation applied')
+                    else:
+                        target['ran'] = dict(argv=target['run']['argv'],
+                                             result=n.PENDING if self.mode == 'carrying' else 'stored operation applied')
+            if self.mode == 'lost-unreadable':
+                self.mode = 'unreadable'
+                return None, None
+            if self.mode == 'wire-error-commit':
+                return self._encode_reply({'error': {'code': 'error', 'message': 'transport failed after commit'}})
+            if self.mode in ('lost-commit', 'lost-open', 'invalid-commit', 'bad-request-commit'):
+                if self.mode in ('invalid-commit', 'bad-request-commit'):
+                    return (400 if self.mode == 'bad-request-commit' else 502), b'not a rollback'
+                return None, None
+            result = dict(bead='sample-1', ask=7, result='stored operation applied') if method == 'ApproveAsk' else None
+        elif method == 'GetCrew':
+            member = self.crew.get(args.get('name')) if isinstance(args, dict) else None
+            if member is None:
+                return self._encode_reply({'error': {'code': 'not-found', 'message': 'no such crew member'}})
+            result = dict(member)
+        elif method == 'ListSessions':
+            result = [dict(item) for item in self.sessions]
+        elif method == 'NudgeSession':
+            if self.mode == 'no-nudge-method':
+                return self._encode_reply({'error': {'code': 'error', 'message': 'no such method NudgeSession'}})
+            reply_box = []
+            class _Adapter:
+                def reply(_, value):
+                    reply_box.append(self._encode_reply(value))
+            result = self.nudge(args, _Adapter())
+            if result is None:
+                return reply_box[0]
+        else:
+            return self._encode_reply({'error': {'code': 'not-found', 'message': 'unknown method'}})
+        return self._encode_reply({'result': result})
 
     def beads_view(self):
         return self.beads if self.beads is not None else {self.bead['id']: dict(self.bead, asks=[self.ask])}
@@ -772,7 +772,14 @@ class NativeCase(BridgeTestCase):
         self.calls.clear()
         self.sent_count = 0
         self.documents.clear()
-        self.bridge.run_asks = n.RunAsks(self.bridge)
+        ra = getattr(self.bridge, 'run_asks', None)
+        if ra is None:
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+        else:
+            ra.config = self.bridge.config
+            ra.now = time.time
+            ra.client = (n.YardSocketClient(self.config['yardr_home'], self.config.get('yardr_source', 'tgbridge'))
+                         if n.owns_cards(self.config) else None)
 
     def reset_depot(self, ask):
         self.reset_native(ask)
@@ -819,6 +826,34 @@ class NativeCase(BridgeTestCase):
     def create_decision(self, ask=None, **kwargs):
         self.reset_native(decision() if ask is None else ask)
         return self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='decision-1', **kwargs))
+
+    def _use_fast_native(self):
+        """Reuse one non-fsynced SQLite handle and dispatch fake RPCs in memory for bulk tests."""
+        import contextlib, sqlite3
+        cached_db = sqlite3.connect(self.store.path, timeout=10)
+        cached_db.execute('PRAGMA synchronous=OFF')
+        cached_db.execute('PRAGMA journal_mode=MEMORY')
+        self.addCleanup(cached_db.close)
+
+        @contextlib.contextmanager
+        def fast_connect():
+            with cached_db:
+                yield cached_db
+
+        self.enterContext(patch.object(self.store, 'connect', fast_connect))
+
+        native = self.native
+        def direct_call(client_self, method, arguments):
+            payload = json.loads(n.canonical(arguments))
+            status, raw = native.dispatch(method, payload, client_self.source)
+            if status != 200 or raw is None or len(raw) > 8 * 1024 * 1024:
+                raise n.RPCUnavailable(f'native {method} unavailable ({status})')
+            value = json.loads(raw, object_pairs_hook=n.strict_object)
+            if 'error' in value:
+                raise n.NativeError(value['error']['message'])
+            return value.get('result')
+
+        self.enterContext(patch.object(n.YardSocketClient, '_call', direct_call))
 
 
 class NativeTests(NativeCase):
@@ -892,6 +927,7 @@ class NativeTests(NativeCase):
         self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
 
     def test_depot_pack_review_and_envelope_fail_closed(self):
+        self._use_fast_native()
         self.reset_native(depot_proposal())
         self.assertFalse(self.create()['delivered'])
         self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
@@ -3798,148 +3834,180 @@ class NativeTests(NativeCase):
             with self.subTest(mutation=tag):
                 self.assert_fixture_prose_mutation(base, ask)
 
-        for fixture_name, factory in supported:
-            base = factory()
-            with self.subTest(intact=fixture_name):
-                self.reset_native(base)
-                self.assertTrue(self.create()['delivered'], fixture_name)
-            does = base['run']['does']
-            for idx, row in enumerate(does):
-                matched = next(((kind, m, prefix_fn) for kind, pat, prefix_fn in row_specs
-                                if (m := pat.fullmatch(row))), None)
-                self.assertIsNotNone(matched, f'{fixture_name} row {idx} unmatched by mutation table: {row!r}')
-                kind, m, prefix_fn = matched
-                tag_base = f'{fixture_name}[{idx}:{kind}]'
-                drift = copy.deepcopy(base)
-                drift['run']['does'][idx] += ' changed after display'
-                self.assert_bound_source_change_stales(base, drift)
+        def run_fixtures(only_names):
+            nonlocal base
+            for fixture_name, factory in supported:
+                if only_names is not None and fixture_name not in only_names:
+                    continue
+                base = factory()
+                with self.subTest(intact=fixture_name):
+                    self.reset_native(base)
+                    self.assertTrue(self.create()['delivered'], fixture_name)
+                does = base['run']['does']
+                for idx, row in enumerate(does):
+                    matched = next(((kind, m, prefix_fn) for kind, pat, prefix_fn in row_specs
+                                    if (m := pat.fullmatch(row))), None)
+                    self.assertIsNotNone(matched, f'{fixture_name} row {idx} unmatched by mutation table: {row!r}')
+                    kind, m, prefix_fn = matched
+                    tag_base = f'{fixture_name}[{idx}:{kind}]'
+                    drift = copy.deepcopy(base)
+                    drift['run']['does'][idx] += ' changed after display'
+                    self.assert_bound_source_change_stales(base, drift)
 
-                # 1. Cut back to fixed prefix.
-                bad = copy.deepcopy(base)
-                bad['run']['does'][idx] = prefix_fn(m)
-                refuse(bad, tag_base + ':prefix')
-
-                # 2. Empty each variable part.
-                if kind == 'cap_absent':
-                    pass
-                elif kind == 'cap_condensed':
-                    for item_idx, item in enumerate(re.finditer(r'[^,]+?(?=(?:, | and |$))', m.group(1))):
-                        start, end = m.start(1) + item.start(), m.start(1) + item.end()
-                        bad = copy.deepcopy(base)
-                        bad['run']['does'][idx] = row[:start] + row[end:]
-                        refuse(bad, f'{tag_base}:empty_lack_{item_idx}')
-                else:
-                    spans = [m.span(g) for g in range(1, m.re.groups + 1) if m.span(g) != (-1, -1)]
-                    if kind == 'cmd_file':
-                        for tok in re.finditer(r'\[([^\]]+)\] \(([a-z0-9._]+), handed (?:no|the) credential\)', m.group(2)):
-                            spans.append((m.start(2) + tok.start(1), m.start(2) + tok.end(1)))
-                            spans.append((m.start(2) + tok.start(2), m.start(2) + tok.end(2)))
-                    for v_idx, (start, end) in enumerate(spans):
-                        bad = copy.deepcopy(base)
-                        bad['run']['does'][idx] = row[:start] + row[end:]
-                        refuse(bad, f'{tag_base}:empty_var_{v_idx}')
-
-                # 3. Tail truncated (no period, half-length, half-length + '.', and clause-truncated).
-                tails = [
-                    ('drop_end', row[:-1]),
-                    ('half_raw', row[:max(1, len(row) // 2)]),
-                    ('half_dot', row[:max(1, len(row) // 2)] + '.'),
-                ]
-                if '; ' in row:
-                    tails.append(('drop_last_semicolon', row.rsplit('; ', 1)[0] + '.'))
-                for t_name, bad_line in tails:
+                    # 1. Cut back to fixed prefix.
                     bad = copy.deepcopy(base)
-                    bad['run']['does'][idx] = bad_line
-                    refuse(bad, f'{tag_base}:tail_{t_name}')
+                    bad['run']['does'][idx] = prefix_fn(m)
+                    refuse(bad, tag_base + ':prefix')
 
-                # 4. Unknown row inserted before and after this row.
-                for pos_name, pos in (('before', idx), ('after', idx + 1)):
-                    bad = copy.deepcopy(base)
-                    bad['run']['does'] = does[:pos] + [unknown_row] + does[pos:]
-                    refuse(bad, f'{tag_base}:unknown_{pos_name}')
-
-                # 5. Every command argv token and Go-quoted token rejects empty, bad escape/Unicode, NUL, and blank program.
-                if 'sends the body ' not in row:
-                    for cmd_idx, argv_match in enumerate(re.finditer(rf'(?:^|command |, )({COMMAND_ARGV})', row)):
-                        inner_start = argv_match.start(1) + 1
-                        inner_end = argv_match.end(1) - 1
-                        for tok_idx, tok_match in enumerate(re.finditer(COMMAND_TOKEN, row[inner_start:inner_end])):
-                            t_start, t_end = inner_start + tok_match.start(), inner_start + tok_match.end()
-                            bad_tokens = [('empty_q', '""'), ('bad_esc', r'"\q"'), ('bad_uni', r'"\uD800"'), ('nul', r'"\x00"')]
-                            if tok_idx == 0:
-                                bad_tokens.append(('blank_prog', '"   "'))
-                            for t_label, bad_tok in bad_tokens:
-                                bad = copy.deepcopy(base)
-                                bad['run']['does'][idx] = row[:t_start] + bad_tok + row[t_end:]
-                                refuse(bad, f'{tag_base}:cmd_{cmd_idx}_{tok_idx}_{t_label}')
-                    for q_idx, q_match in enumerate(GO_QUOTED_TOKEN_RE.finditer(row)):
-                        q_start, q_end = q_match.span()
-                        bad_quotes = [('bad_esc', r'"\q"'), ('bad_uni', r'"\uD800"'), ('nul', r'"\x00"')]
-                        if q_start == 0 or row[q_start - 1] != '=':
-                            bad_quotes.append(('empty_q', '""'))
-                        for q_label, bad_q in bad_quotes:
+                    # 2. Empty each variable part.
+                    if kind == 'cap_absent':
+                        pass
+                    elif kind == 'cap_condensed':
+                        for item_idx, item in enumerate(re.finditer(r'[^,]+?(?=(?:, | and |$))', m.group(1))):
+                            start, end = m.start(1) + item.start(), m.start(1) + item.end()
                             bad = copy.deepcopy(base)
-                            bad['run']['does'][idx] = row[:q_start] + bad_q + row[q_end:]
-                            refuse(bad, f'{tag_base}:quoted_{q_idx}_{q_label}')
+                            bad['run']['does'][idx] = row[:start] + row[end:]
+                            refuse(bad, f'{tag_base}:empty_lack_{item_idx}')
+                    else:
+                        spans = [m.span(g) for g in range(1, m.re.groups + 1) if m.span(g) != (-1, -1)]
+                        if kind == 'cmd_file':
+                            for tok in re.finditer(r'\[([^\]]+)\] \(([a-z0-9._]+), handed (?:no|the) credential\)', m.group(2)):
+                                spans.append((m.start(2) + tok.start(1), m.start(2) + tok.end(1)))
+                                spans.append((m.start(2) + tok.start(2), m.start(2) + tok.end(2)))
+                        for v_idx, (start, end) in enumerate(spans):
+                            bad = copy.deepcopy(base)
+                            bad['run']['does'][idx] = row[:start] + row[end:]
+                            refuse(bad, f'{tag_base}:empty_var_{v_idx}')
 
-                # 6. Malformed non-empty variable-domain values (URLs, paths, strict JSON bodies, hook/holder fields).
-                domain_mutations = []
-                if kind in ('source_summary_no_cred', 'source_summary_cred') and m.group(2):
-                    u_start, u_end = m.span(2)
-                    for u_label, bad_url in (
-                        ('bad_bracket_url', 'https://['),
-                        ('plain_http', 'http://example.invalid'),
-                        ('ftp_scheme', 'ftp://example.invalid'),
-                        ('userinfo', 'https://user@example.invalid'),
-                        ('query_url', 'https://example.invalid?x=1'),
-                        ('dotdot_url', 'https://example.invalid/../x'),
-                    ):
-                        domain_mutations.append((u_label, row[:u_start] + bad_url + row[u_end:]))
-                elif kind == 'copy_remove':
-                    p_start, p_end = m.span(1)
-                    for p_label, bad_path in (('escape', '../../escape'), ('abs', '/etc/passwd'), ('dot', './obsolete.txt')):
-                        domain_mutations.append((p_label, row[:p_start] + bad_path + row[p_end:]))
-                elif kind.startswith('call_first_') and m.group(4):
-                    r_start, r_end = m.span(4)
-                    for r_label, bad_req in (
-                        ('rel_path', 'health'),
-                        ('dotdot_path', '/../escape'),
-                        ('double_slash', '/a//b'),
-                        ('query_path', '/health?x=1'),
-                        ('frag_path', '/health#frag'),
-                    ):
-                        domain_mutations.append((r_label, row[:r_start] + bad_req + row[r_end:]))
-                elif kind == 'call_second' and m.group(2):
-                    b_start, b_end = m.span(2)
-                    for b_label, bad_body in (
-                        ('nan', 'NaN'),
-                        ('inf', 'Infinity'),
-                        ('nested_nan', '{"x":NaN}'),
-                        ('lone_surrogate', r'"\uD800"'),
-                        ('not_json', 'NOT_JSON'),
-                        ('truncated', '{"x":1'),
-                    ):
-                        domain_mutations.append((b_label, row[:b_start] + bad_body + row[b_end:]))
-                elif kind == 'cap_hook_present':
-                    b_start, b_end = m.span(3)
-                    domain_mutations.append(('bad_bodies', row[:b_start] + 'bogus' + row[b_end:]))
-                    if m.group(7):
-                        rp_start, rp_end = m.span(7)
-                        domain_mutations.append(('bad_reg_path', row[:rp_start] + '/../hook' + row[rp_end:]))
-                    if m.group(2):
-                        db_start, db_end = m.span(2)
-                        domain_mutations.append(('bad_deliv_dot', row[:db_start] + 'a..b' + row[db_end:]))
-                elif kind == 'cmd_file':
-                    cp_start, cp_end = m.span(1)
-                    for cp_label, bad_prog in (('escape', '../../escape'), ('abs', '/bin/report'), ('mismatch', 'other/report')):
-                        domain_mutations.append((cp_label, row[:cp_start] + bad_prog + row[cp_end:]))
-                elif kind == 'replace_grants_kept':
-                    h_start, h_end = m.span(4)
-                    domain_mutations.append(('bad_holder', row[:h_start] + '..' + row[h_end:]))
-                for d_label, bad_line in domain_mutations:
-                    bad = copy.deepcopy(base)
-                    bad['run']['does'][idx] = bad_line
-                    refuse(bad, f'{tag_base}:domain_{d_label}')
+                    # 3. Tail truncated (no period, half-length, half-length + '.', and clause-truncated).
+                    tails = [
+                        ('drop_end', row[:-1]),
+                        ('half_raw', row[:max(1, len(row) // 2)]),
+                        ('half_dot', row[:max(1, len(row) // 2)] + '.'),
+                    ]
+                    if '; ' in row:
+                        tails.append(('drop_last_semicolon', row.rsplit('; ', 1)[0] + '.'))
+                    for t_name, bad_line in tails:
+                        bad = copy.deepcopy(base)
+                        bad['run']['does'][idx] = bad_line
+                        refuse(bad, f'{tag_base}:tail_{t_name}')
+
+                    # 4. Unknown row inserted before and after this row.
+                    for pos_name, pos in (('before', idx), ('after', idx + 1)):
+                        bad = copy.deepcopy(base)
+                        bad['run']['does'] = does[:pos] + [unknown_row] + does[pos:]
+                        refuse(bad, f'{tag_base}:unknown_{pos_name}')
+
+                    # 5. Every command argv token and Go-quoted token rejects empty, bad escape/Unicode, NUL, and blank program.
+                    if 'sends the body ' not in row:
+                        for cmd_idx, argv_match in enumerate(re.finditer(rf'(?:^|command |, )({COMMAND_ARGV})', row)):
+                            inner_start = argv_match.start(1) + 1
+                            inner_end = argv_match.end(1) - 1
+                            for tok_idx, tok_match in enumerate(re.finditer(COMMAND_TOKEN, row[inner_start:inner_end])):
+                                t_start, t_end = inner_start + tok_match.start(), inner_start + tok_match.end()
+                                bad_tokens = [('empty_q', '""'), ('bad_esc', r'"\q"'), ('bad_uni', r'"\uD800"'), ('nul', r'"\x00"')]
+                                if tok_idx == 0:
+                                    bad_tokens.append(('blank_prog', '"   "'))
+                                for t_label, bad_tok in bad_tokens:
+                                    bad = copy.deepcopy(base)
+                                    bad['run']['does'][idx] = row[:t_start] + bad_tok + row[t_end:]
+                                    refuse(bad, f'{tag_base}:cmd_{cmd_idx}_{tok_idx}_{t_label}')
+                        for q_idx, q_match in enumerate(GO_QUOTED_TOKEN_RE.finditer(row)):
+                            q_start, q_end = q_match.span()
+                            bad_quotes = [('bad_esc', r'"\q"'), ('bad_uni', r'"\uD800"'), ('nul', r'"\x00"')]
+                            if q_start == 0 or row[q_start - 1] != '=':
+                                bad_quotes.append(('empty_q', '""'))
+                            for q_label, bad_q in bad_quotes:
+                                bad = copy.deepcopy(base)
+                                bad['run']['does'][idx] = row[:q_start] + bad_q + row[q_end:]
+                                refuse(bad, f'{tag_base}:quoted_{q_idx}_{q_label}')
+
+                    # 6. Malformed non-empty variable-domain values (URLs, paths, strict JSON bodies, hook/holder fields).
+                    domain_mutations = []
+                    if kind in ('source_summary_no_cred', 'source_summary_cred') and m.group(2):
+                        u_start, u_end = m.span(2)
+                        for u_label, bad_url in (
+                            ('bad_bracket_url', 'https://['),
+                            ('plain_http', 'http://example.invalid'),
+                            ('ftp_scheme', 'ftp://example.invalid'),
+                            ('userinfo', 'https://user@example.invalid'),
+                            ('query_url', 'https://example.invalid?x=1'),
+                            ('dotdot_url', 'https://example.invalid/../x'),
+                        ):
+                            domain_mutations.append((u_label, row[:u_start] + bad_url + row[u_end:]))
+                    elif kind == 'copy_remove':
+                        p_start, p_end = m.span(1)
+                        for p_label, bad_path in (('escape', '../../escape'), ('abs', '/etc/passwd'), ('dot', './obsolete.txt')):
+                            domain_mutations.append((p_label, row[:p_start] + bad_path + row[p_end:]))
+                    elif kind.startswith('call_first_') and m.group(4):
+                        r_start, r_end = m.span(4)
+                        for r_label, bad_req in (
+                            ('rel_path', 'health'),
+                            ('dotdot_path', '/../escape'),
+                            ('double_slash', '/a//b'),
+                            ('query_path', '/health?x=1'),
+                            ('frag_path', '/health#frag'),
+                        ):
+                            domain_mutations.append((r_label, row[:r_start] + bad_req + row[r_end:]))
+                    elif kind == 'call_second' and m.group(2):
+                        b_start, b_end = m.span(2)
+                        for b_label, bad_body in (
+                            ('nan', 'NaN'),
+                            ('inf', 'Infinity'),
+                            ('nested_nan', '{"x":NaN}'),
+                            ('lone_surrogate', r'"\uD800"'),
+                            ('not_json', 'NOT_JSON'),
+                            ('truncated', '{"x":1'),
+                        ):
+                            domain_mutations.append((b_label, row[:b_start] + bad_body + row[b_end:]))
+                    elif kind == 'cap_hook_present':
+                        b_start, b_end = m.span(3)
+                        domain_mutations.append(('bad_bodies', row[:b_start] + 'bogus' + row[b_end:]))
+                        if m.group(7):
+                            rp_start, rp_end = m.span(7)
+                            domain_mutations.append(('bad_reg_path', row[:rp_start] + '/../hook' + row[rp_end:]))
+                        if m.group(2):
+                            db_start, db_end = m.span(2)
+                            domain_mutations.append(('bad_deliv_dot', row[:db_start] + 'a..b' + row[db_end:]))
+                    elif kind == 'cmd_file':
+                        cp_start, cp_end = m.span(1)
+                        for cp_label, bad_prog in (('escape', '../../escape'), ('abs', '/bin/report'), ('mismatch', 'other/report')):
+                            domain_mutations.append((cp_label, row[:cp_start] + bad_prog + row[cp_end:]))
+                    elif kind == 'replace_grants_kept':
+                        h_start, h_end = m.span(4)
+                        domain_mutations.append(('bad_holder', row[:h_start] + '..' + row[h_end:]))
+                    for d_label, bad_line in domain_mutations:
+                        bad = copy.deepcopy(base)
+                        bad['run']['does'][idx] = bad_line
+                        refuse(bad, f'{tag_base}:domain_{d_label}')
+
+        self._use_fast_native()
+        base = None
+        only_names = getattr(self, '_does_only_names', None)
+        if only_names is not None:
+            run_fixtures(only_names)
+            return
+
+        workers = 1 if os.environ.get('TGBRIDGE_TEST_JOBS') == '1' else min(os.cpu_count() or 1, 4)
+        if workers <= 1:
+            run_fixtures(None)
+        else:
+            names = [name for name, _ in supported]
+            batches = [names[i::workers] for i in range(workers) if names[i::workers]]
+            procs = [
+                subprocess.Popen(
+                    [sys.executable, '-B', str(Path(__file__).resolve()), '--does-fixtures', *batch],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                for batch in batches
+            ]
+            failures = []
+            for batch, proc in zip(batches, procs):
+                out, _ = proc.communicate()
+                if proc.returncode != 0:
+                    failures.append(f'batch {batch} failed (exit {proc.returncode}):\n{out}')
+            if failures:
+                self.fail('\n'.join(failures))
 
         base = source_proposal('replace')
         # Historical preamble mutations are opaque except the retained grants framing.
@@ -4303,6 +4371,7 @@ class NativeTests(NativeCase):
 
     def test_source_and_pack_prose_values_are_native_owned(self):
         """Historical semantic-value mutations are presented whole; structured framing stays bound."""
+        self._use_fast_native()
         zero_sha = '0' * 64
         alt_sha = 'f' * 64
         fixtures = [
@@ -4834,6 +4903,7 @@ class NativeTests(NativeCase):
 
     def test_source_and_pack_carried_leaves_are_structural_and_bound(self):
         """All carried leaves stale old controls; only independent structural contradictions refuse on first read."""
+        self._use_fast_native()
         import yaml
 
         def iter_leaves(node, path=()):
@@ -7321,7 +7391,7 @@ class NativeSettingsTests(unittest.TestCase):
                 with self.subTest(settings_fifo=extra):
                     os.mkfifo(path, 0o600)
                     try:
-                        self.assertEqual(run(*extra, timeout=2).returncode, 1)
+                        self.assertEqual(run(*extra, timeout=10).returncode, 1)
                         self.assertFalse(path.with_name(path.name + '.before-native').exists())
                     finally:
                         path.unlink()
@@ -7330,7 +7400,7 @@ class NativeSettingsTests(unittest.TestCase):
             lock = path.with_name(path.name + '.native.lock')
             lock.unlink()
             os.mkfifo(lock, 0o600)
-            self.assertEqual(run('--apply', timeout=2).returncode, 1)
+            self.assertEqual(run('--apply', timeout=10).returncode, 1)
             self.assertEqual(path.read_text(), '[yardr]\nsource="tgbridge"\n')
             self.assertFalse(path.with_name(path.name + '.before-native').exists())
 
@@ -8550,7 +8620,7 @@ class RealNativeTests(BridgeTestCase):
                     except (BrokenPipeError, ConnectionResetError):
                         pass
             httpd = testports.bind_test_server(Handler)
-            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread = threading.Thread(target=httpd.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
             thread.start()
             try:
                 source = root / ('general-' + boundary + '.yaml')
@@ -10996,3 +11066,12 @@ class RealNativeTests(BridgeTestCase):
                   'core+ledger restart, exact commit/test/review/assembly landing and failed-test status verified')
         finally:
             testyardr.stop(server)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) >= 2 and sys.argv[1] == '--does-fixtures':
+        case = NativeTests('test_source_and_pack_every_does_row_preserves_prose_and_refuses_framing')
+        case._does_only_names = set(sys.argv[2:])
+        result = unittest.TextTestRunner(verbosity=0).run(case)
+        sys.exit(0 if result.wasSuccessful() else 1)
+    unittest.main()

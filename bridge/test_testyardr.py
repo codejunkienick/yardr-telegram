@@ -58,7 +58,7 @@ class NativeFixtureTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix='fp') as root:
             server = Server(str(Path(root) / 'yard.sock'), Handler)
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
             thread.start()
             try:
                 answers.update(SkillDigest=json.dumps({'error': {'code': 'error', 'message': 'skill name "": invalid'}}).encode(),

@@ -124,7 +124,8 @@ def _discover_suite(suite_dir, patterns, discover_pattern=None):
             loader.testNamePatterns = [
                 p if ('*' in p or '?' in p or '[' in p) else f'*{p}*' for p in patterns
             ]
-        discovered = loader.discover(suite_path, pattern=discover_pattern or 'test*.py',
+        discovered = loader.discover(suite_path,
+                                     pattern='test*.py' if discover_pattern is None else discover_pattern,
                                      top_level_dir=suite_path)
         return [case.id() for case in _iter_cases(discovered)]
     finally:
@@ -232,7 +233,7 @@ def _run_serial(unittest_args, has_pattern=False, discover_pattern=None):
     ran_any = False
     env = os.environ.copy()
     env['TGBRIDGE_TEST_JOBS'] = '1'
-    pattern_args = ['-p', discover_pattern] if discover_pattern else []
+    pattern_args = ['-p', discover_pattern] if discover_pattern is not None else []
     for suite_dir in SUITES:
         rc = subprocess.run(
             [sys.executable, '-B', '-m', 'unittest', 'discover', '-s', suite_dir,

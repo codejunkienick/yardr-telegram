@@ -4,6 +4,8 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -28,6 +30,25 @@ class PatternTests(unittest.TestCase):
 
     def test_no_match_pattern_builds_no_units(self):
         self.assertEqual(run_tests._build_units(None, 'zzz_no_match_*.py'), [])
+
+    def test_empty_pattern_discovers_zero_tests(self):
+        with self.subTest(mode='parallel'):
+            self.assertEqual(run_tests._build_units(None, ''), [])
+        with self.subTest(mode='serial'):
+            tmp = Path(tempfile.mkdtemp(prefix='yt-empty-pattern-'))
+            try:
+                (tmp / 'test_dummy.py').write_text(
+                    'import unittest\n'
+                    'class DummyTests(unittest.TestCase):\n'
+                    '    def test_dummy(self):\n'
+                    '        pass\n',
+                    encoding='utf-8',
+                )
+                with mock.patch.object(run_tests, 'SUITES', (str(tmp),)):
+                    rc = run_tests._run_serial([], True, '')
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            self.assertEqual(rc, 5)
 
     def test_serial_forwards_pattern_to_discover(self):
         with mock.patch.object(run_tests.subprocess, 'run') as fake:

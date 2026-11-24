@@ -494,10 +494,11 @@ class SwitchModelSettingsTests(unittest.TestCase):
 
     def test_beside_quota_both_are_native(self):
         path = self.settings(self.PICKS, menu=False)
-        path.write_text(path.read_text() + '\n[yardr.quota]\n')
+        path.write_text(path.read_text().replace('cards = false', 'cards = true') + '\n[yardr.quota]\n')
         settings = b.load_settings(path)
         self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'nudge', 'switch_model'])
-        path.write_text(path.read_text() + '\n[yardr.mail]\n')
+        self.assertTrue(settings.config['yardr_cards'])
+        path.write_text(path.read_text().replace('cards = true', 'cards = false') + '\n[yardr.mail]\n')
         secondary = b.load_settings(path).config
         self.assertFalse(secondary['yardr_cards'])
         self.assertEqual(secondary['commands'], settings.config['commands'])

@@ -749,67 +749,6 @@ stops that new bot; retain its ledger and credentials for recovery. The primary
 keeps running throughout. Activation, BotFather changes, credentials, grants and
 subscriptions remain the operator's.
 
-## Hand a bot's state to a new installation
-
-For a bot another bridge installation polls today, moved to a crew member's own
-installation from the previous section: the same bot, token and paired chat. Only
-its ledger, heartbeat, inbound files and queued transcript jobs move, once and
-coherently; the rest of its state directory stays where it is. `<previous settings>`
-and `<previous state_dir>` are the previous owner's, `<settings>` and `<root>` the
-new installation's; `$H` is `python3 <root>/current/scripts/handover_state.py`.
-
-1. Before the freeze: install the new instance, apply its pack, key its
-   source, add its hook and identity, add the crew member and subscribe it
-   (previous section, steps 1-5), but do not enable its unit. In step 3
-   make only the state directory's parent (`install -d -m 700 <parent of
-   state_dir>`), not the state directory: capture makes that and refuses
-   one that exists. Everything the crew member must see arrives after its
-   add and subscription.
-
-2. Freeze the previous owner. Its poller may not take this host's bot lock,
-   so stop and disable it by name; the lock and Telegram's 409 are fences,
-   not the switch:
-
-   ```sh
-   systemctl --user disable --now <previous unit>
-   ```
-
-3. Capture, with the new unit still stopped:
-
-   ```sh
-   $H capture --settings <settings> --from-settings <previous settings> --from <previous state_dir>
-   ```
-
-   It refuses, changing nothing, when the settings name another bot or chat, a
-   bridge is running, a ledger or file is unexpected, or an ask is still open.
-   Answer or close open asks with the previous owner first; only when that cannot
-   be done, `--close-pending "<decision>"` archives them as decided in the new
-   copy, so a late tap relays nothing. Nothing is approved for anyone. Start the
-   new bridge only after capture reports success. The refusals and the record it
-   writes are in [bridge/OPERATIONS.md](../bridge/OPERATIONS.md#hand-a-bots-state-to-a-new-installation).
-
-4. Start the new unit and check it (previous section, step 6).
-
-To hand the bot back after the new installation has had traffic, never
-restore the copy the capture started from, nor `<previous state_dir>/
-telegram-bridge.sqlite3.before-handback`: both lack every send and update
-since. Stop the new unit and the crew member (`yardr crew stop <crew>`,
-which keeps its inbox), then write the latest state forward:
-
-```sh
-systemctl --user disable --now <unit>
-$H handback --settings <settings> --to <previous state_dir>
-systemctl --user enable --now <previous unit>
-```
-
-It refuses, changing nothing, while either bridge runs or the previous ledger
-changed since the capture (both owners ran: stop both and reconcile by hand).
-After a
-failure, run it again; a finished handback refuses a second. Updates Telegram
-still holds go to the previous owner from the handed-back offset. The full
-refusals are in
-[bridge/OPERATIONS.md](../bridge/OPERATIONS.md#hand-a-bots-state-to-a-new-installation).
-
 ## Move an existing bridge to its own installation
 
 For a bridge whose unit still runs `bridge.py` from a checkout. Its settings,

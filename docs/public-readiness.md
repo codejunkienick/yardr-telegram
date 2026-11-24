@@ -196,8 +196,8 @@ builds `scripts/test.sh` stopped after the bridge's nonzero result; pack tests
 were then run separately with the same selected core. They are historical
 proof counts, not the latest documentation candidate's default-suite totals.
 The public-main failure is solely the fork-only `skill add` prerequisite in
-`MayorSliceTests.test_installed_mayor_bot_reaches_its_inbox_and_answers_through_its_own_source`
-([test](../bridge/test_mayor_handover.py)). It fails before mayor configuration
+`SecondBotTests.test_installed_mayor_bot_reaches_its_inbox_and_answers_through_its_own_source`
+([test](../bridge/test_second_bot.py)). It fails before mayor configuration
 or adoption: no public mayor installation/skills claim follows. The default
 suite passes this fork workflow. The two common skips are the removed
 pre-alignment skill-card method and the Apple-Silicon-only GPU check on Linux.

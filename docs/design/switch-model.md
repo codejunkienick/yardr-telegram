@@ -233,10 +233,6 @@ The native guard still protects the atomic write against every revision change.
   the `switch-model:` namespace govern `/switch_model`. While `[yardr.switch_model]`
   is set, any `switch_model` command/menu name and any prefix overlapping
   `switch-model:` are refused on load before any write.
-- **State handover:** `scripts/handover_state.py` recognizes the additive
-  switch tables in `LATER` / `NATIVE`: empty tables remain compatible across
-  capture and handback, while populated native switch rows retain the existing
-  handback refusal.
 - **Rollback:** Resolve or supersede any pending native switch, stop the unit,
   and restore the pre-edit settings file before running
   `install.sh --settings <settings> --root <root> --rollback`.

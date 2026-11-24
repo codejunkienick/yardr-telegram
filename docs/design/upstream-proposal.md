@@ -98,7 +98,7 @@ suite was run separately with the same selected executable. These are proof
 counts, not the later documentation candidate's fresh default counts.
 
 Public main is not all-green: its sole failure is fork-only `skill add` in
-`MayorSliceTests.test_installed_mayor_bot_reaches_its_inbox_and_answers_through_its_own_source`,
+`SecondBotTests.test_installed_mayor_bot_reaches_its_inbox_and_answers_through_its_own_source`,
 before mayor configuration/adoption. No public mayor installation or skills
 claim follows. The release failures also include guarded ask_card, /decide
 UserAsks shape and group effort setup, as well as formats and skill add.

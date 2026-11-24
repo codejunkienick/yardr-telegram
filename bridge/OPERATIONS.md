@@ -311,60 +311,6 @@ text, or the handler JSON).
 
 Removing a yard's bridge: README.md, "Uninstall".
 
-## Hand a bot's state to a new installation
-
-A bot that another bridge installation polls today can move to a crew member's own
-installation, and back, with `scripts/handover_state.py`. The steps and commands are in
-`yardr/SETUP.md`, "Hand a bot's state to a new installation". Only that bot's ledger
-(offset, delivery keys and receipts, asks, pins, accepted messages), heartbeat, inbound
-files and queued transcript jobs move, once and coherently. The rest of the previous
-state directory, which may hold other programs' files, stays where it is.
-
-Capture refuses, changing nothing, when:
-
-- the two settings name another bot or paired chat;
-- the previous owner's heartbeat names a running bridge, or a bridge of this bot holds
-  the host lock;
-- the ledger has a hot journal (start and stop the previous owner once), a table or
-  column it does not know, or native card rows;
-- the ledger, the heartbeat or anything in the inbound tree, its root included, is a link
-  or special file;
-- the new state directory exists, even empty or as a link;
-- an ask is still open.
-
-Answer or close open asks with the previous owner first. Only when that cannot be done,
-`--close-pending "<decision>"` archives them as decided in the new copy, so a late tap
-relays nothing. Nothing is approved for anyone. The SQLite backup reads the previous
-ledger read-only and leaves it as it was; `<state_dir>/handover.json` records its SHA-256,
-schema, row counts, offset, archived asks and copied files. Capture writes only after
-every check has passed, into a sibling directory it renames into place last; if the state
-directory appears meanwhile it refuses, and a run that does not finish removes only what
-it made. Start the new bridge only after capture reports success.
-
-A key the previous owner saved replays under the same request only where the yard name
-and `account_id` are the same; under new names the request is another payload and fails
-closed as `idempotency_key_conflict`. An ambiguous or reserved send stays ambiguous:
-reconcile it in the chat, never by sending again.
-
-The previous owner's late button taps reach the new bridge only as callbacks on its
-ledger's asks: archived and answered asks relay nothing again, and native card data it
-never published is refused.
-
-Handback refuses, changing nothing, while either bridge runs, when `<settings>` name
-another bot or paired chat than the one captured, when the previous ledger, the new
-heartbeat or anything in either inbound tree is a link or special file, when the previous
-ledger changed since the capture (both owners ran: stop both and reconcile by hand; there
-is no tool for that), or when the new ledger holds a table or column it does not know,
-native card rows, or lacks a table of the previous one. It replaces the previous ledger's
-rows with the new ledger's cursor, receipts, asks, pins and accepted rows, in the previous
-schema and one transaction, keeps the replaced file as `.before-handback`, copies new
-inbound files and leaves exactly the new owner's queued transcript jobs. The message log
-stays in the new state directory. After a failure, run it again: it records what it writes
-before its transaction, so a run that died before, inside or after that transaction, or
-while copying files, is finished by the next; a run that finds either ledger changed since,
-or put back as it was at capture, refuses. A finished handback refuses a second. Updates
-Telegram still holds go to the previous owner from the handed-back offset.
-
 ## Inbound
 
 The bridge relays each message of the paired user to the yard as one POST

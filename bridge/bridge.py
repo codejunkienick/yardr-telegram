@@ -1151,6 +1151,7 @@ class Bridge:
         self.typing_seconds = dict(TYPING_DEFAULTS, **(config.get('typing') or {}))['seconds']
         self.typing_windows = {}
         self.typing_stream_windows = {}
+        self._typing_targets_failed = False
         self.typing_lock = threading.Lock()
         self.typing_wake = threading.Event()
         self.typing_wait = typing_wait or self.typing_wake.wait
@@ -2395,7 +2396,14 @@ class Bridge:
         turns when read_states has a live event stream), each on its own."""
         if not self.typing_seconds:
             return
-        targets = self.read_states.typing_targets()
+        try:
+            targets = self.read_states.typing_targets()
+        except Exception:  # noqa: BLE001 - the worker must outlive a failed store read
+            if not self._typing_targets_failed:
+                self._typing_targets_failed = True
+                self._log(self._typing_line(None, 'ledger_unavailable'))
+            return
+        self._typing_targets_failed = False
         if targets is not None:
             now = self.monotonic()
             with self.typing_lock:
@@ -2416,7 +2424,9 @@ class Bridge:
     def _typing_stream_tick(self, targets):
         """Drive typing per working crew from the read_states event stream:
         send every TYPING_INTERVAL in the newest open (read/working) row's
-        thread while working, stopping on idle, on send, or at the cap."""
+        thread while working, stopping on idle, on send, or at the cap. A
+        window a send stopped resumes for a changed newest open row in the
+        same turn, within the same cap."""
         now = self.monotonic()
         with self.typing_lock:
             for crew in list(self.typing_stream_windows):
@@ -2445,7 +2455,7 @@ class Bridge:
                            turn_seq=turn_seq, newest_mid=newest_mid)
                 with self.typing_lock:
                     self.typing_stream_windows[crew] = win
-            elif has_newer_row:
+            elif has_newer_row or (win['stopped'] and win['newest_mid'] != newest_mid):
                 if now >= win['end'] or (win.get('rejected') and win['thread'] == thread and win['stopped']):
                     with self.typing_lock:
                         win['thread'] = thread

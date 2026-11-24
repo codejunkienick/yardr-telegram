@@ -1205,6 +1205,40 @@ class ReadStates:
         self._poll_wake.set()
         self.bridge.typing_wake.set()
 
+    def _seed_crew_status(self):
+        """Seed cached crew status at stream start from each open row crew's
+        current GetCrew state, so a crew already in a working turn gets its
+        working reaction and stream typing without waiting for its next
+        crew_status event. A crew that is not working, is already cached, or
+        cannot be read stays as it is. Never raises."""
+        try:
+            rows = self._open_rows()
+        except Exception:  # noqa: BLE001 - best effort; crew_status events still drive status
+            return
+        seen = set()
+        for row in rows:
+            crew = self._row_crew_or_configured(row)
+            if not crew or crew in seen:
+                continue
+            seen.add(crew)
+            with self._state_lock:
+                if crew in self._crew_status:
+                    continue
+            try:
+                member = self._read_crew(crew)
+            except Exception:  # noqa: BLE001 - an unreadable crew stays unseeded
+                continue
+            if member.get('state') != 'running' or member.get('status') != 'working':
+                continue
+            with self._stream_cv:
+                if crew in self._crew_status:
+                    continue
+                turn_seq = self._crew_turn_seq.get(crew, 0) + 1
+                self._crew_turn_seq[crew] = turn_seq
+                self._crew_status[crew] = dict(status='working', since=self.bridge.monotonic(),
+                                               turn_seq=turn_seq)
+                self._stream_cv.notify_all()
+
     def _handle_crew_status_event(self, data):
         crew = data.get('crew')
         status = data.get('status')
@@ -1296,6 +1330,7 @@ class ReadStates:
                 def on_open():
                     nonlocal opened_at
                     opened_at = time.monotonic()
+                    self._seed_crew_status()
                     with self._stream_cv:
                         self._stream_connected = True
                         was_broken = self._stream_broken

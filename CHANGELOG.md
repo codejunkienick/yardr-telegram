@@ -22,6 +22,10 @@ sees and does, not how the code is organised.
 
 ### Fixed
 
+- Typing and the ✍ working reaction now cover a crew already working when
+  the bridge connects, and typing resumes for the crew's remaining open
+  message after a send instead of staying silent until the next turn. A
+  failed typing read logs once instead of silently stopping typing.
 - Existing custom `/nudge` commands, menu entries and callback prefixes
   overlapping `nudge:` keep loading with their original meaning. They take
   precedence over the built-in `/nudge` and its confirm cards. Startup and

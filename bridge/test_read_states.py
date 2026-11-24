@@ -2068,6 +2068,150 @@ class ReadStateTests(ReadStateCase):
             self.bridge._typing_tick()
             self.assertEqual(len(self.chat_actions), 2)
 
+    def test_stream_start_seeds_working_crew_status(self):
+        self.restart(typing=dict(seconds=10))
+        self.native.crew[self.CREW]['state'] = 'running'
+        self.native.crew[self.CREW]['status'] = 'working'
+        self.drain(self.update(uid=10))
+        seq10 = self.row(10)['seq']
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(
+                lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working',
+                timeout=2.0, message='stream start did not seed working crew status')
+            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.mono[0] += 15.0
+            self.poll()
+            self.assertEqual(self.row(10)['state'], 'working')
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions, [(1015.0, dict(chat_id=123, action='typing'))])
+            self.bridge.read_states.stop()
+
+    def test_stream_start_seed_skips_idle_and_unreadable_crews(self):
+        self.drain(self.update(uid=10))
+        seq10 = self.row(10)['seq']
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+
+            # Idle crew at start: nothing seeded, no spurious working past working_after.
+            self.assertEqual(self.bridge.read_states._crew_status, {})
+            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.mono[0] += 15.0
+            self.poll()
+            self.assertEqual(self.row(10)['state'], 'read')
+
+            # Unreadable crew at reconnect: the stream recovers, nothing is seeded, nothing crashes.
+            self.native.crew[self.CREW]['state'] = 'running'
+            self.native.crew[self.CREW]['status'] = 'working'
+            self.native.override['GetCrew'] = lambda args, handler: (200, {'result': {'name': self.CREW}})
+            conns = len(self.native.stream_requests)
+            self.native.drop_streams()
+            self._wait_until(lambda: len(self.native.stream_requests) > conns
+                             and self.bridge.read_states._stream_connected, timeout=3.0)
+            self.assertEqual(self.bridge.read_states._crew_status, {})
+
+            # Readable again at the next reconnect: the working crew is seeded.
+            self.native.override.pop('GetCrew')
+            self.native.drop_streams()
+            self._wait_until(
+                lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working',
+                timeout=3.0, message='reconnect did not seed working crew status')
+            self.poll()
+            self.assertEqual(self.row(10)['state'], 'working')
+            self.bridge.read_states.stop()
+
+    def test_stream_typing_resumes_for_older_open_row_after_send(self):
+        self.restart(
+            typing=dict(seconds=10),
+            topics=(dict(name='web', agent=self.CREW),),
+        )
+        self.store.record_topic('web', 9, 'created')
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+
+            u_web = dict(update_id=12, message=dict(
+                message_id=12, text='web msg', message_thread_id=9, is_topic_message=True,
+                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+            ))
+            self.drain(u_web)
+            self.drain(self.update(uid=13))
+            seq13 = self.row(13)['seq']
+            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq13, session=''))
+            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'read'
+                             and (self.row(13) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: self.bridge.read_states.typing_targets().get(self.CREW, (None, 0))[1] == 13)
+
+            # Typing in the newest open row's thread (General); a send stops it.
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions, [(1000.0, dict(chat_id=123, action='typing'))])
+            self.assertTrue(self.bridge.publish(self.publish(key='stop-typing-send'))['delivered'])
+            self.mono[0] = 1004.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 1)
+
+            # Newest row closes while the crew still works: typing resumes for the
+            # older open row in the same turn, then stops at the original cap.
+            self.native.push_event(replied_event(22, seq13, crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.row(13) or {}).get('state') == 'done', timeout=2.0)
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions[-1],
+                             (1004.0, dict(chat_id=123, action='typing', message_thread_id=9)))
+            self.mono[0] = 1008.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 3)
+            self.mono[0] = 1010.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 3)
+            self.bridge.read_states.stop()
+
+    def test_typing_targets_failure_keeps_worker_alive(self):
+        self.restart(typing=dict(seconds=10))
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+            self.drain(self.update(uid=10))
+            seq10 = self.row(10)['seq']
+            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: self.bridge.read_states.typing_targets() != {})
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 1)
+
+            real_targets = self.bridge.read_states.typing_targets
+            failures = [2]
+
+            def flaky():
+                if failures[0]:
+                    failures[0] -= 1
+                    raise RuntimeError('store unavailable')
+                return real_targets()
+
+            self.mono[0] = 1004.0
+            with patch.object(self.bridge.read_states, 'typing_targets', side_effect=flaky):
+                self.bridge._typing_tick()
+                self.bridge._typing_tick()
+                logged = [l for l in self.logs if 'typing not shown: ledger_unavailable' in l]
+                self.assertEqual(len(logged), 1)
+                self.assertEqual(len(self.chat_actions), 1)
+                self.bridge._typing_tick()
+                self.assertEqual(len(self.chat_actions), 2)
+                failures[0] = 1
+                self.bridge._typing_tick()
+                logged = [l for l in self.logs if 'typing not shown: ledger_unavailable' in l]
+                self.assertEqual(len(logged), 2)
+            self.bridge.read_states.stop()
+
 
 class SecondaryReadStateTests(ReadStateCase):
     CREW = 'secretary'
@@ -2093,6 +2237,12 @@ class SecondaryReadStateTests(ReadStateCase):
     )
     test_stream_break_reverts_working_row_to_read = (
         ReadStateTests.test_stream_break_reverts_working_row_to_read
+    )
+    test_stream_start_seeds_working_crew_status = (
+        ReadStateTests.test_stream_start_seeds_working_crew_status
+    )
+    test_stream_start_seed_skips_idle_and_unreadable_crews = (
+        ReadStateTests.test_stream_start_seed_skips_idle_and_unreadable_crews
     )
 
     def test_secondary_offer_and_read_only_degrade(self):

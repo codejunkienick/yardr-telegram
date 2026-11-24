@@ -97,7 +97,7 @@ default yard.
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
 | `[transcribe]` | no | voice transcription (below); off by default |
 | `[reactions]` | no | `on_accept`, `seen`, `done`, `read`, `working`, `working_after`, `nudge_after`: the `seen` reaction on each accepted message, optional yard-backed `read`/`working`/`done` tracking and unread Nudge offer ("Reactions" below) and the emoji `react` sets; no reaction ever without `on_accept = true`, `read` or a `react` call |
-| `[typing]` | no | `seconds` (0-900, default 0): "typing..." in the chat after each accepted message until the next send, at most this long ("Typing" below); no chat action ever with 0 |
+| `[typing]` | no | `seconds` (0-900, default 0): with a live event stream, "typing..." follows real crew activity in the newest open row's thread, capped by `seconds` as a safety cap; without one, "typing..." shows after each accepted message until the next send, at most this long ("Typing" below); no chat action ever with 0 |
 | `[[topic]]` `name`, `crew` | no | topics of the paired chat, each its own conversation, created once by `topics` ("Topics" below); at most 50 |
 | `[auto_topics]` | no | `enabled` (default false): serve the topics the paired user creates in the chat ("Topics the user creates" below); without it only the `[[topic]]` tables are served |
 
@@ -2240,7 +2240,9 @@ row, the typing worker refreshes `sendChatAction` (`typing`) every 4 seconds
 in the thread of that crew's newest open (`read`/`working`) row, and stops
 immediately when that crew leaves `working`, when all its open rows finish,
 on any non-accept/non-readstate ledger send (`Store.sent_since`), or when
-`seconds` elapses as a safety cap. With no live event stream (no `reactions.read`,
+`seconds` elapses as a safety cap; a send-stopped window resumes when the
+crew's newest open row changes while it is still working, within the same
+cap. With no live event stream (no `reactions.read`,
 an old core refusing `/events`, or a dropped stream), typing keeps the
 accept-timer behaviour below unchanged:
 

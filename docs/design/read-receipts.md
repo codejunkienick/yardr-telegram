@@ -52,7 +52,10 @@ when a core lacks `inbox_read` or `/events`.
    While `Bridge.run()` runs with `[reactions] read` and `[yardr] home`, a
    stream worker asks `Head`, opens `GET /events?after=<seq>` on `yard.sock`,
    and reconnects on any stream end with the last `seq` seen (`0.1` s initial
-   backoff, capped at `5` s). Each `inbox_shown` or `inbox_read` (`data.session == ""`,
+   backoff, capped at `5` s). At each connect it seeds cached crew status
+   from `GetCrew` for crews with open rows, so a crew already in a working
+   turn gets ✍ and typing without waiting for its next `crew_status` event.
+   Each `inbox_shown` or `inbox_read` (`data.session == ""`,
    `data.reader == crew`, `data.through >= seq`) transitions open `landed` rows
    to `read` (👀) at once — 👀 means the yard has shown the message to the crew
    member (`inbox_shown`) or the crew acked it (`inbox_read`), and whichever
@@ -83,8 +86,9 @@ when a core lacks `inbox_read` or `/events`.
    typing windows survive read and working reactions. When `[typing] seconds > 0`
    and the stream is active, typing runs only while a crew is `working` and has
    an open (`read`/`working`) row, in the thread of that crew's newest open
-   row, stopping on idle, send, or the `seconds` safety cap; without a live
-   stream, the accept-timer window stays unchanged.
+   row, stopping on idle, send, or the `seconds` safety cap (a send-stopped
+   window resumes when the newest open row changes in the same turn); without
+   a live stream, the accept-timer window stays unchanged.
 
 ```mermaid
 stateDiagram-v2

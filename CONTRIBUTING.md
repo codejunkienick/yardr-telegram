@@ -42,7 +42,7 @@ A settings problem refuses to load with one line naming it.
 ## What belongs here
 
 - New setup/examples use fictional operators and yards, with configurable
-  paths/ports/timezones. Keep protocol names, legacy source aliases, compatibility
+  paths/ports/timezones. Keep protocol names, compatibility
   fixtures and author/legal attribution. Credentials stay in each yard's
   owner-only files, never in this repository. See `docs/public-readiness.md`.
 - The pack ships no `[[command]]` handler. A command or button a yard

@@ -112,8 +112,8 @@ instance selects its matching code and packages and leaves others alone.
 
 After local review/assembly, the coordinator runs installation from the clean
 merged checkout, checks `<root>/bin/telegram-bridge check-install`, follows the
-installer's `next:` line, and applies `<root>/pack` while retaining any existing
-source alias and credential env-file binding. Check the installed source lists
+installer's `next:` line, and applies `<root>/pack` while retaining the existing
+credential env-file binding. Check the installed source lists
 Markdown before using `yardr reply --format markdown`. Rollback uses the
 existing `<root>/current/install.sh --settings <settings> --rollback` and the
 matching source-pack apply/restart procedure. Source landed, installed and

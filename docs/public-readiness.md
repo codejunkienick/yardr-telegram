@@ -120,22 +120,18 @@ bot, operator/home and credential identity. Keep a private state snapshot
 with the unit stopped if needed. Do not put those files in this repository
 or a release export.
 
-Before changing the source, inspect its selected alias and env-file metadata
+Before changing the source, inspect its base and env-file metadata
 without dumping the env file. Run `yardr pack check <root>/pack`, then apply
-that rendered pack with the existing `--source-base tgbridge=<alias>` only
-when an alias is selected, and its existing `--source-env tgbridge=<file>`.
-Neither `pack apply` nor `source grant` has `--run`. A new installation uses
-the rendered default base, which follows its configured port.
+that rendered pack with its existing `--source-env tgbridge=<file>`.
+Neither `pack apply` nor `source grant` has `--run`. The rendered pack names
+one base, which follows its configured port.
 
-The `imd` alias is a deprecated compatibility key with an unchanged
-host. It must remain available before, during and after apply. Do not
-remove it and repair routing afterwards or rebind a credential to the new
-default host. A custom valid alias must likewise exist with the same host in
-the operator's reviewed declaration; the stock installer copies its declaration
-and does not invent custom aliases. If the candidate lacks one, stop before
-apply and retain the old installed source until a compatible declaration is
-reviewed. A source's selected alias is not an instruction to read another
-yard's settings or copy its secret.
+An instance that still selects a named alias takes the migration in
+[the migration runbook](../yardr/SETUP.md#move-an-existing-bridge-to-its-own-installation)
+first: the stock pack names no bases, so reapplying one with `--source-base`
+is refused. Do not rebind a credential to a new default host to repair
+routing afterwards. A source's selected base is not an instruction to read
+another yard's settings or copy its secret.
 
 Rollback uses `<root>/current/install.sh --settings <settings> --rollback`,
 then the same unit restart and matching `<root>/pack` check/apply with the
@@ -158,7 +154,6 @@ remain stable for existing installations and delivery consumers:
 | Conversation `scope_id` and `session_id`, `provider_message_id` | Existing delivery keys keep their meaning. `bridge/test_yard_api.py` checks HTTP routes; `test_bridge.py` pins send fingerprints and retries the same inbound provider ID. |
 | Ledger tables/columns, including `accepted`, `accepted_conversations`, `auto_topics.agent`, `auto_topics.bound_at`, `asks.decided` and `asks.conversation_id` | Existing rows retain their values. `TopicLedgerTests.test_an_existing_base_ledger_opens_unchanged` and `AutoTopicLedgerTests` (including reopening a populated binding timestamp) verify additive upgrades, repeated opens and usable asks. Stored crew names are preserved. |
 | `quota_episode`, internal `agent` and `city_commands` names | Existing config/method names remain intact. The quota cases in `bridge/test_bridge.py`, settings config assertions and command tests exercise them using yard health reports and configured handlers. |
-| `imd` source alias | `yardr/tgbridge.yaml` keeps its existing loopback host. `RenderedPackTests` verifies rendered bytes; the isolated real-store source-upgrade case in `bridge/test_run_asks.py` checks apply/reapply, selected alias, credentials and grants. `InstanceTests` checks independent install/upgrade/rollback. |
 
 Python garbage-collector calls in
 `bridge/test_bridge.py` have an exact-line exception. Synthetic scope
@@ -457,6 +452,6 @@ is not an installable checkout.
    file and any enabled native card. Check that another instance's release,
    config, state and binding did not change. Keep rollback target, private
    settings/credentials and ledger; rollback uses the existing installer and
-   matching rendered pack with the same alias/env bindings. The first move
+   matching rendered pack with the same env binding. The first move
    retains `service.previous`. Never reset delivery state or retry ambiguous
    writes under a new key. Source-only tests do not establish live acceptance.

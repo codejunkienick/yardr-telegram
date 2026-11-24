@@ -161,8 +161,9 @@ the declaration name, manifest pack name and manifest source key; relative
 command paths stay intact inside each source.
 Generations are content-addressed under `packs/`, so a refused or failed
 publication keeps the previous pack. The yard re-applies it from there, which
-also moves the yard's recorded import origin off the checkout. An existing
-`--source-base` selection keeps its host and credential pairing.
+also moves the yard's recorded import origin off the checkout. The rendered
+pack names one base, following the settings' port; an instance that still
+selects a named alias takes the migration in `yardr/SETUP.md` first.
 
 What the tests prove, and no more: two synthetic instances with the same
 operator id and separate homes, bots, state and roots; installing, upgrading,

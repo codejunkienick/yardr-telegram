@@ -1037,7 +1037,7 @@ Existing tap tables remain untouched for rollback; their rows are not migrated.
 Buttons on cards sent before the upgrade answer empty and log
 `no_registered_prefix`; send `/switch_model` again to open a new selector.
 
-Rollout order preserves paired bot/user/chat, `tgbridge` source alias/env
+Rollout order preserves paired bot/user/chat, `tgbridge` source env
 binding and grants (no new accounts, permissions, model choices, pack changes
 or `yardr pack apply` required):
 
@@ -1094,7 +1094,7 @@ systemctl --user restart <INSTANCE_UNIT>
 ```
 
 Verify `/switch_model` opens the selector card; keep `tgbridge` source
-alias/env bindings and grants unchanged. To roll back, resolve/supersede any
+env bindings and grants unchanged. To roll back, resolve/supersede any
 pending switch, stop `<INSTANCE_UNIT>`, restore the pre-edit settings file,
 run `<INSTANCE_ROOT>/current/install.sh --settings <INSTANCE_SETTINGS> --root
 <INSTANCE_ROOT> --rollback`, restart `<INSTANCE_UNIT>`, and run

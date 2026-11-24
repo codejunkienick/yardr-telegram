@@ -196,7 +196,7 @@ native cards need their own live usability checks; source-only proof does not
 supply them.
 
 Runtime rollback uses the existing `install.sh --rollback`, matching rendered
-pack and the same selected alias/env-file binding, then the same unit restart.
+pack and the same env-file binding, then the same unit restart.
 The first checkout-to-release move retains the documented `service.previous`
 fallback. Keep private settings/credentials, ledger and rollback target; do
 not reset delivery state or repeat ambiguous writes under a new key. This

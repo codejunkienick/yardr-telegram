@@ -7,9 +7,7 @@ import run_asks as n
 
 
 TABLE = 'siding_fold_cards'
-LEGACY = 'siding_cards'
 RELEASE_KIND = 'siding_release'  # Not 'siding': the plain-fold release reads those rows of TABLE as folds.
-RETIRED = 'Card from an older bridge release; nothing runs from it. Request a new card.'
 STUCK = ('held', 'claimed', 'peer', 'train', 'blocked', 'asked')
 BY_HAND = ('held', 'asked')  # FoldBeads takes these too; the card leaves them to a person's terminal fold
 FOLD_MAX = 6  # upstream store.SidingMax, for a siding whose group leaves fold_max unstated
@@ -192,14 +190,6 @@ def release_lines(bead, found, note=''):
     return 'Now:\n' + bead + ' · ' + ' · '.join(fields)
 
 
-class Retired(n.RunAsks):
-    """The previous release's siding rows: retired once, never acted on."""
-    table = LEGACY
-
-    def owns(self, row):
-        return row.get('kind') == 'siding'
-
-
 class SidingCards(n.RunAsks):
     table = TABLE
 
@@ -208,8 +198,6 @@ class SidingCards(n.RunAsks):
         if self.store is not None:
             with self.store.connect() as db:
                 db.execute(f'CREATE TABLE IF NOT EXISTS {TABLE} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
-                db.execute(f'CREATE TABLE IF NOT EXISTS {LEGACY} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
-        self.retired = Retired(self.bridge, self.client, self.now) if self.store is not None else None
 
     def owns(self, row):
         return row.get('kind') in ('siding', RELEASE_KIND)
@@ -502,11 +490,10 @@ class SidingCards(n.RunAsks):
 
     def bound_messages(self, message_id):
         rows = [row for row in self.rows() if row['message_id'] == message_id]
-        legacy = [row for row in self.retired.rows() if row.get('message_id') == message_id]
-        if not rows + legacy or self.client is None or not self.config.get('yardr_operator'):
+        if not rows or self.client is None or not self.config.get('yardr_operator'):
             return []
         binding = self.binding()
-        return [(row, None) for row in rows + legacy if row['binding'] == binding]
+        return [(row, None) for row in rows if row['binding'] == binding]
 
     def send_request(self, row, reply=None):
         key, identity = super().send_request(row, reply)
@@ -735,29 +722,25 @@ class SidingCards(n.RunAsks):
         return 'Nothing folded; the card stays open'
 
     def callback(self, update_id, query):
-        match = re.fullmatch(r'siding:([0-9a-f]{24}):(fold|release|approve|leave)', query.get('data', ''))
+        match = re.fullmatch(r'siding:([0-9a-f]{24}):(fold|release|leave)', query.get('data', ''))
         notice = 'Siding card not authorized'
         try:
             with self.lock():
                 row = self.get(match[1]) if match else None
-                legacy = None if row or not match else self.retired.get(match[1])
                 sender = query.get('from', {})
-                if (not (row or legacy) or type(sender.get('id')) is not int or sender['id'] != self.config['user_id']
-                        or sender.get('is_bot') is not False or not self.authorized_message(row or legacy, query.get('message'))):
+                if (not row or type(sender.get('id')) is not int or sender['id'] != self.config['user_id']
+                        or sender.get('is_bot') is not False or not self.authorized_message(row, query.get('message'))):
                     return
                 try:
                     binding = self.binding()
                 except n.NativeError as error:
                     self.bridge._log(f'siding callback not bound (update {update_id}): {error}')
                     raise
-                if ((row or legacy)['binding'] != binding or (row and match[2] == 'approve')
-                        or (row and match[2] in ('fold', 'release') and (match[2] == 'release') != (row.get('action') == 'release'))):
+                if (row['binding'] != binding
+                        or (match[2] in ('fold', 'release') and (match[2] == 'release') != (row.get('action') == 'release'))):
                     return
                 n.verify_operator(self.client, self.config)
-                if legacy:
-                    self.retire(legacy)
-                    notice = RETIRED
-                elif not self.claim_update(update_id):
+                if not self.claim_update(update_id):
                     notice = 'Already handled'
                 elif match[2] == 'leave':
                     if row['attempted']:
@@ -799,9 +782,6 @@ class SidingCards(n.RunAsks):
                 n.verify_operator(self.client, self.config)
                 if not self.claim_update(update_id):
                     return True
-                if 'siding' not in row:
-                    self.retire(row)
-                    raise n.NativeError(RETIRED)
                 words = n.text(message.get('text'), 'siding reply').split()
                 if row.get('action') == 'release':
                     raise n.NativeError(RELEASE_CARD)
@@ -841,15 +821,6 @@ class SidingCards(n.RunAsks):
             self.bridge._command_message(f'siding:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
             return True
 
-    def retire(self, row):
-        """Withdraw a previous release's row once and take its buttons off its message; the edit's receipt."""
-        if row.get('withdrawn') is None and row.get('outcome') is None and row.get('refused') is None:
-            row['withdrawn'] = RETIRED
-            self.retired.save(row)
-        if row.get('withdrawn') != RETIRED or row.get('message_id') is None:
-            return self.bridge.receipt(reason='siding_card_from_older_release')
-        return self.retired.display(row, RETIRED, [])
-
     def close(self, message_id=None, ask_key=None):
         with self.lock():
             if ask_key is not None:
@@ -859,8 +830,6 @@ class SidingCards(n.RunAsks):
                 rows = [self.get(ident) for ident in first['batch']] if first else []
             else:
                 rows = [row for row, _ in self.bound_messages(message_id)]
-                if len(rows) == 1 and 'siding' not in rows[0]:
-                    return self.retire(rows[0])
             if not rows or any(row is None for row in rows):
                 return None
             return self.closure(rows)
@@ -910,13 +879,3 @@ class SidingCards(n.RunAsks):
                     self.refresh_row(row)
                 except n.NativeError:
                     pass  # A failed read supplies no new lifecycle fact or presentation.
-            try:
-                binding = self.binding()
-            except n.NativeError:
-                return
-            for row in self.retired.rows():
-                if row['binding'] == binding and row.get('withdrawn') in (None, RETIRED):
-                    try:
-                        self.retire(row)
-                    except n.NativeError:
-                        pass

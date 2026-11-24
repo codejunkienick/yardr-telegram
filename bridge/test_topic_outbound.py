@@ -2,7 +2,7 @@
 send on a configured, recorded topic's conversation carries the topic's
 message_thread_id on every Telegram request, fallbacks and albums included;
 an ask sent in a topic relays its answer on that topic's conversation; the
-quota notice follows the triggering message; send and reply-current take
+quota notice follows the triggering message; send takes
 --conversation-id <chat_id>:topic:<thread_id> and --topic <name>, and the
 yard's /v1/send takes a topic's conversation id or name. Fake Telegram and
 yard hook, temporary directories; no network."""
@@ -365,7 +365,7 @@ class TopicAskTests(TopicOutboundCase):
                          'topic thread 7 not configured (msg 77); relayed to the main conversation\n')
         self.assertEqual(len(self.sent('editMessageText')), 1)
 
-    def test_a_general_ask_and_a_migrated_ledger_ask_answer_exactly_as_before(self):
+    def test_a_general_ask_and_an_existing_ledger_ask_answer_exactly_as_before(self):
         path = Path(self.tmp.name) / 'base.sqlite3'
         with closing(sqlite3.connect(path)) as db, db:
             for sql in test_topics.TopicLedgerTests.BASE_SCHEMA:
@@ -376,9 +376,6 @@ class TopicAskTests(TopicOutboundCase):
                         76))
         store = b.Store(path, 10)
         b.Store(path, 10)  # a second open adds nothing
-        with closing(sqlite3.connect(path)) as db:
-            columns = [row[1] for row in db.execute('PRAGMA table_info(asks)')]
-        self.assertEqual(columns[-2:], ['decided', 'conversation_id'])
         record_topics(store)
         self.bridge = self.make_bridge(self.config, store)
         self.assertIsNone(store.get_ask(self.ask_id('old-ask'))['conversation_id'])
@@ -511,7 +508,7 @@ class TopicCliTests(unittest.TestCase):
 
     def cli(self, *argv, key='cli-1'):
         with patch.object(b.subprocess, 'run', self.fake_run), patch('sys.stdout', new_callable=io.StringIO) as out:
-            run_main(self, 'bridge.py', '--settings', str(self.settings), 'reply-current',
+            run_main(self, 'bridge.py', '--settings', str(self.settings), 'send',
                      '--body-file', str(self.body), '--idempotency-key', key, *argv)
         return out.getvalue()
 
@@ -559,7 +556,7 @@ class TopicCliTests(unittest.TestCase):
                 self.assertEqual(str(raised.exception), message)
 
     def test_both_flags_or_topic_on_another_command_exit_through_the_parser(self):
-        cases = [['reply-current', '--body-file', 'b', '--idempotency-key', 'k', '--topic', 'ops',
+        cases = [['send', '--body-file', 'b', '--idempotency-key', 'k', '--topic', 'ops',
                   '--conversation-id', '123'],
                  ['send', '--body-file', 'b', '--idempotency-key', 'k', '--topic', 'ops',
                   '--conversation-id', '123:topic:7'],
@@ -576,7 +573,7 @@ class TopicCliTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
             self.assertIn('error:', err.getvalue())
 
-    def test_reply_current_in_its_own_process_takes_the_topic_flag_and_the_settings_from_the_environment(self):
+    def test_send_in_its_own_process_takes_the_topic_flag_and_the_settings_from_the_environment(self):
         bin_dir = self.root / 'bin'
         write_fake_curl(bin_dir, f'#!{sys.executable}\nimport json, sys, uuid\nfrom pathlib import Path\n'
                         'config = sys.stdin.read()\n'
@@ -584,7 +581,7 @@ class TopicCliTests(unittest.TestCase):
                         'print(json.dumps({"ok": True, "result": {"message_id": 42, "chat": {"id": 123}}}))\n'
                         'print("200 0.010000 0.020000 0", end="")\n')
         env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', TELEGRAM_BRIDGE_SETTINGS=str(self.settings))
-        result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), 'reply-current',
+        result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), 'send',
                                  '--topic', 'ops', '--body-file', str(self.body), '--idempotency-key', 'cli-topic'],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)

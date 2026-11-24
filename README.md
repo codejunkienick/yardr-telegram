@@ -83,7 +83,7 @@ Release history: `CHANGELOG.md`.
 
 | Path | What |
 | --- | --- |
-| `bridge/bridge.py` | the bridge: `run`, `probe`, `send`, `reply-current`, `ask-close`, `run-ask`, `ask-card`, `siding-card`, `react`, `pin`, `topics`, `set-commands`, `render-unit`, `check-install`, and the yard API on its loopback port |
+| `bridge/bridge.py` | the bridge: `run`, `probe`, `send`, `ask-close`, `run-ask`, `ask-card`, `siding-card`, `react`, `pin`, `topics`, `set-commands`, `render-unit`, `check-install`, and the yard API on its loopback port |
 | `bridge/OPERATIONS.md` | the operations guide: settings, launch, delivery recovery, transcription |
 | `docs/design/tap-confirmation.md` | the two-tap gate for weighty Telegram cards |
 | `docs/design/depot-pack-approvals.md` | the depot-pack approval contract, activation watermark and rollback |

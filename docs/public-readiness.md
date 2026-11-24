@@ -127,9 +127,9 @@ when an alias is selected, and its existing `--source-env tgbridge=<file>`.
 Neither `pack apply` nor `source grant` has `--run`. A new installation uses
 the rendered default base, which follows its configured port.
 
-The `odyssey` and `imd` aliases are deprecated compatibility keys with unchanged
-hosts. They must remain available before, during and after apply. Do not
-remove them and repair routing afterwards or rebind a credential to the new
+The `imd` alias is a deprecated compatibility key with an unchanged
+host. It must remain available before, during and after apply. Do not
+remove it and repair routing afterwards or rebind a credential to the new
 default host. A custom valid alias must likewise exist with the same host in
 the operator's reviewed declaration; the stock installer copies its declaration
 and does not invent custom aliases. If the candidate lacks one, stop before
@@ -155,18 +155,13 @@ remain stable for existing installations and delivery consumers:
 | Name or format | Reason and compatibility evidence |
 | --- | --- |
 | `GC_RECEIPT` and its `_print_gc_receipt` helper | Delivery consumers parse this prefix and its complete JSON receipt. `bridge/test_bridge.py`, `test_send_retry.py`, `test_ask_close.py`, `test_pin.py` and `test_text_options.py` exercise actual send/CLI failure paths, including permanent, transient and ambiguous outcomes. |
-| `reply-current`, ignored `--session`, conversation `scope_id` and `session_id`, `provider_message_id` | Existing CLI callers and delivery keys keep their meaning. `bridge/test_send_retry.py` drives the CLI alias; `test_yard_api.py` checks the session flag and HTTP routes; `test_bridge.py` pins send fingerprints and retries the same inbound provider ID. |
-| Ledger tables/columns, including `accepted`, `accepted_conversations`, `auto_topics.agent`, `auto_topics.bound_at`, `asks.decided` and `asks.conversation_id` | Existing rows retain their values. `TopicLedgerTests.test_an_existing_base_ledger_opens_unchanged`, `AutoTopicLedgerTests` (including reopening a populated binding timestamp) and the old-ledger case in `test_ask_close.py` verify additive upgrades, repeated opens and usable asks. Stored crew names are preserved. |
-| `city`, `agent`, `gc_base_url`, `gc_api_token_file`, `[[topic]] agent` and the internal `GC_SETTINGS` map | These input keys remain explicitly refused, with the replacement key named; they never select a backend. `SettingsTests.test_legacy_keys_are_refused_by_name` and `TopicSettingsTests` exercise the loader. Only diagnostic prose changes. |
+| Conversation `scope_id` and `session_id`, `provider_message_id` | Existing delivery keys keep their meaning. `bridge/test_yard_api.py` checks HTTP routes; `test_bridge.py` pins send fingerprints and retries the same inbound provider ID. |
+| Ledger tables/columns, including `accepted`, `accepted_conversations`, `auto_topics.agent`, `auto_topics.bound_at`, `asks.decided` and `asks.conversation_id` | Existing rows retain their values. `TopicLedgerTests.test_an_existing_base_ledger_opens_unchanged` and `AutoTopicLedgerTests` (including reopening a populated binding timestamp) verify additive upgrades, repeated opens and usable asks. Stored crew names are preserved. |
 | `mayor_quota_episode`, internal `agent` and `city_commands` names | Existing method/config names remain intact. The quota cases in `bridge/test_bridge.py`, settings config assertions and command tests exercise them using yard health reports and configured handlers. |
-| `odyssey`, `imd` source aliases | `yardr/tgbridge.yaml` keeps their existing loopback hosts. `RenderedPackTests` verifies rendered bytes; the isolated real-store source-upgrade case in `bridge/test_run_asks.py` checks apply/reapply, selected aliases, credentials and grants. `InstanceTests` checks independent install/upgrade/rollback. |
+| `imd` source alias | `yardr/tgbridge.yaml` keeps its existing loopback host. `RenderedPackTests` verifies rendered bytes; the isolated real-store source-upgrade case in `bridge/test_run_asks.py` checks apply/reapply, selected alias, credentials and grants. `InstanceTests` checks independent install/upgrade/rollback. |
 
-Legacy configuration-directory/environment identifiers occur only in the
-negative lookup fixtures in `bridge/test_settings.py`: those fixtures prove
-that only `--settings` or `TELEGRAM_BRIDGE_SETTINGS` selects settings, and
-that the removed root flag refuses. The scanner permits those exact fixture
-tokens only in that file. Python garbage-collector calls in
-`bridge/test_bridge.py` have a separate exact-line exception. Synthetic scope
+Python garbage-collector calls in
+`bridge/test_bridge.py` have an exact-line exception. Synthetic scope
 and crew labels in tests exercise arbitrary stored names and queue isolation.
 No persisted or wire identifier is renamed by this preparation.
 

@@ -102,7 +102,7 @@ with `html`.
 ### The command line
 
 `bridge/bridge.py --settings <file> <command>` keeps `send`,
-`reply-current`, `ask-close`, `react`, `pin`, `topics`, `probe`,
+`ask-close`, `react`, `pin`, `topics`, `probe`,
 `set-commands`, `render-unit` and `check-install`, with the flags they had.
 `--settings` falls back to `$TELEGRAM_BRIDGE_SETTINGS`. Every send is
 delivered in the calling process through the shared ledger; nothing goes
@@ -129,10 +129,6 @@ subscribe: yardr subscribe yardmaster tgbridge --scope all --where type=message 
   loopback only), `hook_secret_file` (owner-only), `source` (default
   `tgbridge`, the declared source's name, used by the rendered installation
   pack and printed lines).
-
-Legacy `city`, `agent`, `gc_base_url` and `gc_api_token_file` settings
-are refused with the replacement key named. A legacy `[[topic]] agent`
-must likewise become `crew`. See [compatibility names and their checks](docs/public-readiness.md#retained-compatibility-names).
 
 ## The yardr pack
 

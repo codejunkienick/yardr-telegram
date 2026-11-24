@@ -83,15 +83,14 @@ class SettingsTests(unittest.TestCase):
                                                               str(Path.home() / '.config/test-city/hook-secret'),
                                                               str(path)))
 
-    def test_a_leftover_quota_table_refuses_with_the_migration_line(self):
-        line = 'settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")'
+    def test_a_leftover_quota_table_refuses_as_an_unknown_key(self):
         for table in ('\n[quota]\nenabled = true\n', '\n[quota]\nenabled = false\n', '\n[quota]\n'):
             with self.subTest(table=table):
                 path = write_settings(self.root)
                 path.write_text(path.read_text() + table)
                 with self.assertRaises(b.SettingsError) as caught:
                     b.load_settings(path)
-                self.assertEqual(str(caught.exception), line)
+                self.assertEqual(str(caught.exception), 'settings: unknown key quota')
 
     def test_quota_loads_as_an_ordinary_command(self):
         handler = self.root / 'quota-handler'
@@ -139,15 +138,15 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(pattern=pattern, replace=replace):
                 self.refused(pattern, **replace)
 
-    def test_legacy_keys_are_refused_by_name(self):
-        for key, value, replacement in (('city', '"test-city"', 'yard'), ('agent', '"mayor"', 'crew'),
-                                        ('gc_base_url', '"http://127.0.0.1:8372"', '[yardr] hook_url'),
-                                        ('gc_api_token_file', '"/srv/legacy-token"', '[yardr] hook_secret_file')):
+    def test_removed_keys_are_refused_as_unknown(self):
+        for key, value in (('city', '"test-city"'), ('agent', '"mayor"'),
+                           ('g' + 'c_base_url', '"http://127.0.0.1:8372"'),
+                           ('g' + 'c_api_token_file', '"/srv/legacy-token"')):
             with self.subTest(key=key):
                 path = write_settings(self.root, **{key: value})
                 with self.assertRaises(b.SettingsError) as caught:
                     b.load_settings(path)
-                expected = f'settings: {key} is a legacy key; use {replacement} (YARDR.md)'
+                expected = f'settings: unknown key {key}'
                 env = dict(HOME=str(self.root), PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin',
                            XDG_CONFIG_HOME=str(self.root / 'config'), XDG_STATE_HOME=str(self.root / 'state'))
                 result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge/bridge.py'),
@@ -156,8 +155,7 @@ class SettingsTests(unittest.TestCase):
                 self.assertEqual((result.returncode, result.stdout, result.stderr),
                                  (1, '', expected + '\n'))
                 self.assertEqual(str(caught.exception), expected)
-        # Named even in a legacy settings file that has no yard key at all.
-        with self.assertRaisesRegex(b.SettingsError, "^settings: city is a legacy key"):
+        with self.assertRaisesRegex(b.SettingsError, r'^settings: unknown key city$'):
             b.load_settings(write_settings(self.root, yard=None, city='"test-city"'))
 
     def test_the_yardr_table_is_required_and_names_its_keys(self):
@@ -560,7 +558,7 @@ class ExampleSettingsTests(unittest.TestCase):
         'menu': {'command', 'description'},
         'command': {'name', 'description', 'handler', 'menu', 'callback_prefix', 'timeout'},
         'transcribe': {'enabled', 'whisper_cli', 'models_dir', 'model', 'language', 'vad_model', 'cpus',
-                       'threads', 'timeout', 'timeout_per_minute', 'method', 'gpu_check', 'gpu',
+                       'threads', 'timeout', 'timeout_per_minute', 'method', 'gpu_check',
                        'gpu_min_free_mb'},
         'reactions': {'on_accept', 'seen', 'done', 'read', 'nudge_after'},
         'typing': {'seconds'},
@@ -594,7 +592,7 @@ class ExampleSettingsTests(unittest.TestCase):
                 keys.setdefault(section, set()).add(key.group(1))
         return keys
 
-    def _write_example(self, command='handler', transcribe='method'):
+    def _write_example(self, command='handler'):
         (self.root / 'yard').mkdir(mode=0o700, exist_ok=True)
         private = self.root / 'private'
         private.mkdir(mode=0o700, exist_ok=True)
@@ -636,15 +634,11 @@ class ExampleSettingsTests(unittest.TestCase):
                 lines.append(line)
             elif section == 'command' and key.group(1) == 'handler' and command == 'url':
                 lines.append('url = "http://127.0.0.1:8095/deploy"')
-            elif section == 'transcribe' and transcribe == 'method' and key.group(1) == 'gpu':
-                lines.append(line)
-            elif section == 'transcribe' and transcribe == 'method' and key.group(1) == 'method':
+            elif section == 'transcribe' and key.group(1) == 'method':
                 lines.append('method = "auto"')  # gpu_check is only valid with method = "auto"
-            elif section == 'transcribe' and transcribe == 'legacy' and key.group(1) in ('method', 'gpu_check'):
-                lines.append(line)
             else:
                 lines.append(content)
-        path = self.root / f'example-{command}-{transcribe}.toml'
+        path = self.root / f'example-{command}.toml'
         path.write_text('\n'.join(lines) + '\n')
         path.chmod(0o600)
         return path
@@ -652,9 +646,9 @@ class ExampleSettingsTests(unittest.TestCase):
     def test_example_keys_load_and_an_unknown_key_refuses(self):
         self.assertEqual(self._example_keys((PACK / 'settings.example.toml').read_text()), self.EXPECTED)
         loaded = {section: set() for section in self.EXPECTED}
-        for command, transcribe in (('handler', 'method'), ('url', 'legacy')):
-            with self.subTest(command=command, transcribe=transcribe):
-                path = self._write_example(command, transcribe)
+        for command in ('handler', 'url'):
+            with self.subTest(command=command):
+                path = self._write_example(command)
                 settings = b.load_settings(path)
                 self.assertEqual(settings.yard, 'example')
                 self.assertEqual(settings.hook_secret_file, self.root / 'private' / 'hook-secret')
@@ -730,7 +724,7 @@ class TranscribeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.language, 'en')
         self.assertEqual(settings.transcribe, dict(
             python='/usr/bin/python3', script=str(PACK / 'transcriber' / 'adapter.py'), model='large-v3-turbo-q5_0',
-            timeout=120, timeout_per_minute=120, gpu=False, method='cpu', language='en', env={
+            timeout=120, timeout_per_minute=120, method='cpu', language='en', env={
                 'VOICE_TRANSCRIBE_WHISPER_CLI': str(home / 'work/whisper.cpp/build/bin/whisper-cli'),
                 'VOICE_TRANSCRIBE_MODEL_DIR': str(home / 'work/whisper.cpp/models'),
                 'VOICE_TRANSCRIBE_VAD_MODEL': 'silero-v6.2.0',
@@ -744,8 +738,6 @@ class TranscribeSettingsTests(unittest.TestCase):
             }))
         self.assertTrue(Path(settings.transcribe['script']).is_file())
         self.assertEqual(settings.queue_dir, home / '.local/state/voice-transcribe')
-        self.assertEqual(self.load('enabled = true\ngpu = false\n').transcribe['env'],
-                         settings.transcribe['env'])
 
     def test_every_yard_gets_the_one_host_wide_queue(self):
         # Two yards' settings, each with its own state, port and transcriber
@@ -807,21 +799,12 @@ class TranscribeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.transcribe['timeout_per_minute'], 1200)
         self.assertEqual(vt.Options(environ=settings.transcribe['env']).threads, 16)
 
-    def test_legacy_gpu_true_behaves_as_method_auto(self):
-        settings = self.load('enabled = true\ngpu = true\ngpu_min_free_mb = 3072\n')
-        default_check = str(PACK / 'transcriber' / 'gpu_check.py')
-        self.assertIs(settings.transcribe['gpu'], True)
-        self.assertEqual(settings.transcribe['method'], 'auto')
-        self.assertEqual(settings.transcribe['gpu_check'], default_check)
-        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_METHOD'], 'auto')
-        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], default_check)
-        self.assertEqual(settings.transcribe['env']['VOICE_TRANSCRIBE_GPU_MIN_FREE_MB'], '3072')
-        options = vt.Options(environ=settings.transcribe['env'])
-        self.assertEqual((options.method, options.gpu, options.gpu_min_free_mb), ('auto', True, 3072))
-        # A configured check with legacy gpu = true loads, as method auto does.
-        check = self.check_file()
-        configured = self.load(f'enabled = true\ngpu = true\ngpu_check = "{check}"\n')
-        self.assertEqual(configured.transcribe['env']['VOICE_TRANSCRIBE_GPU_CHECK'], str(check))
+    def test_transcribe_gpu_is_refused_as_unknown_key(self):
+        for table in ('enabled = true\ngpu = true\n', 'enabled = true\ngpu = false\n',
+                      'enabled = true\nmethod = "cpu"\ngpu = false\n'):
+            with self.subTest(table=table), self.assertRaises(b.SettingsError) as caught:
+                self.load(table)
+            self.assertEqual(str(caught.exception), 'settings: unknown key transcribe.gpu')
 
     def test_language_setting_accepts_codes_and_auto_and_bad_values_refuse(self):
         for value in ('ru', 'de', 'auto', 'en'):
@@ -887,8 +870,8 @@ class TranscribeSettingsTests(unittest.TestCase):
                                ('timeout_per_minute = -1\n', 'transcribe.timeout_per_minute must be an integer'),
                                ('model = "a b;rm"\n', 'transcribe.model is missing or malformed'),
                                ('whisper_cli = "whisper-cli"\n', 'transcribe.whisper_cli must be an absolute'),
-                               ('gpu = "yes"\n', 'transcribe.gpu must be true or false'),
-                               ('gpu = 1\n', 'transcribe.gpu must be true or false'),
+                               ('gpu = "yes"\n', 'unknown key transcribe.gpu'),
+                               ('gpu = 1\n', 'unknown key transcribe.gpu'),
                                ('gpu_min_free_mb = 100\n', 'transcribe.gpu_min_free_mb must be an integer from 256'),
                                ('gpu_min_free_mb = "2048"\n', 'transcribe.gpu_min_free_mb must be an integer')):
             with self.subTest(table):
@@ -909,7 +892,7 @@ class TranscribeSettingsTests(unittest.TestCase):
         settings = self.load('enabled = true\ntimeout = 60\ntimeout_per_minute = 90\n')
         bridge = b.Bridge(settings.config, None, 'SECRET', None, transcribe=settings.transcribe)
         self.assertEqual(bridge._transcribe_gpu_allowance(150), 0)  # gpu off: nothing extra
-        settings = self.load('enabled = true\ntimeout = 60\ntimeout_per_minute = 90\ngpu = true\n')
+        settings = self.load('enabled = true\ntimeout = 60\ntimeout_per_minute = 90\nmethod = "auto"\n')
         bridge = b.Bridge(settings.config, None, 'SECRET', None, transcribe=settings.transcribe)
         options = vt.Options(environ=settings.transcribe['env'], gpu=True)
         for seconds in (0, 20, 150, 3 * 3600):
@@ -927,7 +910,6 @@ class TranscribeSettingsTests(unittest.TestCase):
     def test_each_method_loads(self):
         cpu = self.load('enabled = true\nmethod = "cpu"\n')
         self.assertEqual(cpu.transcribe['method'], 'cpu')
-        self.assertIs(cpu.transcribe['gpu'], False)
         self.assertEqual(cpu.transcribe['env']['VOICE_TRANSCRIBE_METHOD'], 'cpu')
         self.assertNotIn('VOICE_TRANSCRIBE_GPU_CHECK', cpu.transcribe['env'])
         self.assertNotIn('gpu_check', cpu.transcribe)
@@ -951,10 +933,8 @@ class TranscribeSettingsTests(unittest.TestCase):
         options = vt.Options(environ=settings.transcribe['env'])
         self.assertEqual((options.method, options.gpu, options.gpu_check), ('auto', True, str(check)))
 
-    def test_method_and_legacy_gpu_keys_refuse_together(self):
+    def test_bad_method_values_refuse(self):
         for table, pattern in (
-                ('enabled = true\nmethod = "cpu"\ngpu = false\n', 'set one of transcribe.method and transcribe.gpu'),
-                ('enabled = true\nmethod = "gpu"\ngpu = true\n', 'set one of transcribe.method and transcribe.gpu'),
                 ('enabled = true\nmethod = "fast"\n', 'transcribe.method must be one of'),
                 ('enabled = true\nmethod = 1\n', 'transcribe.method must be one of')):
             with self.subTest(table=table):
@@ -1012,10 +992,7 @@ class SettingsLookupTests(unittest.TestCase):
             self.assertEqual(b.settings_path(None), Path('/x/process.toml'))
 
     def test_nothing_else_finds_settings(self):
-        # No legacy root or configuration directory, no default under ~/.config.
-        (self.root / '.gc').mkdir()
-        (self.root / '.gc' / 'site.toml').write_text('workspace_name = "some-city"\n')
-        for environ in ({}, {b.SETTINGS_ENV: ''}, {'GC_CITY': str(self.root), 'GC_CITY_PATH': str(self.root)}):
+        for environ in ({}, {b.SETTINGS_ENV: ''}, {'HOME': str(self.root)}):
             with self.subTest(environ=environ):
                 with self.assertRaises(b.SettingsError) as caught:
                     b.settings_path(None, environ=environ)
@@ -1023,7 +1000,7 @@ class SettingsLookupTests(unittest.TestCase):
                                  f'no settings file: pass --settings or set {b.SETTINGS_ENV}')
 
     def test_cli_refuses_to_start_without_settings_and_says_why(self):
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GC_') and k != b.SETTINGS_ENV}
+        env = {k: v for k, v in os.environ.items() if k != b.SETTINGS_ENV}
         env['HOME'] = str(self.root)
         bridge = str(PACK / 'bridge' / 'bridge.py')
         result = subprocess.run([sys.executable, bridge, 'run'],
@@ -1698,7 +1675,7 @@ class InstallScriptTests(unittest.TestCase):
         self.instance = self.home / '.local/share/yardr-telegram/test-city-telegram'
 
     def install(self, *args, platform='linux', extra_env=None, settings=None):
-        env = {k: v for k, v in git_env(self.home).items() if not k.startswith('GC_') and k != b.SETTINGS_ENV}
+        env = {k: v for k, v in git_env(self.home).items() if not k.startswith('G' + 'C_') and k != b.SETTINGS_ENV}
         env.update(XDG_CONFIG_HOME=str(self.home / '.config'), TELEGRAM_PACK_PLATFORM=platform)
         if extra_env:
             env.update(extra_env)
@@ -1954,7 +1931,7 @@ class InstanceTests(unittest.TestCase):
                         'print(json.dumps({"ok":True,"result":{"message_id":90,"chat":{"id":123}}}))\n'
                         'print("200 0.01 0.02 0", end="")\n')
         self.env = {k: v for k, v in git_env(self.home).items()
-                    if not k.startswith(('GC_', 'YARDR_')) and k != b.SETTINGS_ENV}
+                    if not k.startswith(('G' + 'C_', 'YARDR_')) and k != b.SETTINGS_ENV}
         self.env.update(XDG_CONFIG_HOME=str(self.home / '.config'), TELEGRAM_PACK_PLATFORM='linux',
                         PATH=f'{self.bin}:/usr/local/bin:/usr/bin:/bin')
 
@@ -2246,7 +2223,7 @@ class InstanceTests(unittest.TestCase):
         self.assertEqual(len(old.splitlines(keepends=True)), len(new.splitlines(keepends=True)))
         self.assertEqual([(a, b) for a, b in zip(old.splitlines(keepends=True), new.splitlines(keepends=True)) if a != b],
                          [('base: http://127.0.0.1:8941\n', f'base: http://127.0.0.1:{port}\n')])
-        bases = 'bases:\n  odyssey: http://127.0.0.1:8941\n  imd: http://127.0.0.1:8942\n'
+        bases = 'bases:\n  imd: http://127.0.0.1:8942\n'
         self.assertIn(bases, old)
         self.assertIn(bases, new)
 

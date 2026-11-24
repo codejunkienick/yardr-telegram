@@ -383,7 +383,7 @@ class ReactCommandTests(BridgeTestCase):
 
     def test_react_flags_belong_to_react(self):
         parser = b._build_parser()
-        for argv in (['send', '--reaction', 'done'], ['reply-current', '--message-id', '5']):
+        for argv in (['send', '--reaction', 'done'], ['send', '--message-id', '5']):
             args = parser.parse_args(argv)
             with self.subTest(argv=argv), patch('sys.stderr', new_callable=io.StringIO), \
                     self.assertRaises(SystemExit):

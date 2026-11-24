@@ -414,9 +414,9 @@ class SendRetryTests(BridgeTestCase):
 
 
 class SendRetryCliTests(unittest.TestCase):
-    """reply-current through the real curl transport, curl faked in-process."""
+    """send through the real curl transport, curl faked in-process."""
 
-    def test_reply_current_retries_tls_cuts_and_prints_a_transient_receipt_line(self):
+    def test_send_retries_tls_cuts_and_prints_a_transient_receipt_line(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         settings = write_settings(root)
         body = root / 'body.txt'
@@ -431,7 +431,7 @@ class SendRetryCliTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, payload + metrics(200, 0.01, 0.02, 90), '')
             return subprocess.CompletedProcess(argv, 35, metrics(connect=0.08), 'curl: (35) Send failure: Broken pipe')
 
-        argv = ['bridge.py', '--settings', str(settings), 'reply-current', '--body-file', str(body),
+        argv = ['bridge.py', '--settings', str(settings), 'send', '--body-file', str(body),
                 '--idempotency-key', 'cli-1', '--format', 'html']
         with patch.object(b.subprocess, 'run', fake_run), patch.object(b.time, 'sleep', sleeps.append), \
              patch('sys.stderr', new_callable=io.StringIO) as err:

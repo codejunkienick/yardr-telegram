@@ -312,38 +312,6 @@ class AskCloseTests(BridgeTestCase):
         self.assertEqual(len(edits), tries + 1)
         self.assertEqual(edits[-1]['text'], 'Pick one?\n✓ Decided: Later')
 
-    BASE_ASKS = ('CREATE TABLE asks (ask_id TEXT PRIMARY KEY, question TEXT NOT NULL, '
-                 'format TEXT NOT NULL, options TEXT NOT NULL, message_id INTEGER, '
-                 'answered INTEGER NOT NULL DEFAULT 0, answer TEXT, '
-                 'update_id INTEGER, relayed INTEGER NOT NULL DEFAULT 0, '
-                 "kind TEXT NOT NULL DEFAULT 'text')")
-
-    def test_a_ledger_without_the_decided_column_gains_it_and_stays_answerable(self):
-        path = Path(self.tmp.name) / 'base.sqlite3'
-        ask_id = self.ask_id()
-        with closing(sqlite3.connect(path)) as db, db:
-            db.execute('CREATE TABLE cursor (id INTEGER PRIMARY KEY, offset INTEGER NOT NULL)')
-            db.execute('INSERT INTO cursor VALUES (1, 10)')
-            db.execute('CREATE TABLE deliveries (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL)')
-            db.execute(self.BASE_ASKS)
-            db.execute('INSERT INTO asks(ask_id, question, format, options, message_id) VALUES (?,?,?,?,?)',
-                       (ask_id, 'Old question?', 'plain', json.dumps(self.keyboard()[0]), 77))
-        self.store = b.Store(path, 10)
-        b.Store(path, 10)  # a second open finds the column and adds nothing
-        with closing(sqlite3.connect(path)) as db:
-            columns = [(row[1], row[2], row[3], row[4]) for row in db.execute('PRAGMA table_info(asks)')]
-        self.assertEqual(columns[-2:], [('decided', 'INTEGER', 1, '0'), ('conversation_id', 'TEXT', 0, None)])
-        self.assertEqual([name for name, *_ in columns].count('decided'), 1)
-        ask = self.store.get_ask(ask_id)
-        self.assertEqual((ask['answered'], ask['decided'], ask['message_id']), (False, False, 77))
-        self.bridge.store = self.store
-        self.bridge.drain([self.press(uid=41)])
-        [edit] = self.sent('editMessageText')
-        self.assertEqual(edit['text'], 'Old question?\n✓ Yes')
-        self.assertEqual(len(self.yard_calls()), 1)
-        ask = self.store.get_ask(ask_id)
-        self.assertEqual((ask['answered'], ask['decided'], ask['relayed'], ask['answer']), (True, False, True, 'Yes'))
-
     def test_close_ask_takes_exactly_one_selector(self):
         for selectors in ({}, dict(message_id=77, ask_key='ask-send-1')):
             with self.subTest(selectors=selectors), self.assertRaises(ValueError):
@@ -434,7 +402,7 @@ class AskCloseCliTests(unittest.TestCase):
                  ['ask-close', '--message-id', '-3', '--decision', 'x'],
                  ['ask-close', '--message-id', 'abc', '--decision', 'x'],
                  ['send', '--body-file', 'x', '--idempotency-key', 'k', '--decision', 'x'],
-                 ['reply-current', '--body-file', 'x', '--idempotency-key', 'k', '--message-id', '42'],
+                 ['send', '--body-file', 'x', '--idempotency-key', 'k', '--message-id', '42'],
                  ['run', '--ask-key', 'k']]
         for argv in cases:
             with self.subTest(argv=argv), \

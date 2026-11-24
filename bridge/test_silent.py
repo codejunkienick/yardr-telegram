@@ -1,5 +1,5 @@
-"""Silent sends: `silent: true` on publish() (`--silent` on send and
-reply-current) puts disable_notification on every Telegram request of the
+"""Silent sends: `silent: true` on publish() (`--silent` on send)
+puts disable_notification on every Telegram request of the
 send, fallbacks included, and joins the fingerprint only when true; the CLI
 publishes in its own process, silent or not."""
 from contextlib import closing
@@ -153,26 +153,25 @@ class SilentPublishTests(BridgeTestCase):
 
 
 class SilentCliTests(BridgeTestCase):
-    def args(self, *extra, command='reply-current', key='k-silent'):
-        return b._build_parser().parse_args([command, '--body-file', 'x.txt', '--idempotency-key', key, *extra])
+    def args(self, *extra, key='k-silent'):
+        return b._build_parser().parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', key, *extra])
 
     def test_silent_flag_defaults_off_and_combines_with_the_send_flags(self):
         self.assertFalse(self.args().silent)
         args = self.args('--silent', '--format', 'html', '--attachment', '/tmp/x.png',
-                         '--keyboard-file', '/tmp/k.json', command='send')
+                         '--keyboard-file', '/tmp/k.json')
         self.assertTrue(args.silent)
         self.assertEqual(args.format, 'html')
 
     def test_dispatch_silent_publishes_with_the_field(self):
         seen = []
         publish = self.bridge.publish
-        for command in ('send', 'reply-current'):
-            with patch.object(self.bridge, 'publish', side_effect=lambda request: seen.append(request) or publish(request)):
-                message_id = b._dispatch_outbound(self.bridge, self.args('--silent', command=command, key=command),
-                                                  'review passed')
-            self.assertEqual(message_id, '77')
-        self.assertEqual([request['silent'] for request in seen], [True, True])
-        self.assertEqual([body['disable_notification'] for _, body in self.calls], [True, True])
+        with patch.object(self.bridge, 'publish', side_effect=lambda request: seen.append(request) or publish(request)):
+            message_id = b._dispatch_outbound(self.bridge, self.args('--silent', key='send'),
+                                              'review passed')
+        self.assertEqual(message_id, '77')
+        self.assertEqual([request['silent'] for request in seen], [True])
+        self.assertEqual([body['disable_notification'] for _, body in self.calls], [True])
 
     def test_dispatch_silent_attachment_carries_the_field(self):
         path = self.attachment_file()
@@ -180,7 +179,7 @@ class SilentCliTests(BridgeTestCase):
         self.assertEqual(self.multipart_calls[0][1]['disable_notification'], 'true')
 
     def cli(self, *extra, key):
-        """Run reply-current through main() with a temporary settings file and
+        """Run send through main() with a temporary settings file and
         a fake curl; returns (stdout, the (url, JSON body) of each request)."""
         requests = []
         with tempfile.TemporaryDirectory() as root:
@@ -200,11 +199,11 @@ class SilentCliTests(BridgeTestCase):
 
             with patch.object(b.subprocess, 'run', fake_run), \
                     patch('sys.stdout', new_callable=io.StringIO) as out:
-                run_main(self, 'bridge.py', '--settings', str(settings), 'reply-current',
+                run_main(self, 'bridge.py', '--settings', str(settings), 'send',
                          '--body-file', str(body_file), '--idempotency-key', key, *extra)
         return out.getvalue(), requests
 
-    def test_cli_reply_current_silent_sends_with_disable_notification(self):
+    def test_cli_send_silent_sends_with_disable_notification(self):
         out, requests = self.cli('--silent', key='cli-silent')
         self.assertIn('Telegram delivery confirmed; message ID 42', out)
         [(url, body)] = requests
@@ -212,7 +211,7 @@ class SilentCliTests(BridgeTestCase):
         self.assertEqual(body, dict(chat_id=123, text='merged', link_preview_options={'is_disabled': True},
                                     disable_notification=True))
 
-    def test_cli_reply_current_without_silent_sends_without_the_field(self):
+    def test_cli_send_without_silent_sends_without_the_field(self):
         out, requests = self.cli(key='cli-plain')
         self.assertIn('Telegram delivery confirmed; message ID 42', out)
         [(url, body)] = requests

@@ -1235,15 +1235,17 @@ class BridgeTests(BridgeTestCase):
 
     def test_cli_help_explains_the_send_flags(self):
         help_text = ' '.join(b._build_parser().format_help().split())
-        for text in ('file holding the message text (send, reply-current)',
+        for text in ('file holding the message text (send)',
                      'one stable key per logical message: a retry reuses it with the same body; '
                      'a new message takes a new key',
                      "optional: the settings' bot.chat_id, or <chat id>:topic:<thread id> of a configured "
                      'topic, as the message notice names it',
-                     'send, reply-current, run-ask, ask-card, siding-card: send into the configured topic of this name, '
+                     'send, run-ask, ask-card, siding-card: send into the configured topic of this name, '
                      'instead of --conversation-id',
                      'absolute path of a file to send, the body as its caption'):
             self.assertIn(text, help_text)
+        self.assertNotIn('reply-current', help_text)
+        self.assertNotIn('--session', help_text)
 
     def test_cli_rejects_attachment_kind_without_attachment(self):
         parser = b._build_parser()
@@ -1734,11 +1736,11 @@ class BridgeTests(BridgeTestCase):
 
     def test_dispatch_outbound_html_publishes_with_the_html_parse_mode(self):
         parser = b._build_parser()
-        args = parser.parse_args(['reply-current', '--body-file', 'x.html', '--idempotency-key', 'k7', '--format', 'html'])
+        args = parser.parse_args(['send', '--body-file', 'x.html', '--idempotency-key', 'k7', '--format', 'html'])
         message_id = b._dispatch_outbound(self.bridge, args, '<b>hello</b>')
         self.assertEqual(message_id, '77')
         self.assertEqual(self.calls[0][1]['parse_mode'], 'HTML')
-        args = parser.parse_args(['reply-current', '--body-file', 'x.md', '--idempotency-key', 'md-cli',
+        args = parser.parse_args(['send', '--body-file', 'x.md', '--idempotency-key', 'md-cli',
                                   '--format', 'markdown', '--silent'])
         self.assertEqual(b._dispatch_outbound(self.bridge, args, '**hello**'), '77')
         self.assertEqual(self.calls[-1][1]['text'], '<b>hello</b>')
@@ -2681,7 +2683,7 @@ class AskTests(BridgeTestCase):
         path = Path(self.tmp.name) / 'shape.json'
         path.write_text(json.dumps([[dict(text='Yes')]]))
         parser = b._build_parser()
-        args = parser.parse_args(['reply-current', '--body-file', 'x.txt', '--idempotency-key', 'k-shape',
+        args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k-shape',
                                   '--keyboard-file', str(path)])
         with patch('sys.stderr', new_callable=io.StringIO):
             with self.assertRaisesRegex(b.TransportError, 'invalid_keyboard'):
@@ -2753,19 +2755,19 @@ class VoiceTranscriptionTests(BridgeTestCase):
         self.assertRegex(log.getvalue(), r'voice transcription done \(msg 75\): [0-9.]+ s; device cpu: gpu-off\n')
 
     def test_gpu_on_lets_the_adapter_choose_and_logs_its_device(self):
-        self.bridge.transcribe['gpu'] = True
+        self.bridge.transcribe['method'] = 'auto'
         self.write_script('import os\nprint(json.dumps(dict(text="auto " + repr(os.environ.get("CUDA_VISIBLE_DEVICES")), '
                           'device="gpu")))')
         with patch.dict(os.environ, {'CUDA_VISIBLE_DEVICES': '0'}), \
                 patch('sys.stderr', new_callable=io.StringIO) as log:
             texts = self.drain_and_wait(self.voice_message(uid=76))
         self.assertIn('transcript (msg 76): auto None] (audio: ', texts[1])  # nothing blanked, nothing inherited
-        self.assertEqual(self.script_marker.read_text(), 'base auto\n')
+        self.assertEqual(self.script_marker.read_text(), 'base check\n')
         self.assertRegex(log.getvalue(), r'voice transcription done \(msg 76\): [0-9.]+ s; device gpu\n')
         self.assertNotIn('auto None', log.getvalue())  # the log never carries the text
 
     def test_a_gpu_with_a_check_reason_is_a_valid_device(self):
-        self.bridge.transcribe['gpu'] = True
+        self.bridge.transcribe['method'] = 'auto'
         self.write_script('print(json.dumps(dict(text="hello", device="gpu: unknown")))')
         with patch('sys.stderr', new_callable=io.StringIO) as log:
             texts = self.drain_and_wait(self.voice_message(uid=77))
@@ -3472,7 +3474,7 @@ class SetCommandsTests(unittest.TestCase):
 
     def test_parser_offers_set_commands_beside_the_existing_commands(self):
         parser = b._build_parser()
-        for command in ('run', 'probe', 'send', 'reply-current', 'set-commands'):
+        for command in ('run', 'probe', 'send', 'set-commands'):
             self.assertEqual(parser.parse_args([command]).command, command)
 
     def run_cli(self, readback, empty_menu=False):

@@ -55,7 +55,7 @@ class ProbeFixture(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}', HOME=str(self.home),
                                      TELEGRAM_PACK_PLATFORM='linux'))
 
-    def settings(self, transcribe='enabled = true\ngpu = true\n', **replace):
+    def settings(self, transcribe='enabled = true\nmethod = "auto"\n', **replace):
         path = write_settings(self.root, python=f'"{sys.executable}"', **replace)
         path.write_text(path.read_text() + f'\n[transcribe]\n{transcribe}whisper_cli = "{self.cli}"\n')
         return b.load_settings(path, home=self.home)
@@ -85,7 +85,7 @@ class GpuProbeTests(ProbeFixture):
                          ('FAIL', 'gpu probe: device cpu: gpu-failed'))
 
     def test_a_busy_or_full_card_is_a_skip_to_try_later(self):
-        # The fixture's legacy gpu = true is method auto: a check that
+        # The fixture's method = "auto": a check that
         # says no is a skip to try later, whatever its reason.
         for reason in ('busy', 'vram-low', 'operator-busy'):
             self.assertEqual(self.probe(f'{RUNNING}\n{{"device": "cpu: {reason}", "seconds": 30}}\n'),
@@ -128,9 +128,9 @@ class GpuProbeTests(ProbeFixture):
         self.assertEqual(self.recorded(), [])
 
     def test_transcription_or_the_gpu_off_is_one_skip_line(self):
-        self.assertEqual(self.probe(settings=self.settings('enabled = false\ngpu = true\n')),
+        self.assertEqual(self.probe(settings=self.settings('enabled = false\nmethod = "auto"\n')),
                          ('skip', 'gpu probe: transcription off ([transcribe] enabled = false)'))
-        self.assertEqual(self.probe(settings=self.settings('enabled = true\ngpu = false\n')),
+        self.assertEqual(self.probe(settings=self.settings('enabled = true\nmethod = "cpu"\n')),
                          ('skip', 'gpu probe: method = cpu'))
         self.assertEqual(self.recorded(), [])
 

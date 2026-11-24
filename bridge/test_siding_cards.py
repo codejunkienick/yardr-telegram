@@ -1,7 +1,6 @@
 """Siding cards on plain calls: real native stores of any build, the production poll order and fake Telegram."""
 import copy
 from html import unescape
-import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -20,10 +19,6 @@ n = b.run_asks
 s = b.siding_cards
 FLOW = 'intake -> harbor | repair\nharbor -> launch | repair\nrepair -> harbor | launch\nlaunch -> complete\ncomplete terminal\n'
 READS = ('GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads', 'NextStages', 'GetBead')
-# The bridge release before siding cards moved onto plain calls: its rows are the legacy ones.
-PREVIOUS = '2b5f7443e451bd733ad9d7471c05dc7bde4f66c8'
-# The plain-fold release a release card rolls back to: it reads every siding row of its table as a fold.
-PLAIN_FOLD = 'e7a2c7cf911a1ddf29751cce53664ddf04c5547a'
 
 
 class FakeSidingTests(NativeCase):
@@ -974,93 +969,6 @@ class SidingTests(BridgeTestCase):
         self.press(row, uid=65)
         self.assertEqual((self.writes, self.folds()), ([], []))
 
-    def legacy_row(self):
-        """A siding row as the previous release wrote it: guarded schema, sp1 digest, with its card delivered."""
-        previous = load_previous(self.root)
-        if previous is None:
-            self.skipTest('the previous bridge release is not in this checkout')
-        old = previous.siding_cards.SidingCards(self.bridge, self.bridge.siding_cards.client)
-        members = [dict(bead='sample-old-' + str(i), revision='revision-' + str(i), points=1, stuck='',
-                        entered='2026-01-01T00:00:00Z', title='Synthetic part') for i in (1, 2)]
-        value = previous.siding_cards.proposal(dict(
-            version=1, digest='sp1:' + 'a' * 64, depot='sample', stage='harbor', to='launch', guard='store', unguarded=[],
-            ask=dict(depot='sample', stage='harbor', flow='rotation.f', group='keepers', action='fold',
-                     members=[m['bead'] for m in members], to='launch'),
-            flow=dict(name='rotation.f', source=dict(kind='store'), digest='c' * 64),
-            group=dict(name='keepers', runner='manual', members=['pat'], fold=4, fold_after='1d', fold_max=6),
-            routes=[dict(id='route-harbor', depot='sample', stage='harbor', group='keepers')], waiting=members,
-            members=[dict(m, stage='harbor', route='route-harbor') for m in members], points=2, fold_max=6,
-            ready=False, trigger='', due='', refusals=[]))
-        row = old.new_row(dict(depot='sample'), value, 'legacy:0', '123', False)
-        row['batch'] = [row['id']]
-        old.save(row)
-        receipt = old.send_card(row)
-        self.assertTrue(receipt['delivered'], receipt)
-        return previous, old, old.get(row['id'])
-
-    def test_previous_release_rows_retire_and_survive_a_rollback(self):
-        previous, old, legacy = self.legacy_row()
-        self.assertTrue(legacy['publish_keyboard'])
-        # This release retires the open row once: its own withdrawn field, and its message edited without buttons.
-        self.restart()
-        self.bridge.poll_once()
-        retired = old.get(legacy['id'])
-        self.assertEqual((retired['withdrawn'], retired['outcome'], retired['attempted']), (s.RETIRED, None, False))
-        edit = self.edits()[-1]
-        self.assertEqual((edit['message_id'], edit['reply_markup']['inline_keyboard']), (legacy['message_id'], []))
-        self.assertEqual(edit['text'], legacy['plain'] + '\n' + s.RETIRED)
-        edits = len(self.edits())
-        self.assertEqual(self.press(legacy, action='approve', uid=40), s.RETIRED)
-        self.assertEqual(self.reply(legacy, 'fold sample-old-1 sample-old-2', uid=41), s.RETIRED)
-        self.bridge.poll_once()
-        self.assertEqual((len(self.edits()), self.writes, self.folds()), (edits, [], []))
-        receipt = self.bridge.api_ask_close(dict(message_id=legacy['message_id'], decision='Closed'))
-        self.assertTrue(receipt['delivered'], receipt)
-        # Rows this release writes leave the previous release's poll and refresh loop running after a rollback.
-        one, two = self.part('one'), self.part('two')
-        current = self.card(key='current')
-        settled_members = [self.part('three'), self.part('four')]
-        self.cli('bead', 'hold', one)
-        self.cli('bead', 'hold', two)
-        settled = self.card(key='settled')
-        self.assertEqual(settled['siding']['members'], settled_members)
-        self.press(settled, uid=42)
-        self.assertEqual(self.bridge.siding_cards.state(self.row(settled)), 'settled')
-        folds = len(self.folds())
-        rollback = previous.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.telegram)
-        rollback.hook_secret = 'HOOKSECRET'
-        start = len(self.calls)
-        self.updates = [self.press_update(current, uid=90), self.reply_update(current, f'fold {one} {two}', uid=91),
-                        self.press_update(settled, uid=92), self.press_update(legacy, action='approve', uid=93)]
-        rollback.poll_once()
-        rollback.poll_once()
-        rollback.siding_cards.refresh()
-        rollback.run_asks.refresh()
-        self.assertEqual(rollback.store.offset(), 94)
-        self.assertEqual(len(self.folds()), folds)
-        self.assertEqual(rollback.siding_cards.state(rollback.siding_cards.get(legacy['id'])), 'withdrawn')
-        self.assertFalse([body for url, body in self.calls[start:] if url.endswith('/editMessageText')])
-        self.assertEqual(rollback.api_ask_close(dict(ask_key='current', decision='Closed'))['reason'], 'ask_not_found')
-
-    def test_release_card_survives_a_rollback_to_the_plain_fold_runtime(self):
-        previous = load_previous(self.root, PLAIN_FOLD)
-        if previous is None:
-            self.skipTest('the plain-fold bridge release is not in this checkout')
-        a, c = self.part('a'), self.part('c')
-        row = self.card()
-        release = self.release_card(row, a, uid=40)
-        folds = len(self.folds())
-        # The plain-fold poll reads the release row's table: it must neither crash nor act on the release card.
-        rollback = previous.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.telegram)
-        rollback.hook_secret = 'HOOKSECRET'
-        self.updates = [self.press_update(release, 'leave', uid=90), self.press_update(row, uid=91)]
-        rollback.poll_once()
-        self.assertEqual(rollback.store.offset(), 92)
-        self.assertEqual(self.answer(90), 'Siding card not authorized')
-        self.assertEqual((self.bead(a)['status'], self.bead(c)['status']), ('closed', 'closed'))
-        self.assertEqual((len(self.folds()), self.advances), (folds + 1, []))
-        self.assertEqual(self.bridge.siding_cards.state(self.row(release)), 'open')
-
     def test_authenticated_endpoint_cli_and_installed_module(self):
         port = self.start_callback_server()
         empty_request = dict(depot='sample', key='empty-http')
@@ -1217,22 +1125,3 @@ class SidingTests(BridgeTestCase):
 def receipt_row(bridge, receipt):
     """The id of the row a delivered siding receipt belongs to."""
     return next(row['id'] for row in bridge.siding_cards.rows() if row['message_id'] == int(receipt['message_id']))
-
-
-def load_previous(root, release=PREVIOUS):
-    """The previous bridge release's modules from git, loaded from a copy under root; None outside a checkout."""
-    repo = Path(b.__file__).resolve().parents[1]
-    target = root / 'previous' / 'bridge'
-    target.mkdir(parents=True)
-    for name in ('bridge.py', 'run_asks.py', 'siding_cards.py', 'markdown.py'):
-        shown = subprocess.run(['git', '-C', str(repo), 'show', f'{release}:bridge/{name}'], capture_output=True)
-        if shown.returncode != 0:
-            return None
-        (target / name).write_bytes(shown.stdout)
-    shutil.copytree(repo / 'vendor', root / 'previous' / 'vendor')
-    (root / 'previous' / 'transcriber').mkdir()
-    shutil.copyfile(repo / 'transcriber' / 'voice_transcribe.py', root / 'previous' / 'transcriber' / 'voice_transcribe.py')
-    spec = importlib.util.spec_from_file_location('previous_bridge', target / 'bridge.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module

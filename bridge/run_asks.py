@@ -42,8 +42,6 @@ READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Route
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
-TYPED_CONFIRM_ENDED = 'Typed numbers no longer approve in Telegram; tap Approve, then Confirm. Nothing ran.'
-LEGACY_CONFIRM_ENDED = 'Confirmation by typed number ended with a bridge update; nothing ran. Tap Approve, then Confirm.'
 
 
 class NativeError(Exception):
@@ -3748,67 +3746,44 @@ class RunAsks:
         if not isinstance(reply, dict) or type(reply.get('message_id')) is not int or reply['message_id'] <= 0:
             return False
         with self.lock():
-            # Retained run rows from an earlier pairing do not own this chat's message ids.
             bindings = [(row, turn) for row, turn in self.bound_messages(reply['message_id'])
-                        if row.get('kind') == 'decision'
-                        or (self.client is not None and self.config.get('yardr_operator')
-                            and row['binding'] == self.binding())]
-            known_decision = any(row.get('kind') == 'decision' for row, _ in bindings)
+                        if row.get('kind') == 'decision']
+            if not bindings:
+                return False
             text_reply = isinstance(message.get('text'), str) and self.bridge._extract_attachment(message) is None
             valid_reply = (
                 ('from' not in reply or (isinstance(reply['from'], dict)
                  and reply['from'].get('id') == self.config['bot_id'] and reply['from'].get('is_bot') is True))
                 and ('chat' not in reply or (isinstance(reply['chat'], dict)
                      and reply['chat'].get('id') == self.config['chat_id'])))
-            if not known_decision:
-                if not valid_reply or not text_reply:
-                    return False
-                with self.store.connect() as db:
-                    seen = db.execute('SELECT 1 FROM run_ask_updates WHERE binding=? AND id=?',
-                                      (digest(self.binding()), update_id)).fetchone() if self.client else None
-                if seen and any(self.authorized_message(row, message, reply=True) for row, _ in bindings):
-                    return True
-            candidates = [(row, turn) for row, turn in bindings
-                          if row.get('kind') == 'decision'
-                          or (message['text'] == str(row['ask']) and self.authorized_message(row, message, reply=True))]
-            if not candidates:
-                return False
-            row, input_turn = candidates[0]
+            row, input_turn = bindings[0]
             valid_reply = valid_reply and self.authorized_message(row, message, reply=True)
-            if (len(bindings) if known_decision else len(candidates)) != 1 or not valid_reply:
-                if not known_decision:
-                    return False
+            if len(bindings) != 1 or not valid_reply:
                 notice = 'Native card message binding ambiguous' if len(bindings) != 1 else 'Native card not authorized'
                 self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
-                return True
-            if not known_decision:
-                if self.claim_update(update_id):
-                    self.bridge._command_message(f'runask:{update_id}:notice',
-                        dict(type='send', text=TYPED_CONFIRM_ENDED, plain=None), self.thread(row))
                 return True
             try:
                 ask = self.ensure(row)
                 if not self.claim_update(update_id):
                     return True
-                if row.get('kind') == 'decision':
-                    if not text_reply:
-                        raise NativeError('Native card replies must be text only; attachments are not supported')
-                    if ask['state'] != 'open':
-                        self.settle(row, ask)
-                        notice = 'Ask is ' + ask['state']
-                    else:
-                        value = text(message['text'], 'reply words')
-                        if not value.strip() or units(value) > CAP:
-                            raise NativeError('invalid native reply words')
-                        option, words = 0, value
-                        if row['options']:
-                            pick = re.fullmatch(r'([1-9][0-9]{0,3})(?:\s+(.*))?', value.strip(), re.DOTALL)
-                            if not pick or not 1 <= int(pick[1]) <= len(row['options']):
-                                raise NativeError('reply with a stored option number and optional words')
-                            option, words = int(pick[1]), pick[2] or ''
-                        notice = self.decide(row, 'answer', False, option, words, turn=input_turn)
-                    self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
-                    return True
+                if not text_reply:
+                    raise NativeError('Native card replies must be text only; attachments are not supported')
+                if ask['state'] != 'open':
+                    self.settle(row, ask)
+                    notice = 'Ask is ' + ask['state']
+                else:
+                    value = text(message['text'], 'reply words')
+                    if not value.strip() or units(value) > CAP:
+                        raise NativeError('invalid native reply words')
+                    option, words = 0, value
+                    if row['options']:
+                        pick = re.fullmatch(r'([1-9][0-9]{0,3})(?:\s+(.*))?', value.strip(), re.DOTALL)
+                        if not pick or not 1 <= int(pick[1]) <= len(row['options']):
+                            raise NativeError('reply with a stored option number and optional words')
+                        option, words = int(pick[1]), pick[2] or ''
+                    notice = self.decide(row, 'answer', False, option, words, turn=input_turn)
+                self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
+                return True
             except NativeError as error:
                 notice = str(error)
             self.bridge._command_message(f'runask:{update_id}:notice', dict(type='send', text=notice, plain=None), self.thread(row))
@@ -3919,11 +3894,10 @@ class RunAsks:
                         continue
                     if not self.settle(row, ask) and row.get('pending'):
                         pending, now = row['pending'], self.now()
-                        legacy = 'nonce' not in pending
-                        if legacy or now > pending['expires'] or now < pending['armed_at']:
+                        if now > pending['expires'] or now < pending['armed_at']:
                             row['pending'] = None
                             self.save(row)
-                            self.display(row, LEGACY_CONFIRM_ENDED if legacy else CONFIRM_EXPIRED)
+                            self.display(row, CONFIRM_EXPIRED)
                 except NativeError:
                     continue
             for row in self.rows():

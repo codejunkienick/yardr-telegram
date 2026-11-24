@@ -2578,7 +2578,7 @@ class NativeTests(NativeCase):
                     self.reply(uid=50)
                     for uid, value in enumerate(('ordinary words', ' 7', '7 '), 80):
                         self.reply(value, uid=uid)
-                    self.assertEqual(relay.call_count, 3)
+                    self.assertEqual(relay.call_count, 4)
                 self.assertEqual(self.row()['pending'], pending)
                 self.assertEqual(self.writes(), [])
                 self.press('cancel', uid=42)
@@ -8622,8 +8622,7 @@ class RealNativeTests(BridgeTestCase):
                 return [note for note in sources.get('notes', []) if note.startswith('source tgbridge:')]
 
             # Operator-reviewed custom declarations retain custom aliases; stock ones never invent them.
-            for index, (name, alias, host) in enumerate((('odyssey', 'odyssey', 'http://127.0.0.1:8941'),
-                                                       ('imd', 'imd', 'http://127.0.0.1:8942'),
+            for index, (name, alias, host) in enumerate((('imd', 'imd', 'http://127.0.0.1:8942'),
                                                        ('custom-harbor', 'custom-harbor', 'http://127.0.0.1:23017'),
                                                        ('primary-stock', None, 'http://127.0.0.1:8941'),
                                                        ('primary-port-change', None, 'http://127.0.0.1:8941'))):
@@ -9262,44 +9261,7 @@ class RealNativeTests(BridgeTestCase):
             poll([update(row, 'confirm')])
             self.assertEqual(current(row)['state'], 'answered')
             self.assertEqual(len(events(row)), 1)
-
-        row = make('r9')
-        tap(row)
-        before = current(row)
-        arm = saved(row)['pending']
-        def reply(bound=True):
-            uid = next(updates)
-            message = dict(message_id=uid, text=str(row['ask']), chat=dict(id=123, type='private'),
-                           **{'from': dict(id=123, is_bot=False)})
-            if bound:
-                message['reply_to_message'] = dict(message_id=row['message_id'])
-            return dict(update_id=uid, message=message)
-        with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation) as relay:
-            poll([reply()])
-            relay.assert_not_called()
-            self.assertEqual(self.calls[-1][1]['text'], n.TYPED_CONFIRM_ENDED)
-            poll([reply(False)])
-            relay.assert_called_once()
-        self.assertEqual(saved(row)['pending'], arm)
-        untouched(row, before)
-
-        row = make('r10')
-        row['pending'] = dict(expires=clock[0] + 300, update=next(updates))
-        self.bridge.run_asks.save(row)
-        before = current(row)
-        restart()
-        poll([])
-        self.assertIsNone(saved(row)['pending'])
-        self.assertEqual(saved(row)['display']['footer'], n.LEGACY_CONFIRM_ENDED)
-        with patch.object(self.bridge, '_relay') as relay:
-            poll([reply()])
-            relay.assert_not_called()
-        untouched(row, before)
-        poll([update(row)])
-        poll([update(row, 'confirm')])
-        self.assertEqual(current(row)['state'], 'answered')
-        self.assertEqual(len(events(row)), 1)
-        print('RealNative confirm R1-R10: real isolated RPC/store, fake Telegram, no live state')
+        print('RealNative confirm R1-R8: real isolated RPC/store, fake Telegram, no live state')
 
     def exercise_source_packs(self, root, home, cli, client, native_command, native_env):
         cli('bead', 'create', 'Synthetic source pack review', '--id', 'pack-1')

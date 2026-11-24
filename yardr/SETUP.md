@@ -128,8 +128,8 @@ yardr source check tgbridge               # after step 9; health answers 200
 
 `<root>/pack` is the active release's `yardr/` with its `base` line
 naming this settings file's port, so the source's calls go to this yard's
-own bridge with no `base=`. The `odyssey` and `imd` keys are deprecated
-compatibility aliases, retained with their original hosts. New installs use
+own bridge with no `base=`. The `imd` key is a deprecated
+compatibility alias, retained with its original host. New installs use
 the rendered default; no alias is needed. install.sh renders it on every
 install and `--rollback`, and
 `yardr pack apply tgbridge` reads it again from there.
@@ -563,9 +563,7 @@ identity and a status-only request before any real action. To roll back, use the
 instance-root `install.sh --rollback`, review its printed service step and
 restart only that instance; keep its ledger, home, credentials, source bindings
 and grants. Siding rows have their own table (`siding_fold_cards`), which the
-previous release never reads, so its taps on these cards run nothing. Cards from
-the previous release are retired once by this release, so after a rollback they
-stay withdrawn; request new cards.
+previous release also reads.
 
 ## Add a second crew member's bot
 

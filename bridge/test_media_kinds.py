@@ -1,6 +1,6 @@
 """Voice notes and round video notes out: the shared attachment path (validation,
 multipart send, ledger, receipts, 4xx text fallback) with the fake Telegram,
-and bridge.py's send and reply-current passing both kinds through."""
+and bridge.py's send passing both kinds through."""
 from contextlib import closing
 import io
 import json
@@ -195,12 +195,11 @@ class MediaKindCliTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
 
-    def test_send_and_reply_current_accept_both_kinds(self):
+    def test_send_accepts_both_kinds(self):
         parser = b._build_parser()
-        for command in ('send', 'reply-current'):
-            for kind in ('voice', 'video_note'):
-                args = parser.parse_args([command, '--attachment', '/tmp/x', '--attachment-kind', kind])
-                self.assertEqual(args.attachment_kind, kind)
+        for kind in ('voice', 'video_note'):
+            args = parser.parse_args(['send', '--attachment', '/tmp/x', '--attachment-kind', kind])
+            self.assertEqual(args.attachment_kind, kind)
         self.assertEqual(b.infer_attachment_kind(Path('note.ogg')), 'document')  # never inferred
 
     def fake_curl(self):
@@ -213,7 +212,7 @@ class MediaKindCliTests(unittest.TestCase):
                         'print("200 0.010000 0.020000 0", end="")\n')
         return bin_dir
 
-    def test_bridge_py_reply_current_passes_both_kinds_to_send_voice_and_send_video_note(self):
+    def test_bridge_py_send_passes_both_kinds_to_send_voice_and_send_video_note(self):
         settings = write_settings(self.root)
         env = {k: v for k, v in os.environ.items() if k != b.SETTINGS_ENV}
         env.update(PATH=f'{self.fake_curl()}:{env["PATH"]}')
@@ -226,7 +225,7 @@ class MediaKindCliTests(unittest.TestCase):
         for key, body, path, kind in (('cli-voice', caption, voice, 'voice'),
                                       ('cli-circle', empty, circle, 'video_note')):
             result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge' / 'bridge.py'), '--settings', str(settings),
-                                     'reply-current', '--body-file', str(body),
+                                     'send', '--body-file', str(body),
                                      '--idempotency-key', key, '--attachment', str(path), '--attachment-kind', kind],
                                     env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -248,7 +247,7 @@ class MediaKindCliTests(unittest.TestCase):
         circle, body = self.root / 'circle.mp4', self.root / 'body.txt'
         circle.write_bytes(b'mp4')
         body.write_text('no captions here')
-        argv = ['bridge.py', '--settings', str(settings), 'reply-current', '--body-file', str(body),
+        argv = ['bridge.py', '--settings', str(settings), 'send', '--body-file', str(body),
                 '--idempotency-key', 'k', '--attachment', str(circle), '--attachment-kind', 'video_note']
         with patch.object(b.subprocess, 'run', side_effect=AssertionError('nothing may be sent')), \
              patch('sys.stderr', new_callable=io.StringIO) as err:

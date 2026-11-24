@@ -144,9 +144,9 @@ class OptionsPublishTests(BridgeTestCase):
 
 
 class OptionsCliTests(BridgeTestCase):
-    def args(self, *extra, command='reply-current', key='k-opt'):
+    def args(self, *extra, key='k-opt'):
         return b._build_parser().parse_args(
-            [command, '--body-file', 'x.txt', '--idempotency-key', key, *extra])
+            ['send', '--body-file', 'x.txt', '--idempotency-key', key, *extra])
 
     def keyboard_file(self, key):
         ask_id = b.Bridge._ask_id_for_key(key)
@@ -161,20 +161,16 @@ class OptionsCliTests(BridgeTestCase):
         self.assertTrue(self.args('--text-options').text_options)
 
     def test_dispatch_refuses_lettered_options_before_telegram(self):
-        for command in ('send', 'reply-current'):
-            with self.subTest(command=command), \
-                    patch('sys.stderr', new_callable=io.StringIO) as log:
-                with self.assertRaises(b.TransportError) as ctx:
-                    b._dispatch_outbound(self.bridge,
-                                         self.args(command=command, key=f'k-{command}'),
-                                         OPTIONS_PLAIN)
-            self.assertIn('options_need_keyboard', str(ctx.exception))
-            self.assertIn('--keyboard-file', str(ctx.exception))
-            self.assertIn('Asks with buttons', str(ctx.exception))
-            line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
-            self.assertEqual(json.loads(line[len('GC_RECEIPT '):])['reason'],
-                             'options_need_keyboard')
-            self.assertIsNone(self.store.saved_receipt(f'k-{command}'))
+        with patch('sys.stderr', new_callable=io.StringIO) as log:
+            with self.assertRaises(b.TransportError) as ctx:
+                b._dispatch_outbound(self.bridge, self.args(key='k-send'), OPTIONS_PLAIN)
+        self.assertIn('options_need_keyboard', str(ctx.exception))
+        self.assertIn('--keyboard-file', str(ctx.exception))
+        self.assertIn('Asks with buttons', str(ctx.exception))
+        line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
+        self.assertEqual(json.loads(line[len('GC_RECEIPT '):])['reason'],
+                         'options_need_keyboard')
+        self.assertIsNone(self.store.saved_receipt('k-send'))
         self.assertEqual(self.calls, [])
 
     def test_dispatch_with_a_keyboard_file_sends_the_ask(self):

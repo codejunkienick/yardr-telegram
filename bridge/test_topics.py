@@ -112,9 +112,9 @@ class TopicSettingsTests(unittest.TestCase):
             (topic_tables(('ops', 'not a crew')), 'topic entry 1: crew is missing or malformed'),
             ('\n[[topic]]\nname = "ops"\ncrew = 5\n', 'topic entry 1: crew is missing or malformed'),
             ('\n[[topic]]\nname = "ops"\nagent = "yardmaster"\n',
-             "topic entry 1: agent is a legacy key: name the crew member with crew"),
+             "topic entry 1: unknown key agent"),
             (topic_tables(('ops', None)) + 'agent = 5\n',
-             "topic entry 1: agent is a legacy key: name the crew member with crew"),
+             "topic entry 1: unknown key agent"),
             ('\n[[topic]]\nname = "ops"\nthread_id = 5\n', 'topic entry 1: unknown key thread_id'),
             (topic_tables(*((f't{n}', None) for n in range(51))), 'topic entry 51: more than 50 [[topic]] tables'),
             ('topic = "ops"\n', 'topic must be a list of [[topic]] tables'),
@@ -130,7 +130,7 @@ class TopicSettingsTests(unittest.TestCase):
                         b.load_settings(path)
                     self.assertEqual(str(raised.exception), 'settings: ' + message)
                 else:
-                    if message.startswith('topic entry 1: agent is a legacy key:'):
+                    if message.startswith('topic entry 1: unknown key agent'):
                         path = write_settings(self.root)
                         path.write_text(path.read_text() + tables)
                         env = dict(HOME=str(self.root), PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin',
@@ -156,7 +156,7 @@ class TopicLedgerTests(unittest.TestCase):
         'CREATE TABLE asks (ask_id TEXT PRIMARY KEY, question TEXT NOT NULL, format TEXT NOT NULL, '
         'options TEXT NOT NULL, message_id INTEGER, answered INTEGER NOT NULL DEFAULT 0, answer TEXT, '
         "update_id INTEGER, relayed INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'text', "
-        'decided INTEGER NOT NULL DEFAULT 0)',
+        'decided INTEGER NOT NULL DEFAULT 0, conversation_id TEXT)',
         'CREATE TABLE accepted (id INTEGER PRIMARY KEY CHECK (id = 1), message_id INTEGER NOT NULL, '
         'accepted_at TEXT NOT NULL)',
         'CREATE TABLE pins (slot TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1, message_id INTEGER, '
@@ -196,10 +196,6 @@ class TopicLedgerTests(unittest.TestCase):
         tables, rows = self.dump()
         store = b.Store(self.path, 10)
         after_tables, after_rows = self.dump()
-        # The asks table gains only its last column, conversation_id, which
-        # every recorded ask reads as NULL (the paired chat).
-        tables['asks'] = tables['asks'][:-1] + ', conversation_id TEXT)'
-        rows['asks'] = [row + (None,) for row in rows['asks']]
         added = ('topics', 'topic_attempts', 'accepted_conversations', 'auto_topics', 'messages', 'sqlite_sequence',
                  'run_ask_keys', 'mayor_model_taps', 'model_selectors', 'model_operations', 'model_actions')
         self.assertEqual({k: v for k, v in after_tables.items() if k not in added}, tables)

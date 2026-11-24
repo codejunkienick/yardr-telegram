@@ -10,7 +10,7 @@ yardr call tgbridge pin slot=waiting text="$(cat waiting.md)" format=markdown --
 <root>/bin/telegram-bridge send --format markdown --body-file answer.md --idempotency-key <key>
 ```
 
-The bridge CLI also accepts it on `reply-current` and `pin`. API callers pass
+The bridge CLI also accepts it on `send` and `pin`. API callers pass
 `"format":"markdown"` to `/v1/send` or `/v1/pin`; command handlers use it
 on `send` and `edit` actions. Routing, reply, silent, keyboard and media flags
 keep their existing meanings. An album has 2–10 compatible attachments,

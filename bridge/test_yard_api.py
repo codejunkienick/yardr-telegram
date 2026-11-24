@@ -3,6 +3,7 @@ yard's hook, the message log behind /v1/read, the yard API on the loopback
 port, auto_format and valid_hook_url. Fake transports only; the API runs on
 a real loopback server picked by testports."""
 import datetime
+import io
 import json
 import os
 from pathlib import Path
@@ -762,10 +763,11 @@ class TellTests(BridgeTestCase):
         self.assertEqual(self.telegram_calls(), [])
 
 
-class SessionFlagTests(unittest.TestCase):
-    def test_legacy_session_flag_is_accepted_and_ignored(self):
-        # The sysmon watch and pricewatch add-ons still pass --session.
-        args = b._build_parser().parse_args(['--settings', '/x.toml', 'send', '--session', 'mayor',
-                                             '--body-file', '/b', '--idempotency-key', 'k'])
-        self.assertEqual((args.command, args.session), ('send', 'mayor'))
-        self.assertNotIn('--session', b._build_parser().format_help())
+class RemovedCliCompatTests(unittest.TestCase):
+    def test_reply_current_and_session_flag_are_refused(self):
+        parser = b._build_parser()
+        for argv in (['--settings', '/x.toml', 'reply-current', '--body-file', '/b', '--idempotency-key', 'k'],
+                     ['--settings', '/x.toml', 'send', '--session', 'mayor', '--body-file', '/b', '--idempotency-key', 'k']):
+            with self.subTest(argv=argv), patch('sys.stderr', new_callable=io.StringIO), self.assertRaises(SystemExit) as raised:
+                parser.parse_args(argv)
+            self.assertEqual(raised.exception.code, 2)

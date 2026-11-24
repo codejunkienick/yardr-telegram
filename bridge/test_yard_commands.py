@@ -983,79 +983,6 @@ class RealNativeTests(QuotaCase):
 
 # --- /mayor_model -----------------------------------------------------------
 
-CREW_STUB = """#!{python}
-import json, os, sys, time
-argv = sys.argv[1:]
-state_path, control_path, record = {state!r}, {control!r}, {record!r}
-expected_home = {home!r}
-with open(record, 'a') as stream:
-    stream.write(json.dumps(dict(argv=argv, env=dict(os.environ), cwd=os.getcwd())) + '\\n')
-control = json.load(open(control_path)) if os.path.exists(control_path) else {{}}
-state = json.load(open(state_path))
-if argv[:2] != ['--home', expected_home]:
-    sys.stdout.write('wrong home')
-    sys.exit(9)
-rest = argv[2:]
-actor = None
-if rest[:1] == ['--actor']:
-    actor, rest = rest[1], rest[2:]
-def save():
-    state['revision'] += 1
-    json.dump(state, open(state_path, 'w'))
-if rest[:2] == ['crew', 'show'] and rest[3:] == ['--json'] and actor is None:
-    if rest[2] != state['name']:
-        sys.stdout.write(json.dumps(dict(error='crew member %s: not found' % rest[2])))
-        sys.exit(3)
-    if control.get('show') == 'fail' or (control.get('show') == 'fail-after-set' and state.get('was_set')):
-        sys.stderr.write('yardr: secret=hunter2 broke\\n')
-        sys.exit(1)
-    config = dict(kind=state['kind'])
-    if state['model']:
-        config['model'] = state['model']
-    if state['args']:
-        config['args'] = state['args']
-    if state['env_file']:
-        config['env_file'] = state['env_file']
-    crew = dict(name=state['name'], runner='herdr', config=config, revision='R%d' % state['revision'],
-                kind=state['kind'], state=state['session_state'], journal='j')
-    if state['model']:
-        crew['model'] = state['model']
-    if state.get('session_status'):
-        crew['status'] = state['session_status']
-    if state.get('session_kind'):
-        crew['handle'] = dict(kind=state['session_kind'])
-    sys.stdout.write(json.dumps(dict(crew=crew, inbox=0, journal=[], timers=[])))
-    sys.exit(0)
-if rest[:2] == ['crew', 'set'] and actor == {operator!r}:
-    words = rest[3:]
-    revision = words[words.index('--revision') + 1]
-    if control.get('set') == 'sleep':
-        time.sleep(30)
-    if control.get('set') == 'fail':
-        sys.stderr.write('yardr: refused, token=abc123\\n')
-        sys.exit(1)
-    if revision != 'R%d' % state['revision']:
-        sys.stderr.write('yardr: stale: read it again\\n')
-        sys.exit(1)
-    for word in words[:words.index('--revision')]:
-        key, _, value = word.partition('=')
-        state[key] = json.loads(value) if key == 'args' else value
-    if control.get('set') == 'half':
-        state['model'] = 'half-written'
-    state['was_set'] = True
-    save()
-    sys.stdout.write('crew member %s saved\\nOUT-SECRET\\n' % state['name'])
-    sys.exit(1 if control.get('set') == 'nonzero-after-write' else 0)
-if rest[:2] == ['crew', 'restart'] and actor == {operator!r}:
-    if control.get('restart') == 'fail':
-        sys.stderr.write('yardr: restart failed\\n')
-        sys.exit(1)
-    sys.stdout.write('%s: restart\\n' % rest[2])
-    sys.exit(0)
-sys.stdout.write('unexpected argv')
-sys.exit(8)
-"""
-
 SOL_ARGS = ('--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="high"')
 OPUS_ARGS = ('--permission-mode', 'auto', '--effort', 'high')
 WONDER_ARGS = ('--yolo', '--reasoning-effort', 'high')
@@ -1070,122 +997,32 @@ def mayor_picks(env_file=None):
                  env_file=None, effort='high'))
 
 
-class Crash(BaseException):
-    """The bridge process dying mid-handler: no except Exception catches it."""
-
-
-class FakeYard:
-    """GetUser as the native socket answers it: `mapped` is the Telegram id
-    the operator's tgbridge identity names."""
-
-    def __init__(self, mapped='123', role='operator'):
-        self.mapped, self.role, self.calls = mapped, role, []
-
-    def call(self, method, arguments):
-        self.calls.append((method, arguments))
-        if method != 'GetUser':
-            raise AssertionError('unexpected native call ' + method)
-        return dict(name=arguments['name'], role=self.role, identities=dict(tgbridge=dict(id=self.mapped)))
-
-
-class MayorCase(unittest.TestCase):
-    """A bridge with native /mayor_model on a stub yardr that keeps one crew
-    member's settings in a file, refuses a stale --revision and records
-    every argv; carries no tests."""
-
-    def setUp(self):
-        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.home = self.root / 'yard'
-        self.home.mkdir(mode=0o700)
-        self.state = self.root / 'crew.json'
-        self.control = self.root / 'control.json'
-        self.record = self.root / 'record.jsonl'
-        self.set_crew(kind='codex', model='gpt-6.1-sol', args=list(SOL_ARGS))
-        self.stub = self.root / 'stub-yardr'
-        self.stub.write_text(CREW_STUB.format(python=sys.executable, state=str(self.state),
-                                              control=str(self.control), record=str(self.record),
-                                              home=str(self.home), operator='pat'))
-        self.stub.chmod(0o700)
-        self.store = b.Store(self.root / 'state.sqlite3', 10)
-        self.telegram = FakeTelegram()
-        self.yard = FakeYard()
-        self.enterContext(patch.dict(os.environ, {'LANG': 'C.UTF-8'}))
-        self.log = io.StringIO()
-        self.bridge = self.make_bridge()
-
-    def set_crew(self, **fields):
-        state = json.loads(self.state.read_text()) if self.state.exists() else dict(
-            name='yardmaster', kind='codex', model='', args=[], env_file='', revision=1,
-            session_state='running', session_status='idle', session_kind='codex')
-        state.update(fields)
-        self.state.write_text(json.dumps(state))
-
-    def crew(self):
-        return json.loads(self.state.read_text())
-
-    def mayor(self, **fields):
-        entry = dict(crew='yardmaster', timeout=30, picks=mayor_picks(env_file=str(self.root / 'crew.env')))
-        entry.update(fields)
-        return entry
-
-    def make_bridge(self, mayor=None, **config):
-        mayor = self.mayor() if mayor is None else mayor
-        full = dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
-                    hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
-                    user_display_name='Pat', timezone='Asia/Tokyo', menu=(), agent='yardmaster',
-                    yardr_home=str(self.home), yardr_operator='pat', yardr_bin=str(self.stub),
-                    yardr_mayor_model=mayor, commands=(y.mayor_model_command(mayor),))
-        full.update(config)
-        bridge = b.Bridge(full, self.store, 'SECRET', 'CAPABILITY', request=self.telegram,
-                          state_dir=self.root)
-        bridge.run_asks.client = self.yard
-        return bridge
-
-    def control_with(self, **modes):
-        self.control.write_text(json.dumps(modes))
-
-    def calls(self, verb):
-        if not self.record.exists():
-            return []
-        return [entry for entry in map(json.loads, self.record.read_text().splitlines())
-                if verb in entry['argv'][2:6]]
-
-    def tap(self, pick, uid=60, message_id=777):
-        return dict(update_id=uid, callback_query=dict(
-            id='query-%d' % uid, data='mayor-model:' + pick, **{'from': dict(id=123, is_bot=False)},
-            message=dict(message_id=message_id, chat=dict(id=123, type='private'))))
-
-    def text(self, value, uid=40):
-        return dict(update_id=uid, message=dict(message_id=uid + 1000, text=value,
-                                                chat=dict(id=123, type='private'),
-                                                **{'from': dict(id=123, is_bot=False)}))
-
-    def drain(self, *updates, bridge=None):
-        with patch('sys.stderr', self.log):
-            (bridge or self.bridge).drain(list(updates))
-
-    def answers(self):
-        return self.telegram.of('answerCallbackQuery')
-
-    def edits(self):
-        return self.telegram.of('editMessageText')
-
-    def rows(self):
-        with self.store.connect() as db:
-            return db.execute('SELECT update_id, pick, crew, state FROM mayor_model_taps ORDER BY update_id').fetchall()
-
-
-class MayorOwnedPrefixTests(MayorCase):
+class MayorOwnedPrefixTests(unittest.TestCase):
     def test_another_handler_cannot_send_mayor_model_buttons(self):
-        handler = self.root / 'other'
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        home = root / 'yard'
+        home.mkdir(mode=0o700)
+        handler = root / 'other'
         handler.write_text('#!/bin/sh\ncat >/dev/null\necho \'{"actions":[{"type":"send","text":"x",'
                            '"keyboard":[[{"text":"OK","callback_data":"mayor-model:opus"}]]}]}\'\n')
         handler.chmod(0o700)
         other = dict(name='other', description='x', menu=True, timeout=10, handler=str(handler),
                      callback_prefix='other:')
-        mayor = self.mayor()
-        self.bridge = self.make_bridge(commands=(other, y.mayor_model_command(mayor)))
-        self.drain(self.text('/other'))
-        (send,) = self.telegram.of('sendMessage')
+        mayor = dict(crew='yardmaster', timeout=30, picks=mayor_picks(env_file=str(root / 'crew.env')))
+        telegram = FakeTelegram()
+        store = b.Store(root / 'state.sqlite3', 10)
+        config = dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
+                      hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
+                      user_display_name='Pat', timezone='Asia/Tokyo', menu=(), agent='yardmaster',
+                      yardr_home=str(home), yardr_operator='pat', yardr_bin=str(root / 'unused-yardr'),
+                      yardr_mayor_model=mayor, commands=(other, y.mayor_model_command(mayor)))
+        bridge = b.Bridge(config, store, 'SECRET', 'CAPABILITY', request=telegram, state_dir=root)
+        log = io.StringIO()
+        update = dict(update_id=40, message=dict(message_id=1040, text='/other',
+                                                chat=dict(id=123, type='private'),
+                                                **{'from': dict(id=123, is_bot=False)}))
+        with patch('sys.stderr', log), patch.dict(os.environ, {'LANG': 'C.UTF-8'}):
+            bridge.drain([update])
+        (send,) = telegram.of('sendMessage')
         self.assertEqual(send['text'], 'command other failed')
-        self.assertIn('command other failed (update 40): foreign_callback_data', self.log.getvalue())
+        self.assertIn('command other failed (update 40): foreign_callback_data', log.getvalue())

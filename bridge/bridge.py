@@ -589,16 +589,6 @@ class Store:
                        'update_id INTEGER, relayed INTEGER NOT NULL DEFAULT 0, '
                        "kind TEXT NOT NULL DEFAULT 'text', decided INTEGER NOT NULL DEFAULT 0, "
                        'conversation_id TEXT)')
-            # CREATE TABLE IF NOT EXISTS never adds a column to an existing
-            # ledger: add decided, then conversation_id, once each, so every
-            # recorded ask reads decided=0 and conversation_id NULL (the
-            # paired chat) and keeps its meaning. The INSERT above holds the
-            # write lock, so a second process opening the ledger waits here.
-            columns = [row[1] for row in db.execute('PRAGMA table_info(asks)')]
-            if 'decided' not in columns:
-                db.execute('ALTER TABLE asks ADD COLUMN decided INTEGER NOT NULL DEFAULT 0')
-            if 'conversation_id' not in columns:
-                db.execute('ALTER TABLE asks ADD COLUMN conversation_id TEXT')
             # The paired user's newest message the yard durably accepted: one row,
             # the target of `react` without --message-id.
             db.execute('CREATE TABLE IF NOT EXISTS accepted (id INTEGER PRIMARY KEY CHECK (id = 1), '
@@ -618,7 +608,7 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS topic_attempts (name TEXT PRIMARY KEY, attempt INTEGER NOT NULL)')
             # Topics the paired user created ([auto_topics]): Telegram's name
             # as last seen (NULL until known) and whether it was implicit,
-            # the crew member and the unused legacy binding timestamp.
+            # the crew member and bound_at.
             # Its own table: a Telegram-given name in topics.name could meet
             # a settings name added later.
             db.execute('CREATE TABLE IF NOT EXISTS auto_topics (thread_id INTEGER PRIMARY KEY, name TEXT, '
@@ -704,20 +694,6 @@ class Store:
             row = db.execute('SELECT pick, crew, state FROM mayor_model_taps WHERE update_id=?',
                              (update_id,)).fetchone()
         return None if row is None else dict(pick=row[0], crew=row[1], state=row[2])
-
-    def reserve_mayor_tap(self, update_id, pick, crew):
-        """Reserve this update's tap, committed on return: None when this call
-        reserved it, else the row already there. One transaction, so two
-        callers never both reserve."""
-        with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            row = db.execute('SELECT pick, crew, state FROM mayor_model_taps WHERE update_id=?',
-                             (update_id,)).fetchone()
-            if row is not None:
-                return dict(pick=row[0], crew=row[1], state=row[2])
-            db.execute("INSERT INTO mayor_model_taps VALUES (?, ?, ?, 'reserved', ?)",
-                       (update_id, pick, crew, datetime.datetime.now(datetime.timezone.utc).isoformat()))
-        return None
 
     def record_mayor_tap(self, update_id, state):
         """Record a reserved tap's outcome (done, refused or unknown); an
@@ -920,14 +896,6 @@ class Store:
             cursor = db.execute('UPDATE auto_topics SET name=?, name_implicit=? WHERE thread_id=?'
                                 + (' AND name IS NULL' if unnamed_only else ''),
                                 (name, int(bool(implicit)), thread_id))
-        return cursor.rowcount == 1
-
-    def set_auto_topic_bound(self, thread_id, bound):
-        """Set an auto topic's bound_at to now, or clear it to NULL; False
-        when the thread has no row."""
-        bound_at = datetime.datetime.now(datetime.timezone.utc).isoformat() if bound else None
-        with self.connect() as db:
-            cursor = db.execute('UPDATE auto_topics SET bound_at=? WHERE thread_id=?', (bound_at, thread_id))
         return cursor.rowcount == 1
 
     def auto_topic_rows(self):
@@ -1710,9 +1678,9 @@ class Bridge:
         return cfg['timeout'] + extra
 
     def _transcribe_gpu_allowance(self, audio_seconds):
-        """Extra seconds of a run with gpu on: a GPU run that hangs or fails
-        still leaves the CPU retry its whole run limit."""
-        if not (self.transcribe.get('gpu') or self.transcribe.get('method') in ('auto', 'gpu')):
+        """Extra seconds of a run with method auto or gpu: a GPU run that
+        hangs or fails still leaves the CPU retry its whole run limit."""
+        if self.transcribe.get('method') not in ('auto', 'gpu'):
             return 0
         return max(self.TRANSCRIBE_GPU_MIN, math.ceil(self._transcribe_timeout(audio_seconds) / self.TRANSCRIBE_GPU_SHARE))
 
@@ -1730,13 +1698,12 @@ class Bridge:
         counts and duration; child output is never logged or relayed. The
         child first waits for its turn in the host-wide transcription queue
         with no time limit; the run limit starts at its "running" line. With
-        gpu on the child may use the GPU (device auto) and picks it itself;
+        method auto or gpu the child may use the GPU and picks it itself;
         stats['device'] is its device line when it gave a valid one. Never
         raises."""
         cfg = self.transcribe
         python, script = cfg['python'], cfg['script']
-        device = {'cpu': 'cpu', 'auto': 'check', 'gpu': 'gpu'}.get(cfg.get('method'),
-                                                                  'auto' if cfg.get('gpu') else 'cpu')
+        device = {'cpu': 'cpu', 'auto': 'check', 'gpu': 'gpu'}[cfg.get('method', 'cpu')]
         stats = dict(exit_code=None, stdout_bytes=0, stderr_bytes=0, seconds=0.0, device=None)
         if shutil.which('ffmpeg') is None:
             return None, 'transcriber missing (ffmpeg not on PATH)', stats
@@ -4854,20 +4821,18 @@ def _build_parser():
     parser.add_argument('--settings', type=Path,
                         help=f'the bridge\'s settings file (default: ${SETTINGS_ENV})')
     parser.add_argument('--port', type=int, help='overrides the settings\' port')
-    parser.add_argument('command', choices=('run', 'probe', 'send', 'reply-current', 'ask-close', 'run-ask', 'ask-card', 'siding-card', 'react', 'pin',
+    parser.add_argument('command', choices=('run', 'probe', 'send', 'ask-close', 'run-ask', 'ask-card', 'siding-card', 'react', 'pin',
                                             'topics', 'set-commands', 'render-unit', 'check-install',
                                             'mayor-model', 'switch-model'))
     parser.add_argument('--body-file', type=Path,
-                        help='file holding the message text (send, reply-current)')
+                        help='file holding the message text (send)')
     parser.add_argument('--idempotency-key',
                         help='one stable key per logical message: a retry reuses it with the same body; a new message takes a new key')
-    # Accepted and ignored for existing add-ons; nothing routes on it here.
-    parser.add_argument('--session', help=argparse.SUPPRESS)
     parser.add_argument('--conversation-id',
                         help="optional: the settings' bot.chat_id, or <chat id>:topic:<thread id> of a configured "
                              'topic, as the message notice names it (react: its last accepted message)')
     parser.add_argument('--topic', metavar='NAME',
-                        help='send, reply-current, run-ask, ask-card, siding-card: send into the configured topic of this name, '
+                        help='send, run-ask, ask-card, siding-card: send into the configured topic of this name, '
                              'instead of --conversation-id; react: react to its last accepted message')
     parser.add_argument('--attachment', type=Path, action='append',
                         help='absolute path of a file to send, the body as its caption; '
@@ -4875,15 +4840,15 @@ def _build_parser():
     parser.add_argument('--attachment-kind', choices=tuple(Bridge.ATTACHMENT_KINDS),
                         help='voice and video_note are never inferred; video_note takes an empty body')
     parser.add_argument('--keyboard-file', type=Path,
-                        help='file holding an inline keyboard as JSON rows (send, reply-current; '
+                        help='file holding an inline keyboard as JSON rows (send; '
                              'a keyboard send publishes directly in this process)')
     parser.add_argument('--format', choices=('plain', 'html', 'markdown'), default='plain',
                         help='html sends validated Telegram HTML; markdown renders the documented CommonMark subset')
     parser.add_argument('--silent', action='store_true',
-                        help='send, reply-current: notify with no sound '
+                        help='send: notify with no sound '
                              '(publishes directly in this process)')
     parser.add_argument('--text-options', action='store_true',
-                        help='send, reply-current: allow a body offering lettered options as text '
+                        help='send: allow a body offering lettered options as text '
                              'lines without --keyboard-file (recorded in the receipt)')
     parser.add_argument('--message-id', type=_message_id_arg,
                         help='ask-close: the message ID the ask was sent as; react: the message to '
@@ -4951,8 +4916,8 @@ def _validate_attachment_flags(parser, args):
         parser.error('--message-id is a react and ask-close flag')
     if getattr(args, 'conflict_exit_status_given', False) and args.command != 'run':
         parser.error('--conflict-exit-status is a run flag')
-    if args.topic is not None and args.command not in ('send', 'reply-current', 'run-ask', 'ask-card', 'siding-card', 'react'):
-        parser.error('--topic is a send, reply-current, run-ask, ask-card, siding-card and react flag')
+    if args.topic is not None and args.command not in ('send', 'run-ask', 'ask-card', 'siding-card', 'react'):
+        parser.error('--topic is a send, run-ask, ask-card, siding-card and react flag')
     if args.topic is not None and args.conversation_id is not None:
         parser.error('--topic and --conversation-id are exclusive')
     if args.command == 'react' and args.message_id is not None and (args.conversation_id is not None
@@ -5045,7 +5010,7 @@ def _read_keyboard_file(path):
 
 
 def _outbound_conversation(bridge, args):
-    """The conversation a send, reply-current or react goes to: the paired
+    """The conversation a send or react goes to: the paired
     chat's without --conversation-id and --topic, else the one they name:
     --topic a configured, recorded topic's only, --conversation-id also the
     paired chat's or a served auto topic's (OPERATIONS.md, "Topics")."""
@@ -5176,9 +5141,6 @@ MAYOR_CREW_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,31}')
 MAYOR_PICK_ID_RE = re.compile(r'[a-z0-9][a-z0-9_-]{0,31}')
 MAYOR_KIND_RE = re.compile(r'[a-z0-9][a-z0-9_-]{0,31}')
 MAYOR_MODEL_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,127}')
-# Legacy keys refused by name, each with its replacement.
-GC_SETTINGS = {'city': 'yard', 'agent': 'crew', 'gc_base_url': '[yardr] hook_url',
-               'gc_api_token_file': '[yardr] hook_secret_file'}
 BOT_KEYS = {'bot_id', 'user_id', 'chat_id', 'account_id'}
 COMMAND_KEYS = {'name', 'description', 'handler', 'url', 'menu', 'callback_prefix', 'timeout'}
 # Commands the bridge itself owns: /start is never relayed.
@@ -5202,17 +5164,17 @@ TOPIC_NAME_FORBIDDEN = '[]|'
 # each bound to the settings' agent.
 AUTO_TOPICS_KEYS = {'enabled'}
 TRANSCRIBE_KEYS = {'enabled', 'whisper_cli', 'models_dir', 'model', 'vad_model', 'threads', 'cpus', 'timeout',
-                   'timeout_per_minute', 'gpu', 'gpu_min_free_mb', 'method', 'gpu_check', 'language'}
+                   'timeout_per_minute', 'gpu_min_free_mb', 'method', 'gpu_check', 'language'}
 TRANSCRIBE_METHODS = ('auto', 'cpu', 'gpu')
 _LANGUAGE_RE = voice_transcribe.LANGUAGE_RE
 # Neutral defaults: the whisper.cpp build and models every yard on the host
 # shares (never under a yard), the large turbo model with Silero VAD, every
 # CPU the bridge has, a run limit of 120 s plus 120 s per minute of audio, and
-# the CPU only (the legacy gpu = true means method = "auto").
+# the CPU only (method = "cpu").
 TRANSCRIBE_DEFAULTS = dict(enabled=False, whisper_cli='~/work/whisper.cpp/build/bin/whisper-cli',
                            models_dir='~/work/whisper.cpp/models', model='large-v3-turbo-q5_0',
                            vad_model='silero-v6.2.0', threads=4, cpus='', timeout=120, timeout_per_minute=120,
-                           gpu=False, gpu_min_free_mb=2048, language='en')
+                           method='cpu', gpu_min_free_mb=2048, language='en')
 # The host-wide transcription queue, under the home directory of the user
 # every yard's bridge runs as. Deliberately not a setting: two yards naming
 # different queues would run whisper at the same time.
@@ -5538,8 +5500,6 @@ def _topic_settings(data, agent):
             fail(f'more than {TOPIC_MAX} [[topic]] tables')
         if not isinstance(item, dict):
             fail('not a [[topic]] table')
-        if 'agent' in item:
-            fail('agent is a legacy key: name the crew member with crew')
         unknown = sorted(set(item) - TOPIC_KEYS)
         if unknown:
             fail(f'unknown key {unknown[0]}')
@@ -5586,10 +5546,6 @@ def load_settings(path, home=None):
         data = tomllib.loads(raw.decode('utf-8'))
     except (UnicodeError, ValueError):
         raise SettingsError(f'settings file is not valid TOML: {path}') from None
-    if 'quota' in data:
-        raise SettingsError('settings: [quota] is no longer read; /quota is a [[command]] add-on (README.md, "Add-ons")')
-    for key in sorted(set(data) & set(GC_SETTINGS)):
-        raise SettingsError(f'settings: {key} is a legacy key; use {GC_SETTINGS[key]} (YARDR.md)')
     unknown = sorted(set(data) - SETTINGS_KEYS)
     if unknown:
         raise SettingsError(f'settings: unknown key {unknown[0]}')
@@ -5760,17 +5716,9 @@ def load_settings(path, home=None):
     python = _path_setting(data.get('python', '/usr/bin/python3'), 'python')
     raw_transcribe = _table(data, 'transcribe', TRANSCRIBE_KEYS)
     found = dict(TRANSCRIBE_DEFAULTS, **raw_transcribe)
-    gpu = _bool_setting(found['gpu'], 'transcribe.gpu')
-    if 'method' in raw_transcribe:
-        if 'gpu' in raw_transcribe:
-            raise SettingsError('settings: set one of transcribe.method and transcribe.gpu')
-        method = raw_transcribe['method']
-        if method not in TRANSCRIBE_METHODS:
-            raise SettingsError('settings: transcribe.method must be one of "auto", "cpu" or "gpu"')
-    else:
-        # The legacy boolean: gpu = true asks the GPU check, gpu = false is
-        # the CPU, exactly method = "auto" and method = "cpu".
-        method = 'auto' if gpu else 'cpu'
+    method = found['method']
+    if method not in TRANSCRIBE_METHODS:
+        raise SettingsError('settings: transcribe.method must be one of "auto", "cpu" or "gpu"')
     if 'gpu_check' in raw_transcribe and method != 'auto':
         raise SettingsError('settings: transcribe.gpu_check needs method = "auto"')
     gpu_check = None
@@ -5802,7 +5750,7 @@ def load_settings(path, home=None):
     transcribe = None
     if enabled:
         transcribe = dict(python=str(python), script=str(ADAPTER), model=model, timeout=timeout,
-                          timeout_per_minute=per_minute, gpu=method in ('auto', 'gpu'), method=method,
+                          timeout_per_minute=per_minute, method=method,
                           language=language, env={
             'VOICE_TRANSCRIBE_WHISPER_CLI': str(whisper_cli),
             'VOICE_TRANSCRIBE_MODEL_DIR': str(models_dir),
@@ -6602,10 +6550,8 @@ def gpu_probe(settings, clip=None, run=subprocess.run, which=shutil.which,
     else the probe printed."""
     if settings.transcribe is None:
         return 'skip', 'gpu probe: transcription off ([transcribe] enabled = false)'
-    if settings.transcribe.get('method') == 'cpu':
+    if settings.transcribe.get('method') not in ('auto', 'gpu'):
         return 'skip', 'gpu probe: method = cpu'
-    if settings.transcribe.get('method') not in ('auto', 'gpu') and not settings.transcribe.get('gpu'):
-        return 'skip', 'gpu probe: gpu = false'
     if clip is None:
         clip = default_probe_clip(settings)
         if clip is None or not clip.is_file():
@@ -6716,9 +6662,9 @@ def main():
     if args.command == 'probe':
         bridge.probe()
         print('Telegram identity and webhook checks passed')
-    elif args.command in ('send', 'reply-current'):
+    elif args.command == 'send':
         if not args.body_file or not args.idempotency_key:
-            parser.error('send/reply-current requires --body-file and --idempotency-key (reuse the key for retries)')
+            parser.error('send requires --body-file and --idempotency-key (reuse the key for retries)')
         if args.idempotency_key.startswith(yard_mail.KEY_PREFIX):
             parser.error(RESERVED_KEY)
         conversation = _outbound_conversation(bridge, args)

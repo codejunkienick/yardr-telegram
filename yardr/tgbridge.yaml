@@ -2,7 +2,6 @@ name: tgbridge
 about: The operator's Telegram chat and its topics, through the yardr-telegram bridge on this machine.
 base: http://127.0.0.1:8941
 bases:
-  odyssey: http://127.0.0.1:8941
   imd: http://127.0.0.1:8942
 credential:
   env: TGBRIDGE_SECRET

@@ -177,8 +177,6 @@ def handle_native(bridge, name, payload):
     command path's JSON payload. Never raises for a known command."""
     if name == NATIVE_QUOTA:
         return handle_quota(bridge, payload)
-    if name == NATIVE_MAYOR_MODEL:
-        return handle_mayor_model(bridge, payload)
     raise NativeUnknown(name)
 
 
@@ -713,11 +711,6 @@ def _quota(bridge, payload):
 EFFORT_FLAGS = ('--reasoning-effort', '--effort')
 CONFIG_FLAGS = ('-c', '--config')
 REVISION_RE = re.compile(r'[A-Za-z0-9]{1,64}')
-# yardr answers a crew member it does not have with this exit status.
-CREW_NOT_FOUND_STATUS = 3
-MODEL_SHOWN_MAX = 128
-FIELD_SHOWN_MAX = 32
-TAP_STATES = ('reserved', 'done', 'refused', 'unknown')
 
 
 def effort_of(args):
@@ -823,74 +816,8 @@ def parse_crew(raw):
             'session_kind': _optional_text(handle.get('kind'), unexpected)}
 
 
-def read_crew(config, deadline, log):
-    """The crew member as `crew show <crew> --json` reads it now (parse_crew).
-    MayorUnavailable with a fixed reason otherwise."""
-    status, out, problem = _run_logged(
-        config, _crew_argv(config, 'crew', 'show', config['yardr_mayor_model']['crew'], '--json'),
-        deadline, 'crew show', log)
-    if problem == 'not_started':
-        raise MayorUnavailable('yardr not reachable')
-    if problem == 'timeout':
-        raise MayorUnavailable('timed out')
-    if problem is not None:
-        raise MayorUnavailable('answer too large')
-    if status == CREW_NOT_FOUND_STATUS:
-        raise MayorUnavailable('the crew member does not exist')
-    if status != 0:
-        raise MayorUnavailable(_exit_reason(status))
-    return parse_crew(out)
-
-
-def pick_of(mayor, current):
-    """The configured pick whose kind, model and effort the crew member has,
-    else None (picks differ in those, so at most one matches)."""
-    for pick in mayor['picks']:
-        if (pick['kind'], pick['model'], pick['effort']) == (current['kind'], current['model'], current['effort']):
-            return pick
-    return None
-
-
 def has_pick(pick, current):
     """True when the crew member's settings are the pick's: kind, model and
     args exactly, and the env_file when the pick names one."""
     return ((current['kind'], current['model'], current['args']) == (pick['kind'], pick['model'], list(pick['args']))
             and (pick['env_file'] is None or current['env_file'] == pick['env_file']))
-
-
-def unchanged(before, after):
-    """True when the settings a tap sets read as they did before it (the
-    revision moves with the crew member's runtime state, so it is not
-    compared)."""
-    return all(before[key] == after[key] for key in ('kind', 'model', 'args', 'env_file'))
-
-
-def model_lines(mayor, current, status=None):
-    """The view: the pick or the plain assignment, kind · model · effort, and
-    the session's state, status and the kind it keeps until it restarts.
-    Never the env file or anything of the env."""
-    pick = pick_of(mayor, current)
-    kind = clean(current['kind'], FIELD_SHOWN_MAX)
-    model = clean(current['model'], MODEL_SHOWN_MAX) or 'default model'
-    effort = clean(current['effort'] or '', FIELD_SHOWN_MAX) or 'default'
-    lines = [f'{mayor["crew"]} model: {pick["label"] if pick else f"{model} ({kind}, effort {effort})"}',
-             f'{kind} · {model} · effort {effort}']
-    session = [clean(part, FIELD_SHOWN_MAX) for part in (current['state'], current['status'])
-               if clean(part, FIELD_SHOWN_MAX)]
-    session_kind = clean(current['session_kind'], FIELD_SHOWN_MAX)
-    if session_kind and session_kind != current['kind']:
-        session.append(f'on {session_kind} until it restarts')
-    if session:
-        lines.append('session: ' + ' · '.join(session))
-    return ([status] if status else []) + lines
-
-
-
-def dry_run(config, pick_id, log):
-    from model_switch import dry_run as describe
-    return describe(config, pick_id, log)
-
-
-def handle_mayor_model(bridge, payload):
-    # Production routing supplies the verified Telegram envelope to ModelSwitch.command.
-    return {'actions': [{'type': 'answer_callback', 'text': 'That model button is out of date.', 'alert': True}]}         if payload.get('kind') == 'callback' else send(['Use /switch_model to switch models.'])

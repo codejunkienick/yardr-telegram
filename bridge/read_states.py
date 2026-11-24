@@ -111,10 +111,6 @@ class ReadStates:
                         'state TEXT NOT NULL, '
                         'at REAL NOT NULL)'
                     )
-                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone():
-                    cols = [row[1] for row in db.execute(f'PRAGMA table_info({TABLE})')]
-                    if 'offer_token' not in cols:
-                        db.execute(f'ALTER TABLE {TABLE} ADD COLUMN offer_token TEXT')
 
     @property
     def enabled(self):

@@ -70,14 +70,6 @@ missing file, a file others can read, an unknown key or a bad value refuses
 every command with one line naming the problem; nothing falls back to a
 default yard.
 
-Legacy settings keys do not load as they are. They are refused
-by name, each with the key that replaced it:
-`settings: city is a legacy key; use yard (YARDR.md)`,
-and so for `agent` (`crew`), `gc_base_url` (`[yardr] hook_url`) and
-`gc_api_token_file` (`[yardr] hook_secret_file`); a `[[topic]]` `agent`
-refuses as `settings: topic entry <n>: agent is a legacy key: name the
-crew member with crew`.
-
 | key | required | meaning |
 | --- | --- | --- |
 | `yard` | yes | the yard's name: in the default unit name, the unit's description and every conversation record in the ledger |
@@ -600,7 +592,7 @@ is one of:
   its `received_at`. A message relayed on the paired chat's conversation
   from a topic the bridge does not serve is logged there.
 - **out**: a send Telegram confirmed through `publish()` (`/v1/send`, so
-  `yardr reply`; `/v1/tell`; `send` and `reply-current`; the
+  `yardr reply`; `/v1/tell`; `send`; the
   quota-exhausted notice), under its message id (an album's first), from
   the account, with its visible text (tags removed for HTML) and, when it
   carried files, a first line `[<file name>, ...]`.
@@ -1157,7 +1149,7 @@ fingerprint like `format` does: the same key with another keyboard is
 `idempotency_key_conflict`, and no `keyboard` field sends byte-identically to
 before. `/v1/send` takes `keyboard` as rows or as rows in a JSON string
 (`yardr call tgbridge send key=<key> keyboard="$(cat rows.json)" …`; an
-empty string or `[]` is no keyboard), and `send` and `reply-current` take
+empty string or `[]` is no keyboard), and `send` takes
 `--keyboard-file <path>` holding the rows as JSON (a JSON `null` refuses:
 `keyboard file must hold JSON rows`). The caller chooses the send's key
 before it sends, since every button carries an id made from it (below):
@@ -1168,7 +1160,7 @@ relays there under the topic's line; any other ask's answer relays on the
 paired chat's conversation with no topic line ("Topics").
 
 **Lettered options need buttons.** A send (`/v1/send`, so also `yardr
-reply`, and `send` and `reply-current`) whose
+reply`, and `send`) whose
 visible text (tags removed, entities decoded) offers a choice as lettered
 text lines without a keyboard is refused before anything is sent
 or recorded, with the receipt reason `options_need_keyboard`; the command
@@ -1245,7 +1237,7 @@ for `\n✓ <label>` of its longest option within 4096 UTF-16 units of text, or
 P1 A keyboard may go with no attachment or with exactly one photo; any other
 attachment kind (or more than one) refuses the send as `invalid_keyboard`
 before anything is recorded or sent, through `publish()`, `/v1/send` and
-`send` and `reply-current` with `--keyboard-file` plus `--attachment`. A
+`send` with `--keyboard-file` plus `--attachment`. A
 keyboard on a photo holds only ask buttons: any other callback data on a
 photo refuses
 the send as `invalid_keyboard` (a handler edit of that photo would go through
@@ -1352,9 +1344,7 @@ by hand. `/v1/ask-close` answers `{"delivered": true, "message_id": "<id>"}`,
 or `delivered: false` with the same reasons.
 
 (6) The ledger's asks table carries `decided` (0 or 1, default 0) after
-`kind`. An existing ledger opens unchanged and gains the column once
-when the bridge opens it, so every recorded ask reads decided=0 and keeps its
-meaning. No settings key is involved.
+`kind`. No settings key is involved.
 
 A close and a tap run in separate processes or threads (the CLI process or
 a yard API request, and the poll loop); the guarded writes (a tap's mark
@@ -1385,7 +1375,6 @@ does the same:
 <root>/bin/telegram-bridge send --body-file <path> --idempotency-key <stable-key>
 ```
 
-`reply-current` is a compatibility alias for `send`.
 `--keyboard-file <path>` attaches an inline keyboard ("Asks" above);
 `--silent` notifies with no sound ("Silent messages" below).
 `pin` keeps one pinned message per slot ("Pinned messages" below).
@@ -1393,8 +1382,7 @@ Optional `--conversation-id` is the paired chat's id or a configured
 topic's `<chat_id>:topic:<thread_id>`, exactly as the delivery names its
 conversation, and `--topic <name>` names a configured topic instead: the
 message lands in that topic. With neither, a send lands in General
-("Topics"). `--session` is accepted and ignored for compatibility with
-existing add-ons; it does not select a destination.
+("Topics").
 
 Every send is direct: the process that takes it, the daemon for the yard
 API and the CLI process for the command line, delivers it through the
@@ -1419,7 +1407,7 @@ The `telegram-formatting` skill is the writer's guide.
 
 ### Formatted messages (`html` and `auto`)
 
-`--format html` (on `send` and `reply-current`) and `format: html` (on
+`--format html` (on `send`) and `format: html` (on
 `/v1/send` and `/v1/pin`) send the body with Telegram's HTML `parse_mode`.
 On the command line it is an explicit opt-in; without it nothing changes for
 a caller or its ledger rows. The yard API's `format` defaults to `auto`, and
@@ -1463,7 +1451,7 @@ code whitespace, lists/quotes, limits, identity and operator activation.
 
 ### Silent messages (`--silent`)
 
-`--silent` (on `send` and `reply-current`) and `silent: true` (on
+`--silent` (on `send`) and `silent: true` (on
 `/v1/send`) deliver the message silently: Telegram's
 `disable_notification` ("Users will receive a notification with no sound"),
 so the message still shows in the user's notifications but makes no sound
@@ -1485,7 +1473,7 @@ changes for a caller or its ledger rows.
 
 ### Outbound attachments
 
-`--attachment <absolute path>` on `send` and `reply-current` (with optional
+`--attachment <absolute path>` on `send` (with optional
 `--attachment-kind photo|video|document|voice|video_note`, inferred from the
 extension otherwise: photo, video or document, never voice or video_note),
 and `attachments` on `/v1/send` (a host path, or a list of them, with
@@ -1510,7 +1498,7 @@ send instead, so the ask is never recorded as sent without its buttons.
 Nor does a file sent into a topic the user created ("Renamed and deleted
 topics").
 
-**Albums.** `--attachment` given 2-10 times (on `send` and `reply-current`),
+**Albums.** `--attachment` given 2-10 times (on `send`),
 or 2-10 `attachments` on `/v1/send` (`yardr reply` with 2-10 `--file`),
 sends the files as one Telegram album (sendMediaGroup) under one idempotency
 key, with one receipt: `message_id` is the first message's id and
@@ -1844,7 +1832,7 @@ identity, so one key in two conversations is `idempotency_key_conflict`.
 - `yardr reply` answers on the delivery's conversation, so in its topic.
   `/v1/send` takes `conversation`, the id exactly as a delivery names it, or
   `topic`, a `[[topic]]`'s exact name or a served topic's display name.
-  `send` and `reply-current` take
+  `send` takes
   `--conversation-id <chat_id>:topic:<thread_id>` or `--topic <name>`, a
   `[[topic]]`'s exact name, and send there whatever the send carries (HTML,
   silent, a keyboard, attachments). `--conversation-id` also takes a served
@@ -1859,8 +1847,7 @@ identity, so one key in two conversations is `idempotency_key_conflict`.
   General.
 - An ask with buttons sent in a topic records the topic's conversation id in
   the ledger's asks table (`conversation_id`, its last column, NULL for the
-  paired chat; an existing ledger gains it once, and every ask it holds reads
-  NULL). A tap's answer relays on that conversation by the inbound rules
+  paired chat). A tap's answer relays on that conversation by the inbound rules
   above: the `[topic: <name>]` line comes before the `[ask answer | ...]`
   line; a topic no longer served relays it on the paired chat's
   conversation under the not-configured line, the thread id taken from
@@ -1962,7 +1949,7 @@ conversation, the quota notice follows a message accepted on it, typing
 shows in its thread, a command answers in it, and a pinned slot's
 message stays in General. `yardr reply` answers in it; `/v1/send` and
 `/v1/react` take its conversation id or its display name as `topic`;
-`send`, `reply-current` and `react` take
+`send` and `react` take
 `--conversation-id <chat_id>:topic:<thread_id>` of a served topic, exactly
 as a delivery names it. `--topic` on the command line names only `[[topic]]`
 tables: a display name is refused like any other unknown name. A thread a
@@ -2427,15 +2414,11 @@ says `ok`.
 
 `[transcribe] method` chooses where notes run: `cpu` (the default) is
 always the CPU (`cpu: gpu-off`), `gpu` is always the GPU with no check,
-and `auto` asks the configured GPU check (below) once per note. A settings
-file with `method` may not also set `gpu`; an operator who wants their own
-GPU decision writes it as their own `gpu_check` command. There is no
-other off switch: no check at all is `method = "gpu"`. In every method
-mode a GPU run that fails or runs past its GPU limit (a quarter of the
+and `auto` asks the configured GPU check (below) once per note. An operator
+who wants their own GPU decision writes it as their own `gpu_check` command.
+There is no other off switch: no check at all is `method = "gpu"`. In every
+method mode a GPU run that fails or runs past its GPU limit (a quarter of the
 run limit, at least 30 s) is retried once on the CPU (`cpu: gpu-failed`).
-Without `method`, the legacy `gpu = true` behaves as `method = "auto"`
-(with the configured GPU check) and `gpu = false` as `method = "cpu"`;
-setting both `method` and `gpu` refuses.
 
 #### The GPU check
 
@@ -2516,9 +2499,8 @@ write the queue (`ReadWritePaths`); `install.sh` creates it.
 | `threads` | `4` | whisper-cli threads, 1-64 |
 | `timeout` | `120` | base seconds of a run, 1-3600 (the decode limit, and the start of the whisper limit) |
 | `timeout_per_minute` | `120` | seconds of whisper limit added per minute of audio, 0-3600 (the bridge uses Telegram's duration, assuming 10 minutes when it gives none) |
-| `method` | `cpu` | `auto`, `cpu` or `gpu` (above); with it, `gpu` is refused |
+| `method` | `cpu` | `auto`, `cpu` or `gpu` (above) |
 | `gpu_check` | `<repo>/transcriber/gpu_check.py` | the GPU check command for `method = "auto"`: an existing executable regular file, writable only by its owner, owned by this user or root, in a directory owned by this user or root and writable by neither group nor others (for a symlink, both the link's and the target's directories) |
-| `gpu` | `false` | legacy form without `method`: `true` behaves as `method = "auto"`, `false` as `method = "cpu"` |
 | `gpu_min_free_mb` | `2048` | free video memory, MiB, a GPU run needs (256-131072); whisper itself takes about 1.1 GB; also the check's `GPU_MIN_FREE_MB` |
 | `language` | `en` | whisper language code (short lowercase, such as `en` or `ru`) or `auto` to let whisper detect it; passed to whisper-cli as `-l <value>` |
 
@@ -3862,12 +3844,7 @@ neither the fold nor the release advance is. A yard home that stops
 validating while a reply or tap arrives is logged and nothing is written;
 the poll goes on.
 
-Siding rows live in `siding_fold_cards`. The previous release's
-`siding_cards` rows (guarded `sp1` proposals) are retired once: their own
-`withdrawn` field says the card is from an older bridge release, and their
-message loses its buttons; a tap or reply on one answers that and runs
-nothing. Rolled back, the previous release reads its retired rows as
-withdrawn and never sees the new table. Siding rows share the native-card
+Siding rows live in `siding_fold_cards` and share the native-card
 ledger with ordinary and run cards: update receipts, lock, send
 fingerprints, delivery recovery, display edits and idempotency keys. Every
 card is bound to this instance's yard, home directory identity, operator,

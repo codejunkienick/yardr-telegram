@@ -1,8 +1,8 @@
 """Outbound in topics the paired user creates ([auto_topics], OPERATIONS.md,
 "Topics the user creates"): a send on a served auto topic's conversation,
 named or not, carries its message_thread_id on every Telegram request; the
-yard API's /v1/send takes its conversation id or its display name, and send,
-reply-current and react take its --conversation-id. With [auto_topics] off,
+yard API's /v1/send takes its conversation id or its display name, and send
+and react take its --conversation-id. With [auto_topics] off,
 a shadowed row or an unknown thread, nothing changes; General and the
 settings topics send byte for byte as before. Fake Telegram and yard hook,
 temporary directories; no network beyond a loopback yard API server."""
@@ -326,25 +326,23 @@ class AutoTopicCliTests(unittest.TestCase):
                      '--body-file', str(self.body), '--idempotency-key', key, *argv)
         return out.getvalue()
 
-    def test_a_plain_send_and_reply_current_go_straight_to_telegram_in_the_auto_thread(self):
-        for index, command in enumerate(('send', 'reply-current')):
-            out = self.cli(command, '--conversation-id', AUTO_ID, key=f'plain-{index}')
-            self.assertEqual(out, 'Telegram delivery confirmed; message ID 42\n')
+    def test_a_plain_send_goes_straight_to_telegram_in_the_auto_thread(self):
+        out = self.cli('send', '--conversation-id', AUTO_ID, key='plain-0')
+        self.assertEqual(out, 'Telegram delivery confirmed; message ID 42\n')
         self.assertEqual([(body['text'], body['message_thread_id'], 'parse_mode' in body) for body in self.bodies()],
-                         [('<b>done</b>', AUTO, False)] * 2)
+                         [('<b>done</b>', AUTO, False)])
         self.assertTrue(all('/sendMessage"' in config for config in self.inputs))
 
     def test_a_direct_send_into_an_auto_topic_carries_its_thread(self):
-        for index, (command, thread_id) in enumerate((('send', AUTO), ('reply-current', AUTO),
-                                                      ('reply-current', FRESH))):
-            out = self.cli(command, '--format', 'html', '--conversation-id', f'123:topic:{thread_id}',
+        for index, thread_id in enumerate((AUTO, FRESH)):
+            out = self.cli('send', '--format', 'html', '--conversation-id', f'123:topic:{thread_id}',
                            key=f'html-{index}')
             self.assertEqual(out, 'Telegram delivery confirmed; message ID 42\n')
-        self.assertEqual([body['message_thread_id'] for body in self.bodies()], [AUTO, AUTO, FRESH])
+        self.assertEqual([body['message_thread_id'] for body in self.bodies()], [AUTO, FRESH])
         self.assertTrue(all('url = "https://api.telegram.org/' in config for config in self.inputs))
         with closing(sqlite3.connect(self.ledger)) as db:
             receipts = [json.loads(receipt) for (receipt,) in db.execute('SELECT receipt FROM deliveries')]
-        self.assertEqual([receipt['delivered'] for receipt in receipts], [True, True, True])
+        self.assertEqual([receipt['delivered'] for receipt in receipts], [True, True])
 
     def test_an_id_no_served_auto_topic_has_or_an_auto_display_name_is_refused_before_anything_is_sent(self):
         cases = [(AUTO_ON, ('--conversation-id', f'123:topic:{GONE}'), UNRESOLVED),

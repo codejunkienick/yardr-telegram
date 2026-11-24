@@ -22,9 +22,7 @@ RUNTIME_NAMES = {'telegram-bot-token', 'callback-secret', 'hook-secret', '.env'}
 RELATIONSHIP = re.compile(
     rb'gas[\s_-]*city|\bextms[g]\b|\b19973[c]a\b|'
     rb'(?<!\w)\.?g[c](?:[_.]\w*)?\b|\b\w+_g[c]_\w+\b', re.IGNORECASE)
-COMPATIBILITY_NAMES = {b'GC_RECEIPT', b'_print_gc_receipt', b'GC_SETTINGS',
-                       b'gc_base_url', b'gc_api_token_file'}
-LOOKUP_FIXTURES = {b'.g' + b'c', b'G' + b'C_CITY', b'G' + b'C_CITY_PATH', b'G' + b'C_'}
+COMPATIBILITY_NAMES = {b'GC_RECEIPT', b'_print_gc_receipt'}
 GARBAGE_COLLECTION = {b'import g' + b'c', b'g' + b'c.collect()'}
 # Reviewed binaries, each accepted only at its path with its exact SHA-256: the offline
 # wheelhouse and the two synthetic README captures. Any other binary, or changed bytes, refuse.
@@ -81,8 +79,6 @@ def scan(files):
             for match in RELATIONSHIP.finditer(content):
                 token = match.group()
                 if token in COMPATIBILITY_NAMES:
-                    continue
-                if name == 'bridge/test_settings.py' and token in LOOKUP_FIXTURES:
                     continue
                 start = content.rfind(b'\n', 0, match.start()) + 1
                 end = content.find(b'\n', match.end())

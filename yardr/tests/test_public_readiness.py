@@ -42,12 +42,9 @@ class PublicReadinessTests(unittest.TestCase):
         (self.repo / 'LICENSE').write_text('Copyright the authors\n')
         # Generic paths, compatibility names and attribution are allowed.
         (self.repo / 'README.md').write_text('/home/alex /Users/example odyssey imd city mayor\n'
-                                           'GC_RECEIPT gc_base_url gc_api_token_file\n'
-                                           '_print_gc_receipt GC_SETTINGS mayor_quota_episode\n')
+                                           'GC_RECEIPT _print_gc_receipt mayor_quota_episode\n')
         (self.repo / 'bridge').mkdir()
         (self.repo / 'bridge/test_bridge.py').write_text('import g' + 'c\ng' + 'c.collect()\n')
-        (self.repo / 'bridge/test_settings.py').write_text("legacy = '.g" + "c'\n"
-                                                        "names = ['G" + "C_CITY', 'G" + "C_CITY_PATH', 'G" + "C_']\n")
         executable = self.repo / 'helper'
         executable.write_bytes(b'#!/bin/sh\nprintf usable\\n\n')
         executable.chmod(0o755)
@@ -65,12 +62,12 @@ class PublicReadinessTests(unittest.TestCase):
         manifest = json.loads((target / 'manifest.json').read_text())
         self.assertEqual(manifest['commit'], self.git('rev-parse', 'HEAD'))
         self.assertEqual(manifest['tree'], self.git('rev-parse', 'HEAD^{tree}'))
-        self.assertEqual(summary['files'], 7)
+        self.assertEqual(summary['files'], 6)
         archive = target / manifest['archive']
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), manifest['archive_sha256'])
         with tarfile.open(archive) as tar:
             self.assertEqual(sorted(tar.getnames()), ['LICENSE', 'README.md', 'bridge', 'bridge/test_bridge.py',
-                                                     'bridge/test_settings.py', 'docs', 'docs/images',
+                                                     'docs', 'docs/images',
                                                      'docs/images/native-card-confirmation.png',
                                                      'docs/images/review-bundle.png', 'helper'])
             for entry in manifest['files']:
@@ -143,7 +140,7 @@ class PublicReadinessTests(unittest.TestCase):
             with self.subTest(path=name, case=index):
                 path = self.repo / name
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('GC_RECEIPT gc_base_url\n' + text + '\n')
+                path.write_text('GC_RECEIPT _print_gc_receipt\n' + text + '\n')
                 self.commit()
                 destination = self.root / ('relationship-' + str(index))
                 result = self.scan('--export', destination)

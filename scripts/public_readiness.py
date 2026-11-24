@@ -23,13 +23,15 @@ RELATIONSHIP = re.compile(
     rb'(?<!\w)\.?g[c](?:[_.]\w*)?\b|\b\w+_g[c]_\w+\b', re.IGNORECASE)
 GARBAGE_COLLECTION = {b'import g' + b'c', b'g' + b'c.collect()'}
 # Reviewed binaries, each accepted only at its path with its exact SHA-256: the offline
-# wheelhouse and the two synthetic README captures. Any other binary, or changed bytes, refuse.
+# wheelhouse and the synthetic doc captures. Any other binary, or changed bytes, refuse.
 REVIEWED_BINARIES = {
     'vendor/wheels/pyyaml-6.0.3.tar.gz': 'd76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f',
     'vendor/wheels/markdown_it_py-4.2.0-py3-none-any.whl': '9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a',
     'vendor/wheels/mdurl-0.1.2-py3-none-any.whl': '84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8',
     'docs/images/native-card-confirmation.png': '57ba182adcaf3b324587763823e2d6c597b0dcba3db52c19b291a9698ea127e8',
     'docs/images/native-repo-edit.png': '8e63cd204d63308cd94a4444841884ce02deccaa4b6e1c4f11f9a80841fac85a',
+    'docs/images/read-states-nudge.png': '9a39dead4c89cc41330848db67829da85e42c0a69e04d3b6dbee1d4de1acf69c',
+    'docs/images/read-states.png': '2e14a04420591d01e27067ea3bff663d1bc576f21f7d2da890c694fde2360ea9',
     'docs/images/review-bundle.png': '55fae6e155178a8af861ff5b877017fcdcddea44c078d1bfdac0683aa98dfec4',
 }
 

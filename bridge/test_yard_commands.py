@@ -981,14 +981,14 @@ class RealNativeTests(QuotaCase):
             testyardr.stop(server)
 
 
-# --- /mayor_model -----------------------------------------------------------
+# --- /switch_model ----------------------------------------------------------
 
 SOL_ARGS = ('--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="high"')
 OPUS_ARGS = ('--permission-mode', 'auto', '--effort', 'high')
 WONDER_ARGS = ('--yolo', '--reasoning-effort', 'high')
 
 
-def mayor_picks(env_file=None):
+def switch_picks(env_file=None):
     return (dict(id='sol', label='GPT-6.1 Sol high', kind='codex', model='gpt-6.1-sol', args=SOL_ARGS,
                  env_file=None, effort='high'),
             dict(id='opus', label='Opus high', kind='claude', model='opus', args=OPUS_ARGS,
@@ -997,25 +997,25 @@ def mayor_picks(env_file=None):
                  env_file=None, effort='high'))
 
 
-class MayorOwnedPrefixTests(unittest.TestCase):
-    def test_another_handler_cannot_send_mayor_model_buttons(self):
+class SwitchOwnedPrefixTests(unittest.TestCase):
+    def test_another_handler_cannot_send_switch_model_buttons(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         home = root / 'yard'
         home.mkdir(mode=0o700)
         handler = root / 'other'
         handler.write_text('#!/bin/sh\ncat >/dev/null\necho \'{"actions":[{"type":"send","text":"x",'
-                           '"keyboard":[[{"text":"OK","callback_data":"mayor-model:opus"}]]}]}\'\n')
+                           '"keyboard":[[{"text":"OK","callback_data":"switch-model:opus"}]]}]}\'\n')
         handler.chmod(0o700)
         other = dict(name='other', description='x', menu=True, timeout=10, handler=str(handler),
                      callback_prefix='other:')
-        mayor = dict(crew='yardmaster', timeout=30, picks=mayor_picks(env_file=str(root / 'crew.env')))
+        switch = dict(crew='yardmaster', timeout=30, picks=switch_picks(env_file=str(root / 'crew.env')))
         telegram = FakeTelegram()
         store = b.Store(root / 'state.sqlite3', 10)
         config = dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
                       hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
                       user_display_name='Pat', timezone='Asia/Tokyo', menu=(), agent='yardmaster',
                       yardr_home=str(home), yardr_operator='pat', yardr_bin=str(root / 'unused-yardr'),
-                      yardr_mayor_model=mayor, commands=(other, y.mayor_model_command(mayor)))
+                      yardr_switch_model=switch, commands=(other, y.switch_model_command(switch)))
         bridge = b.Bridge(config, store, 'SECRET', 'CAPABILITY', request=telegram, state_dir=root)
         log = io.StringIO()
         update = dict(update_id=40, message=dict(message_id=1040, text='/other',

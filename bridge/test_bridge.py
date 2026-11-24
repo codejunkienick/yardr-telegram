@@ -779,44 +779,44 @@ class BridgeTests(BridgeTestCase):
     def crew_waiting(self, until, episode='abc123'):
         return [{'template': 'yardmaster', 'status': 'quota_wait', 'episode': episode, 'until': until}]
 
-    def test_mayor_quota_episode_reads_health_file(self):
+    def test_quota_episode_reads_health_file(self):
         self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T09:58:30.255Z')
-        self.assertEqual(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), ('abc123', self.HEALTH_UNTIL))
+        self.assertEqual(self.bridge.quota_episode(now=self.HEALTH_NOW), ('abc123', self.HEALTH_UNTIL))
 
-    def test_mayor_quota_episode_rejects_stale_observed_at(self):
+    def test_quota_episode_rejects_stale_observed_at(self):
         self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2020-01-01T00:00:00.000Z')
-        self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
+        self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW))
         self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T09:49:59Z')
-        self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
+        self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW))
 
-    def test_mayor_quota_episode_rejects_missing_or_unparseable_observed_at(self):
+    def test_quota_episode_rejects_missing_or_unparseable_observed_at(self):
         path = self.health_path()
         path.write_text(json.dumps({'sessions': self.crew_waiting(self.HEALTH_UNTIL)}))
-        self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
+        self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW))
         for bad in ('yesterday', 1789466400000, None, '2026-09-15T10:00:00'):
             path.write_text(json.dumps({'observed_at': bad, 'sessions': self.crew_waiting(self.HEALTH_UNTIL)}))
-            self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), bad)
+            self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW), bad)
 
-    def test_mayor_quota_episode_rejects_future_observed_at(self):
+    def test_quota_episode_rejects_future_observed_at(self):
         self.write_city_health(self.crew_waiting(self.HEALTH_UNTIL), observed_at='2026-09-15T10:05:00Z')
-        self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
+        self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW))
 
-    def test_mayor_quota_episode_rejects_expired_until(self):
+    def test_quota_episode_rejects_expired_until(self):
         now_ms = int(self.HEALTH_NOW.timestamp() * 1000)
         for until in (now_ms - 1, now_ms):
             self.write_city_health(self.crew_waiting(until), observed_at='2026-09-15T09:59:00Z')
-            self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), until)
+            self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW), until)
 
-    def test_mayor_quota_episode_rejects_bool_until(self):
+    def test_quota_episode_rejects_bool_until(self):
         self.write_city_health(self.crew_waiting(True), observed_at='2026-09-15T09:59:00Z')
-        self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW))
+        self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW))
 
-    def test_mayor_quota_episode_rejects_non_finite_until(self):
+    def test_quota_episode_rejects_non_finite_until(self):
         path = self.health_path()
         for literal in ('NaN', 'Infinity', '-Infinity'):  # json.loads accepts these literals
             path.write_text('{"observed_at": "2026-09-15T09:59:00Z", "sessions": [{"template": "yardmaster", '
                             '"status": "quota_wait", "episode": "abc123", "until": %s}]}' % literal)
-            self.assertIsNone(self.bridge.mayor_quota_episode(now=self.HEALTH_NOW), literal)
+            self.assertIsNone(self.bridge.quota_episode(now=self.HEALTH_NOW), literal)
 
     def test_inbound_sends_no_notice_for_stale_or_expired_health(self):
         self.write_city_health(self.crew_waiting(self.future_until(), 'ep-stale'),
@@ -826,24 +826,24 @@ class BridgeTests(BridgeTestCase):
         self.bridge.drain([self.update(uid=11)])
         self.assertEqual([c for c in self.calls if '/sendMessage' in c[0]], [])
 
-    def test_mayor_quota_episode_none_when_the_crew_member_is_running(self):
+    def test_quota_episode_none_when_the_crew_member_is_running(self):
         self.write_city_health([{'template': 'yardmaster', 'status': 'running'}])
-        self.assertIsNone(self.bridge.mayor_quota_episode())
+        self.assertIsNone(self.bridge.quota_episode())
 
-    def test_mayor_quota_episode_none_without_health_file_setting_or_file(self):
-        self.assertIsNone(self.bridge.mayor_quota_episode())
+    def test_quota_episode_none_without_health_file_setting_or_file(self):
+        self.assertIsNone(self.bridge.quota_episode())
         self.health_path()
-        self.assertIsNone(self.bridge.mayor_quota_episode())
+        self.assertIsNone(self.bridge.quota_episode())
 
-    def test_mayor_quota_episode_tolerates_malformed_health_file(self):
+    def test_quota_episode_tolerates_malformed_health_file(self):
         health_dir = self.health_path().parent
         (health_dir / 'health.json').write_text('not json')
-        self.assertIsNone(self.bridge.mayor_quota_episode())
+        self.assertIsNone(self.bridge.quota_episode())
         (health_dir / 'health.json').write_text(json.dumps({'sessions': 'not-a-list'}))
-        self.assertIsNone(self.bridge.mayor_quota_episode())
+        self.assertIsNone(self.bridge.quota_episode())
         (health_dir / 'health.json').write_text(json.dumps(
             {'sessions': [{'template': 'yardmaster', 'status': 'quota_wait'}]}))
-        self.assertIsNone(self.bridge.mayor_quota_episode())
+        self.assertIsNone(self.bridge.quota_episode())
 
     def test_format_quota_exhausted_reply_converts_to_local_time(self):
         reply = self.bridge.format_quota_exhausted_reply(1789470000000)

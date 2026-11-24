@@ -150,12 +150,12 @@ def _capture_errors_and_edge_cases(found):
     case = NativeSwitchTests(methodName='test_missing_and_stale_telemetry_sanitized_and_payload_limits')
     try:
         case.setUp()
-        config = copy.deepcopy(case.config['yardr_mayor_model'])
+        config = copy.deepcopy(case.config['yardr_switch_model'])
         config['picks'][1]['id'] = 'x' * 32
         config['picks'][1]['label'] = '<Ops & Prod> 32-char label-pad!!'[:32]
         config['picks'][1]['model'] = 'claude-opus-4-synthetic-long-model-name'
         config['picks'][1]['env_file'] = '/synthetic/private/crew-secret.env'
-        case.bridge = case.reopen(yardr_mayor_model=config)
+        case.bridge = case.reopen(yardr_switch_model=config)
         selector = case.selector()
         case.poll(case.pick(selector, 'x' * 32))
         rendered = copy.deepcopy(case.edit())

@@ -157,7 +157,7 @@ remain stable for existing installations and delivery consumers:
 | `GC_RECEIPT` and its `_print_gc_receipt` helper | Delivery consumers parse this prefix and its complete JSON receipt. `bridge/test_bridge.py`, `test_send_retry.py`, `test_ask_close.py`, `test_pin.py` and `test_text_options.py` exercise actual send/CLI failure paths, including permanent, transient and ambiguous outcomes. |
 | Conversation `scope_id` and `session_id`, `provider_message_id` | Existing delivery keys keep their meaning. `bridge/test_yard_api.py` checks HTTP routes; `test_bridge.py` pins send fingerprints and retries the same inbound provider ID. |
 | Ledger tables/columns, including `accepted`, `accepted_conversations`, `auto_topics.agent`, `auto_topics.bound_at`, `asks.decided` and `asks.conversation_id` | Existing rows retain their values. `TopicLedgerTests.test_an_existing_base_ledger_opens_unchanged` and `AutoTopicLedgerTests` (including reopening a populated binding timestamp) verify additive upgrades, repeated opens and usable asks. Stored crew names are preserved. |
-| `mayor_quota_episode`, internal `agent` and `city_commands` names | Existing method/config names remain intact. The quota cases in `bridge/test_bridge.py`, settings config assertions and command tests exercise them using yard health reports and configured handlers. |
+| `quota_episode`, internal `agent` and `city_commands` names | Existing config/method names remain intact. The quota cases in `bridge/test_bridge.py`, settings config assertions and command tests exercise them using yard health reports and configured handlers. |
 | `imd` source alias | `yardr/tgbridge.yaml` keeps its existing loopback host. `RenderedPackTests` verifies rendered bytes; the isolated real-store source-upgrade case in `bridge/test_run_asks.py` checks apply/reapply, selected alias, credentials and grants. `InstanceTests` checks independent install/upgrade/rollback. |
 
 Python garbage-collector calls in
@@ -255,7 +255,7 @@ normal use through the declared source requires its application first.
 | Source add | Native new/free/orphan creation PASS; replacement missing grants disclosure REFUSED before send/write [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; explicit replacement-grants disclosure required |
 | Embedded/directory source-pack run cards | Native fresh/orphan cases PASS; replacements missing grants disclosure REFUSED [C] | Native case not supported: formats prerequisite refused before body | Same `run_ask`; complete native carried review; no invented directory snapshot |
 | [Complete depot directory-pack review](../bridge/OPERATIONS.md#depot-pack-bundles) | Native bounded first/reapply/object plans PASS; missing replacement grants REFUSED [H] | Not tested for this depot slice | Same `run_ask`; explicit operator activation watermark; aligned `aadbbd841b1c` and pinned public `52e22d57` fixtures |
-| `/quota`, `/switch_model` (`/mayor_model` migration alias) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1` (`crew switch capabilities --json`), not present on `52e22d57` (refuses before mutation) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1`, not present on `v0.17.0` | `/switch_model` verified on landed core `bd7f54b4` (`NativeSwitchTests` [F], `crew_handoff_switch v1`); local core is not a public release; resolve/supersede pending switches before core downgrade |
+| `/quota`, `/switch_model` | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1` (`crew switch capabilities --json`), not present on `52e22d57` (refuses before mutation) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1`, not present on `v0.17.0` | `/switch_model` verified on landed core `bd7f54b4` (`NativeSwitchTests` [F], `crew_handoff_switch v1`); local core is not a public release; resolve/supersede pending switches before core downgrade |
 | skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only: direct `skill add` (operator, users, crew; no card/grant) |
 | [Skill removal and assignment cards](../bridge/OPERATIONS.md#native-skill-administration-cards) | Unavailable: no `SkillDigest`, filing refused; test skips classified [I] | Unavailable [I] | Fork-only skill cores `5dedfc56`, `9677728c`, `29fcd40d` (not installed); same `run_ask`; operator Approve+Confirm |
 | [Repository edit proposals (`depot edit`)](../bridge/OPERATIONS.md#native-repository-edit-proposals) | Unavailable: no `RepoEditCapabilities`; card refuses cleanly, `/decide` lists terminal-only; existing cards unaffected; test skips classified [L] | Unavailable [L] | Fork-only core contract (`RepoEditCapabilities`, `depot edit`, `NativeEditStatus`): v1 capture-only tested on `e50e27b0`, v2 materialization + `merge-local` landing verified on isolated candidate `d5296bea` (not installed or live); same `run_ask`; operator Approve+Confirm |
@@ -377,14 +377,14 @@ status-only. Stale proposals, ambiguous writes and pruned outcomes require
 canonical reconciliation; another key is not a retry workaround.
 
 Reserved callback prefixes are `ask:`, `runask:`, `askcard:`, `siding:`, with
-native keys `decide:` plus the `/decide` command/menu, and with `[yardr.mayor_model]`
-`mayor-model:` plus both `/switch_model` and `/mayor_model` commands/menus.
+native keys `decide:` plus the `/decide` command/menu, and with `[yardr.switch_model]`
+`switch-model:` plus the `/switch_model` command/menu.
 Overlapping shorter or longer handler prefixes also conflict. Rename conflicting custom
 handlers and their generated callbacks before upgrading; old posted handler
 buttons need operator reconciliation. This is a tested fail-before-write
 configuration diagnostic, not an assertion of universal drop-in compatibility.
 Similarly, resolve or explicitly supersede pending native `/switch_model` operations
-before rolling back or downgrading the core; `mayor_model_taps` keeps its five-column
+before rolling back or downgrading the core; `switch_model_taps` keeps its five-column
 layout and SQLite state is preserved across bridge rollbacks.
 
 ## Committed-tree scan and export

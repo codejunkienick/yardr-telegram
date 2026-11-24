@@ -61,6 +61,7 @@ LATER = {
     'nudge_cards': ('id', 'data'),
     'typed_nudges': ('token', 'value'),
     'mayor_model_taps': ('update_id', 'pick', 'crew', 'state', 'at'),
+    'switch_model_taps': ('update_id', 'pick', 'crew', 'state', 'at'),
     'model_selectors': ('token', 'update_id', 'value'),
     'model_operations': ('token', 'owner', 'active', 'value'),
     'model_actions': ('update_id', 'token', 'value'),

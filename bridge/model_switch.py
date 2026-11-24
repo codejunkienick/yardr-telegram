@@ -25,15 +25,15 @@ import yard_commands as y
 WAIT_SECONDS = 600
 REFRESH_SECONDS = 3
 TOKEN = r'[A-Za-z0-9_-]{16}'
-PICK = re.compile(r'mayor-model:s:(' + TOKEN + r'):([a-z0-9][a-z0-9_-]{0,31})')
-FORCE = re.compile(r'mayor-model:f:(' + TOKEN + r'):([1-9][0-9]{0,8})')
+PICK = re.compile(r'switch-model:s:(' + TOKEN + r'):([a-z0-9][a-z0-9_-]{0,31})')
+FORCE = re.compile(r'switch-model:f:(' + TOKEN + r'):([1-9][0-9]{0,8})')
 STATES = {'waiting', 'timed_out', 'handoff_written', 'restart_requested', 'restarting',
           'running', 'superseded', 'stopped'}
 TERMINAL = {'running', 'superseded', 'stopped'}
 NOT_FOUND = {'error': 'crew switch request: not found'}
 
 
-class UnmatchedReceipt(y.MayorUnavailable):
+class UnmatchedReceipt(y.SwitchUnavailable):
     pass
 
 
@@ -42,7 +42,6 @@ def canonical(value):
 
 
 def initialize(db):
-    # mayor_model_taps stays five columns for positional INSERTs in the previous release.
     db.execute('CREATE TABLE IF NOT EXISTS model_selectors (token TEXT PRIMARY KEY, update_id INTEGER UNIQUE, value TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS model_operations (token TEXT PRIMARY KEY, owner TEXT NOT NULL, active INTEGER NOT NULL, value TEXT NOT NULL)')
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS model_operation_owner ON model_operations(owner) WHERE active=1')
@@ -55,14 +54,14 @@ def now():
 
 def timestamp(value):
     if not isinstance(value, str) or len(value) > 40:
-        raise y.MayorUnavailable('invalid native switch timestamp')
+        raise y.SwitchUnavailable('invalid native switch timestamp')
     try:
         result = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
         if result.tzinfo is None or result.year < 2000:
             raise ValueError()
         return result
     except ValueError:
-        raise y.MayorUnavailable('invalid native switch timestamp') from None
+        raise y.SwitchUnavailable('invalid native switch timestamp') from None
 
 
 def binding(config, conversation):
@@ -73,7 +72,7 @@ def binding(config, conversation):
 
 
 def snapshot(config):
-    return json.loads(canonical(config['yardr_mayor_model']))
+    return json.loads(canonical(config['yardr_switch_model']))
 
 
 def definition_of(crew, target):
@@ -207,35 +206,35 @@ def native_error(out):
 def read_json(config, args, deadline, log):
     status, out, problem = y._run_logged(config, y._crew_argv(config, *args), deadline, 'switch read', log)
     if problem or status != 0:
-        raise y.MayorUnavailable('native switch unavailable')
+        raise y.SwitchUnavailable('native switch unavailable')
     try:
         return y._strict_json(out)
     except y.Unreadable:
-        raise y.MayorUnavailable('invalid native switch response') from None
+        raise y.SwitchUnavailable('invalid native switch response') from None
 
 
 def capability(config, deadline, log):
     try:
         value = read_json(config, ['crew', 'switch', 'capabilities', '--json'], deadline, log)
-    except y.MayorUnavailable:
-        raise y.MayorUnavailable('switch_model requires crew_handoff_switch v1; capability unavailable') from None
+    except y.SwitchUnavailable:
+        raise y.SwitchUnavailable('switch_model requires crew_handoff_switch v1; capability unavailable') from None
     if not isinstance(value, dict) or set(value) != {'crew_handoff_switch'} or type(value.get('crew_handoff_switch')) is not int or value['crew_handoff_switch'] != 1:
-        raise y.MayorUnavailable('switch_model requires crew_handoff_switch v1')
+        raise y.SwitchUnavailable('switch_model requires crew_handoff_switch v1')
 
 
 def read_current(config, deadline, log):
-    value = read_json(config, ['crew', 'show', config['yardr_mayor_model']['crew'], '--json'], deadline, log)
+    value = read_json(config, ['crew', 'show', config['yardr_switch_model']['crew'], '--json'], deadline, log)
     # Reuse the established strict config reader, then retain only known structured telemetry.
     parsed = y.parse_crew(json.dumps(value).encode())
     crew = value['crew']
-    if (crew.get('name') != config['yardr_mayor_model']['crew'] or not isinstance(crew.get('session_generation'), str)
+    if (crew.get('name') != config['yardr_switch_model']['crew'] or not isinstance(crew.get('session_generation'), str)
             or crew['session_generation'] and not y.REVISION_RE.fullmatch(crew['session_generation'])):
-        raise y.MayorUnavailable('invalid native crew generation')
+        raise y.SwitchUnavailable('invalid native crew generation')
     if crew.get('state') not in {'running', 'stopped', 'failed'} or crew.get('status', '') not in {'', 'working', 'idle', 'blocked', 'unknown'}:
-        raise y.MayorUnavailable('invalid native crew status')
+        raise y.SwitchUnavailable('invalid native crew status')
     for key in ('context_pct', 'context_window', 'failures'):
         if key in crew and (type(crew[key]) is not int or crew[key] < 0):
-            raise y.MayorUnavailable('invalid native crew telemetry')
+            raise y.SwitchUnavailable('invalid native crew telemetry')
     if crew.get('context_at'):
         timestamp(crew['context_at'])
     if 'switch' in crew and crew['switch'] is not None:
@@ -244,10 +243,10 @@ def read_current(config, deadline, log):
     if launch is not None and (type(launch) is not dict or set(launch) != {'kind', 'model', 'fingerprint'}
             or any(type(value) is not str for value in launch.values())
             or not re.fullmatch('[0-9a-f]{64}', launch['fingerprint'])):
-        raise y.MayorUnavailable('invalid native actual launch')
+        raise y.SwitchUnavailable('invalid native actual launch')
     for key in ('login_screen', 'enabled'):
         if key in crew and type(crew[key]) is not bool:
-            raise y.MayorUnavailable('invalid native crew status')
+            raise y.SwitchUnavailable('invalid native crew status')
     return crew, parsed
 
 
@@ -261,70 +260,70 @@ def validate_operation(op):
     if (type(op) is not dict or not required.keys() <= op.keys() or op.keys() - (required.keys() | optional.keys())
             or any(type(op[key]) is not kind for key, kind in required.items())
             or any(type(op[key]) is not kind for key, kind in optional.items() if key in op)):
-        raise y.MayorUnavailable('invalid native switch status')
+        raise y.SwitchUnavailable('invalid native switch status')
     if op['state'] not in STATES or op['mode'] not in {'handoff', 'force'}:
-        raise y.MayorUnavailable('invalid native switch status')
+        raise y.SwitchUnavailable('invalid native switch status')
     if op['unresolved'] == (op['state'] in TERMINAL):
-        raise y.MayorUnavailable('invalid native switch status')
+        raise y.SwitchUnavailable('invalid native switch status')
     for key in ('id', 'generation', 'crew', 'actor', 'previous_generation'):
         if not op[key] or len(op[key]) > 128:
-            raise y.MayorUnavailable('invalid native switch identity')
+            raise y.SwitchUnavailable('invalid native switch identity')
     target = op.get('target')
     if set(target) != {'kind', 'model', 'fingerprint'} or any(
             type(v) is not str for v in target.values()) or not re.fullmatch('[0-9a-f]{64}', target['fingerprint']):
-        raise y.MayorUnavailable('invalid native switch target')
+        raise y.SwitchUnavailable('invalid native switch target')
     accepted, deadline = timestamp(op.get('accepted_at')), timestamp(op.get('deadline'))
     if (deadline - accepted).total_seconds() != WAIT_SECONDS:
-        raise y.MayorUnavailable('invalid native switch deadline')
+        raise y.SwitchUnavailable('invalid native switch deadline')
     for key in ('nudged_at', 'timed_out_at', 'handoff_written_at', 'restarting_at', 'running_at'):
         if key in op:
             timestamp(op[key])
     if 'handoff_note' in op and not 0 <= op['handoff_note'] <= 2**64 - 1:
-        raise y.MayorUnavailable('invalid native handoff evidence')
+        raise y.SwitchUnavailable('invalid native handoff evidence')
     if op.get('handoff_written_at') and (type(op.get('handoff_note')) is not int or op['handoff_note'] <= 0):
-        raise y.MayorUnavailable('invalid native handoff evidence')
+        raise y.SwitchUnavailable('invalid native handoff evidence')
     if (op['state'] == 'timed_out' and not op.get('timed_out_at')
             or op['state'] == 'handoff_written' and not op.get('handoff_written_at')
             or op['state'] == 'restarting' and not op.get('restarting_at')
             or op['state'] == 'restart_requested' and op['mode'] != 'force'):
-        raise y.MayorUnavailable('invalid native switch evidence')
+        raise y.SwitchUnavailable('invalid native switch evidence')
     if op['state'] == 'running' and (not op.get('running_at') or not op.get('new_generation')
                                       or op['new_generation'] == op['previous_generation']):
-        raise y.MayorUnavailable('invalid native running proof')
+        raise y.SwitchUnavailable('invalid native running proof')
 
 
 def receipt(value, row, request_id=None, *, admission=False):
     """Reject an unrelated/colliding receipt before giving it any lifecycle authority."""
     if (type(value) is not dict or set(value) != {'request_id', 'existing', 'operation'}
             or type(value['request_id']) is not str or type(value['existing']) is not bool):
-        raise y.MayorUnavailable('invalid native switch receipt')
+        raise y.SwitchUnavailable('invalid native switch receipt')
     if value['request_id'] != (request_id or row['request']['request_id']):
-        raise y.MayorUnavailable('conflicting native switch receipt')
+        raise y.SwitchUnavailable('conflicting native switch receipt')
     op = value['operation']
     validate_operation(op)
     if (op['crew'] != row['crew'] or op['actor'] != row['binding']['operator']
             or op['previous_generation'] != row['request']['session_generation']
             or any(op['target'][key] != row['request']['target'][key] for key in ('kind', 'model'))):
-        raise y.MayorUnavailable('conflicting native switch operation')
+        raise y.SwitchUnavailable('conflicting native switch operation')
     if row.get('receipt') and row.get('admission_confirmed') is True:
         original = row['receipt']['operation']
         if any(op[key] != original[key] for key in ('id', 'generation', 'target', 'accepted_at', 'deadline')):
-            raise y.MayorUnavailable('conflicting native switch operation')
+            raise y.SwitchUnavailable('conflicting native switch operation')
     else:
         # V1 lookups expose launch identity, not the complete admitted request.
         if not admission:
             raise UnmatchedReceipt('Native request could not be matched; operator reconciliation required. Nothing retried.')
         if not value['existing'] and op['id'] != row['request']['request_id']:
-            raise y.MayorUnavailable('conflicting native switch operation')
+            raise y.SwitchUnavailable('conflicting native switch operation')
     previous = row.get('observed')
     if previous:
         for key in ('nudged_at', 'timed_out_at', 'handoff_written_at', 'handoff_note', 'restarting_at', 'running_at', 'new_generation', 'reason'):
             if previous.get(key) is not None and op.get(key) != previous[key]:
-                raise y.MayorUnavailable('stale native switch observation')
+                raise y.SwitchUnavailable('stale native switch observation')
         if (previous['state'] in TERMINAL and op['state'] != previous['state']
                 or previous['mode'] == 'force' and op['mode'] != 'force'
                 or previous.get('previous_ended_without_handoff') and not op.get('previous_ended_without_handoff')):
-            raise y.MayorUnavailable('stale native switch observation')
+            raise y.SwitchUnavailable('stale native switch observation')
     return value
 
 
@@ -342,24 +341,24 @@ def current_lines(crew, parsed):
     else:
         if not isinstance(launch, dict) or set(launch) != {'kind', 'model', 'fingerprint'} or any(
                 not isinstance(v, str) for v in launch.values()):
-            raise y.MayorUnavailable('invalid native actual launch')
+            raise y.SwitchUnavailable('invalid native actual launch')
         assignment = 'Current: ' + y.clean(launch['kind'], 32) + ' · ' + y.clean(launch['model'], 128)
     return [assignment, 'Session: ' + (parsed['status'] or 'unknown')]
 
 
 def dry_run(config, pick_id, log):
-    mayor = config['yardr_mayor_model']
-    pick = next((item for item in mayor['picks'] if item['id'] == pick_id), None)
+    switch = config['yardr_switch_model']
+    pick = next((item for item in switch['picks'] if item['id'] == pick_id), None)
     if pick is None:
-        raise y.MayorUnavailable('unknown pick in [yardr.mayor_model]')
-    deadline = time.monotonic() + mayor['timeout']
+        raise y.SwitchUnavailable('unknown pick in [yardr.switch_model]')
+    deadline = time.monotonic() + switch['timeout']
     capability(config, deadline, log)
     crew, parsed = read_current(config, deadline, log)
     lines = current_lines(crew, parsed)
     active = crew.get('switch')
     if active is not None:
         if not isinstance(active, dict) or type(active.get('unresolved')) is not bool:
-            raise y.MayorUnavailable('invalid native switch status')
+            raise y.SwitchUnavailable('invalid native switch status')
         if active['unresolved']:
             same = y.has_pick(pick, parsed)
             return '\n'.join(lines + ["A switch is already pending: " + (
@@ -427,7 +426,7 @@ class ModelSwitch:
 
     def owner(self):
         # Native ownership identifies saved launch proof; pending ownership spans the ledger.
-        return canonical([os.path.realpath(self.config['yardr_home']), self.config['yardr_mayor_model']['crew']])
+        return canonical([os.path.realpath(self.config['yardr_home']), self.config['yardr_switch_model']['crew']])
 
     def verify(self):
         n.verify_operator(self.bridge.yard_client(), self.config)
@@ -454,11 +453,8 @@ class ModelSwitch:
         try:
             if query is not None:
                 return self.callback(uid, payload, query, thread)
-            if payload['command'] == 'mayor_model':
-                return self.bridge._command_message(f'command:{uid}:0', dict(
-                    type='send', text='Use /switch_model to switch models.', plain=None), thread)
             return self.selector(uid, thread)
-        except (y.MayorUnavailable, n.NativeError):
+        except (y.SwitchUnavailable, n.NativeError):
             if query is not None:
                 self.answer(uid, query, 'Switch unavailable; nothing retried.', True)
             else:
@@ -472,12 +468,12 @@ class ModelSwitch:
     def selector(self, uid, thread):
         conversation = self.bridge.decide_conversation(thread)
         if conversation is None:
-            raise y.MayorUnavailable('conversation not served')
+            raise y.SwitchUnavailable('conversation not served')
         current_binding = binding(self.config, conversation['conversation_id'])
         for op in self.active():
             return self.bridge._command_message(f'command:{uid}:0', dict(type='send', plain=None,
                 text=f'A switch is already pending. See its original card (message {op["message"]}).'), thread)
-        deadline = time.monotonic() + self.config['yardr_mayor_model']['timeout']
+        deadline = time.monotonic() + self.config['yardr_switch_model']['timeout']
         capability(self.config, deadline, self.bridge._log)
         crew, parsed = read_current(self.config, deadline, self.bridge._log)
         row = self.load('model_selectors', 'update_id', uid)
@@ -489,10 +485,10 @@ class ModelSwitch:
                 db.execute('INSERT OR IGNORE INTO model_selectors VALUES (?, ?, ?)', (row['token'], uid, canonical(row)))
             row = self.load('model_selectors', 'update_id', uid)
         if row['binding'] != current_binding or row['snapshot'] != snapshot(self.config):
-            raise y.MayorUnavailable('selector out of date')
+            raise y.SwitchUnavailable('selector out of date')
         if row.get('notice'):
             return self.display_selector(row)
-        keyboard = [[dict(text=pick['label'], callback_data=f'mayor-model:s:{row["token"]}:{pick["id"]}')]
+        keyboard = [[dict(text=pick['label'], callback_data=f'switch-model:s:{row["token"]}:{pick["id"]}')]
                     for pick in row['snapshot']['picks']]
         keyboard = self.bridge._command_keyboard(keyboard)
         action = dict(type='send', format='html', text='<pre>' + escape('\n'.join(row['current'])) + '</pre>',
@@ -525,7 +521,7 @@ class ModelSwitch:
         pick = next((p for p in row['snapshot']['picks'] if p['id'] == select[2]), None)
         if pick is None:
             return self.answer(uid, query, 'That model button is out of date.', True)
-        previous = self.bridge.store.mayor_tap(uid)
+        previous = self.bridge.store.switch_tap(uid)
         if previous:
             action = self.load('model_actions', 'update_id', uid)
             if action and action['kind'] == 'noop':
@@ -542,7 +538,7 @@ class ModelSwitch:
             return self.answer(uid, query, 'That model button is out of date.', True)
         for active in self.active():
             return self.reserve_existing(uid, query, active, pick)
-        deadline = time.monotonic() + self.config['yardr_mayor_model']['timeout']
+        deadline = time.monotonic() + self.config['yardr_switch_model']['timeout']
         capability(self.config, deadline, self.bridge._log)
         crew, parsed = read_current(self.config, deadline, self.bridge._log)
         # An external unresolved native switch also takes precedence over desired equality.
@@ -555,10 +551,10 @@ class ModelSwitch:
             notice = 'Already running ' + y.clean(pick['label'], 64) + '; nothing to switch.'
             with self.bridge.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                tap = db.execute('SELECT 1 FROM mayor_model_taps WHERE update_id=?', (uid,)).fetchone()
+                tap = db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone()
                 existing = db.execute('SELECT value FROM model_operations WHERE active=1 LIMIT 1').fetchone()
                 if not tap and not existing:
-                    db.execute("INSERT INTO mayor_model_taps VALUES (?, ?, ?, 'done', ?)",
+                    db.execute("INSERT INTO switch_model_taps VALUES (?, ?, ?, 'done', ?)",
                                (uid, pick['id'], row['snapshot']['crew'], now().isoformat()))
                     db.execute('INSERT INTO model_actions VALUES (?, ?, ?)',
                                (uid, row['token'], canonical(dict(token=row['token'], kind='noop', notice=notice))))
@@ -570,7 +566,7 @@ class ModelSwitch:
             self.display_selector(row)
             return result
         if not crew['session_generation']:
-            raise y.MayorUnavailable('no current native session')
+            raise y.SwitchUnavailable('no current native session')
         op_token = secrets.token_urlsafe(12)
         request = dict(request_id='tg-switch-' + secrets.token_hex(24), crew=row['snapshot']['crew'],
                        revision=parsed['revision'], session_generation=crew['session_generation'],
@@ -588,14 +584,14 @@ class ModelSwitch:
                          force_action=None, display_failure=None)
         self.verify()
         if not self.bound(row):
-            raise y.MayorUnavailable('model selector binding changed')
+            raise y.SwitchUnavailable('model selector binding changed')
         existing, duplicate = None, False
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            tap = db.execute('SELECT 1 FROM mayor_model_taps WHERE update_id=?', (uid,)).fetchone()
+            tap = db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone()
             existing = db.execute('SELECT value FROM model_operations WHERE active=1 LIMIT 1').fetchone()
             if not tap and not existing:
-                db.execute("INSERT INTO mayor_model_taps VALUES (?, ?, ?, 'reserved', ?)", (uid, pick['id'], operation['crew'], now().isoformat()))
+                db.execute("INSERT INTO switch_model_taps VALUES (?, ?, ?, 'reserved', ?)", (uid, pick['id'], operation['crew'], now().isoformat()))
                 db.execute('INSERT INTO model_operations VALUES (?, ?, 1, ?)', (op_token, self.owner(), canonical(operation)))
                 db.execute('INSERT INTO model_actions VALUES (?, ?, ?)', (uid, op_token, canonical(dict(token=op_token, kind='admit'))))
             elif tap:
@@ -609,10 +605,10 @@ class ModelSwitch:
         status, out, problem = y._run_logged(self.config, admission_argv(self.config, operation), deadline, 'handoff admission', self.bridge._log)
         try:
             if status != 0 or problem:
-                raise y.MayorUnavailable('native admission not confirmed')
+                raise y.SwitchUnavailable('native admission not confirmed')
             self.observe(operation, y._strict_json(out), admission=True)
-            self.bridge.store.record_mayor_tap(uid, 'done')
-        except (y.MayorUnavailable, y.Unreadable):
+            self.bridge.store.record_switch_tap(uid, 'done')
+        except (y.SwitchUnavailable, y.Unreadable):
             error = native_error(out) if problem is None and status is not None and status != 0 else None
             if error:
                 for path in (parsed['env_file'], pick['env_file']):
@@ -620,17 +616,17 @@ class ModelSwitch:
                         error = error.replace(path, '[env_file]')
                 error = y.clean(error, 320)
                 operation['admission_error'] = error
-                self.bridge._log('command mayor_model yardr handoff admission error: ' + error)
+                self.bridge._log('command switch_model yardr handoff admission error: ' + error)
             if problem == 'not_started':
                 self.refuse(operation, 'native command did not start.')
             else:
                 operation['problem'] = 'Switch outcome unknown; reconcile the original native request. Nothing retried.'
-                self.bridge.store.record_mayor_tap(uid, 'unknown')
+                self.bridge.store.record_switch_tap(uid, 'unknown')
                 self.save(operation)
             if error:
                 try:
                     self.lookup(operation, deadline)
-                except (y.MayorUnavailable, y.Unreadable, n.NativeError):
+                except (y.SwitchUnavailable, y.Unreadable, n.NativeError):
                     pass
         self.display(operation)
 
@@ -654,7 +650,7 @@ class ModelSwitch:
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('UPDATE model_operations SET active=0, value=? WHERE token=?', (canonical(row), row['token']))
-            db.execute("UPDATE mayor_model_taps SET state='refused' WHERE update_id=?", (row['update_id'],))
+            db.execute("UPDATE switch_model_taps SET state='refused' WHERE update_id=?", (row['update_id'],))
             self.retire_selectors(db, row)
 
     def retire_selectors(self, db, row):
@@ -668,8 +664,8 @@ class ModelSwitch:
     def reserve_refusal(self, uid, query, selector, pick, notice='A switch is already pending; use its original operation.'):
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            if not db.execute('SELECT 1 FROM mayor_model_taps WHERE update_id=?', (uid,)).fetchone():
-                db.execute("INSERT INTO mayor_model_taps VALUES (?, ?, ?, 'refused', ?)",
+            if not db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone():
+                db.execute("INSERT INTO switch_model_taps VALUES (?, ?, ?, 'refused', ?)",
                            (uid, pick['id'], selector['snapshot']['crew'], now().isoformat()))
                 db.execute('INSERT INTO model_actions VALUES (?, ?, ?)', (uid, selector['token'],
                            canonical(dict(token=selector['token'], kind='refused', notice=notice))))
@@ -678,16 +674,16 @@ class ModelSwitch:
     def reserve_existing(self, uid, query, row, pick):
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            if not db.execute('SELECT 1 FROM mayor_model_taps WHERE update_id=?', (uid,)).fetchone():
-                same = (self.bound(row) and row['crew'] == self.config['yardr_mayor_model']['crew']
+            if not db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone():
+                same = (self.bound(row) and row['crew'] == self.config['yardr_switch_model']['crew']
                         and canonical(row['pick']) == canonical(pick))
-                db.execute('INSERT INTO mayor_model_taps VALUES (?, ?, ?, ?, ?)',
+                db.execute('INSERT INTO switch_model_taps VALUES (?, ?, ?, ?, ?)',
                            (uid, pick['id'], row['crew'], 'done' if same else 'refused', now().isoformat()))
                 db.execute('INSERT INTO model_actions VALUES (?, ?, ?)', (uid, row['token'], canonical(dict(token=row['token'], kind='existing'))))
         return self.ack_existing(uid, query, row, pick)
 
     def ack_existing(self, uid, query, row, pick):
-        if not self.bound(row) or row['crew'] != self.config['yardr_mayor_model']['crew']:
+        if not self.bound(row) or row['crew'] != self.config['yardr_switch_model']['crew']:
             return self.answer(uid, query, 'A switch is already pending; reconcile its original binding/card.', True)
         if canonical(row['pick']) != canonical(pick):
             return self.answer(uid, query, 'A switch is already pending; a different pick is refused.', True)
@@ -734,17 +730,17 @@ class ModelSwitch:
             if missing and row.get('admission_confirmed') is not True:
                 self.refuse(row, row.get('admission_error') or 'not admitted (native request not found).')
                 return
-            raise y.MayorUnavailable('native switch unavailable')
+            raise y.SwitchUnavailable('native switch unavailable')
         value = y._strict_json(out)
         self.observe(row, value)
 
     def force(self, uid, query, row, generation):
         if generation != row['generation'] or not row['active']:
             return self.answer(uid, query, 'That Force button is out of date.', True)
-        previous = self.bridge.store.mayor_tap(uid)
+        previous = self.bridge.store.switch_tap(uid)
         if previous or row['force_action']:
             return self.answer(uid, query, 'Force already recorded; nothing retried.')
-        deadline = time.monotonic() + self.config['yardr_mayor_model']['timeout']
+        deadline = time.monotonic() + self.config['yardr_switch_model']['timeout']
         capability(self.config, deadline, self.bridge._log)
         self.lookup(row, deadline)
         op = row['observed']
@@ -755,18 +751,18 @@ class ModelSwitch:
                       operation_id=op['id'], generation=op['generation'])
         self.verify()
         if not self.bound(row):
-            raise y.MayorUnavailable('model operation binding changed')
+            raise y.SwitchUnavailable('model operation binding changed')
         duplicate = False
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             latest = json.loads(db.execute('SELECT value FROM model_operations WHERE token=?', (row['token'],)).fetchone()[0])
             if (latest['generation'] != generation or latest['force_action'] or not latest['active']
-                    or db.execute('SELECT 1 FROM mayor_model_taps WHERE update_id=?', (uid,)).fetchone()):
+                    or db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone()):
                 duplicate = True
             else:
                 row = latest
                 row['force_action'] = action
-                db.execute("INSERT INTO mayor_model_taps VALUES (?, ?, ?, 'reserved', ?)", (uid, row['pick']['id'], row['crew'], now().isoformat()))
+                db.execute("INSERT INTO switch_model_taps VALUES (?, ?, ?, 'reserved', ?)", (uid, row['pick']['id'], row['crew'], now().isoformat()))
                 db.execute('INSERT INTO model_actions VALUES (?, ?, ?)', (uid, row['token'], canonical(action)))
                 db.execute('UPDATE model_operations SET value=? WHERE token=?', (canonical(row), row['token']))
         if duplicate:
@@ -779,15 +775,15 @@ class ModelSwitch:
         status, out, problem = y._run_logged(self.config, argv, deadline, 'guarded force', self.bridge._log)
         try:
             if status != 0 or problem:
-                raise y.MayorUnavailable('native force not confirmed')
+                raise y.SwitchUnavailable('native force not confirmed')
             value = receipt(y._strict_json(out), row, action['action_id'])
             # Force receipt's request_id is its action ID; observation retains original admission ID.
             value = dict(value, request_id=row['request']['request_id'])
             self.observe(row, value)
-            self.bridge.store.record_mayor_tap(uid, 'done')
-        except (y.MayorUnavailable, y.Unreadable):
+            self.bridge.store.record_switch_tap(uid, 'done')
+        except (y.SwitchUnavailable, y.Unreadable):
             row['problem'] = 'Force outcome unknown; original operation remains observable. Nothing retried.'
-            self.bridge.store.record_mayor_tap(uid, 'unknown')
+            self.bridge.store.record_switch_tap(uid, 'unknown')
             self.save(row)
         self.display(row)
 
@@ -852,10 +848,10 @@ class ModelSwitch:
             lines.append('Context unavailable.')
         keyboard = []
         if op and row['active'] and not row.get('problem') and not row['force_action'] and op['mode'] != 'force' and self.bound(row):
-            keyboard = [[dict(text='Force apply', callback_data=f'mayor-model:f:{row["token"]}:{row["generation"]}')]]
+            keyboard = [[dict(text='Force apply', callback_data=f'switch-model:f:{row["token"]}:{row["generation"]}')]]
         text = '<pre>' + escape('\n'.join(lines)) + '</pre>'
         if n.units(text) > 4096:
-            raise y.MayorUnavailable('model card exceeds message limit')
+            raise y.SwitchUnavailable('model card exceeds message limit')
         if keyboard:
             keyboard = self.bridge._command_keyboard(keyboard)
         return dict(text=text, plain='\n'.join(lines), keyboard=keyboard)
@@ -890,13 +886,13 @@ class ModelSwitch:
             b._log('command switch_model: local display failure; native progress remains observable')
 
     def refresh(self):
-        if not self.config.get('yardr_mayor_model'):
+        if not self.config.get('yardr_switch_model'):
             return
         with self.locked():
             self._refresh()
 
     def _refresh(self):
-        if not self.config.get('yardr_mayor_model'):
+        if not self.config.get('yardr_switch_model'):
             return
         deadline = time.monotonic() + REFRESH_SECONDS
         with self.bridge.store.connect() as db:
@@ -916,12 +912,12 @@ class ModelSwitch:
                     self.recovered.add(row['token'])
                     row['lookup_next'] = False
                 else:
-                    observed_config = dict(self.config, yardr_mayor_model=dict(self.config['yardr_mayor_model'], crew=row['crew']))
+                    observed_config = dict(self.config, yardr_switch_model=dict(self.config['yardr_switch_model'], crew=row['crew']))
                     crew, parsed = read_current(observed_config, deadline, self.bridge._log)
                     op = crew.get('switch')
                     if not isinstance(op, dict) or op.get('id') != row['receipt']['operation']['id']:
                         row['lookup_next'] = True
-                        raise y.MayorUnavailable('native operation unavailable or superseded')
+                        raise y.SwitchUnavailable('native operation unavailable or superseded')
                     current = current_lines(crew, parsed)[0] if op['state'] in {'superseded', 'stopped'} else None
                     self.observe(row, dict(request_id=row['request']['request_id'], existing=row['receipt']['existing'], operation=op))
                     if current is not None:
@@ -930,7 +926,7 @@ class ModelSwitch:
             except UnmatchedReceipt as exc:
                 row['receipt'], row['observed'], row['target'] = None, None, None
                 row['problem'] = str(exc)
-            except (y.MayorUnavailable, y.Unreadable, n.NativeError):
+            except (y.SwitchUnavailable, y.Unreadable, n.NativeError):
                 row['problem'] = 'Native observation unavailable/stale; nothing retried. Reconcile original request if unknown.'
             self.save(row)
             self.display(row)

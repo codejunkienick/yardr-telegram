@@ -16,7 +16,7 @@ and [v0.17.0](https://github.com/yardr-dev/yardr/releases/tag/v0.17.0)
 (`b8595f6f5c873513e67cb15cc734984b075712d8`). Basic rendered-pack,
 hook/store/reply/Markdown/full-history adoption passes on that main revision;
 v0.17.0 refuses the full declaration on `thread.formats`. Standalone native
-`/quota`, `/mayor_model` and siding pass on both; this does not prove release
+`/quota`, `/switch_model` and siding pass on both; this does not prove release
 pack adoption. The frozen public-main suite has one fork-only skill-add
 failure, so it is not all-green and proves no public mayor/skills installation.
 See [the per-capability results and test names](../public-readiness.md#capabilities-and-grants).

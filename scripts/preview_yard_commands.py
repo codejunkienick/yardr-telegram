@@ -24,7 +24,7 @@ def show(title, lines):
     print()
 
 
-def mayor_previews(root):
+def switch_previews(root):
     from html import unescape
     from preview_model_switch import cards
     for title, body in cards():
@@ -65,7 +65,7 @@ def main():
         except b.SettingsError as error:
             print('settings refusal: ' + str(error))
         print()
-        mayor_previews(root)
+        switch_previews(root)
 
 
 if __name__ == '__main__':

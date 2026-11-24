@@ -6,6 +6,15 @@ sees and does, not how the code is organised.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `[yardr.mayor_model]` is now `[yardr.switch_model]` (with
+  `[[yardr.switch_model.picks]]`), callbacks are `switch-model:`, and
+  `/mayor_model` and `telegram-bridge mayor-model` are gone. Buttons on
+  cards sent before the upgrade no longer answer; send `/switch_model` again.
+  Rename the table and picks in the same edit as the install, keep the
+  pre-edit settings file, and restore it before `install.sh --rollback`.
+
 ### Fixed
 
 - Existing custom `/nudge` commands, menu entries and callback prefixes

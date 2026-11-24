@@ -852,22 +852,21 @@ gives the yard's aiquokka source a copy whose limits command ends in
 `timeout`; its answer goes out once per update through the delivery
 ledger.
 
-<a id="mayor_model"></a>
+<a id="switch_model"></a>
 
 ### /switch_model
 
 `/switch_model` shows a crew member's running model and lets the paired user,
 as the yard's operator, switch it through a durable native handoff with one
-updating card. It retains the `[yardr.mayor_model]` table, the same picks and
-the `mayor-model:` callback prefix (`docs/design/switch-model.md`). `/mayor_model`
-is absent from the Telegram menu and replies `Use /switch_model to switch models.`
+updating card. It uses the `[yardr.switch_model]` table, its picks and
+the `switch-model:` callback prefix (`docs/design/switch-model.md`).
 
 ```toml
-[yardr.mayor_model]
+[yardr.switch_model]
 crew = "yardmaster"   # the crew member a tap switches, [A-Za-z0-9][A-Za-z0-9_-]{0,31}
 timeout = 60          # bounded CLI I/O deadline in seconds (10-120), NOT the 600s handoff wait
 
-[[yardr.mayor_model.picks]]
+[[yardr.switch_model.picks]]
 id = "sol"            # [a-z0-9][a-z0-9_-]{0,31}, distinct; selector/force payloads stay <=64 UTF-8 bytes
 label = "GPT-6.1 Sol high"   # the button, 1-32 printable characters
 kind = "codex"        # the yardr harness kind
@@ -912,10 +911,10 @@ bot, account, yard, source, `realpath(home)`, operator, paired user/chat,
 conversation, message, crew and canonical config snapshot). Text after
 `/switch_model` is ignored.
 
-On a pick tap (`mayor-model:s:<token>:<pick>`):
+On a pick tap (`switch-model:s:<token>:<pick>`):
 
-1. Stale selectors (legacy bare `mayor-model:<pick>`, unknown tokens, retired
-   selectors, changed picks/crew/config or mismatched bindings) answer
+1. Stale selectors (unknown tokens, retired selectors, changed
+   picks/crew/config or mismatched bindings) answer
    `That model button is out of date.` and reserve nothing.
 2. Private allowlist/bot/user/conversation and current native operator mapping
    (`GetUser`) are verified before reservation and rechecked right before
@@ -928,7 +927,7 @@ On a pick tap (`mayor-model:s:<token>:<pick>`):
    confirmed target and the preserved non-target crew definition matches, the
    tap answers `Already running this exact pick.` with no write (desired config
    equality alone does not skip admission while an older session still runs).
-5. The bridge durably reserves `mayor_model_taps` (keeping its 5-column schema),
+5. The bridge durably reserves `switch_model_taps`,
    `model_operations` (with 192-bit `tg-switch-...` `request_id` and original
    binding/fingerprint) and `model_actions`, answers the callback, and runs the
    single atomic `crew set ... --handoff --wait-seconds 600 --json` admission.
@@ -958,7 +957,7 @@ While unresolved, `model_switch.refresh()` polls after `drain()` within a shared
   and `Force apply` stays available. A legitimate late handoff or natural exit
   (`previous_ended_without_handoff`) can still launch the saved target and
   settle `running` without fabricating a handoff.
-- **Force apply:** Tapping `Force apply` (`mayor-model:f:<token>:<gen>`)
+- **Force apply:** Tapping `Force apply` (`switch-model:f:<token>:<gen>`)
   re-verifies operator/binding and current native operation, reserves a 192-bit
   `tg-force-...` action, answers the callback, immediately edits the card to
   `Force apply accepted, please wait. Ordinary restart waits for idle when
@@ -977,18 +976,18 @@ While unresolved, `model_switch.refresh()` polls after `drain()` within a shared
   validated `waiting`/`timed_out` handoff observation. Deleted or uneditable
   messages record `display_failure` without sending a replacement message.
 
-**Collisions, migration and diagnostics (no silent conversion).**
-With `[yardr.mayor_model]`, `mayor-model:`, `/switch_model` and `/mayor_model`
-are owned by the bridge. Bare `mayor-model:<pick>` buttons answer out of date.
-A `[[command]]` or `[[menu]]` named `mayor_model` or `switch_model`, or any
-`[[command]]` `callback_prefix` overlapping `mayor-model:` (shorter such as
-`mayor-`, or longer such as `mayor-model:x`), refuses to load before any write.
-For example, keeping a legacy add-on handler beside `[yardr.mayor_model]`:
+**Collisions and diagnostics (no silent conversion).**
+With `[yardr.switch_model]`, `switch-model:` and `/switch_model`
+are owned by the bridge.
+A `[[command]]` or `[[menu]]` named `switch_model`, or any
+`[[command]]` `callback_prefix` overlapping `switch-model:` (shorter such as
+`switch-`, or longer such as `switch-model:x`), refuses to load before any write.
+For example, keeping a custom handler beside `[yardr.switch_model]`:
 
 ```toml
-[yardr.mayor_model]
+[yardr.switch_model]
 crew = "yardmaster"
-[[yardr.mayor_model.picks]]
+[[yardr.switch_model.picks]]
 id = "sol"
 label = "GPT-6.1 Sol high"
 kind = "codex"
@@ -996,32 +995,31 @@ model = "gpt-6.1-sol"
 args = []
 
 [[command]]
-name = "mayor_model"
+name = "switch_model"
 description = "Switch model"
-handler = "/home/alex/bin/mayor-model"
+handler = "/home/alex/bin/switch-model"
 ```
 
 fails with:
 
 ```text
-settings: [[command]] mayor_model clashes with the native /mayor_model ([yardr.mayor_model]); delete the [[command]] mayor_model table
+settings: [[command]] switch_model clashes with the native /switch_model ([yardr.switch_model]); delete the [[command]] switch_model table
 ```
 
-An overlapping custom prefix (`callback_prefix = "mayor-model:"` or `"mayor-"`)
-fails naming the conflicting table, `mayor-model:`, and the exact repair
+An overlapping custom prefix (`callback_prefix = "switch-model:"` or `"switch-"`)
+fails naming the conflicting table, `switch-model:`, and the exact repair
 (`delete the [[command]] <name> table or change its callback_prefix to a non-overlapping prefix`).
-Repair settings explicitly (copy add-on `[mayor_model]` picks to `[yardr.mayor_model]`,
-delete conflicting `[[command]]` and `[[menu]]` tables, keep `mayor-model:`
-unclaimed), then verify with `--dry-run` and `check-install`.
+Repair settings explicitly (delete conflicting `[[command]]` and `[[menu]]`
+tables, keep `switch-model:` unclaimed), then verify with `--dry-run` and
+`check-install`.
 
-**Read-only dry run.** Both `switch-model --dry-run <pick>` and its read-only
-alias `mayor-model --dry-run <pick>` probe `crew switch capabilities --json` and
-`crew show <crew> --json` only; they open no SQLite store, reserve no tap or
-operation, contact no Telegram endpoint and run no `set`/`restart`/`force`:
+**Read-only dry run.** `switch-model --dry-run <pick>` probes
+`crew switch capabilities --json` and `crew show <crew> --json` only; it opens
+no SQLite store, reserves no tap or operation, contacts no Telegram endpoint
+and runs no `set`/`restart`/`force`:
 
 ```sh
 <root>/bin/telegram-bridge switch-model --dry-run sol
-<root>/bin/telegram-bridge mayor-model --dry-run sol
 ```
 
 When idle, the output prints the current launch, session status, target label,
@@ -1034,17 +1032,25 @@ Unknown picks and cores lacking `crew_handoff_switch v1` fail safely with fixed
 diagnostics.
 
 **Rollout and rollback.**
-Rollout order preserves existing settings, paired bot/user/chat, `tgbridge`
-source alias/env binding and grants (no new accounts, permissions, model choices,
-pack changes or `yardr pack apply` required):
+Before upgrading, the operator must confirm that no model operation is active.
+Existing tap tables remain untouched for rollback; their rows are not migrated.
+Buttons on cards sent before the upgrade answer empty and log
+`no_registered_prefix`; send `/switch_model` again to open a new selector.
+
+Rollout order preserves paired bot/user/chat, `tgbridge` source alias/env
+binding and grants (no new accounts, permissions, model choices, pack changes
+or `yardr pack apply` required):
 
 1. Reviewed bridge and core sources land; the authorized owner installs a
    compatible core (`crew_handoff_switch v1`).
 2. Run the candidate suite with the landed core (`TGBRIDGE_TEST_YARDR=<core>
    sh scripts/test.sh`).
-3. Install through the existing release path (`<checkout>/install.sh --settings
-   <settings> --root <root>`), run `<root>/bin/telegram-bridge check-install` and
-   `switch-model --dry-run <pick>`, restart the **same** configured unit
+3. Keep a copy of the pre-edit settings file, rename any prior model-switch
+   table and its picks to `[yardr.switch_model]` / `[[yardr.switch_model.picks]]`
+   in the same edit as the install (check-install refuses any unknown key), install
+   through the existing release path (`<checkout>/install.sh --settings
+   <settings> --root <root>`), run `<root>/bin/telegram-bridge check-install`
+   and `switch-model --dry-run <pick>`, restart the **same** configured unit
    (`systemctl --user restart <unit>` on Linux; `launchctl` equivalent on macOS),
    and run `<root>/bin/telegram-bridge set-commands`.
 4. Verify `/switch_model` live on the paired chat.
@@ -1054,12 +1060,13 @@ For rollback:
 1. Resolve or explicitly supersede any pending native switch in the yard, then
    stop the unit (`systemctl --user stop <unit>`). Rolling back bridge code alone
    does not cancel a pending core operation or undo a saved crew target.
-2. Run `<root>/current/install.sh --settings <settings> --root <root> --rollback`
-   to restore the previous bridge release. (If rolling back to a release
-   predating `[yardr.mayor_model]`, restore the prior compatible settings first.)
-3. Keep SQLite state intact (`mayor_model_taps` retains its 5-column schema;
-   new `mayor-model:s:`/`f:` buttons fail out of date on the prior release). Do
-   not downgrade core while unresolved switch operations exist.
+2. Restore the pre-edit settings file before running
+   `<root>/current/install.sh --settings <settings> --root <root> --rollback`
+   to restore the previous bridge release.
+3. Keep SQLite state intact (`switch_model_taps` is ignored by the prior
+   release, which keeps its own tap table; new `switch-model:s:`/`f:` buttons
+   fail out of date on the prior release, so send the switch command again).
+   Do not downgrade core while unresolved switch operations exist.
 4. Restart the same unit and run `<root>/bin/telegram-bridge set-commands` to
    restore the menu. Independent instances and the public-core/committed-head
    release chain remain untouched.
@@ -1072,11 +1079,12 @@ unit, bot, and source/env bindings (nothing is sent from this build):
 # 1. Confirm the installed yardr core supports crew_handoff_switch v1:
 <YARDR_BIN> --home <YARD_HOME> crew switch capabilities --json
 
-# 2. Install from the reviewed clean bridge commit into this instance's own root:
+# 2. Save the pre-edit settings and rename the switch table and picks to [yardr.switch_model],
+#    then install from the reviewed clean bridge commit into this instance's own root:
 <CHECKOUT>/install.sh --settings <INSTANCE_SETTINGS> --root <INSTANCE_ROOT> --dry-run
 <CHECKOUT>/install.sh --settings <INSTANCE_SETTINGS> --root <INSTANCE_ROOT>
 
-# 3. Verify install and read-only dry-run without changing settings/source/grants:
+# 3. Verify install and read-only dry-run without changing source/grants:
 <INSTANCE_ROOT>/bin/telegram-bridge check-install
 <INSTANCE_ROOT>/bin/telegram-bridge switch-model --dry-run <PICK>
 
@@ -1085,12 +1093,12 @@ systemctl --user restart <INSTANCE_UNIT>
 <INSTANCE_ROOT>/bin/telegram-bridge set-commands
 ```
 
-Verify `/switch_model` opens the selector card and `/mayor_model` prints the
-migration hint; keep `<INSTANCE_SETTINGS>`, `tgbridge` source alias/env
-bindings, and grants unchanged. To roll back, resolve/supersede any pending
-switch, stop `<INSTANCE_UNIT>`, run `<INSTANCE_ROOT>/current/install.sh
---settings <INSTANCE_SETTINGS> --root <INSTANCE_ROOT> --rollback`, restart
-`<INSTANCE_UNIT>`, and run `<INSTANCE_ROOT>/bin/telegram-bridge set-commands`.
+Verify `/switch_model` opens the selector card; keep `tgbridge` source
+alias/env bindings and grants unchanged. To roll back, resolve/supersede any
+pending switch, stop `<INSTANCE_UNIT>`, restore the pre-edit settings file,
+run `<INSTANCE_ROOT>/current/install.sh --settings <INSTANCE_SETTINGS> --root
+<INSTANCE_ROOT> --rollback`, restart `<INSTANCE_UNIT>`, and run
+`<INSTANCE_ROOT>/bin/telegram-bridge set-commands`.
 
 ### /nudge
 

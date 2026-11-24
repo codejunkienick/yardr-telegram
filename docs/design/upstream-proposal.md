@@ -81,7 +81,7 @@ no duplicate prerequisite PR is needed.
 | Group add/set | Native supported fields PASS; model= set refused | Native setup refuses effort config | model= is fork-only |
 | Source add | Native new/free/orphan PASS; missing replacement grants refuses | Native case blocked before body by formats | Explicit replacement-grants disclosure retained |
 | Embedded/directory source-pack cards | Native fresh/orphan PASS; missing replacement grants refuses | Native case blocked before body by formats | Full directory setup/manifest snapshots remain fork-only |
-| /quota, /mayor_model | Native PASS | Native PASS | Does not establish pack or mayor/skills installation |
+| /quota, /switch_model | Native PASS | Native PASS | Does not establish pack or mayor/skills installation |
 | skill add, crew/group skills= | Unsupported | Unsupported | Fork-only terminal work; skill cards refuse whole |
 
 The [capability record](../public-readiness.md#capabilities-and-grants) maps

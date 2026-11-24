@@ -1030,13 +1030,13 @@ class CrewTests(CommandCase):
                 template=template, status='quota_wait', episode='e1', until=until)])))
         self.bridge = self.make_bridge((), agent='other', health_file=str(health))
         sessions('yardmaster')
-        self.assertIsNone(self.bridge.mayor_quota_episode())
+        self.assertIsNone(self.bridge.quota_episode())
         sessions('other')
-        self.assertEqual(self.bridge.mayor_quota_episode(), ('e1', until))
+        self.assertEqual(self.bridge.quota_episode(), ('e1', until))
         default = self.make_bridge((), health_file=str(health))
-        self.assertIsNone(default.mayor_quota_episode())
+        self.assertIsNone(default.quota_episode())
         sessions('yardmaster')
-        self.assertEqual(default.mayor_quota_episode(), ('e1', until))
+        self.assertEqual(default.quota_episode(), ('e1', until))
 
     def test_a_bad_crew_in_the_config_is_refused(self):
         with self.assertRaisesRegex(b.TransportError, 'crew name required'):

@@ -51,7 +51,7 @@ class TypingSettingsTests(unittest.TestCase):
                 self.load(f'seconds = {value}\n')
 
     def test_an_unknown_key_or_a_non_table_refuses(self):
-        with self.assertRaisesRegex(b.SettingsError, r'^settings: unknown key typing\.interval$'):
+        with self.assertRaisesRegex(b.SettingsError, r'^settings: unknown key typing\.interval; \[typing\] takes '):
             self.load('seconds = 300\ninterval = 4\n')
         path = write_settings(self.root)
         path.write_text('typing = 300\n' + path.read_text())
@@ -208,7 +208,7 @@ class TypingTests(BridgeTestCase):
 
     def test_the_quota_notice_closes_the_window(self):
         until = int((time.time() + 3600) * 1000)
-        with patch.object(self.bridge, 'mayor_quota_episode', return_value=('episode-1', until)):
+        with patch.object(self.bridge, 'quota_episode', return_value=('episode-1', until)):
             self.bridge.drain([self.update(uid=10)])
         self.assertEqual(self.ledger_rows(), ['quota-exhausted-10-yardmaster-episode-1'])
         self.work(5)

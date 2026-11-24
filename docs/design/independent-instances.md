@@ -185,7 +185,7 @@ the owner also holds `yardr-cards-<device>-<inode>.lock` for the yard home.
 Home+operator without `cards` retains legacy ownership with a migration WARN.
 Before rolling back to a release without `cards`, restore each non-owner's
 prior settings: remove `cards`, `home`, `operator`, `reactions.read` and
-`reactions.nudge_after`, plus any `[yardr.quota]`, `[yardr.mayor_model]` or
+`reactions.nudge_after`, plus any `[yardr.quota]`, `[yardr.switch_model]` or
 `[yardr.mail]` tables added with them. Removing only `cards = false` would make
 home+operator claim native cards under the older release's legacy rule.
 The owner can remove `cards = true` and keep home+operator. The older release

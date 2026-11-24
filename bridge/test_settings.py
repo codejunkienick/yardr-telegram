@@ -170,12 +170,19 @@ class SettingsTests(unittest.TestCase):
                             (url, 'settings: yardr.hook_secret_file must be a path'),
                             (url + 'hook_secret_file = "relative/hook-secret"\n',
                              'settings: yardr.hook_secret_file must be an absolute, normalized path'),
-                            (url + file + 'secret = "x"\n', 'settings: unknown key yardr.secret'),
+                            (url + file + 'secret = "x"\n',
+                             'settings: unknown key yardr.secret; [yardr] takes ' + ', '.join(sorted(b.YARDR_KEYS))),
+                            (url + file + '[yardr.old_switch]\n',
+                             'settings: unknown key yardr.old_switch; [yardr] takes ' + ', '.join(sorted(b.YARDR_KEYS))),
                             (url + file + 'source = "two words"\n', 'settings: yardr.source is missing or malformed')):
             with self.subTest(table=table):
                 with self.assertRaises(b.SettingsError) as caught:
                     b.load_settings(self.with_yardr(table))
-                self.assertTrue(str(caught.exception).startswith(line), str(caught.exception))
+                if '; [yardr] takes ' in line:
+                    self.assertEqual(str(caught.exception), line)
+                    self.assertIn('switch_model', str(caught.exception))
+                else:
+                    self.assertTrue(str(caught.exception).startswith(line), str(caught.exception))
         home = self.root / 'yard'
         home.mkdir(mode=0o700)
         for keys, owner, acts in (('', False, False), ('cards = false\n', False, False),
@@ -350,8 +357,10 @@ class AutoTopicsSettingsTests(unittest.TestCase):
                 self.assertIs(b.Bridge(config, None, 'SECRET', None).auto_topics, enabled)
 
     def test_an_unknown_key_or_a_non_bool_refuses_with_one_line(self):
-        for table, message in (('\n[auto_topics]\nenabled = true\nagent = "helper"\n', 'unknown key auto_topics.agent'),
-                               ('\n[auto_topics]\nname = "ops"\n', 'unknown key auto_topics.name'),
+        for table, message in (('\n[auto_topics]\nenabled = true\nagent = "helper"\n',
+                                'unknown key auto_topics.agent; [auto_topics] takes enabled'),
+                               ('\n[auto_topics]\nname = "ops"\n',
+                                'unknown key auto_topics.name; [auto_topics] takes enabled'),
                                ('\n[auto_topics]\nenabled = 1\n', 'auto_topics.enabled must be true or false'),
                                ('\n[auto_topics]\nenabled = "true"\n', 'auto_topics.enabled must be true or false'),
                                ('\nauto_topics = true\n', 'auto_topics must be a table')):
@@ -366,16 +375,15 @@ class AutoTopicsSettingsTests(unittest.TestCase):
                 self.assertEqual(str(raised.exception), 'settings: ' + message)
 
 
-class MayorModelSettingsTests(unittest.TestCase):
-    """[yardr.mayor_model]: without it a settings file loads as before and a
-    [[command]] mayor_model keeps its handler; with it /mayor_model is
-    native, the add-on's pick rules hold, and a [[command]] or [[menu]]
-    mayor_model or an overlapping prefix is refused with the migration
-    message."""
+class SwitchModelSettingsTests(unittest.TestCase):
+    """[yardr.switch_model]: without it a settings file loads as before and a
+    [[command]] switch_model keeps its handler; with it /switch_model is
+    native, the pick rules hold, and a [[command]] or [[menu]]
+    switch_model or an overlapping prefix is refused."""
 
-    PICKS = ('\n[[yardr.mayor_model.picks]]\nid = "sol"\nlabel = "GPT-6.1 Sol high"\nkind = "codex"\n'
+    PICKS = ('\n[[yardr.switch_model.picks]]\nid = "sol"\nlabel = "GPT-6.1 Sol high"\nkind = "codex"\n'
              'model = "gpt-6.1-sol"\nargs = ["-c", "model_reasoning_effort=\\"high\\""]\n'
-             '\n[[yardr.mayor_model.picks]]\nid = "opus"\nlabel = "Opus high"\nkind = "claude"\n'
+             '\n[[yardr.switch_model.picks]]\nid = "opus"\nlabel = "Opus high"\nkind = "claude"\n'
              'model = "opus"\nargs = ["--effort", "high"]\nenv_file = "/srv/yard/crew-yardmaster.env"\n')
 
     def setUp(self):
@@ -388,7 +396,7 @@ class MayorModelSettingsTests(unittest.TestCase):
 
     def settings(self, table=None, extra='', native=True, menu=True):
         """A settings file with native [yardr] keys and bin; `table` is the
-        [yardr.mayor_model] text (None: no table), `extra` more tables."""
+        [yardr.switch_model] text (None: no table), `extra` more tables."""
         path = write_settings(self.root)
         text = path.read_text()
         if not menu:
@@ -400,28 +408,28 @@ class MayorModelSettingsTests(unittest.TestCase):
         start = text.index(marker)
         text = text[:start] + marker + lines + text[start + len(marker):]
         if table is not None:
-            text += '\n[yardr.mayor_model]\n' + table
+            text += '\n[yardr.switch_model]\n' + table
         path.write_text(text + extra)
         return path
 
-    def command(self, name='mayor_model', **fields):
-        fields.setdefault('description', 'Mayor model via add-on')
+    def command(self, name='switch_model', **fields):
+        fields.setdefault('description', 'Switch model via handler')
         fields.setdefault('handler', str(self.stub))
         return '\n[[command]]\nname = "%s"\n' % name + ''.join(
             '%s = %s\n' % (key, json.dumps(value)) for key, value in fields.items())
 
-    def test_no_table_keeps_a_command_mayor_model(self):
-        settings = b.load_settings(self.settings(extra=self.command(callback_prefix='mayor-model:')))
+    def test_no_table_keeps_a_command_switch_model(self):
+        settings = b.load_settings(self.settings(extra=self.command(callback_prefix='switch-model:')))
         entry, nudge = settings.config['commands']
         self.assertEqual((entry['name'], entry['handler'], entry['callback_prefix']),
-                         ('mayor_model', str(self.stub), 'mayor-model:'))
+                         ('switch_model', str(self.stub), 'switch-model:'))
         self.assertEqual(nudge['name'], 'nudge')
         self.assertNotIn('native', entry)
-        self.assertNotIn('yardr_mayor_model', settings.config)
+        self.assertNotIn('yardr_switch_model', settings.config)
         self.assertNotIn('yardr_bin', settings.config)
         bridge = b.Bridge(settings.config, None, 'T', None, state_dir=self.root)
-        self.assertIs(bridge._callback_command('mayor-model:sol'), bridge.commands['mayor_model'])
-        self.assertEqual(bridge._publish_keyboard([[dict(text='x', callback_data='mayor-model:sol')]])[1], None)
+        self.assertIs(bridge._callback_command('switch-model:sol'), bridge.commands['switch_model'])
+        self.assertEqual(bridge._publish_keyboard([[dict(text='x', callback_data='switch-model:sol')]])[1], None)
 
     def test_no_table_runs_the_command_handler_on_a_tap(self):
         handler = self.root / 'addon'
@@ -429,7 +437,7 @@ class MayorModelSettingsTests(unittest.TestCase):
                            'echo \'{"actions":[{"type":"answer_callback","text":"add-on"}]}\'\n' % (self.root / 'seen'))
         handler.chmod(0o700)
         settings = b.load_settings(self.settings(extra=self.command(handler=str(handler),
-                                                                    callback_prefix='mayor-model:')))
+                                                                    callback_prefix='switch-model:')))
         calls = []
 
         def telegram(url, body, *args, **kwargs):
@@ -439,94 +447,91 @@ class MayorModelSettingsTests(unittest.TestCase):
                           request=telegram, state_dir=self.root)
         with patch('sys.stderr'):
             bridge.drain([dict(update_id=60, callback_query=dict(
-                id='q', data='mayor-model:sol', **{'from': dict(id=123, is_bot=False)},
+                id='q', data='switch-model:sol', **{'from': dict(id=123, is_bot=False)},
                 message=dict(message_id=7, chat=dict(id=123, type='private'))))])
-        self.assertEqual(json.loads((self.root / 'seen').read_text())['callback_data'], 'mayor-model:sol')
+        self.assertEqual(json.loads((self.root / 'seen').read_text())['callback_data'], 'switch-model:sol')
         self.assertEqual(calls, [('answerCallbackQuery', dict(callback_query_id='q', text='add-on'))])
 
     def test_table_registers_the_native_command(self):
         settings = b.load_settings(self.settings('crew = "mayor"\ntimeout = 45\n' + self.PICKS))
-        mayor = settings.config['yardr_mayor_model']
-        self.assertEqual((mayor['crew'], mayor['timeout']), ('mayor', 45))
-        self.assertEqual(mayor['picks'], (
+        switch = settings.config['yardr_switch_model']
+        self.assertEqual((switch['crew'], switch['timeout']), ('mayor', 45))
+        self.assertEqual(switch['picks'], (
             dict(id='sol', label='GPT-6.1 Sol high', kind='codex', model='gpt-6.1-sol',
                  args=('-c', 'model_reasoning_effort="high"'), env_file=None, effort='high'),
             dict(id='opus', label='Opus high', kind='claude', model='opus', args=('--effort', 'high'),
                  env_file='/srv/yard/crew-yardmaster.env', effort='high')))
         self.assertEqual(settings.config['yardr_bin'], str(self.stub))
-        nudge, entry, alias = settings.config['commands']
+        nudge, entry = settings.config['commands']
         self.assertEqual(nudge['name'], 'nudge')
-        self.assertFalse(alias['menu'])
-        self.assertEqual(alias['name'], 'mayor_model')
         self.assertEqual(entry, dict(name='switch_model', description='Show the mayor model, tap to switch it',
-                                     menu=True, callback_prefix='mayor-model:', native='mayor_model', timeout=45))
+                                     menu=True, callback_prefix='switch-model:', native='switch_model', timeout=45))
 
     def test_defaults(self):
-        mayor = b.load_settings(self.settings(self.PICKS)).config['yardr_mayor_model']
-        self.assertEqual((mayor['crew'], mayor['timeout']), ('yardmaster', 60))
+        switch = b.load_settings(self.settings(self.PICKS)).config['yardr_switch_model']
+        self.assertEqual((switch['crew'], switch['timeout']), ('yardmaster', 60))
 
     def test_the_env_file_is_never_opened(self):
         # A path that does not exist loads: the bridge only passes it on.
         settings = b.load_settings(self.settings(self.PICKS.replace('/srv/yard', str(self.root / 'nowhere'))))
-        self.assertEqual(settings.config['yardr_mayor_model']['picks'][1]['env_file'],
+        self.assertEqual(settings.config['yardr_switch_model']['picks'][1]['env_file'],
                          str(self.root / 'nowhere' / 'crew-yardmaster.env'))
 
     def test_an_env_file_is_passed_on_as_written(self):
         # The add-on's rule: any absolute path, spaces and Unicode included.
         for path in ('/tmp/crew keys.env', '/srv/ярд/crew.env', '/srv/yard/../crew.env'):
             settings = b.load_settings(self.settings(self.PICKS.replace('/srv/yard/crew-yardmaster.env', path)))
-            self.assertEqual(settings.config['yardr_mayor_model']['picks'][1]['env_file'], path)
+            self.assertEqual(settings.config['yardr_switch_model']['picks'][1]['env_file'], path)
 
     def test_beside_quota_both_are_native(self):
         path = self.settings(self.PICKS, menu=False)
         path.write_text(path.read_text() + '\n[yardr.quota]\n')
         settings = b.load_settings(path)
-        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'nudge', 'switch_model', 'mayor_model'])
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'nudge', 'switch_model'])
         path.write_text(path.read_text().replace('[yardr]', '[yardr]\ncards = false') + '\n[yardr.mail]\n')
         secondary = b.load_settings(path).config
         self.assertFalse(secondary['yardr_cards'])
         self.assertEqual(secondary['commands'], settings.config['commands'])
         self.assertTrue(secondary['yardr_mail'])
 
-    def test_migration_clashes_are_refused(self):
+    def test_clashes_are_refused(self):
         fix = r'delete the \[\[(command|menu)\]\] .+ table'
         cases = [
-            (self.command(), r'\[\[command\]\] mayor_model clashes with the native /mayor_model'),
-            (self.command('switch_model'), r'\[\[command\]\] switch_model clashes with the native /switch_model'),
+            (self.command(), r'\[\[command\]\] switch_model clashes with the native /switch_model'),
             ('\n[[menu]]\ncommand = "switch_model"\ndescription = "x"\n', r'\[\[menu\]\] switch_model clashes'),
-            (self.command('other', callback_prefix='mayor-model:x'), 'callback_prefix overlaps the native mayor-model: prefix'),
-            (self.command('other', callback_prefix='mayor-'), 'callback_prefix overlaps the native mayor-model: prefix'),
-            ('\n[[menu]]\ncommand = "mayor_model"\ndescription = "x"\n', r'\[\[menu\]\] mayor_model clashes'),
+            (self.command('other', callback_prefix='switch-model:'), 'callback_prefix overlaps the native switch-model: prefix'),
+            (self.command('other', callback_prefix='switch-model:x'), 'callback_prefix overlaps the native switch-model: prefix'),
+            (self.command('other', callback_prefix='switch-'), 'callback_prefix overlaps the native switch-model: prefix'),
         ]
         for extra, pattern in cases:
             with self.subTest(extra=extra):
                 with self.assertRaisesRegex(b.SettingsError, pattern + '.*' + fix):
                     b.load_settings(self.settings(self.PICKS, extra=extra))
-        # A prefix that no mayor-model: press starts with is no clash.
-        settings = b.load_settings(self.settings(self.PICKS, extra=self.command('mayor', callback_prefix='mayor:')))
-        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['mayor', 'nudge', 'switch_model', 'mayor_model'])
+        # A prefix that no switch-model: press starts with is no clash.
+        settings = b.load_settings(self.settings(self.PICKS, extra=self.command('switch', callback_prefix='switch:')))
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['switch', 'nudge', 'switch_model'])
 
     def test_command_settings_reserve_the_prefix(self):
-        data = dict(command=[dict(name='other', description='x', handler=str(self.stub), callback_prefix='mayor-model:')])
-        with self.assertRaisesRegex(b.SettingsError, 'bridge-owned mayor-model: prefix'):
-            b._command_settings(data, (), True, mayor_model=True)
-        data = dict(command=[dict(name='mayor_model', description='x', handler=str(self.stub), callback_prefix='mm:')])
-        with self.assertRaisesRegex(b.SettingsError, 'clashes with /mayor_model'):
-            b._command_settings(data, (), True, mayor_model=True)
+        data = dict(command=[dict(name='other', description='x', handler=str(self.stub), callback_prefix='switch-model:')])
+        with self.assertRaisesRegex(b.SettingsError, 'bridge-owned switch-model: prefix'):
+            b._command_settings(data, (), True, switch_model=True)
+        data = dict(command=[dict(name='switch_model', description='x', handler=str(self.stub), callback_prefix='sm:')])
+        with self.assertRaisesRegex(b.SettingsError, 'clashes with /switch_model'):
+            b._command_settings(data, (), True, switch_model=True)
         self.assertEqual(len(b._command_settings(data, (), True)), 1)
 
     def test_bad_tables_are_refused(self):
-        pick = ('\n[[yardr.mayor_model.picks]]\nid = "x"\nlabel = "X"\nkind = "codex"\nmodel = "m"\n'
+        pick = ('\n[[yardr.switch_model.picks]]\nid = "x"\nlabel = "X"\nkind = "codex"\nmodel = "m"\n'
                 'args = []\n')
         cases = [
-            ('', r'needs \[\[yardr\.mayor_model\.picks\]\]'),
+            ('', r'needs \[\[yardr\.switch_model\.picks\]\]'),
             ('picks = []\n', '1-8 tables'),
             ('crew = "bad name"\n' + pick, 'crew is missing or malformed'),
             ('crew = "' + 'c' * 33 + '"\n' + pick, 'crew is missing or malformed'),
             ('timeout = 9\n' + pick, 'timeout'),
             ('timeout = 121\n' + pick, 'timeout'),
-            ('target = "yardr"\n' + pick, 'unknown key yardr.mayor_model.target'),
-            ('yardr_home = "/x"\n' + pick, 'unknown key yardr.mayor_model.yardr_home'),
+            ('target = "yardr"\n' + pick, 'unknown key yardr.switch_model.target'),
+            ('yardr_home = "/x"\n' + pick, 'unknown key yardr.switch_model.yardr_home'),
             (pick * 2, 'id must be a distinct'),
             (pick.replace('"x"', '"X"', 1), 'id must be a distinct'),
             (pick.replace('label = "X"', 'label = "' + 'L' * 33 + '"'), 'label must be 1-32'),
@@ -555,7 +560,7 @@ class MayorModelSettingsTests(unittest.TestCase):
             with self.subTest(table=table[:80]):
                 with self.assertRaisesRegex(b.SettingsError, pattern):
                     b.load_settings(self.settings(table))
-        with self.assertRaisesRegex(b.SettingsError, r'\[yardr\.mayor_model\] needs \[yardr\] home and operator'):
+        with self.assertRaisesRegex(b.SettingsError, r'\[yardr\.switch_model\] needs \[yardr\] home and operator'):
             b.load_settings(self.settings(self.PICKS, native=False))
 
     def test_effort_of_reads_each_harness_flag(self):
@@ -568,8 +573,8 @@ class MayorModelSettingsTests(unittest.TestCase):
 
 
 # The example's tables under another: its header, then (parent, section).
-NESTED_TABLES = {'[yardr.quota]': ('yardr', 'quota'), '[yardr.mayor_model]': ('yardr', 'mayor_model'),
-                 '[[yardr.mayor_model.picks]]': ('mayor_model', 'picks')}
+NESTED_TABLES = {'[yardr.quota]': ('yardr', 'quota'), '[yardr.switch_model]': ('yardr', 'switch_model'),
+                 '[[yardr.switch_model.picks]]': ('switch_model', 'picks')}
 
 
 class ExampleSettingsTests(unittest.TestCase):
@@ -579,9 +584,9 @@ class ExampleSettingsTests(unittest.TestCase):
     EXPECTED = {
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
-        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'mayor_model'},
+        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model'},
         'quota': {'timeout', 'groups', 'machine_login', 'machine'},
-        'mayor_model': {'crew', 'timeout', 'picks'},
+        'switch_model': {'crew', 'timeout', 'picks'},
         'picks': {'id', 'label', 'kind', 'model', 'args', 'env_file'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},
         'menu': {'command', 'description'},
@@ -689,10 +694,10 @@ class ExampleSettingsTests(unittest.TestCase):
                                            'topic', 'auto_topics'}
                 loaded['yardr'] |= set(data['yardr'])
                 loaded['quota'] |= set(data['yardr']['quota'])
-                loaded['mayor_model'] |= set(data['yardr']['mayor_model'])
-                loaded['picks'] |= set(data['yardr']['mayor_model']['picks'][0])
+                loaded['switch_model'] |= set(data['yardr']['switch_model'])
+                loaded['picks'] |= set(data['yardr']['switch_model']['picks'][0])
                 self.assertEqual([command['name'] for command in settings.config['commands'] if 'native' in command],
-                                 ['quota', 'nudge', 'switch_model', 'mayor_model'])
+                                 ['quota', 'nudge', 'switch_model'])
                 loaded['bot'] |= set(data['bot'])
                 loaded['menu'] |= set(data['menu'][0])
                 loaded['command'] |= set(data['command'][0])
@@ -833,7 +838,8 @@ class TranscribeSettingsTests(unittest.TestCase):
                       'enabled = true\nmethod = "cpu"\ngpu = false\n'):
             with self.subTest(table=table), self.assertRaises(b.SettingsError) as caught:
                 self.load(table)
-            self.assertEqual(str(caught.exception), 'settings: unknown key transcribe.gpu')
+            self.assertEqual(str(caught.exception),
+                             'settings: unknown key transcribe.gpu; [transcribe] takes ' + ', '.join(sorted(b.TRANSCRIBE_KEYS)))
 
     def test_language_setting_accepts_codes_and_auto_and_bad_values_refuse(self):
         for value in ('ru', 'de', 'auto', 'en'):

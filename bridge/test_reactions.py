@@ -76,7 +76,7 @@ class ReactionSettingsTests(unittest.TestCase):
             self.load('on_accept = "yes"\n')
 
     def test_an_unknown_key_or_a_non_table_refuses(self):
-        with self.assertRaisesRegex(b.SettingsError, r'^settings: unknown key reactions\.typing$'):
+        with self.assertRaisesRegex(b.SettingsError, r'^settings: unknown key reactions\.typing; \[reactions\] takes '):
             self.load('typing = true\n')
         path = write_settings(self.root)
         path.write_text('reactions = 1\n' + path.read_text())

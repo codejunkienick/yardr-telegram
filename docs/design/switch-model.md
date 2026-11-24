@@ -58,7 +58,7 @@ until it stops and a replacement launches:
 - **Force apply:** Available from the first accepted card and after timeout.
   It is never automatic. On tap, the bridge verifies operator identity and
   binding, re-reads the native operation, reserves `force_action` and a row in
-  `model_actions`/`mayor_model_taps`, answers the callback, and edits the card
+  `model_actions`/`switch_model_taps`, answers the callback, and edits the card
   to `"Force apply accepted, please wait. Ordinary restart waits for idle when
   applicable."` with buttons removed *before* running `crew restart --switch`.
   Force schedules an ordinary restart on the saved target without waiting for a
@@ -123,17 +123,17 @@ sequenceDiagram
     U->>B: /switch_model
     B->>Y: crew switch capabilities + crew show
     B->>U: Selector card (token + bound picks)
-    U->>B: Tap pick callback (mayor-model:s:<token>:<pick>)
+    U->>B: Tap pick callback (switch-model:s:<token>:<pick>)
     B->>Y: GetUser (verify_operator) + capabilities + crew show
-    B->>B: BEGIN IMMEDIATE: reserve mayor_model_taps, model_operations, model_actions
+    B->>B: BEGIN IMMEDIATE: reserve switch_model_taps, model_operations, model_actions
     B->>U: answerCallbackQuery ("Switch requested; please wait...")
     B->>Y: crew set --handoff --request-id <192-bit> --wait-seconds 600
     Y-->>B: Receipt (waiting, Force enabled)
     B->>U: editMessageText -> live card with Force apply
     Note over B,Y: Poller drains inbound taps before refresh()
-    U->>B: Tap Force apply (mayor-model:f:<token>:<gen>)
+    U->>B: Tap Force apply (switch-model:f:<token>:<gen>)
     B->>Y: crew switch show + GetUser
-    B->>B: BEGIN IMMEDIATE: save force_action, mayor_model_taps, model_actions
+    B->>B: BEGIN IMMEDIATE: save force_action, switch_model_taps, model_actions
     B->>U: answerCallbackQuery + immediate edit ("Force apply accepted...")
     B->>Y: crew restart --switch <op-id> --generation <op-gen> --action-id <192-bit>
     B->>Y: poll refresh -> crew show (running, new_generation)
@@ -145,16 +145,16 @@ sequenceDiagram
 All switch durability lives in SQLite under `model_switch.locked()` (`flock` on
 `<store>.model-switch.lock`) with `BEGIN IMMEDIATE` transactions:
 
-- `mayor_model_taps(update_id, pick, crew, state, at)` keeps its exact
-  5-column schema and states (`reserved`, `done`, `refused`, `unknown`) so a
-  prior release using positional `INSERT`s still opens and writes the ledger.
+- `switch_model_taps(update_id, pick, crew, state, at)` holds the 5-column
+  tap-dedup record (`reserved`, `done`, `refused`, `unknown`); `model_actions`
+  (`update_id` primary key) also fails replayed updates closed across upgrades.
 - `model_selectors(token, update_id, value)` binds each selector to
   `bot_id`, `account_id`, `yard`, `yardr_source`, `realpath(yardr_home)`,
   `yardr_operator`, `user_id`, `chat_id`, `conversation_id`, `message_id`,
-  `crew`, and canonical `[yardr.mayor_model]` snapshot. Callbacks are
-  `mayor-model:s:<16-char-token>:<pick-id>` and
-  `mayor-model:f:<16-char-token>:<generation>` (`<= 64` UTF-8 bytes even with
-  32-byte pick IDs). Legacy bare `mayor-model:<pick>`, retired selectors,
+  `crew`, and canonical `[yardr.switch_model]` snapshot. Callbacks are
+  `switch-model:s:<16-char-token>:<pick-id>` and
+  `switch-model:f:<16-char-token>:<generation>` (`<= 64` UTF-8 bytes even with
+  32-byte pick IDs). Retired selectors,
   changed config/picks, or mismatched bindings answer `"That model button is
   out of date."`.
   A digest of the complete native config, runner, directory, launch, enabled
@@ -229,18 +229,17 @@ Activity between the fresh tap-time read and admission can still refuse; the
 bridge exposes that error and releases the reservation rather than retrying.
 The native guard still protects the atomic write against every revision change.
 
-- **Settings compatibility:** `[yardr.mayor_model]`, its `picks`, `timeout`, and
-  the `mayor-model:` namespace stay intact. While `[yardr.mayor_model]` is set,
-  both `switch_model` and `mayor_model` command/menu names and any prefix
-  overlapping `mayor-model:` are refused on load before any write. `/mayor_model`
-  is omitted from the Telegram menu and replies `"Use /switch_model to switch
-  models."`.
-- **State handover:** `scripts/handover_state.py` recognizes the three additive
+- **Settings:** `[yardr.switch_model]`, its `picks`, `timeout`, and
+  the `switch-model:` namespace govern `/switch_model`. While `[yardr.switch_model]`
+  is set, any `switch_model` command/menu name and any prefix overlapping
+  `switch-model:` are refused on load before any write.
+- **State handover:** `scripts/handover_state.py` recognizes the additive
   switch tables in `LATER` / `NATIVE`: empty tables remain compatible across
   capture and handback, while populated native switch rows retain the existing
   handback refusal.
-- **Rollback:** Resolve or supersede any pending native switch and stop the unit
-  before running `install.sh --settings <settings> --root <root> --rollback`.
+- **Rollback:** Resolve or supersede any pending native switch, stop the unit,
+  and restore the pre-edit settings file before running
+  `install.sh --settings <settings> --root <root> --rollback`.
   Rolling back bridge code does not cancel a pending core switch or undo a
   saved crew target. Do not downgrade core while unresolved switch operations
   exist.

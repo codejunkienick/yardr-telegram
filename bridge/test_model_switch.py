@@ -18,7 +18,7 @@ import bridge as b
 import run_asks as n
 import yard_commands as y
 import testyardr
-from test_yard_commands import FakeTelegram, mayor_picks
+from test_yard_commands import FakeTelegram, switch_picks
 
 import model_switch as m
 
@@ -48,7 +48,7 @@ class NativeSwitchTests(unittest.TestCase):
         self.cli('init', '--harness', 'claude')
         try:
             m.capability(dict(yardr_bin=binary, yardr_home=str(self.home)), m.time.monotonic() + 10, lambda message: None)
-        except y.MayorUnavailable:
+        except y.SwitchUnavailable:
             self.fail('supplied core requires crew_handoff_switch v1; native model switch tests cannot run')
         source = self.root / 'tgbridge.yaml'
         source.write_text('name: tgbridge\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n'
@@ -81,13 +81,12 @@ class NativeSwitchTests(unittest.TestCase):
         self.rpc('CrewStatusFor', name='mayor', user='', status='working')
         self.telegram = Telegram()
         self.store = b.Store(self.root / 'bridge.sqlite3', 10)
-        self.picks = mayor_picks()
+        self.picks = switch_picks()
         self.config = dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
                            user_display_name='Pat', timezone='UTC', menu=(), agent='mayor',
                            yardr_home=str(self.home), yardr_source='tgbridge', yardr_operator='pat', yardr_bin=binary,
-                           yardr_mayor_model=dict(crew='mayor', timeout=10, picks=self.picks), commands=())
-        self.config['commands'] = (y.mayor_model_command(self.config['yardr_mayor_model']),
-                                   y.mayor_model_alias(self.config['yardr_mayor_model']))
+                           yardr_switch_model=dict(crew='mayor', timeout=10, picks=self.picks), commands=())
+        self.config['commands'] = (y.switch_model_command(self.config['yardr_switch_model']),)
         self.log = self.enterContext(patch('sys.stderr', io.StringIO()))
         self.bridge = self.reopen()
         self.uid = 40
@@ -266,7 +265,7 @@ class NativeSwitchTests(unittest.TestCase):
         before_native = []
         def tracked(argv, *args, **kwargs):
             if 'restart' in argv:
-                before_native.append(dict(tap=self.store.mayor_tap(tap['update_id']),
+                before_native.append(dict(tap=self.store.switch_tap(tap['update_id']),
                     operation=self.last(), restart=self.crew().get('restart_requested', ''),
                     calls=copy.deepcopy(self.telegram.calls)))
                 writes.append(argv)
@@ -342,7 +341,7 @@ class NativeSwitchTests(unittest.TestCase):
                 case.poll(tap)
             self.assertEqual(case.store.offset(), tap['update_id'])
             with self.subTest(stage='refusal reservation'):
-                self.assertEqual((case.store.mayor_tap(tap['update_id']) or {}).get('state'), 'refused')
+                self.assertEqual((case.store.switch_tap(tap['update_id']) or {}).get('state'), 'refused')
             case.cli('crew', 'set', 'mayor', 'model=changed-externally')
             settled = case.crew()
             case.store = b.Store(case.root / 'bridge.sqlite3', 0)
@@ -353,7 +352,7 @@ class NativeSwitchTests(unittest.TestCase):
                                  for call in run.call_args_list))
             self.assertEqual(case.operations(), [])
             self.assertEqual(case.crew(), settled)
-            self.assertEqual(case.store.mayor_tap(tap['update_id'])['state'], 'refused')
+            self.assertEqual(case.store.switch_tap(tap['update_id'])['state'], 'refused')
             self.assertEqual(case.store.offset(), tap['update_id'] + 1)
         finally:
             case.doCleanups()
@@ -373,8 +372,8 @@ class NativeSwitchTests(unittest.TestCase):
             if change == 'invalid-topic': q['message']['is_topic_message'] = True
             if change == 'topic': q['message'].update(message_thread_id=99, is_topic_message=True)
             if change == 'message': q['message']['message_id'] += 1
-            if change == 'legacy': q['data'] = 'mayor-model:opus'
-            if change == 'token': q['data'] = 'mayor-model:s:' + 'A' * 16 + ':opus'
+            if change == 'legacy': q['data'] = 'switch-model:opus'
+            if change == 'token': q['data'] = 'switch-model:s:' + 'A' * 16 + ':opus'
             cases.append((change, tap))
         for change, tap in cases:
             with self.subTest(change=change):
@@ -384,17 +383,17 @@ class NativeSwitchTests(unittest.TestCase):
                 self.poll(tap)
         self.assertEqual(self.operations(), [])
         with self.store.connect() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM mayor_model_taps').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM switch_model_taps').fetchone()[0], 0)
         for change in ('label', 'args', 'env_file', 'crew', 'timeout'):
             with self.subTest(change=change):
                 config = copy.deepcopy(self.config)
                 if change in ('crew', 'timeout'):
-                    config['yardr_mayor_model'][change] = 'other' if change == 'crew' else 20
+                    config['yardr_switch_model'][change] = 'other' if change == 'crew' else 20
                 else:
-                    picks = list(config['yardr_mayor_model']['picks'])
+                    picks = list(config['yardr_switch_model']['picks'])
                     picks[1][change] = {'label': 'different', 'args': ['--effort', 'low'], 'env_file': '/new.env'}[change]
-                    config['yardr_mayor_model']['picks'] = picks
-                self.bridge = self.reopen(yardr_mayor_model=config['yardr_mayor_model'])
+                    config['yardr_switch_model']['picks'] = picks
+                self.bridge = self.reopen(yardr_switch_model=config['yardr_switch_model'])
                 self.poll(self.pick(selector))
                 self.assertEqual(self.operations(), [])
 
@@ -439,7 +438,7 @@ class NativeSwitchTests(unittest.TestCase):
                              for call in run.call_args_list))
         self.assertEqual(len(self.operations()), 1)
         self.assertEqual(other.crew(), before)
-        self.assertEqual(self.store.mayor_tap(other.uid)['state'], 'refused')
+        self.assertEqual(self.store.switch_tap(other.uid)['state'], 'refused')
         self.assertIn('already pending', other.telegram.of('answerCallbackQuery')[-1]['text'])
         self.uid = other.uid
         self.cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
@@ -492,7 +491,7 @@ class NativeSwitchTests(unittest.TestCase):
             case.assertIsNone(case.last()['receipt'])
             case.assertIn('request could not be matched', case.edit()['text'])
             case.assertEqual(case.edit()['reply_markup']['inline_keyboard'], [])
-            case.assertEqual(case.store.mayor_tap(tap['update_id'])['state'], 'reserved')
+            case.assertEqual(case.store.switch_tap(tap['update_id'])['state'], 'reserved')
 
         finally:
             case.doCleanups()
@@ -519,7 +518,7 @@ class NativeSwitchTests(unittest.TestCase):
                 self.poll(force)
             action = self.last()['force_action']
             self.assertIsNotNone(action)
-            self.assertEqual(self.store.mayor_tap(force['update_id'])['state'], 'reserved')
+            self.assertEqual(self.store.switch_tap(force['update_id'])['state'], 'reserved')
             self.assertEqual(self.crew().get('restart_requested', ''), '')
             self.store = b.Store(self.root / 'bridge.sqlite3', 0)
             self.bridge = self.reopen()
@@ -546,7 +545,7 @@ class NativeSwitchTests(unittest.TestCase):
                 self.poll(stale)
             self.assertFalse(any('restart' in call.args[1] for call in run.call_args_list))
             self.assertIn('out of date', self.telegram.of('answerCallbackQuery')[-1]['text'])
-            self.assertEqual(self.store.mayor_tap(force['update_id'])['state'], 'reserved')
+            self.assertEqual(self.store.switch_tap(force['update_id'])['state'], 'reserved')
 
         force = self.force_tap()
         accepted = True
@@ -607,7 +606,7 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertIsNone(self.last()['receipt'])
         self.assertFalse(self.last()['active'])
         self.assertTrue(self.last()['refused'])
-        self.assertEqual(self.store.mayor_tap(tap['update_id'])['state'], 'refused')
+        self.assertEqual(self.store.switch_tap(tap['update_id'])['state'], 'refused')
         self.assertEqual(self.edit()['reply_markup']['inline_keyboard'], [])
         self.assertEqual(self.crew()['config']['model'], 'old')
         self.assertIn('not admitted', self.edit()['text'])
@@ -649,7 +648,7 @@ class NativeSwitchTests(unittest.TestCase):
                     case.assertFalse(any('--handoff' in call.args[0] for call in calls.call_args_list))
                     case.assertEqual(case.operations(), [])
                     case.assertIn('configuration or session changed', case.telegram.of('answerCallbackQuery')[-1]['text'])
-                    case.assertEqual((case.store.mayor_tap(tap['update_id']) or {}).get('state'), 'refused')
+                    case.assertEqual((case.store.switch_tap(tap['update_id']) or {}).get('state'), 'refused')
                     if setting != 'session':
                         key = setting.split('=', 1)[0]
                         if key in before['config']:
@@ -671,9 +670,9 @@ class NativeSwitchTests(unittest.TestCase):
                 case = NativeSwitchTests(methodName=self._testMethodName)
                 try:
                     case.setUp()
-                    config = copy.deepcopy(case.config['yardr_mayor_model'])
+                    config = copy.deepcopy(case.config['yardr_switch_model'])
                     config['picks'][1]['env_file'] = '/synthetic/secret.env'
-                    case.bridge = case.reopen(yardr_mayor_model=config)
+                    case.bridge = case.reopen(yardr_switch_model=config)
                     selector = case.selector()
                     native = y.run_yardr
                     def refuse(argv, *args, **kwargs):
@@ -873,39 +872,36 @@ class NativeSwitchTests(unittest.TestCase):
             self.assertEqual(edit['reply_markup']['inline_keyboard'], [])
         self.assertEqual({edit['message_id'] for edit in self.telegram.of('editMessageText')}, {selector[1]})
 
-    def test_cli_alias_menu_and_zero_write_dry_run(self):
-        self.poll(self.text('/mayor_model opus'))
-        self.assertEqual(self.telegram.of('sendMessage')[-1]['text'], 'Use /switch_model to switch models.')
-        self.assertEqual(self.operations(), [])
+    def test_cli_menu_and_zero_write_dry_run(self):
         self.assertEqual([c['command'] for c in self.bridge.set_commands()], ['switch_model', 'decide'])
         before = self.crew()
         for pick in ('opus', 'sol'):
             result = m.dry_run(self.config, pick, self.bridge._log)
             self.assertIn('600-second', result)
             self.assertIn('crew restart --switch', result)
-        with self.assertRaisesRegex(y.MayorUnavailable, 'unknown pick'):
+        with self.assertRaisesRegex(y.SwitchUnavailable, 'unknown pick'):
             m.dry_run(self.config, 'private-value', self.bridge._log)
         self.assertEqual(self.crew(), before)
         self.assertEqual(self.operations(), [])
         with self.store.connect() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM model_selectors').fetchone()[0], 0)
-            self.assertEqual(db.execute('SELECT count(*) FROM mayor_model_taps').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM switch_model_taps').fetchone()[0], 0)
         self.poll(self.pick(self.selector()))
         self.assertIn('acknowledges the existing operation', m.dry_run(self.config, 'opus', self.bridge._log))
         self.assertIn('different pick is refused', m.dry_run(self.config, 'sol', self.bridge._log))
 
     def test_old_ledger_positional_rows_and_reopen(self):
         with self.store.connect() as db:
-            db.execute("INSERT INTO mayor_model_taps VALUES (20, 'sol', 'mayor', 'done', 'old')")
+            db.execute("INSERT INTO switch_model_taps VALUES (20, 'sol', 'mayor', 'done', 'old')")
         self.poll(self.pick(self.selector()))
         with self.store.connect() as db:
-            self.assertEqual(len(db.execute('PRAGMA table_info(mayor_model_taps)').fetchall()), 5)
-            db.execute("INSERT INTO mayor_model_taps VALUES (21, 'opus', 'mayor', 'unknown', 'old')")
+            self.assertEqual(len(db.execute('PRAGMA table_info(switch_model_taps)').fetchall()), 5)
+            db.execute("INSERT INTO switch_model_taps VALUES (21, 'opus', 'mayor', 'unknown', 'old')")
         self.store = b.Store(self.root / 'bridge.sqlite3', 0)
         self.bridge = self.reopen()
         self.poll()
-        self.assertEqual(self.store.mayor_tap(20), dict(pick='sol', crew='mayor', state='done'))
-        self.assertEqual(self.store.mayor_tap(21)['state'], 'unknown')
+        self.assertEqual(self.store.switch_tap(20), dict(pick='sol', crew='mayor', state='done'))
+        self.assertEqual(self.store.switch_tap(21)['state'], 'unknown')
         self.assertEqual(self.last()['observed']['state'], 'waiting')
 
     def test_message_edit_ambiguity_reuses_exact_key_and_deleted_message(self):
@@ -1088,7 +1084,7 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertIn('Already running Opus high; nothing to switch.', second_edits[0]['text'])
         self.assertEqual(second_edits[0]['reply_markup']['inline_keyboard'], [])
         self.assertEqual(len(self.operations()), ops_before)
-        self.assertEqual(self.store.mayor_tap(second_tap['update_id'])['state'], 'done')
+        self.assertEqual(self.store.switch_tap(second_tap['update_id'])['state'], 'done')
         self.assertEqual(self.store.offset(), second_tap['update_id'] + 1)
 
         # Historical slow inactive operation must not starve a later completed selector either.
@@ -1179,12 +1175,12 @@ class NativeSwitchTests(unittest.TestCase):
                     if mode != 'empty-args':
                         path = {'absolute': str(env), 'relative': 'crew.env', 'tilde': '~/crew.env'}[mode]
                         case.cli('crew', 'set', 'mayor', 'env_file=' + path)
-                    config = copy.deepcopy(case.config['yardr_mayor_model'])
+                    config = copy.deepcopy(case.config['yardr_switch_model'])
                     pick = config['picks'][1]
                     if mode == 'empty-args':
                         pick['args'] = []
                     case.cli('crew', 'set', 'mayor', 'prompt=<synthetic & prompt>\u2028🌲')
-                    case.bridge = case.reopen(yardr_mayor_model=config)
+                    case.bridge = case.reopen(yardr_switch_model=config)
                     case.native_launch_pick(pick)
                     case.poll(case.pick(case.selector()))
                     case.assertEqual(case.operations(), [])
@@ -1193,7 +1189,7 @@ class NativeSwitchTests(unittest.TestCase):
                     # Matching kind/model/config args cannot hide a stale actual effort.
                     pick['args'] = ['--effort', 'low']
                     case.cli('crew', 'set', 'mayor', 'args=["--effort","low"]')
-                    case.bridge = case.reopen(yardr_mayor_model=config)
+                    case.bridge = case.reopen(yardr_switch_model=config)
                     case.poll(case.pick(case.selector()))
                     case.assertEqual(case.last()['observed']['state'], 'waiting')
                 finally:
@@ -1220,11 +1216,11 @@ class NativeSwitchTests(unittest.TestCase):
                         path.write_text('')
                         path.chmod(0o600)
                     case.cli('crew', 'set', 'mayor', 'env_file=crew.env')
-                    config = copy.deepcopy(case.config['yardr_mayor_model'])
+                    config = copy.deepcopy(case.config['yardr_switch_model'])
                     pick = config['picks'][1]
                     if explicit_env:
                         pick['env_file'] = 'crew.env'
-                    case.bridge = case.reopen(yardr_mayor_model=config)
+                    case.bridge = case.reopen(yardr_switch_model=config)
                     case.native_launch_pick(pick)
                     selector = case.selector()
                     native = y.run_yardr
@@ -1303,7 +1299,7 @@ class NativeSwitchTests(unittest.TestCase):
                     case.cli('crew', 'set', 'mayor', 'env_file=other.env')
                     if explicit_env:
                         pick['env_file'] = 'other.env'
-                    case.bridge = case.reopen(yardr_mayor_model=config)
+                    case.bridge = case.reopen(yardr_switch_model=config)
                     case.poll(case.pick(case.selector()))
                     case.assertEqual(case.last()['observed']['state'], 'waiting')
                 finally:
@@ -1361,15 +1357,15 @@ class NativeSwitchTests(unittest.TestCase):
                                      for call in calls.call_args_list))
                 self.assertEqual(self.crew(), external)
                 self.assertEqual(self.rpc('Events', bead=external['journal'], limit=100), events)
-                self.assertEqual(self.store.mayor_tap(tap['update_id']), dict(pick='sol', crew='mayor', state='done'))
+                self.assertEqual(self.store.switch_tap(tap['update_id']), dict(pick='sol', crew='mayor', state='done'))
                 self.assertEqual(self.telegram.of('answerCallbackQuery')[-1]['text'], 'Already running GPT-6.1 Sol high; nothing to switch.')
                 self.assertEqual(self.store.offset(), tap['update_id'] + 1)
 
     def test_missing_and_stale_telemetry_sanitized_and_payload_limits(self):
-        config = copy.deepcopy(self.config['yardr_mayor_model'])
+        config = copy.deepcopy(self.config['yardr_switch_model'])
         config['picks'][1]['id'] = 'x' * 32
         config['picks'][1]['label'] = '<target & model>'
-        self.bridge = self.reopen(yardr_mayor_model=config)
+        self.bridge = self.reopen(yardr_switch_model=config)
         selector = self.selector()
         for row in selector[0]['reply_markup']['inline_keyboard']:
             self.assertLessEqual(len(row[0]['callback_data'].encode()), 64)
@@ -1405,7 +1401,7 @@ class NativeSwitchTests(unittest.TestCase):
         with patch.object(y, 'run_yardr', over_hundred):
             try:
                 crew, _parsed = m.read_current(self.config, m.time.monotonic() + 10, lambda message: None)
-            except y.MayorUnavailable:
+            except y.SwitchUnavailable:
                 self.fail('read_current refuses context_pct 102')
             selector = self.selector()
             self.poll(self.pick(selector))
@@ -1424,7 +1420,7 @@ class NativeSwitchTests(unittest.TestCase):
                         return status, json.dumps(value).encode(), err, problem
                 return status, out, err, problem
             with patch.object(y, 'run_yardr', corrupt):
-                with self.assertRaises(y.MayorUnavailable):
+                with self.assertRaises(y.SwitchUnavailable):
                     m.read_current(self.config, m.time.monotonic() + 10, lambda message: None)
 
     def test_bad_capability_status_and_output_never_reserve_or_disclose(self):
@@ -1475,7 +1471,7 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertFalse(any('--handoff' in call.args[1] or 'restart' in call.args[1]
                              for call in run.call_args_list))
         self.assertEqual(len(self.operations()), 1)
-        self.assertEqual(self.store.mayor_tap(tap['update_id'])['state'], 'refused')
+        self.assertEqual(self.store.switch_tap(tap['update_id'])['state'], 'refused')
         self.assertIn('Switch refused;', self.edit()['text'])
 
     def test_receipt_conflicts_stay_unknown_and_confirmed_receipts_reconcile(self):
@@ -1542,7 +1538,7 @@ class NativeSwitchTests(unittest.TestCase):
         cases = []
         for state, sample in (('waiting', waiting), ('timed_out', timed_out), ('running', running), ('refused', refused)):
             if state == 'refused':
-                with self.assertRaises(y.MayorUnavailable):
+                with self.assertRaises(y.SwitchUnavailable):
                     m.receipt(sample, pending)
             else:
                 self.assertEqual(m.receipt(sample, pending), sample)
@@ -1698,9 +1694,9 @@ class NativeSwitchTests(unittest.TestCase):
                     if mode == 'relative':
                         case.cli('crew', 'set', 'mayor', 'env_file=crew.env')
                     elif mode == 'explicit-relative':
-                        config = copy.deepcopy(case.config['yardr_mayor_model'])
+                        config = copy.deepcopy(case.config['yardr_switch_model'])
                         config['picks'][1]['env_file'] = 'crew.env'
-                        case.bridge = case.reopen(yardr_mayor_model=config)
+                        case.bridge = case.reopen(yardr_switch_model=config)
                     selector = case.selector()
                     case.bridge.drain([case.pick(selector)])
                     row = case.last()
@@ -1715,7 +1711,7 @@ class NativeSwitchTests(unittest.TestCase):
                     self.assertEqual(case.crew()['config'].get('env_file'), None if mode == 'absent' else 'crew.env')
                     if mode != 'explicit-relative':
                         self.assertNotIn('env_file', row['request']['target'])
-                    case.bridge = case.reopen(**({'yardr_mayor_model': config} if mode == 'explicit-relative' else {}))
+                    case.bridge = case.reopen(**({'yardr_switch_model': config} if mode == 'explicit-relative' else {}))
                     case.poll()
                     self.assertTrue(case.last()['admission_confirmed'])
                     self.assertEqual(case.last()['receipt'], native)
@@ -1763,9 +1759,9 @@ class NativeSwitchTests(unittest.TestCase):
         other = self.root / 'other.env'
         other.write_text('')
         other.chmod(0o600)
-        config = copy.deepcopy(self.config['yardr_mayor_model'])
+        config = copy.deepcopy(self.config['yardr_switch_model'])
         config['picks'][0]['env_file'] = str(other)
-        self.bridge = self.reopen(yardr_mayor_model=config)
+        self.bridge = self.reopen(yardr_switch_model=config)
         self.poll(self.pick(self.selector(), 'sol'))
         self.assertEqual(self.last()['request']['target']['env_file'], str(other))
         self.assertEqual(self.crew()['config']['env_file'], str(other))
@@ -1795,8 +1791,8 @@ class NativeSwitchTests(unittest.TestCase):
                     self.assertNotEqual(statuses, [0])
                     reserved = case.last()
                     self.assertIsNone(reserved['receipt'])
-                    self.assertEqual(case.store.mayor_tap(tap['update_id'])['state'], 'unknown')
-                    forged = case.tap(f'mayor-model:f:{reserved["token"]}:1', selector[1])
+                    self.assertEqual(case.store.switch_tap(tap['update_id'])['state'], 'unknown')
+                    forged = case.tap(f'switch-model:f:{reserved["token"]}:1', selector[1])
                     for launched in (False, True):
                         if launched:
                             case.handoff()
@@ -1825,8 +1821,8 @@ class NativeSwitchTests(unittest.TestCase):
                         self.assertIn('operator reconciliation required', case.edit()['text'])
                         self.assertNotIn('Running on target.', case.edit()['text'])
                         self.assertEqual(case.edit()['reply_markup']['inline_keyboard'], [])
-                        self.assertEqual(case.store.mayor_tap(tap['update_id'])['state'], 'unknown')
-                        self.assertIsNone(case.store.mayor_tap(forged['update_id']))
+                        self.assertEqual(case.store.switch_tap(tap['update_id'])['state'], 'unknown')
+                        self.assertIsNone(case.store.switch_tap(forged['update_id']))
                     self.assertEqual({edit['message_id'] for edit in case.telegram.of('editMessageText')}, {selector[1]})
                     self.assertEqual(len(case.telegram.of('sendMessage')), 1)
                     events = case.rpc('Events', bead=case.crew()['journal'], limit=100)
@@ -1861,29 +1857,28 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertTrue(self.last()['display_failure'])
         self.assertEqual(len(self.telegram.of('sendMessage')), count)
 
-    def test_dry_run_cli_aliases_and_unsupported_zero_writes(self):
+    def test_dry_run_cli_and_unsupported_zero_writes(self):
         from test_bridge import write_settings, run_main
         path = write_settings(self.root)
         text = path.read_text()
         text = text.replace('[yardr]\n', '[yardr]\nhome = ' + json.dumps(str(self.home)) + '\noperator = "pat"\nbin = ' + json.dumps(self.config['yardr_bin']) + '\n')
-        text += '\n[yardr.mayor_model]\ncrew = "mayor"\n[[yardr.mayor_model.picks]]\nid = "opus"\nlabel = "Opus"\nkind = "claude"\nmodel = "opus"\nargs = []\n'
+        text += '\n[yardr.switch_model]\ncrew = "mayor"\n[[yardr.switch_model.picks]]\nid = "opus"\nlabel = "Opus"\nkind = "claude"\nmodel = "opus"\nargs = []\n'
         path.write_text(text)
         native = self.crew()
-        for command in ('switch-model', 'mayor-model'):
-            out = io.StringIO()
-            with patch('sys.stdout', out), patch.object(b, 'Store', side_effect=AssertionError('dry run opened ledger')):
-                run_main(self, 'telegram-bridge', '--settings', str(path), command, '--dry-run', 'opus')
-            self.assertIn('600-second', out.getvalue())
+        out = io.StringIO()
+        with patch('sys.stdout', out), patch.object(b, 'Store', side_effect=AssertionError('dry run opened ledger')):
+            run_main(self, 'telegram-bridge', '--settings', str(path), 'switch-model', '--dry-run', 'opus')
+        self.assertIn('600-second', out.getvalue())
         self.assertEqual(self.crew(), native)
         self.assertEqual(self.operations(), [])
         self.assertEqual(self.telegram.calls, [])
         with patch.object(y, 'run_yardr', return_value=(0, b'{"crew_handoff_switch":0}', b'PRIVATE', None)):
-            with self.assertRaisesRegex(y.MayorUnavailable, 'requires crew_handoff_switch v1'):
+            with self.assertRaisesRegex(y.SwitchUnavailable, 'requires crew_handoff_switch v1'):
                 m.dry_run(self.config, 'opus', self.bridge._log)
         self.assertEqual(self.operations(), [])
 
     def test_dry_run_active_same_different_and_unknown_zero_writes(self):
-        with self.assertRaisesRegex(y.MayorUnavailable, 'unknown pick'):
+        with self.assertRaisesRegex(y.SwitchUnavailable, 'unknown pick'):
             m.dry_run(self.config, 'missing-pick', self.bridge._log)
         self.assertEqual(self.operations(), [])
         self.assertEqual(self.telegram.calls, [])
@@ -1898,6 +1893,82 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertEqual(self.crew(), before_crew)
         self.assertEqual(self.operations(), before_ops)
         self.assertEqual(self.telegram.calls, before_calls)
+
+
+class SwitchUpgradeBoundaryTests(unittest.TestCase):
+    """Real Store + fake native client boundary checks that run without a native binary."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.home = self.root / 'yard'
+        self.home.mkdir(mode=0o700)
+        self.stub = self.root / 'yardr-stub'
+        self.stub.write_text('#!/bin/sh\nexit 0\n')
+        self.stub.chmod(0o700)
+        self.store = b.Store(self.root / 'bridge.sqlite3', 10)
+        self.telegram = Telegram()
+        self.picks = list(switch_picks())
+        self.picks[1] = dict(self.picks[1], id='p' * 32)
+        self.config = dict(
+            bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
+            user_display_name='Pat', timezone='UTC', menu=(), agent='mayor',
+            yardr_home=str(self.home), yardr_source='tgbridge', yardr_operator='pat', yardr_bin=str(self.stub),
+            yardr_switch_model=dict(crew='mayor', timeout=10, picks=tuple(self.picks)), commands=(),
+        )
+        self.config['commands'] = (y.switch_model_command(self.config['yardr_switch_model']),)
+        self.log = self.enterContext(patch('sys.stderr', io.StringIO()))
+        self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY',
+                               request=self.telegram, state_dir=self.root)
+        self.native_calls = []
+
+    def _fake_yardr(self, argv, home, env, deadline):
+        self.native_calls.append(list(argv))
+        if argv[-4:] == ['crew', 'switch', 'capabilities', '--json']:
+            return 0, b'{"crew_handoff_switch":1}', b'', None
+        if argv[-3:] == ['crew', 'show', 'mayor'] or argv[-4:] == ['crew', 'show', 'mayor', '--json']:
+            payload = {'crew': {
+                'name': 'mayor', 'revision': 'rev1', 'session_generation': 'gen1',
+                'state': 'running', 'status': 'working',
+                'config': {'kind': 'codex', 'model': 'old', 'args': []},
+                'handle': {'kind': 'codex'},
+                'launch': {'kind': 'codex', 'model': 'old', 'fingerprint': 'f' * 64},
+            }}
+            return 0, json.dumps(payload).encode('utf-8'), b'', None
+        raise AssertionError(f'unexpected mutating/unknown native call: {argv}')
+
+    def test_selector_longest_callback_fits_64_bytes_and_replay_in_model_actions_fails_closed(self):
+        selector_update = dict(
+            update_id=40,
+            message=dict(message_id=1040, text='/switch_model', chat=dict(id=123, type='private'),
+                         **{'from': dict(id=123, is_bot=False)}),
+        )
+        with patch.object(y, 'run_yardr', side_effect=self._fake_yardr), patch.object(n, 'verify_operator'):
+            self.bridge.drain([selector_update])
+            sent = self.telegram.of('sendMessage')[-1]
+            longest = sent['reply_markup']['inline_keyboard'][1][0]['callback_data']
+            self.assertEqual(len(longest.encode('utf-8')), 64)
+            self.assertTrue(m.PICK.fullmatch(longest))
+
+            tap = dict(
+                update_id=41,
+                callback_query=dict(
+                    id='cb-41', data=sent['reply_markup']['inline_keyboard'][0][0]['callback_data'],
+                    **{'from': dict(id=123, is_bot=False)},
+                    message=dict(message_id=self.telegram.next_id, chat=dict(id=123, type='private'),
+                                 **{'from': dict(id=999, is_bot=True)}),
+                ),
+            )
+            with self.store.connect() as db:
+                db.execute('INSERT INTO model_actions VALUES (?, ?, ?)',
+                           (tap['update_id'], 'prior-token', m.canonical(dict(token='prior-token', kind='admit'))))
+            self.native_calls.clear()
+            self.bridge.drain([tap])
+        self.assertFalse(any('--handoff' in call or 'restart' in call for call in self.native_calls))
+        self.assertEqual(self.bridge.model_switch.active(), [])
+        self.assertIsNone(self.store.switch_tap(tap['update_id']))
+        answer = self.telegram.of('answerCallbackQuery')[-1]
+        self.assertTrue(answer['show_alert'])
+        self.assertIn('nothing retried', answer['text'])
 
 
 class PreviewSmokeTests(unittest.TestCase):

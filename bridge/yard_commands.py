@@ -2,7 +2,7 @@
 """Native yard commands and the bounded, metadata-only yardr child runner.
 
 /quota renders yardr limits. /switch_model uses model_switch for durable
-handoff admission, observation and guarded Force; /mayor_model is a text alias.
+handoff admission, observation and guarded Force.
 No native output, argument value or environment path reaches logs.
 """
 import concurrent.futures
@@ -30,22 +30,17 @@ NATIVE_QUOTA = 'quota'
 QUOTA_COMMAND = dict(name='quota', description='Usage limits and time to each reset',
                      menu=True, callback_prefix='quota:', native=NATIVE_QUOTA)
 QUOTA_MENU_TEXT = QUOTA_COMMAND['description']
-# The mayor-model: prefix remains the bridge's own while
-# [yardr.mayor_model] is set, as decide: is with native home and operator.
-NATIVE_MAYOR_MODEL = 'mayor_model'
-MAYOR_MODEL_PREFIX = 'mayor-model:'
+# The switch-model: prefix remains the bridge's own while
+# [yardr.switch_model] is set, as decide: is with native home and operator.
+NATIVE_SWITCH_MODEL = 'switch_model'
+SWITCH_MODEL_PREFIX = 'switch-model:'
 
 
-def mayor_model_command(mayor):
-    """The native model selector; its callback namespace remains compatible."""
-    return dict(name='switch_model', description=f'Show the {mayor["crew"]} model, tap to switch it',
-                menu=True, callback_prefix=MAYOR_MODEL_PREFIX, native=NATIVE_MAYOR_MODEL,
-                timeout=mayor['timeout'])
-
-
-def mayor_model_alias(mayor):
-    return dict(name='mayor_model', description='Use /switch_model', menu=False,
-                callback_prefix=MAYOR_MODEL_PREFIX, native=NATIVE_MAYOR_MODEL, timeout=mayor['timeout'])
+def switch_model_command(switch):
+    """The native model selector."""
+    return dict(name='switch_model', description=f'Show the {switch["crew"]} model, tap to switch it',
+                menu=True, callback_prefix=SWITCH_MODEL_PREFIX, native=NATIVE_SWITCH_MODEL,
+                timeout=switch['timeout'])
 
 # The native /nudge command: typed-only, never in the Telegram menu, so a
 # core without the session nudge never advertises it. Callbacks carry
@@ -741,7 +736,7 @@ def effort_of(args):
     return effort
 
 
-class MayorUnavailable(Exception):
+class SwitchUnavailable(Exception):
     """A fixed reason the crew member could not be read or set; never
     yardr's own text."""
 
@@ -757,8 +752,8 @@ def set_argv(config, pick, revision):
     """The `crew set` a tap runs, as the operator: the pick's kind, model,
     args (one JSON list) and env_file when it names one. `--revision` makes
     yardr refuse when the crew member changed since it was read."""
-    mayor = config['yardr_mayor_model']
-    args = ['crew', 'set', mayor['crew'], f'kind={pick["kind"]}', f'model={pick["model"]}',
+    switch = config['yardr_switch_model']
+    args = ['crew', 'set', switch['crew'], f'kind={pick["kind"]}', f'model={pick["model"]}',
             'args=' + json.dumps(list(pick['args']), ensure_ascii=False, separators=(',', ':'))]
     if pick['env_file']:
         args.append(f'env_file={pick["env_file"]}')
@@ -768,29 +763,29 @@ def set_argv(config, pick, revision):
 def _run_logged(config, argv, deadline, step, log):
     status, out, err, problem = run_yardr(argv, config['yardr_home'], child_env(config), deadline)
     if problem is not None or status != 0:
-        log(f'command mayor_model yardr {step}: status={status} problem={problem} '
+        log(f'command switch_model yardr {step}: status={status} problem={problem} '
             f'stdout={len(out)}B stderr={len(err)}B')
     return status, out, problem
 
 
 def _optional_text(value, what):
     if value is not None and not isinstance(value, str):
-        raise MayorUnavailable(what)
+        raise SwitchUnavailable(what)
     return value or ''
 
 
 def parse_crew(raw):
     """The crew member of `crew show --json` stdout: {'kind', 'model',
     'args', 'env_file', 'effort', 'revision', 'state', 'status',
-    'session_kind'}. MayorUnavailable for any other shape."""
+    'session_kind'}. SwitchUnavailable for any other shape."""
     try:
         payload = _strict_json(raw)
     except Unreadable:
-        raise MayorUnavailable('answer not valid JSON') from None
+        raise SwitchUnavailable('answer not valid JSON') from None
     crew = payload.get('crew') if isinstance(payload, dict) else None
     settings = crew.get('config') if isinstance(crew, dict) else None
     if not isinstance(settings, dict):
-        raise MayorUnavailable('yardr answered no crew member')
+        raise SwitchUnavailable('yardr answered no crew member')
     unexpected = 'yardr answered an unexpected crew member'
     kind = settings.get('kind') or crew.get('kind')
     model = settings.get('model') or crew.get('model') or ''
@@ -799,7 +794,7 @@ def parse_crew(raw):
         try:
             args = _strict_json(args.encode('utf-8'))
         except (Unreadable, UnicodeError):
-            raise MayorUnavailable(unexpected) from None
+            raise SwitchUnavailable(unexpected) from None
     env_file = settings.get('env_file') or None
     revision = crew.get('revision')
     handle = crew.get('handle', {})
@@ -808,7 +803,7 @@ def parse_crew(raw):
             or not (env_file is None or isinstance(env_file, str))
             or not isinstance(revision, str) or not REVISION_RE.fullmatch(revision)
             or not isinstance(handle, dict)):
-        raise MayorUnavailable(unexpected)
+        raise SwitchUnavailable(unexpected)
     return {'kind': kind, 'model': model, 'args': list(args), 'env_file': env_file,
             'effort': effort_of(args), 'revision': revision,
             'state': _optional_text(crew.get('state'), unexpected),

@@ -763,7 +763,7 @@ class HandoverTests(unittest.TestCase):
         self.assertEqual(store.offset(), 7001)
         tables = {row[0] for row in ledger_rows(state / 'telegram-bridge.sqlite3',
                                                 "SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertTrue({'messages', 'run_asks', 'mayor_model_taps'} <= tables)
+        self.assertTrue({'messages', 'run_asks', 'switch_model_taps'} <= tables)
         receipt = store.saved_receipt('sent-key')
         self.assertEqual(bot.bridge.api_send(dict(text='already sent', key='sent-key'))['message_id'],
                          str(receipt['message_id']))

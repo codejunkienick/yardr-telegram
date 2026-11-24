@@ -50,9 +50,11 @@ when a core lacks `inbox_read` or `/events`.
    While `Bridge.run()` runs with `[reactions] read` and `[yardr] home`, a
    stream worker asks `Head`, opens `GET /events?after=<seq>` on `yard.sock`,
    and reconnects on any stream end with the last `seq` seen (`0.1` s initial
-   backoff, capped at `5` s). Each `inbox_read` (`data.session == ""`,
+   backoff, capped at `5` s). Each `inbox_shown` or `inbox_read` (`data.session == ""`,
    `data.reader == crew`, `data.through >= seq`) transitions open `landed` rows
-   to `read` at once, each matching `replied` (`data.source`, `data.crew`,
+   to `read` (👀) at once — 👀 means the yard has shown the message to the crew
+   member (`inbox_shown`) or the crew acked it (`inbox_read`), and whichever
+   arrives first moves the row. Each matching `replied` (`data.source`, `data.crew`,
    `data.seq`) transitions open rows to `done` at once, and each matching `hook`
    resolves `crew` early; `/v1/send reply_to` and `react` continue to act
    immediately. A background fallback round (`read_states.refresh()`, also
@@ -60,7 +62,9 @@ when a core lacks `inbox_read` or `/events`.
    (`ROUND_SECONDS = 5`) only while open rows exist (`landed` or `read`),
    making zero native calls when idle. If `/events` is refused or `GetCrew`
    shows `cursor >= seq` after the stream caught up to `Head` without
-   `inbox_read`, the fallback reason is logged once. `landed` rows older than
+   `inbox_read`, the fallback reason is logged once (cores without `inbox_shown`
+   behave identically via `inbox_read` and the 5 s poll, with no new fallback
+   logged). `landed` rows older than
    24 h move to `expired` without a reaction. Every reaction check, Telegram
    `setMessageReaction` and `read_states` state update runs under the reactions
    `flock`, stepping only forward (`landed -> read -> done`), using
@@ -70,7 +74,7 @@ when a core lacks `inbox_read` or `/events`.
 ```mermaid
 stateDiagram-v2
   [*] --> landed: hook 2xx seq (🕊 via on_accept)
-  landed --> read: inbox_read stream / GetCrew cursor >= seq (👀)
+  landed --> read: inbox_shown / inbox_read stream / GetCrew cursor >= seq (👀)
   landed --> done: replied stream / Events / reply_to / react done (👌)
   read --> done: replied stream / Events / reply_to / react done (👌)
   landed --> manual: react none or other

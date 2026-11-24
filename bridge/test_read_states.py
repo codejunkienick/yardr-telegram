@@ -229,6 +229,13 @@ def inbox_read_event(seq, reader='yardmaster', through=10, session=''):
     )
 
 
+def inbox_shown_event(seq, reader='yardmaster', through=10, session=''):
+    return dict(
+        seq=seq, kind='inbox_shown', actor=reader, at='2026-11-24T09:30:00Z',
+        data=dict(reader=reader, through=through, session=session),
+    )
+
+
 def hook_event(seq, source='tgbridge', deliveries=None):
     return dict(
         seq=seq, id=str(seq), kind='hook', actor='hook:tgbridge', at='2026-11-21T16:00:00Z',
@@ -1578,6 +1585,49 @@ class ReadStateTests(ReadStateCase):
                              message='replied did not move row to done')
             self.assertEqual(self.reaction_emojis(), [DOVE, EYES, OK_HAND])
 
+            # inbox_shown behaves identically to inbox_read: non-line session ignored,
+            # line session moves landed -> read within 2 s with no ack, and later
+            # inbox_read does not re-send eyes.
+            self.calls.clear()
+            self.drain(self.update(uid=14))
+            seq14 = self.row(14)['seq']
+            self.native.push_event(inbox_shown_event(24, reader=self.CREW, through=seq14, session='hal'))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 24)
+            self.assertEqual(self.row(14)['state'], 'landed')
+
+            t_shown = time.monotonic()
+            self.native.push_event(inbox_shown_event(25, reader=self.CREW, through=seq14, session=''))
+            self._wait_until(lambda: (self.row(14) or {}).get('state') == 'read', timeout=2.0,
+                             message='inbox_shown did not move row to read')
+            self.assertLess(time.monotonic() - t_shown, 2.0)
+            self.native.push_event(inbox_read_event(26, reader=self.CREW, through=seq14, session=''))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 26)
+            self.assertEqual(self.row(14)['state'], 'read')
+            self.assertEqual(self.reaction_emojis(), [DOVE, EYES])
+
+            # Whichever arrives first: inbox_read first, then inbox_shown is a no-op.
+            self.calls.clear()
+            self.drain(self.update(uid=15))
+            seq15 = self.row(15)['seq']
+            self.native.push_event(inbox_read_event(27, reader=self.CREW, through=seq15, session=''))
+            self._wait_until(lambda: (self.row(15) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(inbox_shown_event(28, reader=self.CREW, through=seq15, session=''))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 28)
+            self.assertEqual(self.row(15)['state'], 'read')
+            self.assertEqual(self.reaction_emojis(), [DOVE, EYES])
+
+            # Out-of-order inbox_shown after done does not move the row back.
+            self.calls.clear()
+            self.drain(self.update(uid=16))
+            seq16 = self.row(16)['seq']
+            self.native.push_event(replied_event(29, seq16, crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.row(16) or {}).get('state') == 'done', timeout=2.0)
+            self.native.push_event(inbox_shown_event(30, reader=self.CREW, through=seq16, session=''))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 30)
+            self.assertEqual(self.row(16)['state'], 'done')
+            self.assertEqual(self.reaction_emojis(), [DOVE, OK_HAND])
+
     def test_stream_drop_resumes_from_last_seq_without_lost_or_duplicate_reaction(self):
         with patch.object(self.bridge, '_log', side_effect=self.logs.append):
             self.bridge.read_states.start()
@@ -1639,6 +1689,28 @@ class ReadStateTests(ReadStateCase):
             self.assertEqual(self.row(12)['state'], 'read')
             fallback_logs = [l for l in self.logs if 'did not emit inbox_read' in l]
             self.assertEqual(len(fallback_logs), 1)
+        self.bridge.read_states.stop()
+
+        # 3. Core without inbox_shown behaves identically: inbox_read turns eyes with
+        #    no new fallback log and no stream error, and invalid inbox_shown recovers.
+        self.logs.clear()
+        self.restart()
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+            self.drain(self.update(uid=13))
+            seq13 = self.row(13)['seq']
+            self.native.push_event(inbox_read_event(30, reader=self.CREW, through=seq13, session=''))
+            self._wait_until(lambda: (self.row(13) or {}).get('state') == 'read', timeout=2.0)
+            self.assertEqual([l for l in self.logs if 'fallback' in l or 'read states stream' in l], [])
+
+            self.native.push_event(inbox_shown_event(31, reader=self.CREW, through=-1, session=''))
+            self._wait_until(lambda: any('read states stream' in l for l in self.logs), timeout=2.0)
+            self.drain(self.update(uid=14))
+            seq14 = self.row(14)['seq']
+            self.native.push_event(inbox_shown_event(32, reader=self.CREW, through=seq14, session=''))
+            self._wait_until(lambda: (self.row(14) or {}).get('state') == 'read', timeout=3.0)
 
     def test_bridge_run_starts_and_stops_read_states_stream(self):
         ready = threading.Event()
@@ -2638,6 +2710,29 @@ class RealReadStateTests(BridgeTestCase):
                     except Exception:
                         pass
 
+                fixture = testyardr.store_fixture(root, 'nudge')
+                has_inbox_shown = False
+
+                def daemon(*args):
+                    nonlocal server
+                    testyardr.stop(server)
+                    try:
+                        res = subprocess.run([str(fixture), str(home), *args], capture_output=True, text=True, timeout=60)
+                        self.assertEqual(res.returncode, 0, res.stderr)
+                    finally:
+                        server = testyardr.restart(root, self.binary, home, command, env)
+
+                if fixture is not None:
+                    self.bridge.drain([self.update(98)])
+                    self.bridge.reaction_queue.join()
+                    probe_shown_seq = self.bridge.read_states.get(98)['seq']
+                    shown_probe_head = probe_client.call('Head', [])
+                    daemon('shown', 'writer', '', str(probe_shown_seq))
+                    shown_evs = probe_client.call('EventsSince', [shown_probe_head, 100]) or ()
+                    has_inbox_shown = any(e['kind'] == 'inbox_shown' for e in shown_evs)
+                    self.bridge.read_states._set_terminal(98, b.read_states.OPEN_STATES, 'done')
+                    probe_head = probe_client.call('Head', [])
+
                 t_probe = threading.Thread(target=probe_watch, daemon=True)
                 t_probe.start()
                 self.bridge.drain([self.update(99)])
@@ -2712,6 +2807,57 @@ class RealReadStateTests(BridgeTestCase):
                                and OK_HAND in emojis(101), timeout=2.0)
                     self.assertEqual(emojis(101), [DOVE, EYES, OK_HAND])
 
+                    shown_elapsed = None
+                    if has_inbox_shown:
+                        # Real yardr-w5pt core: inbox_shown turns 🕊 into 👀 within 2 s with no ack.
+                        cli('crew', 'set', 'writer', 'env_for_pat=' + str(root / 'writer.env'))
+                        self.bridge.drain([self.update(104)])
+                        self.bridge.reaction_queue.join()
+                        seq104 = self.bridge.read_states.get(104)['seq']
+                        self.assertEqual(emojis(104), [DOVE])
+                        daemon('shown', 'writer', 'pat', str(seq104))
+                        hal_head = probe_client.call('Head', [])
+                        wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= hal_head, timeout=3.0)
+                        self.assertEqual(self.bridge.read_states.get(104)['state'], 'landed')
+
+                        daemon('shown', 'writer', '', str(seq104))
+                        t_shown = time.monotonic()
+                        wait_until(lambda: self.bridge.read_states.get(104)['state'] == 'read'
+                                   and EYES in emojis(104), timeout=2.0,
+                                   msg='real inbox_shown did not turn to eyes within 2 s')
+                        shown_elapsed = time.monotonic() - t_shown
+                        self.assertLess(shown_elapsed, 2.0)
+                        self.assertLess(probe_client.call('GetCrew', {'name': 'writer'})['cursor'], seq104)
+                        cli('inbox', '--crew', 'writer', '--ack', str(seq104))
+                        ack_head = probe_client.call('Head', [])
+                        wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= ack_head, timeout=3.0)
+                        self.assertEqual(emojis(104), [DOVE, EYES])
+
+                        # Out-of-order inbox_shown after done does not move a row back.
+                        self.bridge.drain([self.update(105)])
+                        self.bridge.reaction_queue.join()
+                        seq105 = self.bridge.read_states.get(105)['seq']
+                        env['TGBRIDGE_SECRET'] = self.bridge.secret
+                        cli('reply', str(seq105), '--crew', 'writer', 'Done before inbox_shown')
+                        wait_until(lambda: self.bridge.read_states.get(105)['state'] == 'done'
+                                   and OK_HAND in emojis(105), timeout=2.0)
+                        daemon('shown', 'writer', '', str(seq105))
+                        shown_done_head = probe_client.call('Head', [])
+                        wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= shown_done_head, timeout=3.0)
+                        self.assertEqual(self.bridge.read_states.get(105)['state'], 'done')
+                        self.assertEqual(emojis(105), [DOVE, OK_HAND])
+
+                        # Secondary non-owner instance also transitions on inbox_shown without ack.
+                        secondary.drain([self.update(106)])
+                        secondary.reaction_queue.join()
+                        seq106 = secondary.read_states.get(106)['seq']
+                        daemon('shown', 'secretary', '', str(seq106))
+                        t_sec_shown = time.monotonic()
+                        wait_until(lambda: secondary.read_states.get(106)['state'] == 'read'
+                                   and EYES in emojis(106), timeout=2.0,
+                                   msg='secondary real inbox_shown did not turn to eyes within 2 s')
+                        self.assertLess(time.monotonic() - t_sec_shown, 2.0)
+
                     self.bridge.read_states.stop()
                     secondary.read_states.stop()
 
@@ -2772,10 +2918,11 @@ class RealReadStateTests(BridgeTestCase):
                                     br_fb.read_states.stop()
                     finally:
                         br_proxy.read_states.stop()
+                shown_note = f', shown={shown_elapsed:.3f}s' if shown_elapsed is not None else ''
                 print(
-                    f'Real core stream ({self.binary}, ndfm={has_inbox_read}): '
+                    f'Real core stream ({self.binary}, ndfm={has_inbox_read}, w5pt={has_inbox_shown}): '
                     f'ack={primary_ack_elapsed:.3f}s, replied={replied_elapsed:.3f}s, '
-                    f'secondary_ack={sec_elapsed:.3f}s'
+                    f'secondary_ack={sec_elapsed:.3f}s{shown_note}'
                 )
             finally:
                 if proxy is not None:

@@ -120,6 +120,13 @@ func main() {
 			panic("expected status")
 		}
 		must(st.CrewStatusFor(ctx, crew, "", os.Args[4]))
+	case "shown":
+		if len(os.Args) < 6 {
+			panic("expected session and seq")
+		}
+		seq, err := strconv.ParseUint(os.Args[5], 10, 64)
+		must(err)
+		must(st.MarkNotifiedFor(ctx, crew, os.Args[4], seq))
 	case "seed-session":
 		// As the yard claims a bead's session on a group with a kind but no
 		// model: ListSessions reads it with no model key.

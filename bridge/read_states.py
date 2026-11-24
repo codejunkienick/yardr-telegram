@@ -3,8 +3,8 @@
 When [reactions] read is configured (with [yardr] home), each accepted
 operator message gets a `read_states` ledger row in state `landed`. While the
 bridge runs, a stream worker follows `GET /events?after=<seq>` on the native
-socket to transition rows at once on `inbox_read` (line session `""`) and
-`replied`, while a fallback round runs at most once every 5 monotonic seconds
+socket to transition rows at once on `inbox_shown`, `inbox_read` (line session
+`""`) and `replied`, while a fallback round runs at most once every 5 monotonic seconds
 only while open rows exist:
 
 - EventsSince [seq-1, 1] once per message: the configured crew must appear
@@ -1004,16 +1004,17 @@ class ReadStates:
             else:
                 self._set_terminal(row['message_id'], OPEN_STATES, 'off', 'crew_not_in_deliveries')
 
-    def _handle_inbox_read_event(self, data):
+    def _handle_inbox_event(self, kind, data):
         reader = data.get('reader')
         through = data.get('through')
         session = data.get('session', '')
         if (not isinstance(reader, str) or not reader
                 or type(through) is not int or through < 0
                 or not isinstance(session, str)):
-            raise n.RPCAmbiguous('invalid native inbox_read event')
+            raise n.RPCAmbiguous(f'invalid native {kind} event')
         with self._stream_cv:
-            self._inbox_read_seen = True
+            if kind == 'inbox_read':
+                self._inbox_read_seen = True
             if session == '':
                 self._stream_inbox_read[reader] = max(self._stream_inbox_read.get(reader, 0), through)
             self._stream_cv.notify_all()
@@ -1042,8 +1043,8 @@ class ReadStates:
         data = event.get('data', {})
         if kind == 'hook':
             self._handle_hook_event(event['seq'], data)
-        elif kind == 'inbox_read':
-            self._handle_inbox_read_event(data)
+        elif kind in ('inbox_read', 'inbox_shown'):
+            self._handle_inbox_event(kind, data)
         elif kind == 'replied':
             self._handle_replied_event(data)
 

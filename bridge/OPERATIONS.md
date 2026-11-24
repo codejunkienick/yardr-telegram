@@ -2076,7 +2076,7 @@ repeat never stacks a second reaction and edits nothing the user wrote.
 | --- | --- | --- |
 | `on_accept` | `false` | `true` sets `seen` on each message once the yard has accepted it ("Inbound") |
 | `seen` | `"👀"` | the emoji for "the yard has the message" (with `read` enabled, typically `"🕊"`) |
-| `read` | unset (off) | optional emoji set once the target crew's inbox cursor passes the message's hook `seq` (typically `"👀"`; requires `[yardr] home`) |
+| `read` | unset (off) | optional emoji set once the yard has shown the message to the target crew (`inbox_shown`) or the crew's inbox cursor passes the message's hook `seq` (`inbox_read` / `GetCrew`; typically `"👀"`; requires `[yardr] home`) |
 | `nudge_after` | `0` (off) | integer seconds from `0` to `3600` (`0` off); when unread past this age while the crew is `running` and `idle` or `blocked`, offers one Nudge confirm card (requires `read`) |
 | `done` | `"👌"` | the emoji for "the work this message asked for is finished or answered" |
 
@@ -2190,8 +2190,10 @@ native calls are made.
 - **Stream and fallback rounds:** While `run` is active with `[reactions] read`
   and `[yardr] home`, a stream worker follows `GET /events?after=<seq>` on
   `home/yard.sock` (starting from `Head` and reconnecting on any stream end
-  with the last `seq` seen): `inbox_read` (`session == ""`, matching crew,
-  `through >= seq`) moves `landed` to `read` at once, `replied` (matching
+  with the last `seq` seen): `inbox_shown` or `inbox_read` (`session == ""`,
+  matching crew, `through >= seq`) moves `landed` to `read` at once — 👀 means
+  the yard has shown the message to the crew member (`inbox_shown`) or the crew
+  acked it (`inbox_read`), whichever arrives first — `replied` (matching
   `source`, `crew`, `seq`) moves open rows to `done` at once, and matching
   `hook` events resolve `crew` early. `read_states.refresh()` also runs in
   `poll_once` after `typed_nudge.refresh()` and from the open-row fallback
@@ -2229,7 +2231,9 @@ native calls are made.
   unexpected `Events` array shapes are logged once without breaking
   polling. On a core without `inbox_read` (or where `/events` is refused),
   the bridge logs the fallback once and still moves rows to `read` via the
-  5 s `GetCrew` poll while rows remain open.
+  5 s `GetCrew` poll while rows remain open; a core without `inbox_shown`
+  behaves identically via `inbox_read` and the 5 s poll with no new fallback
+  logged.
 - **Unread Nudge offer (`[reactions] nudge_after`):** an integer from `0` to
   `3600` (default `0`, off; a value above `0` without `read` refuses at load
   naming `reactions.nudge_after`). With `nudge_after > 0`, if the built-in

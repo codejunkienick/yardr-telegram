@@ -1,14 +1,11 @@
 """Offline pack adoption through a real native hook, store and reply caller."""
 import http.client
-import http.server
 import io
 import json
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import threading
-import time
 from urllib.parse import urlsplit
 
 import bridge as b
@@ -90,21 +87,7 @@ class NativeAdoptionTests(BridgeTestCase):
                     secret.chmod(0o600)
                     cli('hook', 'add', 'tgbridge', '--source', 'tgbridge', '--secret-file', str(secret),
                         '--unknown', 'ignore')
-                    # Core rejects hook_addr port 0; reserve a kernel-selected test port before restart.
-                    probe = testports.bind_test_server(http.server.BaseHTTPRequestHandler)
-                    port = probe.server_address[1]
-                    probe.server_close()
-                    cli('settings', 'set', 'hook_addr', f'127.0.0.1:{port}')
-                    testyardr.stop(server)
-                    log_path = root / 'server.log'
-                    with log_path.open('w') as log:
-                        server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root,
-                                                  stdout=log, stderr=log)
-                    deadline = time.monotonic() + 15
-                    while not re.search(r'hook receiver ready.*127\.0\.0\.1:' + str(port), log_path.read_text()):
-                        if server.poll() is not None or time.monotonic() > deadline:
-                            self.fail('isolated hook receiver did not start: ' + log_path.read_text())
-                        time.sleep(.02)
+                    server, port = testyardr.restart_with_hook(root, server, command, env, cli)
                     self.bridge.hook_url = f'http://127.0.0.1:{port}/hooks/tgbridge'
                     self.bridge.hook_secret = secret.read_text()
                     self.bridge.reactions['on_accept'], self.bridge.typing_seconds = False, 0

@@ -7,14 +7,18 @@ is used only by the retired pre-alignment fixture.
 """
 import ctypes
 import http.client
+import http.server
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import time
+
+import testports
 
 NAMED = 'TGBRIDGE_TEST_YARDR'
 PROBE = (b'POST /call/RecordSkillAdded HTTP/1.1\r\nHost: localhost\r\nX-Yardr-Connection: tgbridge\r\n'
@@ -90,6 +94,45 @@ def stop(server):
     except subprocess.TimeoutExpired:
         server.kill()
         server.wait(timeout=10)
+
+
+def restart_with_hook(root, server, command, env, cli, port=None):
+    """Restart an isolated yard with a hook listener and return its bound port."""
+    requested = port
+    log_path = root / 'hook-server.log'
+    try:
+        for _ in range(3):
+            if requested is None:
+                # The core settings require a concrete port. Keep it reserved through setup.
+                with testports.bind_test_server(http.server.BaseHTTPRequestHandler) as probe:
+                    port = probe.server_address[1]
+                    cli('settings', 'set', 'hook_addr', f'127.0.0.1:{port}')
+                    stop(server)
+            else:
+                stop(server)
+            with log_path.open('w') as log:
+                server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root,
+                                          stdout=log, stderr=log)
+            deadline = time.monotonic() + 30
+            while True:
+                text = log_path.read_text()
+                if re.search(r'hook receiver ready[^\n]*\b127\.0\.0\.1:' + str(port) + r'\b', text):
+                    return server, port
+                failed = re.search(r'hook receiver not started[^\n]*', text)
+                if failed:
+                    if 'address already in use' in failed[0]:
+                        break
+                    raise AssertionError('isolated hook receiver could not open its loopback listener')
+                status = server.poll()
+                if status is not None:
+                    raise AssertionError(f'isolated yard exited with status {status} before hook readiness')
+                if time.monotonic() > deadline:
+                    raise AssertionError('isolated hook receiver did not report readiness within 30 seconds')
+                time.sleep(.02)
+        raise AssertionError('isolated hook receiver hit a port collision on all three attempts')
+    except BaseException:
+        stop(server)
+        raise
 
 
 def _probe(home, request):

@@ -830,13 +830,19 @@ time.sleep(60)
         self.telegram.calls.clear()
         self.store = b.Store(self.root / 'state-big.sqlite3', 10)
         self.assert_failure(answer(), 'output_too_large', url=big.url)
-        closed = LoopbackHandler(self)
-        url = closed.url
-        closed.server.shutdown()
-        closed.server.server_close()
-        self.telegram.calls.clear()
-        self.store = b.Store(self.root / 'state-closed.sqlite3', 10)
-        self.assert_failure(answer(), 'handler_unreachable', url=url)
+
+        class RefusingServer(http.server.HTTPServer):
+            allow_reuse_address = False
+
+            def server_activate(self):
+                # Keep the port bound without accepting TCP connections.
+                pass
+
+        with testports.bind_test_server(http.server.BaseHTTPRequestHandler, RefusingServer) as closed:
+            url = f'http://127.0.0.1:{closed.server_address[1]}/hook'
+            self.telegram.calls.clear()
+            self.store = b.Store(self.root / 'state-closed.sqlite3', 10)
+            self.assert_failure(answer(), 'handler_unreachable', url=url)
 
     def test_the_url_deadline_covers_writing_the_request(self):
         clock = [1000.0]

@@ -7,7 +7,6 @@ import io
 import json
 from pathlib import Path
 import queue
-import re
 import socket
 import socketserver
 import sqlite3
@@ -295,6 +294,10 @@ class ReadStateCase(BridgeTestCase):
             reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND),
         )
         self.restart()
+
+    def tearDown(self):
+        self.doCleanups()
+        super().tearDown()
 
     def restart(self, **overrides):
         config = dict(self.config, **overrides)
@@ -1683,6 +1686,8 @@ class ReadStateTests(ReadStateCase):
             self.assertEqual(msg11_emojis, [DOVE, EYES])
 
     def test_stream_fallback_when_events_refused_or_inbox_read_absent(self):
+        self.addCleanup(
+            lambda: self.assertTrue(self.path.is_file(), 'read-state database removed before worker cleanup'))
         # 1. HTTP 404 on /events logs fallback reason once and polls within 5 s.
         self.native.stream_mode = 'http_404'
         with patch.object(self.bridge, '_log', side_effect=self.logs.append):
@@ -2277,6 +2282,7 @@ class RealReadStateTests(BridgeTestCase):
 
     def _start_yard(self, root):
         server, home, command, env = testyardr.start(root, self.binary)
+        callback = worker = None
 
         def cli(*args, ok=True, stdin=None):
             result = subprocess.run(command + list(args), env=env, cwd=root, input=stdin,
@@ -2314,9 +2320,6 @@ class RealReadStateTests(BridgeTestCase):
             b.stage_pack(b.render_pack(PACK, callback.server_address[1]), pack)
             checked = cli('pack', 'check', str(pack), ok=False)
             if checked.returncode:
-                callback.shutdown()
-                callback.server_close()
-                worker.join(timeout=5)
                 self.skipTest('pack check refused: ' + checked.stderr.strip())
             cli('pack', 'apply', str(pack), '--yes')
             cli('source', 'key', 'tgbridge', stdin='TGBRIDGE_SECRET=' + self.bridge.secret + '\n')
@@ -2333,23 +2336,16 @@ class RealReadStateTests(BridgeTestCase):
             secret.chmod(0o600)
             cli('hook', 'add', 'tgbridge', '--source', 'tgbridge', '--secret-file', str(secret),
                 '--unknown', 'ignore')
-            probe = testports.bind_test_server(http.server.BaseHTTPRequestHandler)
-            port = probe.server_address[1]
-            probe.server_close()
-            cli('settings', 'set', 'hook_addr', f'127.0.0.1:{port}')
-            testyardr.stop(server)
-            log_path = root / 'server.log'
-            with log_path.open('w') as log:
-                server = subprocess.Popen(command + ['server', 'run'], env=env, cwd=root, stdout=log, stderr=log)
-            deadline = time.monotonic() + 15
-            while not re.search(r'hook receiver ready.*127\.0\.0\.1:' + str(port), log_path.read_text()):
-                if server.poll() is not None or time.monotonic() > deadline:
-                    self.fail('isolated hook receiver did not start: ' + log_path.read_text())
-                time.sleep(.02)
+            server, port = testyardr.restart_with_hook(root, server, command, env, cli)
             env['TGBRIDGE_SECRET'] = self.bridge.secret
             return server, home, command, env, port, secret.read_text(), callback, worker
         except Exception:
             testyardr.stop(server)
+            if callback is not None:
+                if worker is not None and worker.is_alive():
+                    callback.shutdown()
+                    worker.join(timeout=5)
+                callback.server_close()
             raise
 
     def second_instance(self, root, cli, home, port, mono, wall):

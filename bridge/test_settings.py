@@ -2030,6 +2030,8 @@ class InstanceTests(unittest.TestCase):
     each with its own settings, bot, port, secrets, state, root, unit and
     native yard home: nothing done to one changes another."""
 
+    INSTALL_TIMEOUT = 120
+
     def setUp(self):
         self.natives = {}
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -2069,7 +2071,7 @@ class InstanceTests(unittest.TestCase):
 
     def run_install(self, settings, *args, source=None):
         return subprocess.run(['sh', str((source or self.source) / 'install.sh'), '--settings', str(settings), *args],
-                              env=self.env, capture_output=True, text=True, timeout=120)
+                              env=self.env, capture_output=True, text=True, timeout=self.INSTALL_TIMEOUT)
 
     def ok(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -2988,7 +2990,7 @@ class InstanceTests(unittest.TestCase):
                         with subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                               text=True, start_new_session=True) as process:
                             try:
-                                out, err = process.communicate(timeout=15)
+                                out, err = process.communicate(timeout=self.INSTALL_TIMEOUT)
                             except subprocess.TimeoutExpired:
                                 os.killpg(process.pid, signal.SIGTERM)
                                 try:

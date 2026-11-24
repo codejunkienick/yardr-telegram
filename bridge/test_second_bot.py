@@ -11,7 +11,6 @@ import http.server
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import signal
 import sqlite3
@@ -62,6 +61,7 @@ with open(TOP / 'lock', 'a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     state = json.loads((TOP / 'state.json').read_text())
     if method == 'getUpdates' and state.get('conflict'):
+        state['conflict_polls'] += 1
         status, answer = 409, dict(ok=False, error_code=409, description='Conflict: terminated by other getUpdates')
     elif method == 'getUpdates':
         state['polls'].append(body['offset'])
@@ -101,7 +101,7 @@ class FakeTelegram:
     def __init__(self, top, bin_dir, bot_id, username):
         self.top = Path(top)
         self.top.mkdir()
-        self.write(dict(bot_id=bot_id, username=username, updates=[], polls=[], sent=[], next=500))
+        self.write(dict(bot_id=bot_id, username=username, updates=[], polls=[], conflict_polls=0, sent=[], next=500))
         real = shutil.which('curl', path='/usr/local/bin:/usr/bin:/bin')
         if real is None:
             raise unittest.SkipTest('curl required for the installed bridge')
@@ -163,21 +163,13 @@ class Yard:
         case.addCleanup(lambda: testyardr.stop(self.server))
         self.cli('settings', 'set', 'operator', 'pat')
         self.cli('settings', 'set', 'default_kind', 'codex')
-        probe = testports.bind_test_server(http.server.BaseHTTPRequestHandler)
-        port = probe.server_address[1]
-        probe.server_close()
-        self.cli('settings', 'set', 'hook_addr', f'127.0.0.1:{port}')
+        self.hook_port = None
         self.restart()
 
     def restart(self):
-        testyardr.stop(self.server)
-        log_path = self.root / 'isolated-server.log'
-        with log_path.open('w') as log:
-            self.server = subprocess.Popen(self.command + ['server', 'run'], env=self.env, cwd=self.root,
-                                           stdout=log, stderr=log)
-        match = wait_for(lambda: re.search(r'hook receiver ready.*?addr[= ](?:"?)(127\.0\.0\.1:\d+)',
-                                           log_path.read_text()), 'the isolated hook receiver')
-        self.hook = 'http://' + match[1]
+        self.server, self.hook_port = testyardr.restart_with_hook(
+            self.root, self.server, self.command, self.env, self.cli, self.hook_port)
+        self.hook = f'http://127.0.0.1:{self.hook_port}'
 
     def run(self, *args, actor='pat', env=None):
         return subprocess.run([self.command[0], '--home', str(self.home), '--actor', actor, *args],
@@ -290,9 +282,26 @@ class SecondBotTests(unittest.TestCase):
         state.mkdir(parents=True, mode=0o700)
         primary_locks = home / '.config/odyssey-telegram'
         primary_locks.mkdir(parents=True, mode=0o700)
-        probe = testports.bind_test_server(http.server.BaseHTTPRequestHandler)
-        self.mayor_port = probe.server_address[1]
-        probe.server_close()
+        self.mayor_listener = testports.bind_test_server(http.server.BaseHTTPRequestHandler)
+        self.addCleanup(self.mayor_listener.server_close)
+        self.mayor_port = self.mayor_listener.server_address[1]
+        self.callback_fixture = self.root / 'callback-fixture'
+        self.callback_fixture.mkdir()
+        (self.callback_fixture / 'sitecustomize.py').write_text(
+            'import http.server, os, socket\n'
+            'fd = os.environ.pop("CALLBACK_FD", None)\n'
+            'if fd is not None:\n'
+            '    class CallbackServer(http.server.ThreadingHTTPServer):\n'
+            '        def server_bind(self):\n'
+            '            listener = socket.socket(fileno=int(fd))\n'
+            '            if self.server_address != listener.getsockname():\n'
+            '                listener.detach()\n'
+            '                return super().server_bind()\n'
+            '            self.socket.close()\n'
+            '            self.socket = listener\n'
+            '            self.server_name, self.server_port = self.server_address\n'
+            '    http.server.ThreadingHTTPServer = CallbackServer\n',
+        )
         settings = private(config / 'telegram-bridge.toml', f'''yard = "odyssey"
 crew = "mayor"
 unit = "odyssey-mayor-telegram.service"
@@ -361,9 +370,12 @@ seconds = 0
     def start_mayor(self, root, env):
         self.starts = getattr(self, 'starts', 0) + 1
         self.mayor_log = self.root / f'mayor-bridge-{self.starts}.log'
+        # The installed pack publishes a concrete port that must survive both process restarts.
+        fd = self.mayor_listener.fileno()
+        env = dict(env, PYTHONPATH=str(self.callback_fixture), CALLBACK_FD=str(fd))
         with self.mayor_log.open('w') as log:
             process = subprocess.Popen([str(root / 'bin/telegram-bridge'), 'run'], env=env, cwd=self.root,
-                                       stdout=log, stderr=log)
+                                       stdout=log, stderr=log, pass_fds=(fd,))
         self.addCleanup(self.stop_mayor, process)
         wait_for(lambda: process.poll() is not None or 'Telegram bridge ready' in self.mayor_log.read_text(),
                  'the mayor bridge')
@@ -548,12 +560,13 @@ seconds = 0
         # The stale tap is refused as a native card; the foreign sender's message is dropped unrelayed.
         self.assertEqual([(c['method'], c['body'].get('text')) for c in self.telegram.sent()][2:],
                          [('answerCallbackQuery', 'Native card not authorized')])
-        polls = len(self.telegram.change()['polls'])
-        self.telegram.change(lambda state: state.update(conflict=True))
+        polls = self.telegram.change(lambda state: state.update(conflict=True))['polls']
         self.assertEqual(process.wait(timeout=30), 2)
         self.assertIn('another Telegram poller or webhook owns this bot', self.mayor_log.read_text())
-        sent = self.telegram.sent()
-        self.assertEqual(len(self.telegram.change()['polls']), polls)
+        stopped = self.telegram.change()
+        self.assertEqual(stopped['polls'], polls)
+        self.assertEqual(stopped['conflict_polls'], 1)
+        sent = stopped['sent']
         print(f'Mayor slice: release SHA256SUMS {self.release_sums}; inbox {len(events)} events (relay + bot) kept '
               f'through a yard and a bridge restart; {len(sent)} Telegram writes, '
               f'{len(receipts)} durable reply receipt(s); cross-credential 403 x3; ungranted/revoked/native calls '

@@ -78,7 +78,7 @@ class TopicSettingsTests(unittest.TestCase):
     def test_a_file_without_topics_loads_to_a_config_without_them(self):
         config = self.load('').config
         expected = dict(yard='test-city', account_id='test_bot', hook_url='http://127.0.0.1:8797/hooks/tgbridge',
-                        yardr_source='tgbridge', agent='yardmaster', user_display_name='Pat', timezone='Asia/Tokyo',
+                        yardr_source='tgbridge', yardr_cards=False, agent='yardmaster', user_display_name='Pat', timezone='Asia/Tokyo',
                         menu=MENU, bot_id=999, user_id=123, chat_id=123, unit='test-city-telegram.service',
                         protected_paths=config['protected_paths'])
         self.assertEqual(config, expected)

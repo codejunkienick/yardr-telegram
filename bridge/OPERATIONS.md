@@ -18,7 +18,8 @@ one to fix; where this guide differs from `bridge/bridge.py`, the code is.
 
 Every bot runs its own bridge process from this one `bridge.py`, configured
 only by its own settings file. Several bots may share a yard, with distinct
-sources and state directories; the primary alone enables native cards.
+sources and state directories. Every instance has the same message states;
+`[yardr] cards` names the one native-card owner independently of reads and nudges.
 See [the second-bot procedure](../yardr/SETUP.md#add-a-second-crew-members-bot).
 Below, `<repo>` is
 this repository's directory and `<settings>` that bridge's settings file.
@@ -79,8 +80,11 @@ default yard.
 | `[yardr]` `hook_url` | yes | the yard's hook: `http://<host>:<port>/hooks/<name>`, the host `127.0.0.1`, `::1` or `localhost`, with no user, query or fragment, at most 256 characters |
 | `[yardr]` `hook_secret_file` | yes | owner-only file holding the hook's secret, sent as `X-Tgbridge-Secret`; a file other than the token and the callback secret (`install.sh` creates a missing one, as for the callback secret) |
 | `[yardr]` `source` | no | the declared source's name in the yard, in the lines `topics` prints; default `tgbridge` |
+| `[yardr]` `home` | no | existing private yard home for message-state reads on any instance; socket is `home/yard.sock` |
+| `[yardr]` `operator` | no | current operator mapped to the paired Telegram user on this source; requires home, enables verified nudges and configured operator commands |
+| `[yardr]` `cards` | no | native-card ownership: true on exactly one instance, false on all others; true needs home+operator. Omitted preserves legacy home+operator ownership with a migration WARN |
 | `[bot]` `bot_id`, `user_id`, `chat_id`, `account_id` | yes | positive numeric ids (`chat_id` equals `user_id`: a private chat), the bot username as the account |
-| `lock_dir` | no | where the per-bot lock lives; default the token file's directory |
+| `lock_dir` | no | shared directory for per-bot and per-yard native-card locks; default the token file's directory |
 | `unit` | no | service name: the systemd unit name on Linux and WSL 2, and on macOS the source of the launchd label (this name without its `.service` suffix); default `<yard>-telegram.service` |
 | `python` | no | interpreter for the unit and the transcriber; default `/usr/bin/python3` |
 | `user_display_name` | no | the name of the paired user on relayed messages (`from.name`) and in the message log; default `User` |
@@ -556,7 +560,7 @@ does, and leaves the machine whole. Mail stays unread in the yard: reading
 it in Telegram acknowledges nothing. Without `[yardr.mail]`, `/v1/tell` is
 as described above.
 
-To turn it on, on the primary bridge: add an empty `[yardr.mail]` table to
+To turn it on, on an instance with home and operator: add an empty `[yardr.mail]` table to
 the settings, run `<root>/bin/telegram-bridge --settings <settings> probe`
 (the first start with it: mail before is never sent), then restart the
 unit. To turn it off, remove the table and restart; the ledger and the
@@ -2153,7 +2157,7 @@ message to react to`.
 
 ### Read and done from the yard
 
-When `[reactions] read` is set (together with `[yardr] home` and `operator`;
+When `[reactions] read` is set (together with `[yardr] home`;
 recommended activation: `on_accept = true`, `seen = "🕊"`, `read = "👀"`,
 `done = "👌"`), the accept point also inserts a row in the `read_states`
 ledger table (`message_id` PK, `conversation_id`, `thread_id`, `seq`,
@@ -2200,7 +2204,7 @@ native calls are made.
   unchanged, and `none` or any other emoji sets `manual` and stops
   tracking. A delivered `/v1/send` with `reply_to` naming an open row
   moves it to `done`.
-- **Degrade cases:** without `[yardr] home` (such as a secondary bridge),
+- **Degrade cases:** without `[yardr] home`,
   loading with `reactions.read` refuses with `SettingsError` naming
   `reactions.read`. A missing socket (`RPCUnavailable`/`RPCAmbiguous`)
   logs once while it stands, never stalls the inbound cursor, and retries
@@ -2752,9 +2756,18 @@ through).
 `run_asks.py` owns native socket framing, payload checks, rendering and the
 SQLite state machine. `bridge.py` supplies its existing ledger-backed
 transport, routing, callbacks and ordinary asks. The optional `[yardr] home`
-and `operator` settings must be set together. The socket is always resolved
+allows reads on every instance; `operator` additionally enables verified operator acts.
+Native cards require `cards = true` with both keys (legacy home+operator files
+retain ownership and check-install warns to set cards explicitly). The socket is always resolved
 `home/yard.sock`; check-install verifies its owner/type and current operator
-mapping. No sandbox write exceptions are installed for native cards.
+mapping, or reads every configured conversation crew when no operator is set.
+No sandbox write exceptions are installed for native cards.
+
+Only the polling `run` command takes the yard's native-card ownership lock,
+inside the bot lock and held for the process lifetime. Every instance on
+the host must use the same `lock_dir`; a second owner refuses startup with
+the instruction to set `cards = false` on one of them. CLI sends, probes,
+card publishing and ask-close do not take this process lock.
 
 Authenticated `POST /v1/run-ask` accepts exactly `bead`, positive `ask`,
 `topic`/`conversation`, `silent`, and `key` (or Idempotency-Key). It reads
@@ -3647,7 +3660,7 @@ core baseline and pending independent-runtime deployment prerequisite.
 
 ## /decide: the operator's open decisions
 
-With native `[yardr] home` and `operator` set, `/decide` is the bridge's own
+With `[yardr] cards = true` (home and operator required), `/decide` is the bridge's own
 command. It is never relayed and runs no add-on. Without those keys a
 `[[command]]` named `decide` and its `decide:` prefix keep their handler, as
 before.

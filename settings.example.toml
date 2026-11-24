@@ -25,14 +25,17 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 # (the yard's hook_addr) and the hook's name, and the secret the hook was
 # added with (yardr hook add tgbridge --source tgbridge --secret-file <it>).
 [yardr]
-# Optional native cards: set BOTH on the primary bridge after binding the operator.
-# A second crew bot in the same yard omits home/operator; native asks are yard-wide.
+# Every instance can read its crew's message states with home and reactions.read.
+# Add operator for verified /nudge and unread-message offers, after binding its identity.
+# Set cards = true on exactly one bridge per yard, false on every other bridge.
+# Without cards, home+operator keeps owning cards for compatibility (check-install warns).
 # Single-file skill snapshots also require the core captured-snapshot capability
 # (a79f6f8162c8 or compatible); complete review parts precede weighted confirmation.
 # Herdr group add/set cards need core fc7375cf5ad4 or compatible, and nothing more here.
 # See yardr/SETUP.md. No new settings, blanket grant or yard filesystem writes.
 # home = "~/.yardr"                 # private existing yard; socket is home/yard.sock
 # operator = "operator"             # current operator user mapped to bot.user_id
+# cards = true                     # owns native /decide and approvals; use false on every other instance
 hook_url = "http://127.0.0.1:8795/hooks/tgbridge"
 hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints it
 # source = "tgbridge"                       # the rendered pack/source name; unique per bridge in a yard
@@ -101,7 +104,7 @@ description = "Show the agent's status"
 # on_accept = true                          # set `seen` once the yard has a message; default false: no reaction unless an agent runs react
 # seen = "👀"                               # default 👀 (set "🕊" when `read` is enabled)
 # read = "👀"                               # optional: mark read once the crew's inbox ack passes the hook seq (requires [yardr] home)
-# nudge_after = 300                         # optional: seconds unread before offering a Nudge button while crew is idle/blocked (0-3600, default 0 off; requires `read`)
+# nudge_after = 300                         # optional: seconds unread before a Nudge offer while crew is idle/blocked (0-3600, default 0 off; requires read, home+operator, built-in /nudge and core NudgeSession; independent of cards)
 # done = "👌"                               # `yardr call tgbridge react reaction=done`; default 👌 (✅ is not an allowed reaction)
 
 # "typing..." in the chat after each message the yard accepts, until the next

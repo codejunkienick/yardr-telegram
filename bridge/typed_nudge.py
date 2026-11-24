@@ -215,7 +215,7 @@ class TypedNudge:
 
     @property
     def client(self):
-        return self.ra.client
+        return self.bridge.yard_client()
 
     def log(self, words):
         # Said once while it stands, not on every poll.
@@ -243,7 +243,7 @@ class TypedNudge:
         return [row for row in rows if row['binding'] == self.binding_digest()]
 
     def binding_digest(self):
-        return n.digest(self.ra.binding())
+        return n.digest(n.binding_of(self.config))
 
     def verify(self):
         n.verify_operator(self.client, self.config)
@@ -518,6 +518,7 @@ class TypedNudge:
         if not candidates:
             return False
         try:
+            self.ra.require_client()
             if len(candidates) != 1:
                 raise n.NativeError('Native nudge card message binding ambiguous')
             run = candidates[0]
@@ -555,7 +556,7 @@ class TypedNudge:
         back to the request's own session_nudge_requested, or the start."""
         ra, limit = self.ra, 64
         while True:
-            events = ra._validate_events(ra.client.call('Events', [journal, limit]), journal, limit, 'nudge outcome')
+            events = ra._validate_events(self.client.call('Events', [journal, limit]), journal, limit, 'nudge outcome')
             found = [e for e in events if e['kind'] == 'session_nudged' and e['data'].get('id') == ident]
             if len(found) > 1:
                 raise n.NativeError('invalid native duplicate session_nudged')
@@ -603,7 +604,7 @@ class TypedNudge:
         if not self.bridge.native_nudge():
             return
         ra = self.ra
-        if ra.client is None or not self.config.get('yardr_operator'):
+        if self.client is None or not self.config.get('yardr_operator'):
             return
         with ra.lock():
             rows = [row for row in self.rows() if row['state'] in ('following', 'telling')]

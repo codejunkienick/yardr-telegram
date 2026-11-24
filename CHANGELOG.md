@@ -16,6 +16,12 @@ sees and does, not how the code is organised.
 
 ### Added
 
+- Message states on every bridge instance: `[yardr] home` alone enables
+  read/done tracking; `operator` enables verified nudges independently of
+  native-card ownership. New `cards` selects the single native-card owner.
+  Existing home+operator settings keep ownership with a migration warning.
+  Startup and `check-install` report states and off reasons per instance;
+  a shared-lock-directory fence refuses a second card owner for the same yard.
 - Unread-message Nudge offer (`[reactions] nudge_after`): when configured
   with `[reactions] read` and the built-in `/nudge`, messages left at
   `landed` (🕊) past `nudge_after` seconds while their target crew is

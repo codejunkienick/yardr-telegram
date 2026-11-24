@@ -137,7 +137,8 @@ run from a checkout:
 
 Install never starts, stops or restarts a service and never contacts
 Telegram. Where the settings name a `[yardr] home`, `check-install` (in a
-dry-run too) asks that yard's socket for the operator, a read, so that yard
+dry-run too) asks that yard's socket for the operator, or for every configured
+conversation crew without an operator. These are reads, so that yard
 must be running; install writes nothing to it. It prints the `next:` line
 the operator runs. Because `current` moves at activation, the new release is
 what the unit runs at its next start, whoever starts it, including a
@@ -177,10 +178,20 @@ Several bots may now share one yard's home/socket. The same-yard test uses
 distinct pack/source names, the same operator and chat/message IDs, separate
 bridge ledgers and real native hooks/RPC. It proves independent replies and
 readback, a replay after native accept but before cursor advance, per-ledger
-key conflicts and native refusal by the secondary. The primary alone keeps
-the optional native `home`/`operator` keys: native asks have no source
+key conflicts and native refusal by the secondary. Both can set `home` for
+read/done reactions and `operator` for verified nudges. Exactly one sets
+`cards = true` (the others `false`): native asks have no source
 destination and are not partitioned by a crew name. Both installations use
-the same bot lock directory; their bot-id lock files stay distinct.
+the same lock directory; their bot-id lock files stay distinct, while
+the owner also holds `yardr-cards-<device>-<inode>.lock` for the yard home.
+Home+operator without `cards` retains legacy ownership with a migration WARN.
+Before rolling back to a release without `cards`, restore each non-owner's
+prior settings: remove `cards`, `home`, `operator`, `reactions.read` and
+`reactions.nudge_after`, plus any `[yardr.quota]`, `[yardr.mayor_model]` or
+`[yardr.mail]` tables added with them. Removing only `cards = false` would make
+home+operator claim native cards under the older release's legacy rule.
+The owner can remove `cards = true` and keep home+operator. The older release
+checks settings before activation; no ledger schema changes are needed.
 
 ## Host resources
 
@@ -195,7 +206,7 @@ the same bot lock directory; their bot-id lock files stay distinct.
 | `python3` (the settings' `python`), curl, ffmpeg, sha256sum, git (at install only), systemd `--user` or launchd | host dependency | Host packages, shared. |
 | The service-file directory and loopback ports | host dependency | A host namespace: unit names and ports are unique per settings file. |
 | Settings, token, secrets, `state_dir` (ledger, offset, message log), the bot | per instance | Never shared. Install writes none of them, except to mint a missing secret. |
-| The yard home and socket | per yard | Shared by bridges serving that yard; native card authority is enabled on the primary alone. |
+| The yard home and socket | per yard | Shared reads on every bridge; home+operator enables verified nudges. Explicit cards = true selects one native-card owner, fenced through the shared lock_dir. |
 | `lock_dir` | per host user | Shared by pollers; each bot id has a separate lock file, so a second local poller of that bot refuses. |
 
 After an install or rollback, the operator repeats `yardr skill add`

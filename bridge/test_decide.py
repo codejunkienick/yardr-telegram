@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 import testyardr  # noqa: E402
-from test_bridge import BridgeTestCase, write_settings  # noqa: E402
+from test_bridge import BridgeTestCase, MENU, write_settings  # noqa: E402
 from test_run_asks import NativeCase, NativeSocket, decision, group_add_proposal, pack_proposal, source_proposal, proposal, general_proposal  # noqa: E402
 
 n = b.run_asks
@@ -685,7 +685,7 @@ class DecideTests(DecideCase):
 
 
 class DecideNamespaceTests(BridgeTestCase):
-    def native_settings(self, extra='', native=True):
+    def native_settings(self, extra='', native=True, cards=None):
         root = Path(self.tmp.name)
         home = root / 'yard'
         home.mkdir(mode=0o700, exist_ok=True)
@@ -693,6 +693,8 @@ class DecideNamespaceTests(BridgeTestCase):
         text = path.read_text()
         if native:
             text = text.replace('[yardr]\n', f'[yardr]\nhome = "{home}"\noperator = "pat"\n')
+        if cards is not None:
+            text = text.replace('[yardr]\n', '[yardr]\ncards = ' + str(cards).lower() + '\n')
         path.write_text(text + extra)
         return path
 
@@ -714,6 +716,20 @@ class DecideNamespaceTests(BridgeTestCase):
         self.assertEqual(bridge._match_command('/decide x')[0]['name'], 'decide')
         self.assertIsNot(bridge._callback_command('decide:1'), None)
         self.assertEqual(bridge._publish_keyboard([[dict(text='x', callback_data='decide:1')]])[1], None)
+        for extra in (handler.format('decide'), handler.format('mine') + 'callback_prefix = "decide:"\n',
+                      '\n[[menu]]\ncommand = "decide"\ndescription = "x"\n'):
+            loaded = b.load_settings(self.native_settings(extra, cards=False))
+            bridge = b.Bridge(loaded.config, self.store, 'T', 'C', request=self.transport)
+            self.assertFalse(bridge.native_decide())
+            self.assertIsNone(bridge.run_asks.client)
+            self.assertIsNotNone(bridge.yard_client())
+        for owner in (False, True):
+            count = b.MENU_MAX - len(MENU) - int(owner)
+            entries = ''.join(handler.format('c' + str(i)) for i in range(count))
+            loaded = b.load_settings(self.native_settings(entries, cards=owner))
+            self.assertEqual(sum(c['menu'] for c in loaded.config['commands']) + len(MENU) + int(owner), b.MENU_MAX)
+            with self.assertRaisesRegex(b.SettingsError, 'at most 100'):
+                b.load_settings(self.native_settings(entries + handler.format('overflow'), cards=owner))
 
     def test_native_menu_publish_and_routing_own_decide(self):
         loaded = b.load_settings(self.native_settings())
@@ -1276,6 +1292,50 @@ class RealDecideTests(BridgeTestCase):
         self.assertEqual(client.call('Bead', dict(bead='rep-1', viewer='pat'))['asks'][0]['state'], 'open')
         tap(f"askcard:{rep_row['id']}:pick1:{rep_row['turn']}", rep_row['message_id'], 16)
         self.assertEqual(client.call('Bead', dict(bead='rep-1', viewer='pat'))['stage'], 'new')
+
+        retained = []
+        for kind in ('run', 'decision'):
+            bead = 'run-1' if kind == 'run' else 'sample-1'
+            args = ('--run', 'source set tgbridge updates_per_hour=299') if kind == 'run' else ('--option', 'Keep: Keep it.')
+            number = asked(bead, 'Retained card after ownership changes?', '--to', 'pat',
+                           '--context', 'Synthetic ownership downgrade', *args)
+            api = bridge.api_run_ask if kind == 'run' else bridge.api_ask_card
+            self.assertTrue(api(dict(bead=bead, ask=number, key='retained-' + kind))['delivered'])
+            retained.append(bridge.run_asks.get(bridge.run_asks.ident(bead, number)))
+        relayed = []
+        def secondary_transport(url, body, *args, **kwargs):
+            if url == self.config['hook_url']:
+                relayed.append(body)
+                return 200, dict(seq=9999)
+            return telegram(url, body, *args, **kwargs)
+        bridge = b.Bridge(dict(self.config, yardr_cards=False), self.store, 'TOKEN', 'CAPABILITY',
+                          request=secondary_transport)
+        calls = []
+        real_call = n.YardSocketClient.call
+        def observed(socket, method, arguments):
+            calls.append(method)
+            return real_call(socket, method, arguments)
+        with patch.object(n.YardSocketClient, 'call', observed):
+            for uid, row in enumerate(retained, 100):
+                decision = row.get('kind') == 'decision'
+                data = (f"askcard:{row['id']}:pick1:{row['turn']}" if decision else f"runask:{row['id']}:approve")
+                tap(data, row['message_id'], uid)
+                self.assertIn('native_run_asks_not_configured', str(self.calls[-1][1]))
+                bridge.inbound(dict(update_id=uid + 10, message=dict(message_id=uid + 10, text='1',
+                    chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+                    reply_to_message=dict(message_id=row['message_id']))))
+                for selector in (dict(message_id=row['message_id']),
+                                 dict(ask_key='retained-' + ('decision' if decision else 'run'))):
+                    refusal = bridge.api_ask_close(dict(selector, decision='ignored'))
+                    self.assertIn('not_configured', refusal['reason'])
+            bridge.run_asks.refresh()
+            bridge.siding_cards.refresh()
+            bridge.nudge_cards.refresh()
+            self.assertEqual(calls, [])
+            self.assertEqual(len(relayed), 1)
+        for row in retained:
+            ask = next(a for a in client.call('Bead', dict(bead=row['bead'], viewer='pat'))['asks'] if a['ask'] == row['ask'])
+            self.assertEqual(ask['state'], 'open')
 
 
 if __name__ == '__main__':

@@ -3249,6 +3249,49 @@ class ConflictExitStatusTests(BridgeTestCase):
                 with patch.object(b.Bridge, 'run') as run, patch.object(b.signal, 'signal', lambda *a, **k: None):
                     run_main(self, 'bridge.py', '--settings', str(duplicate), 'run')
                     run.assert_called_once()
+            home = Path(root) / 'yard'
+            home.mkdir(mode=0o700)
+            duplicate.write_text(duplicate.read_text().replace('[yardr]',
+                                 f'[yardr]\nhome = "{home}"\noperator = "pat"\ncards = true'))
+            info = home.stat()
+            card_path = Path(root) / 'private' / f'yardr-cards-{info.st_dev}-{info.st_ino}.lock'
+            bot_path = Path(root) / 'private/telegram-bot-998.lock'
+            with card_path.open('a') as lock:
+                b.fcntl.flock(lock, b.fcntl.LOCK_EX | b.fcntl.LOCK_NB)
+                with patch.object(b.Bridge, 'run') as run:
+                    with self.assertRaisesRegex(b.TransportError, "another bridge already owns this yard's native cards"):
+                        run_main(self, 'bridge.py', '--settings', str(duplicate), 'run')
+                    run.assert_not_called()
+                with patch.object(b.Bridge, 'probe') as probe, patch('sys.stdout', io.StringIO()):
+                    run_main(self, 'bridge.py', '--settings', str(duplicate), 'probe')
+                    probe.assert_called_once()
+                body = Path(root) / 'message.txt'
+                body.write_text('Synthetic message')
+                with patch.object(b, '_dispatch_outbound', return_value='77') as send, patch('sys.stdout', io.StringIO()):
+                    run_main(self, 'bridge.py', '--settings', str(duplicate), 'send', '--body-file', str(body),
+                             '--idempotency-key', 'synthetic-send')
+                    send.assert_called_once()
+                with patch.object(b.Bridge, 'api_run_ask', return_value=dict(delivered=True)) as publish, \
+                        patch('sys.stdout', io.StringIO()):
+                    run_main(self, 'bridge.py', '--settings', str(duplicate), 'run-ask', '--bead', 'sample-1',
+                             '--ask', '7', '--idempotency-key', 'synthetic-card')
+                    publish.assert_called_once()
+                with patch.object(b.Bridge, 'close_ask', return_value=dict(delivered=True, message_id='77')) as close, \
+                        patch('sys.stdout', io.StringIO()):
+                    run_main(self, 'bridge.py', '--settings', str(duplicate), 'ask-close', '--message-id', '77',
+                             '--decision', 'Synthetic decision')
+                    close.assert_called_once()
+                duplicate.write_text(duplicate.read_text().replace('cards = true', 'cards = false'))
+                with patch.object(b.Bridge, 'run') as run, patch.object(b.signal, 'signal'):
+                    run_main(self, 'bridge.py', '--settings', str(duplicate), 'run')
+                    run.assert_called_once()
+            duplicate.write_text(duplicate.read_text().replace('cards = false', 'cards = true'))
+            def assert_locks():
+                for path in (card_path, bot_path):
+                    with path.open('a') as held, self.assertRaises(BlockingIOError):
+                        b.fcntl.flock(held, b.fcntl.LOCK_EX | b.fcntl.LOCK_NB)
+            with patch.object(b.Bridge, 'run', side_effect=assert_locks), patch.object(b.signal, 'signal'):
+                run_main(self, 'bridge.py', '--settings', str(duplicate), 'run')
 
     def test_conflict_exit_status_is_a_run_only_flag_of_0_to_255(self):
         parser = b._build_parser()
@@ -3397,10 +3440,21 @@ class HeartbeatTests(BridgeTestCase):
                 b.Bridge._write_heartbeat(linked / 'telegram-bridge-heartbeat.json', '{}')
 
     def test_write_failure_keeps_the_poll_loop_running(self):
-        with patch.object(self.bridge, 'heartbeat_path', return_value=Path(self.tmp.name) / 'missing-dir' / 'hb.json'):
+        self.bridge.config.update(commands=None, topics=None, reactions=None)
+        with patch.object(self.bridge, 'heartbeat_path', return_value=Path(self.tmp.name) / 'missing-dir' / 'hb.json'), \
+                patch.object(self.bridge, '_log') as log:
             self.poll_once((200, dict(ok=True, result=[self.update(10)])))
+        for line in b.message_state_report(self.bridge.config):
+            self.assertEqual(log.call_args_list.count(((line,), {})), 1)
         # The update was still drained: the cursor moved past it.
         self.assertEqual(self.store.offset(), 11)
+        config = dict(self.bridge.config, yardr_home=self.tmp.name, yardr_operator='pat', yardr_cards=False,
+                      reactions=dict(read='👀', nudge_after=300))
+        self.bridge = b.Bridge(config, self.store, 'SECRET', 'CAPABILITY', request=self.transport)
+        with patch.object(self.bridge, '_log') as log:
+            self.poll_once((200, dict(ok=True, result=[])))
+        self.assertTrue(any('nudge offer off (built-in /nudge unavailable)' in call.args[0]
+                            for call in log.call_args_list))
 
 
 class SetCommandsTests(unittest.TestCase):

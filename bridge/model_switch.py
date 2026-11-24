@@ -430,7 +430,7 @@ class ModelSwitch:
         return canonical([os.path.realpath(self.config['yardr_home']), self.config['yardr_mayor_model']['crew']])
 
     def verify(self):
-        n.verify_operator(self.bridge.run_asks.client, self.config)
+        n.verify_operator(self.bridge.yard_client(), self.config)
 
     def answer(self, uid, query, text, alert=False):
         return self.bridge._answer_callback(uid, query, text, alert)

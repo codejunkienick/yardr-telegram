@@ -2495,6 +2495,53 @@ class NativeTests(NativeCase):
         self.assertTrue(self.bridge.api_ask_close(dict(ask_key='native-1', decision='ignored'))['delivered'])
         self.assertEqual(len(self.calls), calls)
 
+        self.reset_native(proposal())
+        self.assertTrue(self.create()['delivered'])
+        self.exercise_non_owner_rows()
+        self.create_decision()
+        self.exercise_non_owner_rows()
+
+    def exercise_non_owner_rows(self):
+        owner = self.bridge
+        old_binding = {key: str(self.config.get(key, 'tgbridge' if key == 'yardr_source' else '')) for key in
+                       ('yard', 'yardr_home', 'yardr_operator', 'yardr_source', 'bot_id', 'user_id', 'chat_id')}
+        self.assertEqual(owner.run_asks.binding(), old_binding)
+        owner.run_asks.claim_update(90000)
+        relayed = []
+        def request(url, body, *args, **kwargs):
+            if url == self.config['hook_url']:
+                relayed.append(body)
+                return 200, dict(seq=91001)
+            return owner.request(url, body, *args, **kwargs)
+        self.bridge = b.Bridge(dict(self.config, yardr_cards=False, hook_secret='SYNTHETIC'), self.store,
+                               'TOKEN', 'CAPABILITY', request=request)
+        try:
+            self.assertEqual(n.binding_of(self.bridge.config), old_binding)
+            self.assertFalse(self.bridge.run_asks.claim_update(90000))
+            self.assertEqual(self.bridge.typed_nudge.binding_digest(), n.digest(old_binding))
+            self.native.calls.clear()
+            self.press('pick1' if self.row().get('kind') == 'decision' else 'approve', uid=91000)
+            self.assertIn('native_run_asks_not_configured', str(self.calls[-1][1]))
+            self.reply('1', uid=91001)
+            self.assertEqual(len(relayed), 0 if self.row().get('kind') == 'decision' else 1)
+            key = 'decision-1' if self.row().get('kind') == 'decision' else 'native-1'
+            for selector in (dict(message_id=self.row()['message_id']), dict(ask_key=key)):
+                receipt = self.bridge.api_ask_close(dict(selector, decision='ignored'))
+                self.assertFalse(receipt['delivered'])
+                self.assertIn('not_configured', receipt['reason'])
+            for api in (self.bridge.api_run_ask, self.bridge.api_ask_card):
+                refused = api(dict(bead='sample-1', ask=7, key='secondary-create'))
+                self.assertFalse(refused['delivered'])
+                self.assertIn('not_configured', refused['reason'])
+            self.bridge.run_asks.refresh()
+            self.bridge.siding_cards.refresh()
+            self.bridge.nudge_cards.refresh()
+            with self.assertRaisesRegex(n.NativeError, 'native_run_asks_not_configured'):
+                self.bridge.run_asks.record_depot_cutover()
+            self.assertEqual(self.native.calls, [])
+        finally:
+            self.bridge = owner
+
     def test_decline_and_take_back_use_canonical_words_without_execution(self):
         for factory in (proposal,):
             with self.subTest(payload=factory.__name__):
@@ -6941,7 +6988,12 @@ class NativeSettingsTests(unittest.TestCase):
             yard.mkdir(mode=0o700)
             settings = write_settings(root)
             original = settings.read_text()
-            for extra in ('home = "' + str(yard) + '"', 'operator = "pat"',
+            settings.write_text(original.replace('[yardr]', f'[yardr]\nhome = "{yard}"'))
+            reader = b.load_settings(settings).config
+            self.assertEqual(reader['yardr_socket'], str(yard / 'yard.sock'))
+            self.assertNotIn('yardr_operator', reader)
+            self.assertFalse(reader['yardr_cards'])
+            for extra in ('operator = "pat"',
                           'home = "' + str(yard) + '"\noperator = "invalid operator"'):
                 settings.write_text(original.replace('[yardr]', '[yardr]\n' + extra))
                 with self.assertRaises(b.SettingsError):
@@ -6949,6 +7001,8 @@ class NativeSettingsTests(unittest.TestCase):
             settings.write_text(original.replace('[yardr]', f'[yardr]\nhome = "{yard}"\noperator = "pat"'))
             loaded = b.load_settings(settings)
             self.assertEqual(loaded.config['yardr_socket'], str(yard / 'yard.sock'))
+            self.assertTrue(loaded.config['yardr_cards'])
+            self.assertTrue(loaded.config['yardr_cards_legacy'])
             yard.chmod(0o777)
             with self.assertRaises(b.SettingsError):
                 b.load_settings(settings)
@@ -8914,9 +8968,9 @@ class RealNativeTests(BridgeTestCase):
         state.mkdir(mode=0o700)
         store = b.Store(state / 'telegram-bridge.sqlite3', 0)
         config = {key: value for key, value in primary.config.items()
-                  if key not in ('yardr_home', 'yardr_operator', 'yardr_socket')}
+                  if key != 'yardr_socket'}
         config.update(bot_id=998, account_id='secretary_bot', agent='secretary', yardr_source='tgsecretary',
-                      hook_url=hook_base + '/hooks/tgsecretary', hook_secret='secretary-hook')
+                      hook_url=hook_base + '/hooks/tgsecretary', hook_secret='secretary-hook', yardr_cards=False)
         sent = []
 
         def telegram(url, body, *args, **kwargs):

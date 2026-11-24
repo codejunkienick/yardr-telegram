@@ -61,7 +61,11 @@ Release history: `CHANGELOG.md`.
   buttons and need no enable flag.
 - The paired user sees a reaction on a message once the yard has it
   (`seen`, when the settings turn it on) and another when the work it
-  asked for is done (`yardr call tgbridge react reaction=done`).
+  asked for is done (`yardr call tgbridge react reaction=done`). Every bot
+  can show 🕊 landed, 👀 read and 👌 done for its conversation's crew:
+  set `[yardr] home` and `[reactions] on_accept = true, seen = "🕊", read = "👀"`.
+  Adding `operator` and `nudge_after = 300` enables verified unread Nudge
+  offers where the core supports them. Set `cards = false` on non-owner bots.
 - The paired user sees "typing..." after a message the yard has, until
   the bridge's next send, when the settings turn it on (`[typing]`).
 - The paired user answers an ask on a text message or on one photo
@@ -334,9 +338,12 @@ table (and a `handler_write_paths` entry if it writes), then run
 `launchctl bootout gui/$(id -u)/<label> 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist`, and run
 `set-commands`. Remove one: delete the table, delete the handler program if nothing else uses it, drop its `handler_write_paths` entry if no other handler writes there, run `install.sh` again, restart the service the same way, then run `set-commands`. The menu loses the command only then.
 The handler protocol is in `bridge/OPERATIONS.md`, "Commands".
-With native `[yardr] home` and `operator` set, `/decide` and the `decide:`
-prefix are the bridge's own (open decisions as native cards, YARDR.md), so no
-add-on may use them.
+With `[yardr] cards = true` (requiring `home` and `operator`), `/decide`
+and the `decide:` prefix are the bridge's own (native cards, YARDR.md).
+Exactly one instance per yard owns these cards; the shared `lock_dir`
+fences a second owner at startup. Existing home+operator settings retain
+ownership with a `check-install` migration warning until `cards` is explicit.
+Message states, `/nudge`, quota, model switching and mail do not require card ownership.
 Three ready add-ons are
 [telegram-quota](https://github.com/codejunkienick/telegram-quota), which adds
 a `/resets` command that spends a Codex reset credit (`/quota` and

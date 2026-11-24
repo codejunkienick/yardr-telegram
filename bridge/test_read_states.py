@@ -37,14 +37,14 @@ REACTION_INVALID = (400, dict(ok=False, error_code=400, description='Bad Request
 class FakeReadYard:
     """Minimal framed Unix RPC socket serving GetUser, EventsSince, GetCrew, Events and NudgeSession."""
 
-    def __init__(self, root):
+    def __init__(self, root, crew='yardmaster', source='tgbridge'):
         self.root = Path(root)
         self.calls = []
         self.hook_events = {}
         self.crew = {
-            'yardmaster': dict(name='yardmaster', journal='yardmaster-journal', state='idle', status='', cursor=0),
+            crew: dict(name=crew, journal=crew + '-journal', state='idle', status='', cursor=0),
         }
-        self.journal_events = {'yardmaster-journal': []}
+        self.journal_events = {crew + '-journal': []}
         self.nudges = {}
         self.nudge_mode = None
         self.override = {}
@@ -71,7 +71,7 @@ class FakeReadYard:
                     return
                 if method == 'GetUser':
                     self._send(200, {'result': dict(name='pat', role='operator',
-                                                    identities={'tgbridge': {'id': '123'}})})
+                                                    identities={source: {'id': '123'}})})
                     return
                 if method == 'EventsSince':
                     after, limit = args[0], args[1]
@@ -157,11 +157,16 @@ def replied_event(seq, target_seq, crew='yardmaster', source='tgbridge', journal
     )
 
 
-class ReadStateTests(BridgeTestCase):
+class ReadStateCase(BridgeTestCase):
+    CREW = 'yardmaster'
+    SOURCE = 'tgbridge'
+    CARDS = True
+    BOT_ID = 999
+
     def setUp(self):
         super().setUp()
         self.yard_dir = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='tgrs-fake-', dir='/tmp')))
-        self.native = FakeReadYard(self.yard_dir)
+        self.native = FakeReadYard(self.yard_dir, self.CREW, self.SOURCE)
         self.addCleanup(self.native.close)
         self.mono = [1000.0]
         self.wall = [2000.0]
@@ -175,7 +180,7 @@ class ReadStateTests(BridgeTestCase):
             yardr_home=str(self.yard_dir),
             yardr_socket=str(self.yard_dir / 'yard.sock'),
             yardr_operator='pat',
-            yardr_source='tgbridge',
+            agent=self.CREW, yardr_source=self.SOURCE, yardr_cards=self.CARDS, bot_id=self.BOT_ID,
             reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND),
         )
         self.restart()
@@ -196,7 +201,7 @@ class ReadStateTests(BridgeTestCase):
             seq = self.next_seq
             self.next_seq += 1
             if seq not in self.native.hook_events:
-                self.native.hook_events[seq] = hook_event(seq)
+                self.native.hook_events[seq] = hook_event(seq, source=self.SOURCE, deliveries={self.CREW: "all"})
             return 200, dict(seq=seq)
         if url.endswith('/sendMessage'):
             self.calls.append((url, body))
@@ -255,6 +260,38 @@ class ReadStateTests(BridgeTestCase):
         return [method for method, _ in self.native.calls
                 if method in ('EventsSince', 'GetCrew', 'Events')]
 
+    def _sends(self):
+        return [body for url, body in self.calls if url.endswith('/sendMessage')]
+
+    def _edits(self):
+        return [body for url, body in self.calls if url.endswith('/editMessageText')]
+
+    def _answers(self):
+        return [body for url, body in self.calls if url.endswith('/answerCallbackQuery')]
+
+    def _nudge_writes(self):
+        return [args for m, args in self.native.calls if m == 'NudgeSession' and args.get('target')]
+
+    def _tap(self, token, action='nudge', uid=40, **message):
+        tn_row = self.bridge.typed_nudge.get(token)
+        base = dict(message_id=tn_row['message'], chat=dict(id=123, type='private'),
+                    **{'from': dict(id=self.bridge.config['bot_id'], is_bot=True)})
+        base.update(message)
+        return dict(update_id=uid, callback_query=dict(
+            id=f'q{uid}', data=f'nudge:{token}:{action}', message=base,
+            **{'from': dict(id=123, is_bot=False)},
+        ))
+
+    def _enable_offers(self, nudge_after=300, status='idle'):
+        self.native.crew[self.CREW].update(kind='claude', model='opus', state='running', status=status)
+        self.restart(
+            commands=(y.NUDGE_COMMAND,),
+            reactions=dict(self.config['reactions'], nudge_after=nudge_after),
+        )
+
+
+
+class ReadStateTests(ReadStateCase):
     def test_settings_without_read_makes_no_rows_and_no_native_calls(self):
         self.restart(reactions=dict(on_accept=True, seen=EYES, done=OK_HAND))
         self.drain(self.update(uid=10))
@@ -297,14 +334,14 @@ class ReadStateTests(BridgeTestCase):
         # Round 1: EventsSince resolves crew, GetCrew cursor 0 < 10 stays landed, 0 Events calls.
         self.poll()
         self.assertEqual(self.native_methods(), ['EventsSince', 'GetCrew'])
-        self.assertEqual(self.row(10)['crew'], 'yardmaster')
+        self.assertEqual(self.row(10)['crew'], self.CREW)
         self.assertEqual(self.row(10)['state'], 'landed')
         self.assertEqual(self.reaction_emojis(), [DOVE])
 
         # Round 2 before 60 s monotonic does nothing.
         self.mono[0] += 59.0
         self.native.calls.clear()
-        self.native.crew['yardmaster']['cursor'] = 10
+        self.native.crew[self.CREW]['cursor'] = 10
         self.poll()
         self.assertEqual(self.native_methods(), [])
         self.assertEqual(self.row(10)['state'], 'landed')
@@ -325,7 +362,7 @@ class ReadStateTests(BridgeTestCase):
 
         # A reply send inserts a non-reaction delivery row; reply event logged after send.
         self.assertTrue(self.bridge.publish(self.publish(key='reply-1'))['delivered'])
-        self.native.journal_events['yardmaster-journal'].append(replied_event(501, 10))
+        self.native.journal_events[self.CREW + '-journal'].append(replied_event(501, 10, crew=self.CREW, source=self.SOURCE, journal=self.CREW + "-journal"))
         self.mono[0] += 60.0
         self.poll()
         self.assertEqual(self.native_methods(), ['GetCrew', 'Events'])
@@ -852,34 +889,14 @@ class ReadStateTests(BridgeTestCase):
         self.assertIn(EYES, result.stdout)
         self.assertIn(OK_HAND, result.stdout)
 
-    def _sends(self):
-        return [body for url, body in self.calls if url.endswith('/sendMessage')]
-
-    def _edits(self):
-        return [body for url, body in self.calls if url.endswith('/editMessageText')]
-
-    def _answers(self):
-        return [body for url, body in self.calls if url.endswith('/answerCallbackQuery')]
-
-    def _nudge_writes(self):
-        return [args for m, args in self.native.calls if m == 'NudgeSession' and args.get('target')]
-
-    def _tap(self, token, action='nudge', uid=40, **message):
-        tn_row = self.bridge.typed_nudge.get(token)
-        base = dict(message_id=tn_row['message'], chat=dict(id=123, type='private'),
-                    **{'from': dict(id=999, is_bot=True)})
-        base.update(message)
-        return dict(update_id=uid, callback_query=dict(
-            id=f'q{uid}', data=f'nudge:{token}:{action}', message=base,
-            **{'from': dict(id=123, is_bot=False)},
-        ))
-
-    def _enable_offers(self, nudge_after=300, status='idle'):
-        self.native.crew['yardmaster'].update(kind='claude', model='opus', state='running', status=status)
-        self.restart(
-            commands=(y.NUDGE_COMMAND,),
-            reactions=dict(self.config['reactions'], nudge_after=nudge_after),
-        )
+        secondary = subprocess.run([sys.executable, '-B', str(script), '--instance', 'secondary'],
+                                   capture_output=True, text=True, timeout=30)
+        self.assertEqual(secondary.returncode, 0, secondary.stderr)
+        self.assertIn('crew secretary · native cards not owned here', secondary.stdout)
+        self.assertIn('✓ Nudge typed', secondary.stdout)
+        self.assertNotIn('outcome unreadable', secondary.stdout)
+        for emoji in (DOVE, EYES, OK_HAND):
+            self.assertIn(emoji, secondary.stdout)
 
     def test_nudge_after_settings_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1430,6 +1447,57 @@ class ReadStateTests(BridgeTestCase):
         self.assertEqual(self._sends(), [])
         self.assertIsNone(self.row(10)['offer_token'])
 
+class SecondaryReadStateTests(ReadStateCase):
+    CREW = 'secretary'
+    SOURCE = 'tgsecretary'
+    CARDS = False
+    BOT_ID = 998
+
+    test_full_lifecycle_replace_not_stack_and_idle_call_counts = ReadStateTests.test_full_lifecycle_replace_not_stack_and_idle_call_counts
+
+    def test_secondary_offer_and_read_only_degrade(self):
+        self.assertFalse(self.bridge.native_decide())
+        self.assertIsNone(self.bridge.run_asks.client)
+        self._enable_offers()
+        self.drain(self.update(uid=10))
+        self.wall[0] += 300
+        self.poll()
+        token = self.row(10)['offer_token']
+        self.assertIsNotNone(token)
+        self.poll(self._tap(token))
+        self.assertEqual(self._nudge_writes(), [dict(target=self.CREW, user='',
+            text=b.read_states.OFFER_LINE.format(seq=10), clear=False, actor='pat')])
+        ident = self.native.nudges['crew:' + self.CREW]['id']
+        self.native.journal_events[self.CREW + '-journal'].append(
+            dict(nudged(502, ident, crew=self.CREW), bead=self.CREW + '-journal'))
+        self.poll()
+        self.assertEqual(self._sends()[-1]['text'], '✓ Nudge typed')
+        self.assertLessEqual(set(self.native_methods()),
+                            {'GetUser', 'GetCrew', 'EventsSince', 'Events', 'ListSessions', 'NudgeSession'})
+
+        self.native.calls.clear()
+        self.restart(yardr_operator=None)
+        self.drain(self.update(uid=50))
+        self.native.crew[self.CREW]['cursor'] = 11
+        self.poll()
+        self.assertEqual(self.row(50)['state'], 'read')
+        self.assertNotIn('GetUser', self.native_methods())
+        self.assertNotIn('NudgeSession', self.native_methods())
+
+        self.native.nudge_mode = 'no-nudge-method'
+        self.calls.clear()
+        self.native.calls.clear()
+        self.logs.clear()
+        self.restart(commands=(y.NUDGE_COMMAND,), reactions=dict(self.config['reactions'], nudge_after=300))
+        self.drain(self.update(uid=51))
+        self.wall[0] += 300
+        self.poll()
+        self.mono[0] += 60
+        self.poll()
+        self.assertEqual(self._sends(), [])
+        self.assertEqual([args for m, args in self.native.calls if m == 'NudgeSession'], [{}])
+        self.assertEqual(len([line for line in self.logs if 'nudge offers off' in line]), 1)
+
 
 class RealReadStateTests(BridgeTestCase):
     def setUp(self):
@@ -1515,6 +1583,61 @@ class RealReadStateTests(BridgeTestCase):
             testyardr.stop(server)
             raise
 
+    def second_instance(self, root, cli, home, port, mono, wall):
+        state = root / 'secondary-state'
+        state.mkdir(mode=0o700)
+        store = b.Store(state / 'ledger.sqlite3', 0)
+        config = dict(self.config, agent='secretary', bot_id=998, account_id='secretary_bot', yardr_source='tgsecretary',
+                      yardr_home=str(home), yardr_operator='pat', yardr_cards=False,
+                      hook_url=f'http://127.0.0.1:{port}/hooks/tgsecretary', hook_secret='secondary-hook',
+                      commands=(y.NUDGE_COMMAND,),
+                      reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND, nudge_after=300))
+        telegram = self.bridge.request
+        def request(url, body, *args, **kwargs):
+            if url == config['hook_url']:
+                conn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+                try:
+                    conn.request('POST', '/hooks/tgsecretary', json.dumps(body),
+                                 kwargs['headers'] | {'Content-Type': 'application/json'})
+                    response = conn.getresponse()
+                    return response.status, json.load(response)
+                finally:
+                    conn.close()
+            return telegram(url, body, *args, **kwargs)
+        br = b.Bridge(config, store, 'SECOND', 'SECOND_CAPABILITY', request=request,
+                      monotonic=lambda: mono[0], sleep=lambda _: None)
+        br.run_asks.now = lambda: wall[0]
+        case = self
+        class Proxy:
+            def __getattr__(self, name):
+                return getattr(case.bridge, name)
+        server = testports.bind_test_server(b._callback_handler(Proxy()))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            pack = root / 'secondary-pack'
+            b.stage_pack(b.render_pack(PACK, server.server_address[1], 'tgsecretary'), pack)
+            cli('pack', 'apply', str(pack), '--yes')
+            cli('source', 'key', 'tgsecretary', stdin='TGBRIDGE_SECRET=SECOND_CAPABILITY\n')
+            cli('source', 'set', 'tgsecretary', 'updates_per_hour=300')
+            cli('user', 'identity', 'pat', '--source', 'tgsecretary', '--id', '123')
+            credential = root / 'secretary.env'
+            credential.write_text('TGBRIDGE_SECRET=SECOND_CAPABILITY\n')
+            credential.chmod(0o600)
+            cli('crew', 'add', 'secretary', '--dir', str(root), '--set', 'kind=codex',
+                '--set', 'env_file=' + str(credential))
+            cli('subscribe', 'secretary', 'tgsecretary', '--scope', 'all', '--where', 'type=message')
+            secret = root / 'secondary-hook.secret'
+            secret.write_text('secondary-hook')
+            secret.chmod(0o600)
+            cli('hook', 'add', 'tgsecretary', '--source', 'tgsecretary', '--secret-file', str(secret), '--unknown', 'ignore')
+        except BaseException:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+            raise
+        return br, server, worker
+
     def test_real_core_transitions_races_and_degrades(self):
         with tempfile.TemporaryDirectory(prefix='tgrs-', dir='/tmp') as tmp:
             root = Path(tmp)
@@ -1528,9 +1651,9 @@ class RealReadStateTests(BridgeTestCase):
             react_hook = [None]
             actions = []
 
-            def cli(*args):
+            def cli(*args, stdin=None):
                 result = subprocess.run(command + list(args), env=env, cwd=root, text=True,
-                                        capture_output=True, timeout=60)
+                                        capture_output=True, input=stdin, timeout=60)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return result
 
@@ -1767,6 +1890,83 @@ class RealReadStateTests(BridgeTestCase):
                 poll(self.bridge)
                 self.assertEqual(self.bridge.read_states.get(46)['state'], 'done')
                 self.assertEqual(emojis(46), [OK_HAND])
+
+                primary = self.bridge
+                secondary, second_server, second_worker = self.second_instance(root, cli, home, port, mono, wall)
+                try:
+                    self.assertTrue(primary.native_decide())
+                    self.assertFalse(secondary.native_decide())
+                    self.assertIsNone(secondary.run_asks.client)
+                    self.bridge = secondary
+                    calls = []
+                    real = secondary.reader.call
+                    def observed(method, args):
+                        calls.append((method, args))
+                        return real(method, args)
+                    secondary.reader.call = observed
+                    secondary.drain([self.update(47)])
+                    secondary.reaction_queue.join()
+                    seq = secondary.read_states.get(47)['seq']
+                    self.assertEqual(emojis(47), [DOVE])
+                    cli('inbox', '--crew', 'writer', '--ack', str(seq))
+                    poll(secondary)
+                    self.assertEqual(secondary.read_states.get(47)['state'], 'landed')
+                    cli('inbox', '--crew', 'secretary', '--ack', str(seq))
+                    mono[0] += 60
+                    poll(secondary)
+                    self.assertEqual(emojis(47), [DOVE, EYES])
+                    env['TGBRIDGE_SECRET'] = 'SECOND_CAPABILITY'
+                    cli('reply', str(seq), '--crew', 'secretary', 'Secondary reply')
+                    mono[0] += 60
+                    poll(secondary)
+                    self.assertEqual(emojis(47), [DOVE, EYES, OK_HAND])
+
+                    # Home-only reopens the same ledger with reads, without an operator lookup.
+                    config = dict(secondary.config)
+                    config.pop('yardr_operator')
+                    self.bridge = b.Bridge(config, secondary.store, 'SECOND', 'SECOND_CAPABILITY', request=secondary.request,
+                                           monotonic=lambda: mono[0])
+                    calls.clear()
+                    home_only_call = self.bridge.reader.call
+                    def observed_home_only(method, args):
+                        calls.append((method, args))
+                        return home_only_call(method, args)
+                    self.bridge.reader.call = observed_home_only
+                    self.bridge.drain([self.update(48)])
+                    self.bridge.reaction_queue.join()
+                    seq = self.bridge.read_states.get(48)['seq']
+                    cli('inbox', '--crew', 'secretary', '--ack', str(seq))
+                    poll(self.bridge)
+                    self.assertEqual(self.bridge.read_states.get(48)['state'], 'read')
+                    cli('reply', str(seq), '--crew', 'secretary', 'Read-only instance reply')
+                    mono[0] += 60
+                    poll(self.bridge)
+                    self.assertEqual(emojis(48), [DOVE, EYES, OK_HAND])
+                    self.assertNotIn('GetUser', [m for m, _ in calls])
+                    self.assertNotIn('NudgeSession', [m for m, _ in calls])
+                    self.assertLessEqual({m for m, _ in calls},
+                                        {'GetCrew', 'EventsSince', 'Events', 'GetUser', 'ListSessions', 'NudgeSession'})
+                    for call, fields in [('run_ask', ['bead=missing', 'ask=7']),
+                                         ('ask_card', ['bead=missing', 'ask=7']),
+                                         ('siding_card', ['depot=missing'])]:
+                        refused = json.loads(cli('call', 'tgsecretary', call, *fields, 'key=second-' + call, '--json').stdout)
+                        self.assertFalse(refused['delivered'])
+                        self.assertIn('not_configured', refused['reason'])
+                    ordinary = self.update(49)
+                    ordinary['message']['text'] = '/decide'
+                    self.bridge.drain([ordinary])
+                    self.assertIsNotNone(self.bridge.read_states.get(49))
+                    self.bridge.inbound(dict(update_id=50, callback_query=dict(id='second-decide', data='decide:o:1',
+                        message=dict(message_id=1234, chat=dict(id=123, type='private'),
+                                     **{'from': dict(id=998, is_bot=True)}), **{'from': dict(id=123, is_bot=False)})))
+                    print('Two real native crews: owner writer and non-owner secretary; landed/read/done, '
+                          'cross-crew ack isolation, home-only reads, native API refusals')
+                finally:
+                    second_server.shutdown()
+                    second_server.server_close()
+                    second_worker.join(timeout=5)
+                    self.bridge = primary
+
             finally:
                 callback.shutdown()
                 callback.server_close()
@@ -1774,6 +1974,12 @@ class RealReadStateTests(BridgeTestCase):
                 testyardr.stop(server)
 
     def test_real_core_nudge_offer_on_fork_and_silent_on_upstream(self):
+        for secondary in (False, True):
+            with self.subTest(secondary=secondary):
+                self.exercise_real_core_nudge_offer(secondary)
+
+    def exercise_real_core_nudge_offer(self, secondary):
+        self.calls.clear()
         with tempfile.TemporaryDirectory(prefix='tgrs-nudge-', dir='/tmp') as tmp:
             root = Path(tmp)
             server, home, command, env, port, hook_secret, callback, worker = self._start_yard(root)
@@ -1783,9 +1989,9 @@ class RealReadStateTests(BridgeTestCase):
             logs = []
             rpc_calls = []
 
-            def cli(*args):
+            def cli(*args, stdin=None):
                 result = subprocess.run(command + list(args), env=env, cwd=root, text=True,
-                                        capture_output=True, timeout=60)
+                                        capture_output=True, input=stdin, timeout=60)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return result
 
@@ -1838,13 +2044,13 @@ class RealReadStateTests(BridgeTestCase):
                               request_multipart=self.multipart_transport, request_download=self.download_transport,
                               sleep=lambda s: None, monotonic=lambda: mono[0])
                 br.run_asks.now = lambda: wall[0]
-                orig_call = br.run_asks.client.call
+                orig_call = br.yard_client().call
 
                 def spy(method, arguments):
                     rpc_calls.append((method, arguments))
                     return orig_call(method, arguments)
 
-                br.run_asks.client.call = spy
+                br.yard_client().call = spy
                 return br
 
             def poll(br, *updates):
@@ -1858,9 +2064,20 @@ class RealReadStateTests(BridgeTestCase):
                     br.poll_once()
                 br.reaction_queue.join()
 
+            crew = 'secretary' if secondary else 'writer'
+            second_server = second_worker = None
             try:
                 has_nudge = testyardr.serves(home, 'NudgeSession')
                 br = make_bridge()
+                self.bridge = br
+                if secondary:
+                    br, second_server, second_worker = self.second_instance(root, cli, home, port, mono, wall)
+                    self.bridge = br
+                    secondary_call = br.reader.call
+                    def observed(method, arguments):
+                        rpc_calls.append((method, arguments))
+                        return secondary_call(method, arguments)
+                    br.reader.call = observed
                 callback.RequestHandlerClass.bridge = br
 
                 if not has_nudge:
@@ -1876,7 +2093,7 @@ class RealReadStateTests(BridgeTestCase):
                     self.assertIsNone(br.read_states.get(50)['offer_token'])
                     self.assertEqual([args for m, args in rpc_calls if m == 'NudgeSession'], [])
                     # Even when GetCrew reports running+idle, real U refuses NudgeSession as unsupported.
-                    real_call = br.run_asks.client.call
+                    real_call = br.yard_client().call
 
                     def idle_get_crew(method, arguments):
                         res = real_call(method, arguments)
@@ -1884,7 +2101,7 @@ class RealReadStateTests(BridgeTestCase):
                             res = dict(res, state='running', status='idle')
                         return res
 
-                    br.run_asks.client.call = idle_get_crew
+                    br.yard_client().call = idle_get_crew
                     mono[0] += 60.0
                     poll(br)
                     sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
@@ -1924,13 +2141,13 @@ class RealReadStateTests(BridgeTestCase):
                 poll(br)
                 self.assertEqual([body for url, body in self.calls if url.endswith('/sendMessage')], [])
 
-                daemon('start', 'writer')
-                daemon('status', 'writer', 'working')
+                daemon('start', crew)
+                daemon('status', crew, 'working')
                 mono[0] += 60.0
                 poll(br)
                 self.assertEqual([body for url, body in self.calls if url.endswith('/sendMessage')], [])
 
-                daemon('status', 'writer', 'idle')
+                daemon('status', crew, 'idle')
                 mono[0] += 60.0
                 poll(br)
                 sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
@@ -1950,22 +2167,22 @@ class RealReadStateTests(BridgeTestCase):
                 tap = dict(update_id=60, callback_query=dict(
                     id='q60', data=f'nudge:{token}:nudge',
                     message=dict(message_id=tn_row['message'], chat=dict(id=123, type='private'),
-                                 **{'from': dict(id=999, is_bot=True)}),
+                                 **{'from': dict(id=br.config['bot_id'], is_bot=True)}),
                     **{'from': dict(id=123, is_bot=False)},
                 ))
                 poll(br, tap)
                 nudge_writes = [args for m, args in rpc_calls if m == 'NudgeSession' and args.get('target')]
                 self.assertEqual(len(nudge_writes), 1)
-                self.assertEqual(nudge_writes[0], dict(target='writer', user='', text=expected_line,
+                self.assertEqual(nudge_writes[0], dict(target=crew, user='', text=expected_line,
                                                        clear=False, actor='pat'))
                 journal = br.typed_nudge.get(token)['journal']
                 ident = br.typed_nudge.get(token)['request']
-                requested = [e for e in br.run_asks.client.call('Events', [journal, 200])
+                requested = [e for e in br.yard_client().call('Events', [journal, 200])
                              if e['kind'] == 'session_nudge_requested' and e['data'].get('id') == ident]
                 self.assertEqual(len(requested), 1)
                 self.assertEqual(requested[0]['data']['line'], expected_line)
 
-                daemon('finish', 'writer', 'typed', '')
+                daemon('finish', crew, 'typed', '')
                 poll(br)
                 sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
                 self.assertEqual(len(sends), 2)
@@ -1973,15 +2190,20 @@ class RealReadStateTests(BridgeTestCase):
                 self.assertEqual(sends[-1]['reply_parameters']['message_id'], tn_row['message'])
 
                 # Ack moves landed -> read (eyes) as usual.
-                cli('inbox', '--crew', 'writer', '--ack', str(seq))
+                cli('inbox', '--crew', crew, '--ack', str(seq))
                 mono[0] += 60.0
                 poll(br)
                 self.assertEqual(br.read_states.get(50)['state'], 'read')
                 emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
                           if url.endswith('/setMessageReaction') and body['message_id'] == 50]
                 self.assertEqual(emojis, [DOVE, EYES])
-                print('Real core F (NudgeSession):', self.binary, 'offer -> tap -> session_nudged -> outcome -> read')
+                print('Real core F (NudgeSession), crew', crew, 'cards', br.native_decide(), ':', self.binary,
+                      'offer -> tap -> session_nudged -> outcome -> read')
             finally:
+                if second_server is not None:
+                    second_server.shutdown()
+                    second_server.server_close()
+                    second_worker.join(timeout=5)
                 callback.shutdown()
                 callback.server_close()
                 worker.join(timeout=5)

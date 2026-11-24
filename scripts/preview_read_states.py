@@ -2,16 +2,21 @@
 """Render a synthetic chat showing landed (🕊), read (👀), done (👌)
 message reactions and an unread-message Nudge offer from the fake core with
 fake Telegram as offline HTML."""
+import argparse
 from html import escape
 from pathlib import Path
 import sys
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--instance', choices=('primary', 'secondary'), default='primary')
+    args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
-    from test_read_states import DOVE, EYES, OK_HAND, ReadStateTests, hook_event, nudged, replied_event  # noqa: E402
+    from test_read_states import DOVE, EYES, OK_HAND, ReadStateTests, SecondaryReadStateTests, hook_event, nudged, replied_event  # noqa: E402
 
-    case = ReadStateTests(methodName='test_full_lifecycle_replace_not_stack_and_idle_call_counts')
+    fixture = SecondaryReadStateTests if args.instance == 'secondary' else ReadStateTests
+    case = fixture(methodName='test_full_lifecycle_replace_not_stack_and_idle_call_counts')
     case.setUp()
     messages = [
         (10, 'Deploy the staging pack after the check passes.'),
@@ -21,14 +26,14 @@ def main():
     try:
         case._enable_offers(nudge_after=300, status='idle')
         for uid, text in messages:
-            case.native.hook_events[uid] = hook_event(uid)
+            case.native.hook_events[uid] = hook_event(uid, source=case.SOURCE, deliveries={case.CREW: "all"})
             u = case.update(uid=uid)
             u['message']['text'] = text
             case.drain(u)
         # Msg 10 -> done (replied), Msg 11 -> read (cursor >= 11), Msg 12 -> landed (cursor 11 < 12).
-        case.native.crew['yardmaster']['cursor'] = 11
+        case.native.crew[case.CREW]['cursor'] = 11
         case.assertTrue(case.bridge.publish(case.publish(key='preview-reply'))['delivered'])
-        case.native.journal_events['yardmaster-journal'].append(replied_event(501, 10))
+        case.native.journal_events[case.CREW + '-journal'].append(replied_event(501, 10, crew=case.CREW, source=case.SOURCE, journal=case.CREW + "-journal"))
         case.wall[0] += 300
         case.poll()
         states = {mid: case.row(mid)['state'] for mid, _ in messages}
@@ -42,10 +47,17 @@ def main():
         assert token is not None
         case.poll(case._tap(token, uid=40))
         tapped_edit = case._edits()[-1]
-        ident = case.native.nudges['crew:yardmaster']['id']
-        case.native.journal_events['yardmaster-journal'].append(nudged(502, ident))
+        ident = case.native.nudges['crew:' + case.CREW]['id']
+        case.native.journal_events[case.CREW + '-journal'].append(
+            dict(nudged(502, ident, crew=case.CREW), bead=case.CREW + '-journal'))
         case.poll()
         outcome_reply = case._sends()[-1]
+        assert outcome_reply['text'] == '✓ Nudge typed', outcome_reply
+        if args.instance == 'secondary':
+            assert case.bridge.native_decide() is False
+            assert case.bridge.run_asks.client is None
+            assert {m for m, _ in case.native.calls} <= {
+                'GetUser', 'GetCrew', 'EventsSince', 'Events', 'ListSessions', 'NudgeSession'}
     finally:
         case.doCleanups()
         case.tearDown()
@@ -84,11 +96,14 @@ def main():
         f'<div class="meta"><span>verified operator tap · 1 NudgeSession write</span></div>'
         f'</div></div>'
         f'<div class="row left"><div class="bot reply">'
-        f'<blockquote>Nudge crew member yardmaster?</blockquote>'
+        f'<blockquote>Nudge crew member {escape(case.CREW)}?</blockquote>'
         f'<div class="card-body">{escape(outcome_reply["text"])}</div>'
         f'<div class="meta"><span>daemon session_nudged outcome · message stays {DOVE} until inbox ack</span></div>'
         f'</div></div>'
     )
+    subtitle = 'Synthetic chat · fake core · bridge ledger, setMessageReaction &amp; NudgeSession · fake Telegram'
+    if args.instance == 'secondary':
+        subtitle += ' · secondary tgsecretary · crew secretary · native cards not owned here'
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic read states and nudge offer</title>
 <style>
 *{box-sizing:border-box}
@@ -113,7 +128,7 @@ button{flex:1;border:0;border-radius:7px;padding:8px 10px;background:#e2eff9;col
 .legend{margin-top:16px;padding:10px 12px;background:#fff;border:1px solid #cfdee8;border-radius:10px;font-size:12px;color:#395166}
 </style>
 <h1>Operator message read states &amp; unread nudge offer</h1>
-<p class="sub">Synthetic chat · fake core · bridge ledger, setMessageReaction &amp; NudgeSession · fake Telegram</p>
+<p class="sub">''' + subtitle + '''</p>
 <div class="chat">''' + ''.join(bubbles) + offer_html + '''</div>
 <h2>After verified Nudge tap &amp; daemon outcome</h2>
 <div class="chat">''' + tapped_html + f'''</div>

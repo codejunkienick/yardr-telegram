@@ -249,17 +249,20 @@ yardr user set <operator> role=operator
 yardr user identity <operator> --source tgbridge --id <bot.user_id>
 ```
 
-In the bridge's existing private settings, add both keys under `[yardr]`:
+In the bridge's existing private settings, name the one card owner under `[yardr]`:
 
 ```toml
 home = "~/.yardr"          # the exact yard this bridge serves
 operator = "<operator>"
+cards = true             # exactly one owner in this yard
 ```
 
 The home must exist, belong to the service user, and have no group/world
 write permission; `yard.sock` is the only native endpoint (no socket
 override). `[reactions] read` also needs `[yardr] home`; `nudge_after`
-needs `read`, built-in `/nudge`, and `NudgeSession` (off otherwise). The operator
+needs `read`, `operator`, built-in `/nudge`, and `NudgeSession` (off otherwise).
+Every instance can read with `home` alone; `cards = false` keeps all native
+cards and approvals off while allowing message states and operator nudges. The operator
 must keep their role and source identity, checked at every interaction.
 
 After reviewed code is installed, run `install.sh --settings <file>`,
@@ -414,6 +417,10 @@ write fallback.
 
 Do not assume the native keys exist. The operator can check, then add only
 missing keys to a private settings file without printing it:
+
+The helper adds only `home` and `operator`; without an explicit `cards`
+these retain legacy card ownership. On a second bridge set `cards = false`
+first; the helper preserves it and validates the resulting settings.
 
 ```sh
 python3 scripts/native_settings.py --settings <private-settings> \
@@ -615,7 +622,15 @@ yardr crew show secretary
    source = "tgsecretary"
    hook_url = "http://127.0.0.1:8795/hooks/tgsecretary"
    hook_secret_file = "~/.config/example-secretary-telegram/hook-secret"
-   # Omit home and operator: the primary bridge alone owns native cards.
+   home = "~/.yardr"             # read this conversation crew's message states
+   cards = false                # native cards belong to the one owner instance
+   # operator = "<operator>"    # optional: verified /nudge and unread offers
+
+   [reactions]
+   on_accept = true
+   seen = "🕊"
+   read = "👀"
+   # nudge_after = 300          # also needs operator and core NudgeSession
 
    [bot]
    bot_id = 1000000003
@@ -626,8 +641,9 @@ yardr crew show secretary
 
    `lock_dir` must be the first installation's lock directory (its token
    directory by default), shared by every poller on this host: its
-   `telegram-bot-<bot_id>.lock` fences each bot, and a distinct lock directory
-   cannot. Pick an unused bridge port and a unique unit and root, and copy
+   `telegram-bot-<bot_id>.lock` fences each bot and the yard-home identity's
+   `yardr-cards-<device>-<inode>.lock` fences native-card ownership. A distinct
+   lock directory cannot. Pick an unused bridge port and a unique unit and root, and copy
    nothing of the first bot's ledger, offset, pins or topic rows. Start with no
    `[[topic]]` and no `[auto_topics]`. Add transcription or commands only with
    this instance's paths and crew; external handlers keep their own state
@@ -688,11 +704,26 @@ yardr crew show secretary
 
    A `yardr reply` uses its caller's credential, so a shell test must supply this
    bot's. Do not reuse the yardmaster's environment for the secretary. Do not grant
-   `run_ask`, `ask_card` or `siding_card` on the second source: enabling
-   `home`/`operator` on both would expose the same yard-wide queue, `/decide`
-   included, on both. The secondary omits them and refuses native calls, while
+   `run_ask`, `ask_card` or `siding_card` on the second source. Keep
+   `cards = false` there: `home` enables reads and optional `operator`
+   enables verified nudges without claiming the yard-wide queue or `/decide`.
+   The non-owner refuses native-card calls, while
    ordinary chat asks and buttons remain available. Native approval publishing
    stays on the primary.
+
+   `check-install` and startup report landed/read/done and nudge-offer
+   configuration per instance, with off reasons. A legacy owner with
+   home+operator keeps its cards and gets a nonfatal migration warning:
+   set `cards = true` there and `cards = false` on every other instance.
+
+   Before rolling back to a release without `cards`, restore the non-owner's
+   prior settings: remove `cards`, `home`, `operator`, `reactions.read` and
+   `reactions.nudge_after`, plus any `[yardr.quota]`, `[yardr.mayor_model]` or
+   `[yardr.mail]` tables added with them. Removing only `cards = false` would make
+   home+operator claim native cards under the older release's legacy rule.
+   The owner can remove `cards = true` and retain home+operator. Rollback checks
+   the older settings before activation; the ledger schema is unchanged.
+   Installation belongs to the operator; settings take effect after restart.
 
 6. Activate only the second bot, then check both paths:
 
@@ -812,8 +843,8 @@ git -C <checkout> status --short --untracked-files=no   # prints nothing
 ```
 
 It writes nothing and does not contact Telegram. Where the settings name a
-`[yardr] home`, its checks ask that yard's socket for the operator (a read),
-so that yard must be running. Look for:
+`[yardr] home`, its checks read the current operator identity, or every
+configured conversation crew when no operator is set, so that yard must be running. Look for:
 
 - `would stage <commit> as <root>/releases/<commit>`;
 - `would replace <service file>: bridge <checkout>/bridge/bridge.py -> <root>/current/bridge/bridge.py; settings <settings> -> <settings>; the old file is kept in <root>/service.previous`;

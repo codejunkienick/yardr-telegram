@@ -1178,6 +1178,8 @@ class Bridge:
                                  conversation_id=str(config['chat_id']), kind='dm')
         self.publish_lock = threading.Lock()
         self.run_asks = run_asks.RunAsks(self)
+        self.reader = (run_asks.YardSocketClient(config['yardr_home'], config.get('yardr_source', 'tgbridge'))
+                       if config.get('yardr_home') and self.run_asks.client is None else None)
         self.nudge_cards = nudge_cards.NudgeCards(self)
         self.typed_nudge = typed_nudge.TypedNudge(self)
         self.read_states = read_states.ReadStates(self)
@@ -2502,8 +2504,11 @@ class Bridge:
         return self.DECIDE_COMMAND if native else self.commands[match.group(1)], match.group(3) or ''
 
     def native_decide(self):
-        """True when /decide and decide: buttons are the bridge's own: native [yardr] home and operator are set."""
-        return bool(self.config.get('yardr_home') and self.config.get('yardr_operator'))
+        """Whether this instance owns the yard's native cards."""
+        return run_asks.owns_cards(self.config)
+
+    def yard_client(self):
+        return self.run_asks.client if self.run_asks.client is not None else self.reader
 
     def native_nudge(self):
         return self.commands.get('nudge', {}).get('native') == yard_commands.NATIVE_NUDGE
@@ -4768,6 +4773,8 @@ class Bridge:
                 self._log(reason)
                 ready += '; ' + reason
             print(ready, flush=True)
+            for line in message_state_report(self.config):
+                self._log(line)
             if self.typing_seconds:
                 self._start_typing()
             failures = 0
@@ -5125,7 +5132,7 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
                  'pairing_update_id', 'bot', 'menu', 'transcribe', 'crew', 'command',
                  'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
 # The yard this bridge relays to (YARDR.md, "Settings").
-YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota', 'mayor_model', 'mail'}
+YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'mayor_model', 'mail'}
 # The native /quota table ([yardr.quota]): its presence turns /quota on.
 YARDR_QUOTA_KEYS = {'timeout', 'groups', 'machine_login', 'machine'}
 # The native /mayor_model table ([yardr.mayor_model]) and each of its picks:
@@ -5568,15 +5575,23 @@ def load_settings(path, home=None):
     source = _text_setting(yardr.get('source', 'tgbridge'), 'yardr.source', NAME_RE)
 
     native = {}
-    if 'home' in yardr or 'operator' in yardr:
-        if not yardr.get('home') or not yardr.get('operator'):
-            raise SettingsError('settings: [yardr] home and operator must be set together')
+    if 'operator' in yardr and not yardr.get('home'):
+        raise SettingsError('settings: [yardr] operator needs home')
+    if 'home' in yardr:
         try:
             native_home = run_asks.validate_home(_path_setting(yardr['home'], 'yardr.home'))
         except run_asks.NativeError as error:
             raise SettingsError('settings: ' + str(error)) from None
-        operator = _text_setting(yardr['operator'], 'yardr.operator', re.compile(r'[a-z0-9][a-z0-9._-]{0,63}'))
-        native = dict(yardr_home=str(native_home), yardr_socket=str(native_home / 'yard.sock'), yardr_operator=operator)
+        native = dict(yardr_home=str(native_home), yardr_socket=str(native_home / 'yard.sock'))
+    if 'operator' in yardr:
+        native['yardr_operator'] = _text_setting(yardr['operator'], 'yardr.operator', re.compile(r'[a-z0-9][a-z0-9._-]{0,63}'))
+    operator_acts = bool(native.get('yardr_home') and native.get('yardr_operator'))
+    native['yardr_cards'] = _bool_setting(yardr.get('cards', operator_acts), '[yardr] cards')
+    if native['yardr_cards'] and not operator_acts:
+        raise SettingsError('settings: [yardr] cards = true needs home and operator')
+    if native['yardr_cards'] and 'cards' not in yardr:
+        native['yardr_cards_legacy'] = True
+    owner = run_asks.owns_cards(native)
 
     menu = data.get('menu', [])
     if not isinstance(menu, list) or len(menu) > 100:
@@ -5587,8 +5602,8 @@ def load_settings(path, home=None):
             raise SettingsError(f'settings: menu entry {index + 1} needs exactly command and description')
         menu_entries.append((_text_setting(item['command'], f'menu entry {index + 1} command', _COMMAND_RE),
                              _text_setting(item['description'], f'menu entry {index + 1} description', limit=256)))
-    if native and any(name == 'decide' for name, _ in menu_entries):
-        raise SettingsError('settings: [[menu]] /decide clashes with the native /decide the bridge owns with [yardr] home and operator')
+    if owner and any(name == 'decide' for name, _ in menu_entries):
+        raise SettingsError('settings: [[menu]] /decide clashes with the native /decide this bridge owns ([yardr] cards)')
 
     # The native /quota ([yardr.quota] turns it on): it needs native [yardr]
     # home and operator. A [[menu]] or [[command]] quota, or a [[command]]
@@ -5600,7 +5615,7 @@ def load_settings(path, home=None):
         raise SettingsError('settings: [yardr.quota] must be a table')
     quota, yardr_bin = None, None
     if quota_table is not None:
-        if not native:
+        if not operator_acts:
             raise SettingsError('settings: [yardr.quota] needs [yardr] home and operator together')
         unknown = sorted(set(quota_table) - YARDR_QUOTA_KEYS)
         if unknown:
@@ -5620,7 +5635,7 @@ def load_settings(path, home=None):
         raise SettingsError('settings: [yardr.mayor_model] must be a table')
     mayor = None
     if mayor_table is not None:
-        if not native:
+        if not operator_acts:
             raise SettingsError('settings: [yardr.mayor_model] needs [yardr] home and operator together')
         unknown = sorted(set(mayor_table) - YARDR_MAYOR_MODEL_KEYS)
         if unknown:
@@ -5639,20 +5654,20 @@ def load_settings(path, home=None):
     if mail_table is not None:
         if not isinstance(mail_table, dict):
             raise SettingsError('settings: [yardr.mail] must be a table')
-        if not native:
+        if not operator_acts:
             raise SettingsError('settings: [yardr.mail] needs [yardr] home and operator together')
         if mail_table:
             raise SettingsError(f'settings: unknown key yardr.mail.{sorted(mail_table)[0]}')
     if quota is not None or mayor is not None:
         yardr_bin = _native_bin(yardr.get('bin'))
-    city_commands = _command_settings(data, menu_entries, bool(native), mayor_model=mayor is not None)
-    nudge_reason = _nudge_disabled_reason(city_commands, menu_entries) if native else None
+    city_commands = _command_settings(data, menu_entries, owner, mayor_model=mayor is not None)
+    nudge_reason = _nudge_disabled_reason(city_commands, menu_entries) if operator_acts else None
 
     natives = (((dict(yard_commands.QUOTA_COMMAND, timeout=quota['timeout']),) if quota is not None else ())
-               + ((yard_commands.NUDGE_COMMAND,) if native and nudge_reason is None else ())
+               + ((yard_commands.NUDGE_COMMAND,) if operator_acts and nudge_reason is None else ())
                + ((yard_commands.mayor_model_command(mayor), yard_commands.mayor_model_alias(mayor)) if mayor is not None else ()))
     if natives:
-        shown = (len(menu_entries) + sum(1 for command in city_commands if command['menu']) + bool(native)
+        shown = (len(menu_entries) + sum(1 for command in city_commands if command['menu']) + owner
                  + sum(command['menu'] for command in natives))
         if shown > MENU_MAX:
             names = ', '.join('/' + command['name'] for command in natives)
@@ -5685,8 +5700,8 @@ def load_settings(path, home=None):
             if not valid_reaction_emoji(reactions[name]):
                 raise SettingsError(f'settings: reactions.{name} must be one emoji: at most '
                                     f'{REACTION_MAX_CHARS} characters, no space, letter or digit')
-        if 'read' in reactions and not native:
-            raise SettingsError('settings: reactions.read needs [yardr] home and operator together')
+        if 'read' in reactions and not native.get('yardr_home'):
+            raise SettingsError('settings: reactions.read needs [yardr] home')
         if 'nudge_after' in reactions:
             _int_setting(reactions['nudge_after'], 'reactions.nudge_after', 0, REACTIONS_NUDGE_AFTER_MAX)
             if reactions['nudge_after'] > 0 and 'read' not in reactions:
@@ -6241,6 +6256,40 @@ def _interpreter_version(python):
         return None
 
 
+def message_state_report(config):
+    reactions = dict(REACTIONS_DEFAULTS, **(config.get('reactions') or {}))
+    landed = ('on (' + reactions['seen'] + ')' if reactions['on_accept'] else 'off (reactions.on_accept unset)')
+    reading = reactions.get('read') and config.get('yardr_home')
+    crews = list(dict.fromkeys([config.get('agent', 'yardmaster')] + [t['agent'] for t in (config.get('topics') or ())]))
+    read = ('on (' + reactions['read'] + '; crew ' + ', '.join(crews) + ')' if reading
+            else 'off (reactions.read unset)')
+    done = 'on (' + reactions['done'] + '; react' + (' and replies)' if reading else '; replies off without reactions.read)')
+    after = reactions.get('nudge_after', 0)
+    reason = None
+    if not after:
+        reason = 'reactions.nudge_after 0'
+    elif not reading:
+        reason = 'reactions.read unset'
+    elif not config.get('yardr_operator'):
+        reason = '[yardr] operator unset'
+    elif not any(c.get('native') == yard_commands.NATIVE_NUDGE for c in (config.get('commands') or ())):
+        reason = config.get('yardr_nudge_disabled') or 'built-in /nudge unavailable'
+    offer = 'off (' + reason + ')' if reason else 'on (NudgeSession checked at runtime)'
+    prefix = 'WARN  ' if after and reason else ''
+    account = config.get('account_id', config.get('bot_username'))
+    report = [prefix + 'message states (' + account + '): landed ' + landed + '; read ' + read
+              + '; done ' + done + '; nudge offer ' + offer]
+    if run_asks.owns_cards(config):
+        if config.get('yardr_cards_legacy') or 'yardr_cards' not in config:
+            report.append('WARN  native cards: owned by the legacy rule (home and operator); add cards = true here '
+                          'and cards = false to every other bridge in this yard')
+        else:
+            report.append('native cards: owned here (cards = true)')
+    else:
+        report.append('native cards: not owned here (cards = false)')
+    return report
+
+
 def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, platform=None,
                      version=_interpreter_version, osrelease='/proc/sys/kernel/osrelease',
                      systemd_dir='/run/systemd/system', linger_dir='/var/lib/systemd/linger', home=None,
@@ -6271,6 +6320,8 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
     def warn(line):
         results.append((True, f'WARN  {line}'))
 
+    for line in message_state_report(settings.config):
+        check(True, line)
     if reason := settings.config.get('yardr_nudge_disabled'):
         warn(reason)
 
@@ -6355,8 +6406,21 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
             check(False, f'{what} file must be an owner-only regular file')
     if settings.config.get('yardr_home'):
         try:
-            run_asks.verify_operator(run_asks.YardSocketClient(settings.config['yardr_home'], settings.config['yardr_source']), settings.config)
-            check(True, 'native yard socket and current operator identity')
+            client = run_asks.YardSocketClient(settings.config['yardr_home'], settings.config['yardr_source'])
+            if settings.config.get('yardr_operator'):
+                run_asks.verify_operator(client, settings.config)
+                check(True, 'native yard socket and current operator identity')
+            else:
+                crews = list(dict.fromkeys([settings.config['agent']] + [t['agent'] for t in settings.config.get('topics', ())]))
+                for crew in crews:
+                    try:
+                        member = client.call('GetCrew', {'name': crew})
+                        if (not isinstance(member, dict) or member.get('name') != crew
+                                or type(member.get('cursor')) is not int or member['cursor'] < 0):
+                            raise run_asks.NativeError('invalid_crew_cursor')
+                    except run_asks.NativeError as error:
+                        raise run_asks.NativeError(f'native yard socket: crew {crew}: {error}') from None
+                check(True, 'native yard socket: crew ' + ', '.join(crews) + ' readable')
         except run_asks.NativeError as error:
             check(False, str(error))
     check(settings.state_dir.is_dir() or settings.state_dir.parent.is_dir(), f'state directory {settings.state_dir}')
@@ -6737,11 +6801,20 @@ def main():
             raise TransportError('not every [[topic]] has a thread id')
     else:
         # Token-wide lock survives alternate state directories; never unlink while locked.
-        with (settings.lock_dir / ('telegram-bot-' + str(settings.config['bot_id']) + '.lock')).open('a') as lock:
+        with contextlib.ExitStack() as locks:
+            lock = locks.enter_context((settings.lock_dir / ('telegram-bot-' + str(settings.config['bot_id']) + '.lock')).open('a'))
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise TransportError('another bridge already owns this bot') from None
+            if run_asks.owns_cards(settings.config):
+                info = os.stat(settings.config['yardr_home'])
+                cards_lock = locks.enter_context((settings.lock_dir / f'yardr-cards-{info.st_dev}-{info.st_ino}.lock').open('a'))
+                try:
+                    fcntl.flock(cards_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise TransportError("another bridge already owns this yard's native cards; "
+                                         'set [yardr] cards = false on one of them') from None
             for signum in (signal.SIGTERM, signal.SIGINT):
                 signal.signal(signum, lambda *_: bridge.stop.set())
             bridge.reconcile_pending()

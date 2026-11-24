@@ -2633,13 +2633,24 @@ def format_report_markdown(bead_id, title, stage, ask_number, question, notes, s
     return final_cut.encode('utf-8')
 
 
+def owns_cards(config):
+    return config.get('yardr_cards', bool(config.get('yardr_home') and config.get('yardr_operator')))
+
+
+def binding_of(config):
+    if not config.get('yardr_home') or not config.get('yardr_operator'):
+        raise NativeError('native_run_asks_not_configured')
+    return {key: str(config.get(key, 'tgbridge' if key == 'yardr_source' else '')) for key in
+            ('yard', 'yardr_home', 'yardr_operator', 'yardr_source', 'bot_id', 'user_id', 'chat_id')}
+
+
 class RunAsks:
     table = 'run_asks'
 
     def __init__(self, bridge, client=None, now=time.time):
         self.bridge, self.store, self.config, self.now = bridge, bridge.store, bridge.config, now
         self.client = client
-        if self.config.get('yardr_home') and client is None:
+        if owns_cards(self.config) and client is None:
             self.client = YardSocketClient(self.config['yardr_home'], self.config.get('yardr_source', 'tgbridge'))
         if self.store is not None:
             with self.store.connect() as db:
@@ -2656,11 +2667,13 @@ class RunAsks:
         finally:
             os.close(fd)
 
-    def binding(self):
-        if self.client is None or not self.config.get('yardr_operator'):
+    def require_client(self):
+        if self.client is None:
             raise NativeError('native_run_asks_not_configured')
-        return {key: str(self.config.get(key, 'tgbridge' if key == 'yardr_source' else '')) for key in
-                ('yard', 'yardr_home', 'yardr_operator', 'yardr_source', 'bot_id', 'user_id', 'chat_id')}
+
+    def binding(self):
+        self.require_client()
+        return binding_of(self.config)
 
     def depot_cutover_identity(self):
         home = validate_home(Path(self.config['yardr_home']))
@@ -2690,6 +2703,7 @@ class RunAsks:
     def record_depot_cutover(self):
         """Record the native event head during authorized activation, never during a send."""
         with self.lock():
+            self.require_client()
             verify_operator(self.client, self.config)
             floor = self.client.call('Head', [])
             if type(floor) is not int or not 0 <= floor < 2**64:
@@ -3469,7 +3483,7 @@ class RunAsks:
     def claim_update(self, update_id):
         with self.store.connect() as db:
             return db.execute('INSERT OR IGNORE INTO run_ask_updates VALUES (?,?)',
-                              (digest(self.binding()), update_id)).rowcount == 1
+                              (digest(binding_of(self.config)), update_id)).rowcount == 1
 
     def authorized_origin(self, row, message, reply=False):
         if not isinstance(message, dict) or any(key in message for key in self.bridge.FORWARD_KEYS):

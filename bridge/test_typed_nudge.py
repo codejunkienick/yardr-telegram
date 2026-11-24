@@ -509,7 +509,7 @@ class NudgeSettingsTests(unittest.TestCase):
                      patch('sys.stdout', new_callable=io.StringIO) as out, \
                      patch('sys.stderr', new_callable=io.StringIO) as err:
                     testports.run_bridge(bridge)
-                self.assertEqual(err.getvalue().splitlines(), [reason])
+                self.assertEqual(err.getvalue().splitlines(), [reason] + b.message_state_report(settings.config))
                 self.assertIn('Telegram bridge ready', out.getvalue())
                 self.assertEqual(out.getvalue().count(reason), 1)
                 lines = b.install_problems(settings)
@@ -907,6 +907,13 @@ class ReplyTests(TypedCase):
         self.assertEqual(self.native.calls, [])
         hooks = [body for url, body in self.calls if url == self.bridge.hook_url]
         self.assertEqual([body['text'] for body in hooks], ['plain words'])
+        self.bridge = b.Bridge(dict(self.config, yardr_cards=False), self.store, 'TOKEN', 'CAPABILITY',
+                               request=self.bridge.request)
+        self.native.calls.clear()
+        self.reply('go on', uid=90)
+        self.assertIn('native_run_asks_not_configured', self.sends()[-1]['text'])
+        self.assertEqual(self.native.calls, [])
+        self.assertEqual(self.bridge.typed_nudge.rows(), saved)
 
     def test_a_reply_with_overlong_words_is_refused(self):
         self.publish_card()

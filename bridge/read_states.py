@@ -428,7 +428,7 @@ class ReadStates:
         this message from our source to `crew`. Raises TRANSIENT on transient
         RPC errors, or _Off(reason) when permanently ineligible/invalid."""
         try:
-            events = self.ra.client.call('EventsSince', [seq - 1, 1])
+            events = self.bridge.yard_client().call('EventsSince', [seq - 1, 1])
         except TRANSIENT:
             raise
         except (n.RPCRefused, n.NativeError) as error:
@@ -457,7 +457,7 @@ class ReadStates:
         """Call GetCrew {"name": crew} and validate name and non-negative int
         cursor. Raises TRANSIENT on transient errors, _Off on refusal/invalid."""
         try:
-            member = self.ra.client.call('GetCrew', {'name': crew})
+            member = self.bridge.yard_client().call('GetCrew', {'name': crew})
         except TRANSIENT:
             raise
         except (n.RPCRefused, n.NativeError) as error:
@@ -473,7 +473,7 @@ class ReadStates:
         limit = EVENTS_MIN
         while True:
             events = self.ra._validate_events(
-                self.ra.client.call('Events', [journal, limit]),
+                self.bridge.yard_client().call('Events', [journal, limit]),
                 journal, limit, 'read state reply',
             )
             if not events or len(events) < limit or events[0]['seq'] <= oldest_open_seq or limit >= EVENTS_MAX:
@@ -841,7 +841,7 @@ class ReadStates:
                 trouble.append(f'read states offer {token}: {reason}')
 
     def refresh(self):
-        if not self.enabled or self.ra.client is None or not self.config.get('yardr_home'):
+        if not self.enabled or self.bridge.yard_client() is None or not self.config.get('yardr_home'):
             return
         try:
             if self.nudge_after > 0 and (not self.bridge.native_nudge() or not self.config.get('yardr_operator')):

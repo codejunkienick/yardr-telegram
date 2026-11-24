@@ -185,7 +185,16 @@ class NativeSwitchTests(unittest.TestCase):
         return value
 
     def test_complete_real_native_poll_slice(self):
+        self.bridge = self.reopen(yardr_cards=False)
+        self.assertIsNone(self.bridge.run_asks.client)
         selector = self.selector()
+        self.cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '456')
+        with self.assertRaisesRegex(n.NativeError, 'operator_not_authorized'):
+            self.bridge.model_switch.verify()
+        self.poll(self.pick(selector))
+        self.assertEqual(self.operations(), [])
+        self.assertIn('Switch unavailable', str(self.telegram.of('answerCallbackQuery')))
+        self.cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
         self.poll(self.pick(selector))
         row = self.last()
         self.assertEqual(row['observed']['state'], 'waiting')

@@ -634,6 +634,32 @@ class SidingTests(BridgeTestCase):
             self.home.chmod(0o700)
         self.assertEqual((self.writes, self.folds()), ([], []))
         self.assertTrue(self.press(row, uid=82).startswith('Folded into '))
+        relayed, calls = [], []
+        telegram = self.bridge.request
+        def request(url, body, *args, **kwargs):
+            if url == self.config['hook_url']:
+                relayed.append(body)
+                return 200, dict(seq=100)
+            return telegram(url, body, *args, **kwargs)
+        self.bridge = b.Bridge(dict(self.config, yardr_cards=False, hook_secret='SYNTHETIC'), self.store,
+                               'TOKEN', 'CAPABILITY', request=request)
+        real_call = n.YardSocketClient.call
+        def observed(client, method, arguments):
+            calls.append(method)
+            return real_call(client, method, arguments)
+        with patch.object(n.YardSocketClient, 'call', observed):
+            for uid, action in ((90, 'fold'), (91, 'leave')):
+                self.assertEqual(self.press(row, action, uid=uid), 'native_run_asks_not_configured')
+            for uid, text in ((92, 'fold ' + one), (93, 'release ' + one)):
+                self.reply(row, text, uid=uid)
+            self.assertEqual(len(relayed), 2)
+            self.assertEqual(self.bridge.api_ask_close(dict(message_id=row['message_id'], decision='ignored'))['reason'],
+                             'ask_not_found')
+            self.assertEqual(self.bridge.api_ask_close(dict(ask_key='siding', decision='ignored'))['reason'],
+                             'native_run_asks_not_configured')
+            self.assertIn('not_configured', self.bridge.api_siding_card(dict(depot='sample', key='secondary'))['reason'])
+            self.bridge.siding_cards.refresh()
+            self.assertEqual(calls, [])
 
     def test_status_cards_and_explicit_subsets(self):
         a, b_, c = self.part('a', 'large'), self.part('b', 'large'), self.part('c')

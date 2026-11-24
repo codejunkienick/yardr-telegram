@@ -207,17 +207,20 @@ requirements are:
   is intentionally shared per host user; input files and results stay in
   the submitting bridge's state directory.
 - Native asks are **yard-wide**, without a destination-source field.
-  Keep `[yardr] home`/`operator` and native grants on the primary bridge
-  alone. A secondary omits both keys: it does no native discovery or
-  reconciliation, offers no `/decide`, and refuses `run_ask`, `ask_card` and
-  `siding_card`. It can still use ordinary chat questions and buttons.
+  Set `[yardr] cards = true` and native grants on one owner bridge;
+  every other instance sets `cards = false`. A non-owner does no native-card
+  discovery or reconciliation, offers no native `/decide`, and refuses
+  `run_ask`, `ask_card` and `siding_card`. Every instance can set `home`
+  for read/done reactions and add `operator` for verified nudges. It can
+  also use ordinary chat questions and buttons.
   Source/bot bindings protect existing native callbacks; they do not route
-  a yard-wide ask to a particular bot. Enabling native keys on both bots
-  would expose the same operator queue on both and is outside this setup.
+  a yard-wide ask to a particular bot. All pollers share `lock_dir` so only
+  one can hold the yard's native-card lock. Legacy home+operator settings
+  retain ownership with a check-install warning to set `cards` explicitly.
 
 ## Native operator approvals
 
-Optional `[yardr] home` and `operator` enable authenticated
+Optional `[yardr] cards = true`, with `home` and `operator`, enables authenticated
 `POST /v1/run-ask`, the `run_ask` source update call and:
 
 ```sh

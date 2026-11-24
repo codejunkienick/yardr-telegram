@@ -13,7 +13,9 @@ changes and clean degradation when a build lacks a read.
    caller check in `store.GetCrew` (`internal/store/crew.go`). It
    returns the line session's `cursor`, `state`, `status` and `journal`.
    No core addition is needed.
-   *Degrades off:* without `[yardr] home` (e.g. a secondary bridge),
+   Every instance uses these reads independently of native-card ownership.
+   `home` alone suffices; no operator identity or approval grant is needed.
+   *Degrades off:* without `[yardr] home`,
    when the socket is absent, or when `GetCrew` omits an integer
    `cursor >= 0`.
 
@@ -69,6 +71,10 @@ stateDiagram-v2
 
 When `[reactions] nudge_after` (`1`–`3600` seconds) is configured together
 with `[reactions] read`, `[yardr] home`/`operator`, and the built-in `/nudge`:
+
+The same preconditions apply on every instance, including `cards = false`.
+Without `operator`, reads still work and the offer is off with its reason
+in startup and `check-install`. Unsupported `NudgeSession` is logged at runtime.
 
 1. **Reuse over a second card type:** Offers open via
    `TypedNudge.open_confirm(token=..., reply_to=mid, header=..., silent=True)`

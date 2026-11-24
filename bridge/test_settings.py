@@ -60,7 +60,7 @@ class SettingsTests(unittest.TestCase):
         # The hook secret itself is read only by the polling process (main).
         self.assertEqual(settings.config, dict(
             yard='test-city', account_id='test_bot', hook_url='http://127.0.0.1:8797/hooks/tgbridge',
-            yardr_source='tgbridge', agent='yardmaster', user_display_name='Pat',
+            yardr_source='tgbridge', yardr_cards=False, agent='yardmaster', user_display_name='Pat',
             timezone='Asia/Tokyo', menu=MENU, unit='test-city-telegram.service',
             protected_paths=(str(self.root / 'private' / 'telegram-bot-token'),
                              str(self.root / 'private' / 'telegram-callback-secret'),
@@ -176,6 +176,30 @@ class SettingsTests(unittest.TestCase):
                 with self.assertRaises(b.SettingsError) as caught:
                     b.load_settings(self.with_yardr(table))
                 self.assertTrue(str(caught.exception).startswith(line), str(caught.exception))
+        home = self.root / 'yard'
+        home.mkdir(mode=0o700)
+        for keys, owner, acts in (('', False, False), ('cards = false\n', False, False),
+                                  (f'home = "{home}"\n', False, False),
+                                  (f'home = "{home}"\ncards = false\n', False, False),
+                                  (f'home = "{home}"\noperator = "pat"\n', True, True),
+                                  (f'home = "{home}"\noperator = "pat"\ncards = true\n', True, True),
+                                  (f'home = "{home}"\noperator = "pat"\ncards = false\n', False, True)):
+            with self.subTest(keys=keys):
+                path = self.with_yardr(url + file + keys)
+                if 'home =' in keys:
+                    path.write_text(path.read_text() + '\n[reactions]\nread = "👀"\nnudge_after = 300\n')
+                config = b.load_settings(path).config
+                self.assertIs(config['yardr_cards'], owner)
+                self.assertEqual(config.get('yardr_cards_legacy', False), owner and 'cards =' not in keys)
+                self.assertEqual('yardr_operator' in config, acts)
+                self.assertEqual(any(c.get('native') == b.yard_commands.NATIVE_NUDGE
+                                     for c in config.get('commands', ())), acts)
+        for keys, reason in (('operator = "pat"\n', r'operator needs home'),
+                             ('cards = true\n', r'cards.*needs.*home and operator'),
+                             (f'home = "{home}"\ncards = true\n', r'cards.*needs.*home and operator'),
+                             ('cards = 1\n', r'cards.*true or false'), ('cards = "false"\n', r'cards.*true or false')):
+            with self.subTest(keys=keys), self.assertRaisesRegex(b.SettingsError, reason):
+                b.load_settings(self.with_yardr(url + file + keys))
         self.assertEqual(b.load_settings(self.with_yardr(url + file)).config['yardr_source'], 'tgbridge')
         for source in ('telegram-ops', 'MyBot', 'My.Bot_2-3', 'N' * 64):
             with self.subTest(source=source):
@@ -458,6 +482,11 @@ class MayorModelSettingsTests(unittest.TestCase):
         path.write_text(path.read_text() + '\n[yardr.quota]\n')
         settings = b.load_settings(path)
         self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'nudge', 'switch_model', 'mayor_model'])
+        path.write_text(path.read_text().replace('[yardr]', '[yardr]\ncards = false') + '\n[yardr.mail]\n')
+        secondary = b.load_settings(path).config
+        self.assertFalse(secondary['yardr_cards'])
+        self.assertEqual(secondary['commands'], settings.config['commands'])
+        self.assertTrue(secondary['yardr_mail'])
 
     def test_migration_clashes_are_refused(self):
         fix = r'delete the \[\[(command|menu)\]\] .+ table'
@@ -550,7 +579,7 @@ class ExampleSettingsTests(unittest.TestCase):
     EXPECTED = {
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
-        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'bin', 'quota', 'mayor_model'},
+        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'mayor_model'},
         'quota': {'timeout', 'groups', 'machine_login', 'machine'},
         'mayor_model': {'crew', 'timeout', 'picks'},
         'picks': {'id', 'label', 'kind', 'model', 'args', 'env_file'},
@@ -1182,7 +1211,7 @@ class InstallCheckTests(unittest.TestCase):
         self.assertEqual(self.failures(sums=sums), [])
         results = b.install_problems(self.settings, which=lambda n: '/usr/bin/' + n, sums=sums,
                                      platform='linux', version=lambda python: (3, 14))
-        self.assertEqual(results, [
+        self.assertEqual(results, [(True, line) for line in b.message_state_report(self.settings.config)] + [
             (True, f'python {self.settings.python}'),
             (True, 'curl on PATH'),
             (True, 'bot token file is owner-only'),
@@ -1196,6 +1225,58 @@ class InstallCheckTests(unittest.TestCase):
             (True, f'model {self.models}/ggml-large-v3-turbo-q5_0.bin SHA-256'),
             (True, f'model {self.models}/ggml-silero-v6.2.0.bin SHA-256'),
         ])
+        from test_read_states import FakeReadYard
+        home = self.root / 'yard'
+        home.mkdir(mode=0o700)
+        native = FakeReadYard(home, crew='secretary', source='tgsecretary')
+        self.addCleanup(native.close)
+        native.crew['helper'] = dict(name='helper', cursor=0)
+        for label, keys, read, ownership in (
+                ('P', 'operator = "pat"\ncards = true\n', True, 'owned here (cards = true)'),
+                ('S', 'operator = "pat"\ncards = false\n', True, 'not owned here (cards = false)'),
+                ('S0', '', True, 'not owned here (cards = false)'),
+                ('S0n', 'cards = false\n', False, 'not owned here (cards = false)'),
+                ('L', 'operator = "pat"\n', True, 'owned by the legacy rule')):
+            with self.subTest(instance=label):
+                path = write_settings(self.root, crew='"secretary"')
+                text = path.read_text().replace('[yardr]', '[yardr]\nsource = "tgsecretary"\n'
+                                                f'home = "{home}"\n' + keys)
+                text += '\n[[topic]]\nname = "help"\ncrew = "helper"\n'
+                if read:
+                    text += '\n[reactions]\non_accept = true\nseen = "🕊"\nread = "👀"\nnudge_after = 300\n'
+                path.write_text(text)
+                env = dict(HOME=str(self.root), PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin',
+                           XDG_CONFIG_HOME=str(self.root / 'config'), XDG_STATE_HOME=str(self.root / 'state'))
+                result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge/bridge.py'), '--settings',
+                                         str(path), 'check-install'], env=env, cwd=self.root,
+                                        capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                print(f'Synthetic check-install {label}:\n{result.stdout}', end='')
+                self.assertIn('native cards: ' + ownership, result.stdout)
+                self.assertIn('message states (test_bot): landed ' + ('on (🕊)' if read else 'off'), result.stdout)
+                self.assertIn('read ' + ('on (👀; crew secretary, helper)' if read else 'off (reactions.read unset)'), result.stdout)
+                self.assertIn('done on (👌; react' + (' and replies)' if read else '; replies off'), result.stdout)
+                self.assertIn('nudge offer ' + ('on (NudgeSession checked at runtime)' if 'operator' in keys else
+                                               'off ([yardr] operator unset)' if read else
+                                               'off (reactions.nudge_after 0)'), result.stdout)
+                if label == 'L':
+                    self.assertIn('WARN', result.stdout)
+                    self.assertIn('add cards = true here and cards = false to every other bridge', result.stdout)
+                if 'operator' not in keys:
+                    self.assertIn('native yard socket: crew secretary, helper readable', result.stdout)
+                    self.assertEqual([m for m, _ in native.calls if m == 'GetUser'], [])
+                    if read:
+                        self.assertIn('WARN', result.stdout)
+                    del native.crew['helper']
+                    checks = b.install_problems(b.load_settings(path), platform='linux')
+                    self.assertTrue(any(not ok and 'crew helper' in line for ok, line in checks))
+                    native.crew['helper'] = dict(name='helper', cursor=True)
+                    checks = b.install_problems(b.load_settings(path), platform='linux')
+                    self.assertIn((False, 'native yard socket: crew helper: invalid_crew_cursor'), checks)
+                    native.crew['helper'] = dict(name='helper', cursor=0)
+                else:
+                    self.assertIn('native yard socket and current operator identity', result.stdout)
+                native.calls.clear()
 
     def test_an_installed_release_checks_its_own_files_and_a_checkout_says_nothing(self):
         sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
@@ -1462,7 +1543,7 @@ class InstallCheckTests(unittest.TestCase):
                     version=lambda python: (3, 14), osrelease=str(release),
                     systemd_dir=str(systemd), linger_dir=str(linger), home=self.root / 'home')
         results = b.install_problems(self.settings, **base)
-        self.assertEqual(results[0], (True, 'WSL 2 with systemd'))
+        self.assertIn((True, 'WSL 2 with systemd'), results)
         results = b.install_problems(self.settings, **dict(base, systemd_dir=str(self.root / 'missing-systemd')))
         self.assertIn((False, 'systemd is not running in this WSL distribution: add [boot] systemd=true '
                               'to /etc/wsl.conf, run wsl --shutdown in Windows, reopen the distribution'), results)

@@ -2800,21 +2800,14 @@ wrong-topic/wrong-message/expired/cancelled/stale/replayed confirmations cannot
 approve. A wrong nonce, expiry or backward host-clock jump clears the arm.
 Cancel restores the open card with ‘Cancelled; nothing ran’. Decline records
 the native decline immediately with the same ownership checks.
-A text reply exactly matching the bound run card's number is consumed with
-‘Typed numbers no longer approve in Telegram; tap Approve, then Confirm.
-Nothing ran.’ Other replies and free-standing numbers keep ordinary routing.
+A text reply to an older run-card row is not consumed: only rows of
+kind=decision are handled, so such a reply falls through to ordinary
+inbound routing like any other message, and no arm is cleared. Other
+replies and free-standing numbers keep ordinary routing.
 No account or device passwords are requested.
 
-On the first poll after updating, legacy typed-number arms are cleared,
-never converted; their cards say the old confirmation ended and nothing
-ran. Existing unarmed cards need no redraw. A restart preserves a current
-arm; each poll clears expired arms before processing queued updates.
-
-Rollback (`install.sh --rollback`) keeps the ledger readable: the previous
-release treats a current arm's `expires` and `update` as its own typed
-confirmation, and its callback regex rejects the new `confirm` data. After
-rollback, use that release's typed gate or cancel and reopen the card.
-Native answers and operations already carried out remain canonical.
+Existing unarmed cards need no redraw. A restart preserves a current arm;
+each poll clears expired arms before processing queued updates.
 
 The state lives beside ordinary asks in the existing SQLite ledger;
 process locks serialize terminal interactions and durable update claims

@@ -10,7 +10,7 @@ The rows live only here; SKILL.md holds none.
 | pack | yardr/tgbridge.yaml | attachment:   { type: string, pattern: "^/", max: 4096, optional: true } | yardr call tgbridge send attachment= takes one absolute path |
 | pack | yardr/tgbridge.yaml | attachment_kind: { type: enum, values: [photo, video, document, voice, video_note], optional: true } | send attachment_kind= explicitly selects any outbound kind |
 | pack | bridge/bridge.py | def api_send(self, request, key_header=None): | the yard API sends the files the call names |
-| pack | bridge/bridge.py | elif args.command in ('send', 'reply-current'): | the host's command line sends the same way |
+| pack | bridge/bridge.py | elif args.command == 'send': | the host's command line sends the same way |
 | pack | bridge/bridge.py | def settings_path(explicit, environ=None): | --settings names the bridge's settings |
 | pack | install.sh | files[root / 'bin/telegram-bridge'] = ( | the instance's launcher carries its settings |
 | pack | install.sh | ".local/share/yardr-telegram" | the default install root |

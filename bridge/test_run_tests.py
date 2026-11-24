@@ -109,6 +109,44 @@ class SerialEnvTests(unittest.TestCase):
         self.assertIsNone(fake.call_args.kwargs.get('env'))
 
 
+class MultiFileTargetTests(unittest.TestCase):
+    def _run_mocked(self, names, returncodes=(0,)):
+        targets = [str(ROOT / 'bridge' / name) for name in names]
+        with mock.patch.object(run_tests.subprocess, 'run') as fake:
+            if len(returncodes) == 1:
+                fake.return_value = mock.Mock(returncode=returncodes[0])
+            else:
+                fake.side_effect = [mock.Mock(returncode=c) for c in returncodes]
+            rc = run_tests._run_target(targets, [], serial=False)
+        return rc, [call.args[0] for call in fake.call_args_list]
+
+    def _discover_cmd(self, name):
+        return [run_tests.sys.executable, '-B', '-m', 'unittest',
+                'discover', '-s', 'bridge', '-p', name]
+
+    def test_two_files_run_two_discovers(self):
+        rc, commands = self._run_mocked(['test_testports.py', 'test_topics.py'])
+        self.assertEqual(rc, 0)
+        self.assertEqual(commands, [
+            self._discover_cmd('test_testports.py'),
+            self._discover_cmd('test_topics.py'),
+        ])
+
+    def test_multi_file_returns_first_failure(self):
+        rc, _ = self._run_mocked(['test_testports.py', 'test_topics.py'], (0, 3))
+        self.assertEqual(rc, 3)
+        rc, _ = self._run_mocked(['test_testports.py', 'test_topics.py'], (2, 3))
+        self.assertEqual(rc, 2)
+
+    def test_non_file_targets_keep_unittest_fallback(self):
+        with mock.patch.object(run_tests.subprocess, 'run') as fake:
+            fake.return_value = mock.Mock(returncode=0)
+            rc = run_tests._run_target(['test_testports.NoSuchTest'], [], serial=False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake.call_count, 1)
+        self.assertNotIn('discover', fake.call_args.args[0])
+
+
 class DefaultJobsTests(unittest.TestCase):
     def _jobs(self, cpus, load1, env_value='ABSENT'):
         with mock.patch.object(os, 'cpu_count', return_value=cpus), \

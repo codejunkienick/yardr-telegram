@@ -207,24 +207,37 @@ def _partition_port_range(raw, slots):
     return ranges
 
 
+def _suite_file(arg):
+    """Map a test file path to (suite_dir, file name), or None when not a suite file."""
+    candidate = Path(arg)
+    if not candidate.is_file():
+        return None
+    resolved = candidate.resolve()
+    for suite_dir in SUITES:
+        suite_root = (ROOT / suite_dir).resolve()
+        if resolved.parent == suite_root:
+            return (suite_dir, resolved.name)
+    return None
+
+
 def _run_target(args, unittest_args, serial=False):
-    """Run a single file or explicit positional targets directly with unittest."""
+    """Run suite files as per-file discovers, other targets directly with unittest."""
     env = None
     if serial:
         env = os.environ.copy()
         env['TGBRIDGE_TEST_JOBS'] = '1'
-    if len(args) == 1:
-        candidate = Path(args[0])
-        if candidate.is_file():
-            resolved = candidate.resolve()
-            for suite_dir in SUITES:
-                suite_root = (ROOT / suite_dir).resolve()
-                if resolved.parent == suite_root:
-                    return subprocess.run(
-                        [sys.executable, '-B', '-m', 'unittest', 'discover', '-s', suite_dir,
-                         '-p', resolved.name, *unittest_args],
-                        cwd=ROOT, env=env,
-                    ).returncode
+    mapped = [_suite_file(arg) for arg in args]
+    if args and all(item is not None for item in mapped):
+        rc = 0
+        for suite_dir, name in mapped:
+            proc_rc = subprocess.run(
+                [sys.executable, '-B', '-m', 'unittest', 'discover', '-s', suite_dir,
+                 '-p', name, *unittest_args],
+                cwd=ROOT, env=env,
+            ).returncode
+            if proc_rc != 0 and rc == 0:
+                rc = proc_rc
+        return rc
     return subprocess.run([sys.executable, '-B', '-m', 'unittest', *args, *unittest_args],
                           cwd=ROOT, env=env).returncode
 

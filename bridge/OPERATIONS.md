@@ -1009,9 +1009,10 @@ For rollback:
 1. Resolve or explicitly supersede any pending native switch in the yard, then
    stop the unit (`systemctl --user stop <unit>`). Rolling back bridge code alone
    does not cancel a pending core operation or undo a saved crew target.
-2. Restore the pre-edit settings file before running
-   `<root>/current/install.sh --settings <settings> --root <root> --rollback`
-   to restore the previous bridge release.
+2. Restore the pre-edit settings file, then run
+   `<root>/previous/install.sh --settings <settings> --root <root> --rollback`
+   (`--dry-run` first) to restore the previous bridge release. The upgraded
+   `current` script refuses the restored pre-rename settings before swapping.
 3. Keep SQLite state intact (`switch_model_taps` is ignored by the prior
    release, which keeps its own tap table; new `switch-model:s:`/`f:` buttons
    fail out of date on the prior release, so send the switch command again).
@@ -1045,9 +1046,11 @@ systemctl --user restart <INSTANCE_UNIT>
 Verify `/switch_model` opens the selector card; keep `tgbridge` source
 env bindings and grants unchanged. To roll back, resolve/supersede any
 pending switch, stop `<INSTANCE_UNIT>`, restore the pre-edit settings file,
-run `<INSTANCE_ROOT>/current/install.sh --settings <INSTANCE_SETTINGS> --root
-<INSTANCE_ROOT> --rollback`, restart `<INSTANCE_UNIT>`, and run
-`<INSTANCE_ROOT>/bin/telegram-bridge set-commands`.
+run `<INSTANCE_ROOT>/previous/install.sh --settings <INSTANCE_SETTINGS>
+--root <INSTANCE_ROOT> --rollback` (`--dry-run` first), restart
+`<INSTANCE_UNIT>`, and run `<INSTANCE_ROOT>/bin/telegram-bridge
+set-commands`. The upgraded `current` script refuses the restored pre-rename
+settings before swapping.
 
 ### /nudge
 

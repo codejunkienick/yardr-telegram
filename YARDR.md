@@ -106,8 +106,8 @@ with `html`.
 `set-commands`, `render-unit` and `check-install`, with the flags they had.
 `--settings` falls back to `$TELEGRAM_BRIDGE_SETTINGS`. Every send is
 delivered in the calling process through the shared ledger; nothing goes
-through the yard. The `GC_RECEIPT {...}` line on stderr keeps its name,
-because existing delivery consumers parse it.
+through the yard. The `BRIDGE_RECEIPT {...}` line on stderr carries the
+same JSON receipt; delivery consumers parse the new prefix.
 
 `topics` prints, for each topic, the subscription that routes it:
 

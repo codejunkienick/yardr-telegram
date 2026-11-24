@@ -408,8 +408,8 @@ class SendRetryTests(BridgeTestCase):
                 with self.assertRaises(b.TransportError) as caught:
                     b._dispatch_outbound(self.bridge, args, text)
                 self.assertIn('send again with the same key and body', str(caught.exception))
-        lines = [json.loads(line[len('GC_RECEIPT '):]) for line in self.log.getvalue().splitlines()
-                 if line.startswith('GC_RECEIPT ')]
+        lines = [json.loads(line[len('BRIDGE_RECEIPT '):]) for line in self.log.getvalue().splitlines()
+                 if line.startswith('BRIDGE_RECEIPT ')]
         self.assertEqual(lines, [dict(delivered=False, failure_kind='transient', reason=NOT_SENT)] * 2)
 
 
@@ -439,7 +439,7 @@ class SendRetryCliTests(unittest.TestCase):
                 run_main(self, *argv)
         self.assertEqual((len(configs), sleeps), (3, [1, 3]))
         log = err.getvalue()
-        self.assertIn('GC_RECEIPT {"delivered": false, "failure_kind": "transient", "reason": "transport_unavailable_not_sent"}', log)
+        self.assertIn('BRIDGE_RECEIPT {"delivered": false, "failure_kind": "transient", "reason": "transport_unavailable_not_sent"}', log)
         attempts = [line for line in log.splitlines() if line.startswith('telegram ')]
         self.assertEqual(len(attempts), 3)
         for line in attempts:

@@ -18,11 +18,9 @@ PATTERNS = {
     'operator-path': rb'/(?:home|Users)/ni' + rb'ck(?:/|\b)',
 }
 RUNTIME_NAMES = {'telegram-bot-token', 'callback-secret', 'hook-secret', '.env'}
-# Exact compatibility tokens do not exempt the rest of their line or file.
 RELATIONSHIP = re.compile(
     rb'gas[\s_-]*city|\bextms[g]\b|\b19973[c]a\b|'
     rb'(?<!\w)\.?g[c](?:[_.]\w*)?\b|\b\w+_g[c]_\w+\b', re.IGNORECASE)
-COMPATIBILITY_NAMES = {b'GC_RECEIPT', b'_print_gc_receipt'}
 GARBAGE_COLLECTION = {b'import g' + b'c', b'g' + b'c.collect()'}
 # Reviewed binaries, each accepted only at its path with its exact SHA-256: the offline
 # wheelhouse and the two synthetic README captures. Any other binary, or changed bytes, refuse.
@@ -78,9 +76,6 @@ def scan(files):
         if b'\0' not in content:
             counts = {}
             for match in RELATIONSHIP.finditer(content):
-                token = match.group()
-                if token in COMPATIBILITY_NAMES:
-                    continue
                 start = content.rfind(b'\n', 0, match.start()) + 1
                 end = content.find(b'\n', match.end())
                 line = content[start:end if end != -1 else len(content)].strip()

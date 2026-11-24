@@ -1300,12 +1300,12 @@ class BridgeTests(BridgeTestCase):
         with patch('sys.stderr', new_callable=io.StringIO) as log:
             message_id = b._dispatch_outbound(self.bridge, args, 'hello world')
         self.assertEqual(message_id, '77')
-        self.assertNotIn('GC_RECEIPT', log.getvalue())
+        self.assertNotIn('BRIDGE_RECEIPT', log.getvalue())
 
     def test_dispatch_outbound_prints_structured_receipt_line_on_idempotency_conflict(self):
         # A caller replaying a frozen idempotency key with another body must
         # tell the conflict (already delivered) from a real failure: the
-        # GC_RECEIPT line on stderr carries the bridge's own reason.
+        # BRIDGE_RECEIPT line on stderr carries the bridge's own reason.
         parser = b._build_parser()
         args = parser.parse_args(['send', '--body-file', 'x.txt', '--idempotency-key', 'k6'])
         self.assertEqual(b._dispatch_outbound(self.bridge, args, 'first body'), '77')
@@ -1313,8 +1313,8 @@ class BridgeTests(BridgeTestCase):
             with self.assertRaisesRegex(b.TransportError, 'idempotency_key_conflict'):
                 b._dispatch_outbound(self.bridge, args, 'hello world')
         self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
-        line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
-        self.assertEqual(json.loads(line[len('GC_RECEIPT '):]),
+        line = next(l for l in log.getvalue().splitlines() if l.startswith('BRIDGE_RECEIPT '))
+        self.assertEqual(json.loads(line[len('BRIDGE_RECEIPT '):]),
                           {'delivered': False, 'failure_kind': 'permanent', 'reason': 'idempotency_key_conflict'})
 
     def test_cli_main_send_with_attachment_shares_the_daemons_store(self):
@@ -1754,8 +1754,8 @@ class BridgeTests(BridgeTestCase):
             with self.assertRaises(b.TransportError) as ctx:
                 b._dispatch_outbound(self.bridge, args, '<div>x</div>')
         self.assertIn('html_tag_not_allowed', str(ctx.exception))
-        line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
-        self.assertEqual(json.loads(line[len('GC_RECEIPT '):])['reason'], 'html_tag_not_allowed')
+        line = next(l for l in log.getvalue().splitlines() if l.startswith('BRIDGE_RECEIPT '))
+        self.assertEqual(json.loads(line[len('BRIDGE_RECEIPT '):])['reason'], 'html_tag_not_allowed')
         self.assertEqual(self.calls, [])
 
 

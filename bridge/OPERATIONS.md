@@ -1347,7 +1347,7 @@ then the `Already answered` answer; nothing is relayed.
 
 (5) Output: `Telegram ask closed; message ID <id>` (exit 0), the same line on
 an idempotent repeat. A refusal, or an edit that is not confirmed (rejected,
-ambiguous or not sent), prints the `GC_RECEIPT` line with its reason on
+ambiguous or not sent), prints the `BRIDGE_RECEIPT` line with its reason on
 stderr and exits 1. After the write the ask stays closed and the message
 says so (`ask closed; Telegram edit not confirmed: <reason>`). A not-sent
 edit is sent by running the same command again; a rejected edit (the user
@@ -1405,9 +1405,9 @@ confirms it ("The message log").
 
 The command line prints `Telegram delivery confirmed; message ID <id>`. A
 send that is not delivered prints one
-`GC_RECEIPT {"delivered": false, "failure_kind": ..., "reason": ...}` line on
-stderr and exits 1; the receipt prefix is stable because delivery consumers
-parse it. The yard API answers `delivered`,
+`BRIDGE_RECEIPT {"delivered": false, "failure_kind": ..., "reason": ...}` line on
+stderr and exits 1; delivery consumers parse the `BRIDGE_RECEIPT` prefix.
+The yard API answers `delivered`,
 `message_id`, `conversation` and, when not delivered, `reason` and
 `failure_kind` ("The yard API").
 
@@ -1641,7 +1641,7 @@ unconfirmed unpin pins the message again before it can report the slot
 unchanged, and an unpin after such a re-pin unpins again.
 
 Success prints `pinned message ID <id> (slot <slot>, revision <r>)` (revision
-0 for a new generation). A failure prints the `GC_RECEIPT` line with its
+0 for a new generation). A failure prints the `BRIDGE_RECEIPT` line with its
 reason on stderr and exits 1, naming the step (send, pin, edit or unpin) and
 the message id when there is one. The yard API answers a pin with
 `{"delivered": true, "message_id": "<id>", "changed": <bool>}`, an unpin
@@ -2133,7 +2133,7 @@ answers `{"delivered": true, "message_id": "<id>"}`); a rejection exits 1
 with `Telegram reaction not set: telegram_rejected_not_sent_<code>` (an emoji
 outside Telegram's list is a 400), a not-sent call with the not-sent message
 of "Delivery recovery" (`Telegram could not be reached; nothing was sent
-...`), each with the `GC_RECEIPT` line on stderr (the yard
+...`), each with the `BRIDGE_RECEIPT` line on stderr (the yard
 API answers `delivered: false` with the reason). Reaction updates from the
 user are not polled.
 
@@ -2700,7 +2700,7 @@ the send as ambiguous at once, never retried: exit 28 after the handshake, 52,
 56, 92, an HTTP 5xx, a body that cannot be read, a timeout on the bridge's own
 side, and every other curl exit code. A 4xx stays the definite rejection below.
 The yard API passes the receipt's `reason` and `failure_kind` on unchanged,
-and the command line prints them in its `GC_RECEIPT` line; only the reason
+and the command line prints them in its `BRIDGE_RECEIPT` line; only the reason
 `transport_unavailable_not_sent` means not sent. For it a send on the
 command line says `Telegram could not be reached; nothing was sent
 (transport_unavailable_not_sent): send again with the same key and body`,

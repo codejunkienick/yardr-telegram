@@ -14,6 +14,8 @@ sees and does, not how the code is organised.
   cards sent before the upgrade no longer answer; send `/switch_model` again.
   Rename the table and picks in the same edit as the install, keep the
   pre-edit settings file, and restore it before `install.sh --rollback`.
+- **Breaking:** the stderr receipt line is now `BRIDGE_RECEIPT {...}`
+  (same JSON). Delivery consumers must parse the new prefix.
 
 ### Fixed
 

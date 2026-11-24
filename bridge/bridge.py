@@ -4991,9 +4991,9 @@ def bridge_unit_state(unit, platform=None, run=subprocess.run):
     return result.stdout.strip() or None
 
 
-def _print_gc_receipt(delivered, failure_kind, reason):
+def _print_receipt(delivered, failure_kind, reason):
     """One machine-readable line on stderr for every non-delivered receipt, so a caller can act on the bridge's own reason instead of the human-readable text, and tell an idempotency-key replay from a real failure."""
-    print('GC_RECEIPT ' + json.dumps({'delivered': delivered, 'failure_kind': failure_kind, 'reason': reason}),
+    print('BRIDGE_RECEIPT ' + json.dumps({'delivered': delivered, 'failure_kind': failure_kind, 'reason': reason}),
           file=sys.stderr, flush=True)
 
 
@@ -5070,7 +5070,7 @@ def _dispatch_outbound(bridge, args, text, conversation=None):
     if receipt.get('delivered') is not True:
         failure_kind = receipt.get('failure_kind', 'permanent')
         reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
-        _print_gc_receipt(False, failure_kind, reason)
+        _print_receipt(False, failure_kind, reason)
         if reason == 'options_need_keyboard':
             raise TransportError(OPTIONS_NEED_KEYBOARD_MESSAGE)
         if reason == NOT_SENT_REASON:
@@ -5110,7 +5110,7 @@ def _react(bridge, args):
     receipt = bridge.set_reaction(message_id, emoji, key)
     if not receipt.get('delivered'):
         reason = receipt['metadata']['reason']
-        _print_gc_receipt(False, receipt.get('failure_kind', 'permanent'), reason)
+        _print_receipt(False, receipt.get('failure_kind', 'permanent'), reason)
         if reason == NOT_SENT_REASON:
             raise TransportError(NOT_SENT_MESSAGE)
         raise TransportError('Telegram reaction not set: ' + reason)
@@ -6751,7 +6751,7 @@ def main():
         receipt = bridge.close_ask(args.decision, message_id=args.message_id, ask_key=args.ask_key)
         if receipt.get('delivered') is not True:
             reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
-            _print_gc_receipt(False, receipt.get('failure_kind', 'permanent'), reason)
+            _print_receipt(False, receipt.get('failure_kind', 'permanent'), reason)
             if reason in ('ask_already_answered', 'ask_already_decided'):
                 raise TransportError(f'ask not closed: {reason} (recorded: {receipt.get("answer")})')
             if reason in Bridge.ASK_CLOSE_REFUSALS:
@@ -6771,7 +6771,7 @@ def main():
         receipt = bridge.unpin(slot) if args.unpin else bridge.pin(slot, args.body_file.read_text(), args.format)
         if receipt.get('delivered') is not True:
             reason = (receipt.get('metadata') or {}).get('reason') or 'delivery not confirmed'
-            _print_gc_receipt(False, receipt.get('failure_kind', 'permanent'), reason)
+            _print_receipt(False, receipt.get('failure_kind', 'permanent'), reason)
             step = receipt.get('step')
             message = f'pin {slot} not updated: {reason}' if step is None else \
                 f'pin {slot}: Telegram {step} not confirmed: {reason}'

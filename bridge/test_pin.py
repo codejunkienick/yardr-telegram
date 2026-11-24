@@ -456,7 +456,7 @@ class PinCliTests(unittest.TestCase):
         with self.assertRaisesRegex(b.TransportError,
                                     r'^pin waiting: Telegram send not confirmed: telegram_rejected_not_sent_400$'):
             self.cli('--slot', 'waiting', '--body-file', str(self.body))
-        self.assertIn('GC_RECEIPT {"delivered": false, "failure_kind": "permanent", '
+        self.assertIn('BRIDGE_RECEIPT {"delivered": false, "failure_kind": "permanent", '
                       '"reason": "telegram_rejected_not_sent_400"}', self.err)
 
     def test_flag_errors_exit_through_the_parser(self):

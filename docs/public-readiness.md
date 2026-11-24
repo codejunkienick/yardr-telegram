@@ -141,8 +141,9 @@ Rollback uses `<root>/current/install.sh --settings <settings> --rollback`,
 then the same unit restart and matching `<root>/pack` check/apply with the
 same bindings. The first checkout-to-release move has no previous release:
 restore `service.previous` as documented and retain the old checkout until
-acceptance. SQLite tables/fields, `GC_RECEIPT`, quota method names and legacy
-chat/run/source/CLI/API contracts remain compatible. New required callback
+acceptance. SQLite tables/fields, quota method names and legacy
+chat/run/source/CLI/API contracts remain compatible. The stderr receipt
+prefix is `BRIDGE_RECEIPT` (delivery consumers parse the new prefix). New required callback
 namespaces are the explicit configuration exception below. No automatic DB
 rewrite or broad credential rebinding is part of public preparation.
 
@@ -154,7 +155,6 @@ remain stable for existing installations and delivery consumers:
 
 | Name or format | Reason and compatibility evidence |
 | --- | --- |
-| `GC_RECEIPT` and its `_print_gc_receipt` helper | Delivery consumers parse this prefix and its complete JSON receipt. `bridge/test_bridge.py`, `test_send_retry.py`, `test_ask_close.py`, `test_pin.py` and `test_text_options.py` exercise actual send/CLI failure paths, including permanent, transient and ambiguous outcomes. |
 | Conversation `scope_id` and `session_id`, `provider_message_id` | Existing delivery keys keep their meaning. `bridge/test_yard_api.py` checks HTTP routes; `test_bridge.py` pins send fingerprints and retries the same inbound provider ID. |
 | Ledger tables/columns, including `accepted`, `accepted_conversations`, `auto_topics.agent`, `auto_topics.bound_at`, `asks.decided` and `asks.conversation_id` | Existing rows retain their values. `TopicLedgerTests.test_an_existing_base_ledger_opens_unchanged` and `AutoTopicLedgerTests` (including reopening a populated binding timestamp) verify additive upgrades, repeated opens and usable asks. Stored crew names are preserved. |
 | `quota_episode`, internal `agent` and `city_commands` names | Existing config/method names remain intact. The quota cases in `bridge/test_bridge.py`, settings config assertions and command tests exercise them using yard health reports and configured handlers. |

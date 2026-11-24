@@ -40,9 +40,9 @@ class PublicReadinessTests(unittest.TestCase):
 
     def test_export_matches_every_committed_byte_mode_and_provenance(self):
         (self.repo / 'LICENSE').write_text('Copyright the authors\n')
-        # Generic paths, compatibility names and attribution are allowed.
+        # Generic paths and attribution are allowed; the bridge receipt prefix is not a relationship reference.
         (self.repo / 'README.md').write_text('/home/alex /Users/example odyssey imd city mayor\n'
-                                           'GC_RECEIPT _print_gc_receipt mayor_quota_episode\n')
+                                           'BRIDGE_RECEIPT quota_episode\n')
         (self.repo / 'bridge').mkdir()
         (self.repo / 'bridge/test_bridge.py').write_text('import g' + 'c\ng' + 'c.collect()\n')
         executable = self.repo / 'helper'
@@ -135,22 +135,25 @@ class PublicReadinessTests(unittest.TestCase):
             ('yardr/SETUP.md', 'load .g' + 'c/site.toml'),
             ('example.py', 'g' + 'c_new_api = None'),
             ('example.py', '_new_g' + 'c_api = None'),
-            ('README.md', 'GC_RECEIPT means Gas' + ' City delivery'),
+            ('README.md', 'G' + 'C_RECEIPT means Gas' + ' City delivery'),
         )
         for index, (name, text) in enumerate(cases):
             with self.subTest(path=name, case=index):
                 path = self.repo / name
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('GC_RECEIPT _print_gc_receipt\n' + text + '\n')
+                # The old receipt prefix is no longer exempt: it is flagged on its own line.
+                # (Split so this file itself carries no flaggable token.)
+                path.write_text('G' + 'C_RECEIPT _print_g' + 'c_receipt\n' + text + '\n')
                 self.commit()
                 destination = self.root / ('relationship-' + str(index))
                 result = self.scan('--export', destination)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertFalse(destination.exists())
                 records = [json.loads(line) for line in result.stdout.splitlines()]
-                count = 2 if index == 6 else 1
-                self.assertEqual(records[:-1], [dict(path=name, line=2, category='relationship-reference', count=count)])
-                self.assertEqual(records[-1]['findings'], count)
+                count = 2 if index in (6, 13) else 1
+                self.assertEqual(records[:-1], [dict(path=name, line=1, category='relationship-reference', count=2),
+                                                dict(path=name, line=2, category='relationship-reference', count=count)])
+                self.assertEqual(records[-1]['findings'], 2 + count)
                 self.assertNotIn(text, result.stdout + result.stderr)
                 path.unlink()
 

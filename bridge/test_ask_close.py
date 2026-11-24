@@ -371,7 +371,7 @@ class AskCloseCliTests(unittest.TestCase):
         self.record_ask()
         with self.assertRaisesRegex(b.TransportError, r'^ask not closed: ask_not_found$'):
             self.cli('--message-id', '43', '--decision', 'Merged by hand')
-        self.assertIn('GC_RECEIPT {"delivered": false, "failure_kind": "permanent", "reason": "ask_not_found"}',
+        self.assertIn('BRIDGE_RECEIPT {"delivered": false, "failure_kind": "permanent", "reason": "ask_not_found"}',
                       self.err)
         self.assertEqual(self.requests, [])
         self.cli('--message-id', '42', '--decision', 'Merged by hand')

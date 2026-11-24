@@ -167,8 +167,8 @@ class OptionsCliTests(BridgeTestCase):
         self.assertIn('options_need_keyboard', str(ctx.exception))
         self.assertIn('--keyboard-file', str(ctx.exception))
         self.assertIn('Asks with buttons', str(ctx.exception))
-        line = next(l for l in log.getvalue().splitlines() if l.startswith('GC_RECEIPT '))
-        self.assertEqual(json.loads(line[len('GC_RECEIPT '):])['reason'],
+        line = next(l for l in log.getvalue().splitlines() if l.startswith('BRIDGE_RECEIPT '))
+        self.assertEqual(json.loads(line[len('BRIDGE_RECEIPT '):])['reason'],
                          'options_need_keyboard')
         self.assertIsNone(self.store.saved_receipt('k-send'))
         self.assertEqual(self.calls, [])

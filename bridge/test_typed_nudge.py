@@ -538,7 +538,7 @@ class RealTypedNudgeTests(BridgeTestCase):
         self.cli('user', 'add', 'proposer')
         self.cli('crew', 'add', 'yardmaster', '--set', 'kind=claude')
         self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge',
-                           commands=(y.NUDGE_COMMAND,))
+                           yardr_cards=True, commands=(y.NUDGE_COMMAND,))
         self.ids = iter(range(77, 300))
         self.logs = []
         self.restart_bridge()

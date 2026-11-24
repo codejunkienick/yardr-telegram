@@ -205,7 +205,7 @@ class ThreadTests(unittest.TestCase):
 class RenderedPackTests(unittest.TestCase):
     """An instance's pack as install.sh renders it from a release's yardr/:
     the declaration's one base line names the instance's port, and every
-    other byte, the legacy bases included, is the release's."""
+    other byte is the release's."""
 
     @classmethod
     def setUpClass(cls):
@@ -221,8 +221,7 @@ class RenderedPackTests(unittest.TestCase):
         before = (PACK.parent / 'bridge/fixtures/source_tgbridge_commented.yaml').read_text()
         self.assertEqual(self.b['run_asks'].source_yaml(before),
                          self.b['run_asks'].source_yaml(declaration.decode()))
-        bases = b'bases:\n  imd: http://127.0.0.1:8942\n'
-        self.assertIn(bases, release['tgbridge.yaml'][0])
+        self.assertNotIn(b'\nbases:\n', release['tgbridge.yaml'][0])
         digests = set()
         for port in (18941, 28942):
             with self.subTest(port=port):
@@ -234,7 +233,7 @@ class RenderedPackTests(unittest.TestCase):
                 self.assertEqual([(a, b) for a, b in zip(old.splitlines(True), new.splitlines(True)) if a != b],
                                  [(b'base: http://127.0.0.1:8941\n', f'base: http://127.0.0.1:{port}\n'.encode())])
                 self.assertEqual(len(old.splitlines()), len(new.splitlines()))
-                self.assertIn(bases, new)
+                self.assertNotIn(b'\nbases:\n', new)
                 digests.add(self.b['pack_digest'](rendered))
         self.assertEqual(len(digests), 2)
         # Two bots in one yard need distinct pack/source registrations too.
@@ -246,7 +245,7 @@ class RenderedPackTests(unittest.TestCase):
                 self.assertIn(f'name: {quoted}\n'.encode(), named['pack.yaml'][0])
                 self.assertIn(f'  {quoted}:\n    declaration: tgbridge.yaml'.encode(), named['pack.yaml'][0])
                 self.assertIn(b'base: http://127.0.0.1:28942\n', named['tgbridge.yaml'][0])
-                self.assertIn(bases, named['tgbridge.yaml'][0])
+                self.assertNotIn(b'\nbases:\n', named['tgbridge.yaml'][0])
                 self.assertEqual(named['tgbridge/thread'], release['tgbridge/thread'])
                 self.assertEqual(named['tgbridge/normalize'], release['tgbridge/normalize'])
                 self.assertNotIn(self.b['pack_digest'](named), digests)

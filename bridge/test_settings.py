@@ -2304,9 +2304,8 @@ class InstanceTests(unittest.TestCase):
         self.assertEqual(len(old.splitlines(keepends=True)), len(new.splitlines(keepends=True)))
         self.assertEqual([(a, b) for a, b in zip(old.splitlines(keepends=True), new.splitlines(keepends=True)) if a != b],
                          [('base: http://127.0.0.1:8941\n', f'base: http://127.0.0.1:{port}\n')])
-        bases = 'bases:\n  imd: http://127.0.0.1:8942\n'
-        self.assertIn(bases, old)
-        self.assertIn(bases, new)
+        self.assertNotIn('\nbases:\n', old)
+        self.assertNotIn('\nbases:\n', new)
 
     def next_line(self, root, unit):
         launcher = root / 'bin/telegram-bridge'

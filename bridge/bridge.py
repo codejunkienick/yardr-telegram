@@ -6151,7 +6151,7 @@ def render_pack(directory, port, source='tgbridge'):
     """pack_tree of a release's yardr/ directory with the one top-level line
     base: http://127.0.0.1:<n> of its declaration naming port instead. A named
     source also renames the manifest's pack and source as YAML strings,
-    keeping the relative command paths and legacy bases intact."""
+    keeping the relative command paths intact."""
     if not isinstance(source, str) or not NAME_RE.fullmatch(source):
         raise ValueError('invalid installation source name')
     files = pack_tree(directory)

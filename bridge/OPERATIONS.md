@@ -3190,8 +3190,7 @@ value is preserved, including the siding call's description.
 The bridge polls Telegram, transcribes voice notes, runs chat commands and
 keeps the delivery ledger. Both the yard's hook listener and the bridge's
 callback service use loopback. Each bot belongs to one yard on its own port;
-`install.sh` renders the source name and port into `<root>/pack`. Named bases
-remain legacy aliases for installations that selected one.
+`install.sh` renders the source name and port into `<root>/pack`.
 `credential.env: TGBRIDGE_SECRET` names the callback secret without storing
 its value in the declaration. Every update carries the yard's idempotency
 key, and a retried call finds its first send in the bridge's ledger.

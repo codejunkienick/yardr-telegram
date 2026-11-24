@@ -128,19 +128,13 @@ yardr source check tgbridge               # after step 9; health answers 200
 
 `<root>/pack` is the active release's `yardr/` with its `base` line
 naming this settings file's port, so the source's calls go to this yard's
-own bridge with no `base=`. The `imd` key is a deprecated
-compatibility alias, retained with its original host. New installs use
-the rendered default; no alias is needed. install.sh renders it on every
-install and `--rollback`, and
-`yardr pack apply tgbridge` reads it again from there.
-
-An installation that already has an alias selected (`yardr source show
-tgbridge` says `(base <alias>)`) keeps it, and names the env file it already
-has (`source.env_file` in `yardr source show tgbridge --json`):
+own bridge. install.sh renders it on every install and `--rollback`, and
+`yardr pack apply tgbridge` reads it again from there. Name the env file
+the source already has (`source.env_file` in
+`yardr source show tgbridge --json`):
 
 ```sh
-yardr pack apply <root>/pack \
-  --source-base tgbridge=<existing-alias> --source-env tgbridge=<existing-env-file>
+yardr pack apply <root>/pack --source-env tgbridge=<existing-env-file>
 ```
 
 The first apply from `<root>/pack` moves the yard's recorded import origin
@@ -663,8 +657,7 @@ yardr crew show secretary
    ```
 
    Installation activates neither unit. The rendered `<root>/pack` names the
-   source `tgsecretary` with the second port; new instances use the rendered
-   default base, never the primary's legacy alias.
+   source `tgsecretary` with the second port.
 
 4. Declare the new source and hook in the same yard, with their own secrets:
 
@@ -821,7 +814,7 @@ refusals are in
 ## Move an existing bridge to its own installation
 
 For a bridge whose unit still runs `bridge.py` from a checkout. Its settings,
-token, secrets, state directory, port, bot, source credential, alias and
+token, secrets, state directory, port, bot, source credential and
 grants all stay as they are; what moves is the code the unit runs, the
 launchers, the pack's origin and (fork-only) yard-local skill copies. Move one
 instance at a time: no other instance is changed or needs to be running.
@@ -830,8 +823,7 @@ The design and what it does not promise: `docs/design/independent-instances.md`.
 Placeholders: `<settings>` is the bridge's settings file, `<unit>` its `unit`,
 `<root>` its install root (`~/.local/share/yardr-telegram/<unit stem>` unless you
 pass `--root <root>` to every `install.sh`), `<state_dir>` its `state_dir`,
-`<checkout>` the reviewed checkout, `<alias>` the named base the source has
-selected, if any, `<credential file>` the source's env file, and `<service file>`
+`<checkout>` the reviewed checkout, `<credential file>` the source's env file, and `<service file>`
 the unit file the dry-run names (`~/.config/systemd/user/<unit>` by default). Run
 every `yardr` command with this yard's `YARDR_HOME`. On macOS the service steps
 are the `launchctl` ones in `bridge/OPERATIONS.md`, "Install and launch".
@@ -998,24 +990,21 @@ pack rollback applies a reviewed earlier snapshot or the terminal command.
 Read the bindings the source has, without printing the credential:
 
 ```sh
-yardr source show tgbridge          # "(base <alias>)" when an alias is selected
+yardr source show tgbridge          # the rendered base of this installation
 yardr source show tgbridge --json   # source.env_file is the <credential file>
 yardr pack check <root>/pack
 ```
 
 `pack check` plans against the current bindings and takes no binding flags.
-Apply with the bindings the source already has: `--source-base` only where an
-alias is selected, `--source-env` always.
+Apply with the source's env file:
 
 ```sh
-yardr pack apply <root>/pack --source-base tgbridge=<alias> --source-env tgbridge=<credential file>
-# or, with no alias selected:
 yardr pack apply <root>/pack --source-env tgbridge=<credential file>
 yardr pack list                     # tgbridge is imported from <root>/pack
 yardr source check tgbridge
 ```
 
-The apply keeps the alias and its credential pairing, the limits, the grants
+The apply keeps the credential pairing, the limits, the grants
 and the user identity; `yardr source show tgbridge` still shows the same base.
 Later installs and rollbacks publish into `<root>/pack`, and `yardr pack apply
 tgbridge` reads it from there.
@@ -1106,7 +1095,7 @@ systemctl --user start <unit>
 ```
 
 The unit runs the checkout again, so it must still be there. The
-pack applied above still works with it (the same port or alias); apply
+pack applied above still works with it (the same port); apply
 `<checkout>/yardr` with the same flags only to move the recorded origin back.
 On the fork, revert skills with `yardr skill add` from
 `<checkout>/skills/<name>` for this yard.
@@ -1122,14 +1111,14 @@ The host-wide voice-transcribe link stays the operator's choice.
 - Delete the checkout, the state directory or `<root>/service.previous`
   before the verification and the pack steps pass: the undo above runs the
   checkout and its old unit.
-- Reset the alias, re-key the source or grant the calls again: the apply
+- Re-key the source or grant the calls again: the apply
   keeps them.
 
 ## Explicit Markdown replies
 
 Install only the reviewed merged checkout with the existing installer, then
 check the installed release and follow its `next:` line. Apply `<root>/pack`
-using step 5, retaining the selected source alias and existing env-file binding.
+using step 5, retaining the existing env-file binding.
 The declaration adds `thread.formats: [markdown, html]`; core `0035b8c13e27` or a
 compatible explicit reply-format transport is required. The core alone does
 not activate the source capability. No new grants, settings or Python installs

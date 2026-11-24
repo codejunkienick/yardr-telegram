@@ -4,13 +4,10 @@
 # on loopback, and it reaches the yard's hook listener on loopback.
 #
 # One bridge serves one bot in one yard, each on its own port: install.sh
-# renders its source name and port into <install root>/pack. The named
-# bases are legacy aliases an installation that selected one keeps.
+# renders its source name and port into <install root>/pack.
 name: tgbridge
 about: The operator's Telegram chat and its topics, through the yardr-telegram bridge on this machine.
 base: http://127.0.0.1:8941
-bases:
-  imd: http://127.0.0.1:8942
 credential:
   env: TGBRIDGE_SECRET                     # the bridge's callback secret: the name, never the value
   header: "Authorization: Bearer {credential}"

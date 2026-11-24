@@ -41,9 +41,7 @@ per-instance pieces around it.
   copy of it: no shared virtual environment and no install when a message is
   sent. Such dependencies go under the release's `vendor/`.
 - The yards differ only in rollout state and enabled ask kinds, not in
-  product policy. The named `bases:` of the source declaration (`odyssey`,
-  `imd`) are legacy bindings: they stay, and an installation that selects one
-  keeps it.
+  product policy. Each installation uses its own rendered `base:` line.
 
 Routine choices made with the design: the layout and default root below,
 installing only a committed tree, the link name `current`, committing pinned
@@ -160,7 +158,7 @@ and stay until the operator deletes them (README.md, "Uninstall").
 rollback: the release's `yardr/` with its one top-level `base:` line
 rewritten to the settings' port. A non-default `[yardr] source` also changes
 the declaration name, manifest pack name and manifest source key; relative
-command paths stay intact inside each source. The legacy `bases:` are byte-identical.
+command paths stay intact inside each source.
 Generations are content-addressed under `packs/`, so a refused or failed
 publication keeps the previous pack. The yard re-applies it from there, which
 also moves the yard's recorded import origin off the checkout. An existing
@@ -228,6 +226,5 @@ folder to an instance's `current` (`yardr/SETUP.md`, "The crew's skills").
   the GPU policy. A queue per instance would be a separate decision.
 - A per-instance transcriber environment in the `voice-transcribe` launcher:
   it behaves as the old global link did.
-- Removing or renaming the legacy `bases:` aliases.
 - The formatter and its pinned packages, which arrive later through
   `vendor/`.

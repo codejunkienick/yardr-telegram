@@ -146,7 +146,11 @@ what the unit runs at its next start, whoever starts it, including a
 runs from any release and needs no git. It verifies `previous` against its
 `SHA256SUMS`, runs its `check-install`, and swaps `current` and `previous`
 under the same locks; `pack` returns to that release's generation. A second
-`--rollback` goes forward again. After the first install from a checkout unit
+`--rollback` goes forward again. When the upgrade changed settings
+compatibility, restore the pre-edit settings file and run
+`<root>/previous/install.sh --settings <settings> --rollback` instead: the
+upgraded `current` script refuses the older settings before swapping. After the
+first install from a checkout unit
 there is no previous release: restoring `service.previous` over the service
 file is that rollback.
 
@@ -183,14 +187,14 @@ read/done reactions and `operator` for verified nudges. Exactly one sets
 destination and are not partitioned by a crew name. Both installations use
 the same lock directory; their bot-id lock files stay distinct, while
 the owner also holds `yardr-cards-<device>-<inode>.lock` for the yard home.
-Home+operator without `cards` retains legacy ownership with a migration WARN.
-Before rolling back to a release without `cards`, restore each non-owner's
-prior settings: remove `cards`, `home`, `operator`, `reactions.read` and
-`reactions.nudge_after`, plus any `[yardr.quota]`, `[yardr.switch_model]` or
-`[yardr.mail]` tables added with them. Removing only `cards = false` would make
-home+operator claim native cards under the older release's legacy rule.
-The owner can remove `cards = true` and keep home+operator. The older release
-checks settings before activation; no ledger schema changes are needed.
+`cards` is required wherever home and operator are both set: `cards = true` on
+the one bridge that owns this yard's native cards, `cards = false` on every
+other. Rolling back to a release older than `cards` means restoring the
+settings file kept before the upgrade edit, then the previous release's own
+`<root>/previous/install.sh --settings <settings> --root <root> --rollback`
+(`--dry-run` first): the upgraded `current` script refuses the restored
+settings before swapping. The older release checks settings before activation;
+no ledger schema changes are needed.
 
 ## Host resources
 

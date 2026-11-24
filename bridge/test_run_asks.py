@@ -726,7 +726,8 @@ class NativeCase(BridgeTestCase):
         self.home.mkdir(mode=0o700)
         self.native = NativeSocket(self.home)
         self.addCleanup(self.native.close)
-        self.config.update(yardr_home=str(self.home.resolve()), yardr_operator='pat', yardr_source='tgbridge')
+        self.config.update(yardr_home=str(self.home.resolve()), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True)
         self.bridge = b.Bridge(self.config, self.store, 'TOKEN', 'CAPABILITY', request=self.transport)
         self.sent_count = 0
         self.config['hook_secret'] = None
@@ -6966,7 +6967,7 @@ class NativeTests(NativeCase):
         root = Path(self.tmp.name)
         settings = write_settings(root)
         settings.write_text(settings.read_text().replace('[yardr]',
-                            f'[yardr]\nhome = "{self.home}"\noperator = "pat"')
+                            f'[yardr]\nhome = "{self.home}"\noperator = "pat"\ncards = true')
                             + topic_tables(('ops', None), ('uncreated', None)))
         bin_dir = root / 'bin'
         write_fake_curl(bin_dir, f'#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n'
@@ -7350,7 +7351,7 @@ class NativeSettingsTests(unittest.TestCase):
                 return result
 
             valid = ('# Keep comments; synthetic-secret\n' + write_settings(root).read_text().replace(
-                '[yardr]', '[yardr] # native keys\nsource = "tgbridge"') + '\n[typing]\nseconds = 3\n')
+                '[yardr]', '[yardr] # native keys\nsource = "tgbridge"\ncards = false') + '\n[typing]\nseconds = 3\n')
             for newline in ('\n', '\r\n'):
                 original = valid.replace('\n', newline).encode()
                 path.write_bytes(original)
@@ -7391,6 +7392,8 @@ class NativeSettingsTests(unittest.TestCase):
                     if native:
                         original = original.replace('[yardr] # native keys',
                             f'[yardr] # native keys\nhome = "{home}"\noperator = "pat"')
+                    # The checked after-state owns the native cards, so the clash refuses.
+                    original = original.replace('cards = false', 'cards = true')
                     for args in ((), ('--apply',)):
                         with self.subTest(diagnostic=diagnostic, native=native, args=args):
                             path.write_text(original)
@@ -7468,10 +7471,13 @@ class NativeSettingsTests(unittest.TestCase):
                 with self.assertRaises(b.SettingsError):
                     b.load_settings(settings)
             settings.write_text(original.replace('[yardr]', f'[yardr]\nhome = "{yard}"\noperator = "pat"'))
+            with self.assertRaisesRegex(b.SettingsError, r'cards is required with home and operator'):
+                b.load_settings(settings)
+            settings.write_text(original.replace('[yardr]', f'[yardr]\nhome = "{yard}"\noperator = "pat"\ncards = true'))
             loaded = b.load_settings(settings)
             self.assertEqual(loaded.config['yardr_socket'], str(yard / 'yard.sock'))
             self.assertTrue(loaded.config['yardr_cards'])
-            self.assertTrue(loaded.config['yardr_cards_legacy'])
+            self.assertEqual([key for key in loaded.config if key.endswith('legacy')], [])
             yard.chmod(0o777)
             with self.assertRaises(b.SettingsError):
                 b.load_settings(settings)
@@ -8777,7 +8783,8 @@ class RealNativeTests(BridgeTestCase):
             cli('bead', 'ask', 'decline-1', 'Which option?', '--to', 'pat', '--context', 'Synthetic decline',
                 '--option', 'First: Choose first.', '--option', 'Second: Choose second.', actor='proposer')
             original = client.call('Bead', dict(bead='decline-1', viewer='pat'))['asks'][0]
-            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True)
             ids = iter(range(77, 300))
 
             def telegram(url, body, *args, **kwargs):
@@ -9375,7 +9382,8 @@ class RealNativeTests(BridgeTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         ask = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][0]
         self.assertEqual(ask.get('weight', []), [])
-        self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+        self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True)
         ids = iter(range(77, 300))
         def telegram(url, body, *args, **kwargs):
             status, response = self.transport(url, body, *args, **kwargs)
@@ -10297,7 +10305,8 @@ class RealNativeTests(BridgeTestCase):
             def events(kind):
                 return client.call('EventsOfKind', [kind, 1000]) or []
 
-            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True)
             ids = iter(range(77, 900))
             def telegram(url, body, *args, **kwargs):
                 status, response = self.transport(url, body, *args, **kwargs)
@@ -10514,7 +10523,8 @@ class RealNativeTests(BridgeTestCase):
                 '--set', f"prompt={home / 'roles' / 'planner.md'}", '--set', 'effort=high')
             cli('group', 'add', 'drafters', '--runner', 'herdr', '--set', 'kind=claude')
 
-            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge')
+            self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True)
             ids = iter(range(77, 400))
             def telegram(url, body, *args, **kwargs):
                 status, response = self.transport(url, body, *args, **kwargs)

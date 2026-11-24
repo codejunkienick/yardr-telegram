@@ -5705,11 +5705,12 @@ def load_settings(path, home=None):
     if 'operator' in yardr:
         native['yardr_operator'] = _text_setting(yardr['operator'], 'yardr.operator', re.compile(r'[a-z0-9][a-z0-9._-]{0,63}'))
     operator_acts = bool(native.get('yardr_home') and native.get('yardr_operator'))
-    native['yardr_cards'] = _bool_setting(yardr.get('cards', operator_acts), '[yardr] cards')
+    if operator_acts and 'cards' not in yardr:
+        raise SettingsError('settings: [yardr] cards is required with home and operator: cards = true on the '
+                            'one bridge that owns this yard\'s native cards, cards = false on every other')
+    native['yardr_cards'] = _bool_setting(yardr.get('cards', False), '[yardr] cards')
     if native['yardr_cards'] and not operator_acts:
         raise SettingsError('settings: [yardr] cards = true needs home and operator')
-    if native['yardr_cards'] and 'cards' not in yardr:
-        native['yardr_cards_legacy'] = True
     owner = run_asks.owns_cards(native)
 
     menu = data.get('menu', [])
@@ -6412,11 +6413,7 @@ def message_state_report(config):
     report = [prefix + 'message states (' + account + '): landed ' + landed + '; read ' + read
               + '; working ' + working + '; done ' + done + '; nudge offer ' + offer]
     if run_asks.owns_cards(config):
-        if config.get('yardr_cards_legacy') or 'yardr_cards' not in config:
-            report.append('WARN  native cards: owned by the legacy rule (home and operator); add cards = true here '
-                          'and cards = false to every other bridge in this yard')
-        else:
-            report.append('native cards: owned here (cards = true)')
+        report.append('native cards: owned here (cards = true)')
     else:
         report.append('native cards: not owned here (cards = false)')
     return report

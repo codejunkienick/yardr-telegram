@@ -54,7 +54,7 @@ def main():
         text = re.sub(r'\n\[\[menu\]\]\ncommand = "quota"\ndescription = [^\n]*\n', '\n', text)
         marker = '\n[yardr]\n'
         start = text.index(marker)
-        text = text[:start] + marker + 'home = "%s"\noperator = "pat"\n' % (root / 'yard') \
+        text = text[:start] + marker + 'home = "%s"\noperator = "pat"\ncards = true\n' % (root / 'yard') \
             + text[start + len(marker):]
         text += '\n[yardr.quota]\n'
         text += '\n[[command]]\nname = "quota"\ndescription = "Quota via add-on"\n'

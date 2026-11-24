@@ -415,9 +415,9 @@ write fallback.
 Do not assume the native keys exist. The operator can check, then add only
 missing keys to a private settings file without printing it:
 
-The helper adds only `home` and `operator`; without an explicit `cards`
-these retain legacy card ownership. On a second bridge set `cards = false`
-first; the helper preserves it and validates the resulting settings.
+The helper adds only `home` and `operator`; `cards` is required with them,
+so set `cards = true` on the owning bridge (or `cards = false` on every other)
+first. The helper preserves it and validates the resulting settings.
 
 ```sh
 python3 scripts/native_settings.py --settings <private-settings> \
@@ -707,17 +707,16 @@ yardr crew show secretary
    stays on the primary.
 
    `check-install` and startup report landed/read/done and nudge-offer
-   configuration per instance, with off reasons. A legacy owner with
-   home+operator keeps its cards and gets a nonfatal migration warning:
-   set `cards = true` there and `cards = false` on every other instance.
+   configuration per instance, with off reasons. `cards` is required wherever
+   home and operator are both set: `cards = true` on the owning bridge,
+   `cards = false` on every other instance.
 
-   Before rolling back to a release without `cards`, restore the non-owner's
-   prior settings: remove `cards`, `home`, `operator`, `reactions.read` and
-   `reactions.nudge_after`, plus any `[yardr.quota]`, `[yardr.switch_model]` or
-   `[yardr.mail]` tables added with them. Removing only `cards = false` would make
-   home+operator claim native cards under the older release's legacy rule.
-   The owner can remove `cards = true` and retain home+operator. Rollback checks
-   the older settings before activation; the ledger schema is unchanged.
+   Before rolling back to a release without `cards`, restore the settings file
+   kept before the upgrade edit, then run the previous release's own script:
+   `<root>/previous/install.sh --settings <settings> --root <root> --rollback`
+   (`--dry-run` first). The upgraded `current` script refuses the restored
+   settings before swapping. Rollback checks the older settings before
+   activation; the ledger schema is unchanged.
    Installation belongs to the operator; settings take effect after restart.
 
 6. Activate only the second bot, then check both paths:
@@ -1021,6 +1020,13 @@ It verifies `previous` against its `SHA256SUMS`, swaps `current` and
 `previous`, and returns `<root>/pack` to that release's own. A second
 `--rollback` goes forward again. On the fork, refresh skill
 copies as above for that release.
+
+When the upgrade changed settings compatibility (a key the new release
+requires or renamed), restore the pre-edit settings file first and run the
+rollback from the previous release instead:
+`<root>/previous/install.sh --settings <settings> --rollback --dry-run`, then
+without `--dry-run`. The upgraded `current` script loads the settings with its
+own parser and refuses the older file before swapping.
 
 Undoing this first move, when there is no previous release (`--rollback`
 says so and names `service.previous`):

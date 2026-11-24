@@ -82,7 +82,7 @@ default yard.
 | `[yardr]` `source` | no | the declared source's name in the yard, in the lines `topics` prints; default `tgbridge` |
 | `[yardr]` `home` | no | existing private yard home for message-state reads on any instance; socket is `home/yard.sock` |
 | `[yardr]` `operator` | no | current operator mapped to the paired Telegram user on this source; requires home, enables verified nudges and configured operator commands |
-| `[yardr]` `cards` | no | native-card ownership: true on exactly one instance, false on all others; true needs home+operator. Omitted preserves legacy home+operator ownership with a migration WARN |
+| `[yardr]` `cards` | no | native-card ownership: true on exactly one instance, false on all others; true needs home+operator. Required with home and operator |
 | `[bot]` `bot_id`, `user_id`, `chat_id`, `account_id` | yes | positive numeric ids (`chat_id` equals `user_id`: a private chat), the bot username as the account |
 | `lock_dir` | no | shared directory for per-bot and per-yard native-card locks; default the token file's directory |
 | `unit` | no | service name: the systemd unit name on Linux and WSL 2, and on macOS the source of the launchd label (this name without its `.service` suffix); default `<yard>-telegram.service` |
@@ -185,7 +185,10 @@ In order, it:
    diagnostic prints its old and new settings paths as well as bridge paths.
 
 `install.sh --settings <settings> --rollback` runs from any release (for
-example `<root>/current/install.sh`) and needs no git. It verifies
+example `<root>/current/install.sh`) and needs no git. When the upgrade changed
+settings compatibility, restore the pre-edit settings file and run
+`<root>/previous/install.sh` instead: the upgraded `current` script refuses the
+older settings before swapping. It verifies
 `previous` against its `SHA256SUMS`, runs its `check-install`, and swaps
 `current` and `previous`; `pack` returns to that release's own. After the
 first install there is no previous release: restoring `service.previous`
@@ -2743,8 +2746,8 @@ through).
 SQLite state machine. `bridge.py` supplies its existing ledger-backed
 transport, routing, callbacks and ordinary asks. The optional `[yardr] home`
 allows reads on every instance; `operator` additionally enables verified operator acts.
-Native cards require `cards = true` with both keys (legacy home+operator files
-retain ownership and check-install warns to set cards explicitly). The socket is always resolved
+Native cards require `cards = true` with both keys (`cards` is required wherever
+home and operator are both set). The socket is always resolved
 `home/yard.sock`; check-install verifies its owner/type and current operator
 mapping, or reads every configured conversation crew when no operator is set.
 No sandbox write exceptions are installed for native cards.

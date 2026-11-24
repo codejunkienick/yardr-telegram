@@ -387,7 +387,7 @@ class NudgeSettingsTests(unittest.TestCase):
         if native:
             marker = '\n[yardr]\n'
             start = text.index(marker)
-            text = text[:start] + marker + 'home = "%s"\noperator = "pat"\n' % self.home + text[start + len(marker):]
+            text = text[:start] + marker + 'home = "%s"\noperator = "pat"\ncards = true\n' % self.home + text[start + len(marker):]
         path.write_text(text + extra)
         return path
 

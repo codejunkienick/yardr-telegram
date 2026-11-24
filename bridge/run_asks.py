@@ -2807,7 +2807,7 @@ def format_report_markdown(bead_id, title, stage, ask_number, question, notes, s
 
 
 def owns_cards(config):
-    return config.get('yardr_cards', bool(config.get('yardr_home') and config.get('yardr_operator')))
+    return bool(config.get('yardr_cards'))
 
 
 def binding_of(config):

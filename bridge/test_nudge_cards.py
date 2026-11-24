@@ -408,8 +408,8 @@ class NudgeCardTests(NudgeCase):
             self.assertIn(said, result.stdout)
 
     def test_without_native_keys_nothing_is_read(self):
-        bridge = b.Bridge(dict(self.config, yardr_home=None, yardr_operator=None), self.store, 'TOKEN', 'CAPABILITY',
-                          request=self.transport)
+        bridge = b.Bridge(dict(self.config, yardr_home=None, yardr_operator=None, yardr_cards=False),
+                          self.store, 'TOKEN', 'CAPABILITY', request=self.transport)
         calls = len(self.native.calls)
         bridge.nudge_cards.refresh()
         self.assertEqual(len(self.native.calls), calls)
@@ -443,7 +443,8 @@ class RealNudgeTests(BridgeTestCase):
         self.cli('bead', 'create', 'Synthetic run', '--id', 'run-1')
         self.cli('bead', 'ask', 'run-1', 'Lower the test limit?', '--to', 'pat', '--context', 'Synthetic ordinary run card',
                  '--run', 'source set tgbridge calls_per_hour=60', actor='proposer')
-        self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge')
+        self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True)
         self.ids = iter(range(77, 300))
         self.logs = []
         self.restart_bridge()

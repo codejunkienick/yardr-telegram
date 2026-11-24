@@ -188,7 +188,6 @@ class SettingsTests(unittest.TestCase):
         for keys, owner, acts in (('', False, False), ('cards = false\n', False, False),
                                   (f'home = "{home}"\n', False, False),
                                   (f'home = "{home}"\ncards = false\n', False, False),
-                                  (f'home = "{home}"\noperator = "pat"\n', True, True),
                                   (f'home = "{home}"\noperator = "pat"\ncards = true\n', True, True),
                                   (f'home = "{home}"\noperator = "pat"\ncards = false\n', False, True)):
             with self.subTest(keys=keys):
@@ -197,13 +196,23 @@ class SettingsTests(unittest.TestCase):
                     path.write_text(path.read_text() + '\n[reactions]\nread = "👀"\nnudge_after = 300\n')
                 config = b.load_settings(path).config
                 self.assertIs(config['yardr_cards'], owner)
-                self.assertEqual(config.get('yardr_cards_legacy', False), owner and 'cards =' not in keys)
+                self.assertEqual([key for key in config if key.endswith('legacy')], [])
                 self.assertEqual('yardr_operator' in config, acts)
                 self.assertEqual(any(c.get('native') == b.yard_commands.NATIVE_NUDGE
                                      for c in config.get('commands', ())), acts)
+        line = ('settings: [yardr] cards is required with home and operator: cards = true on the one bridge '
+                'that owns this yard\'s native cards, cards = false on every other')
+        with self.assertRaises(b.SettingsError) as caught:
+            b.load_settings(self.with_yardr(url + file + f'home = "{home}"\noperator = "pat"\n'))
+        self.assertEqual(str(caught.exception), line)
+        # A hand-built config without yardr_cards owns nothing, even with home and operator.
+        self.assertFalse(b.run_asks.owns_cards({}))
+        self.assertFalse(b.run_asks.owns_cards(dict(yardr_home=str(home), yardr_operator='pat')))
+        self.assertTrue(b.run_asks.owns_cards(dict(yardr_cards=True)))
         for keys, reason in (('operator = "pat"\n', r'operator needs home'),
                              ('cards = true\n', r'cards.*needs.*home and operator'),
                              (f'home = "{home}"\ncards = true\n', r'cards.*needs.*home and operator'),
+                             (f'home = "{home}"\noperator = "pat"\n', r'cards is required with home and operator'),
                              ('cards = 1\n', r'cards.*true or false'), ('cards = "false"\n', r'cards.*true or false')):
             with self.subTest(keys=keys), self.assertRaisesRegex(b.SettingsError, reason):
                 b.load_settings(self.with_yardr(url + file + keys))
@@ -403,7 +412,7 @@ class SwitchModelSettingsTests(unittest.TestCase):
             text = re.sub(r'\n\[\[menu\]\]\ncommand = "[a-z_]+"\ndescription = [^\n]*\n', '\n', text)
         lines = 'bin = "%s"\n' % self.stub
         if native:
-            lines += 'home = "%s"\noperator = "pat"\n' % self.home
+            lines += 'home = "%s"\noperator = "pat"\ncards = false\n' % self.home
         marker = '\n[yardr]\n'
         start = text.index(marker)
         text = text[:start] + marker + lines + text[start + len(marker):]
@@ -488,7 +497,7 @@ class SwitchModelSettingsTests(unittest.TestCase):
         path.write_text(path.read_text() + '\n[yardr.quota]\n')
         settings = b.load_settings(path)
         self.assertEqual([entry['name'] for entry in settings.config['commands']], ['quota', 'nudge', 'switch_model'])
-        path.write_text(path.read_text().replace('[yardr]', '[yardr]\ncards = false') + '\n[yardr.mail]\n')
+        path.write_text(path.read_text() + '\n[yardr.mail]\n')
         secondary = b.load_settings(path).config
         self.assertFalse(secondary['yardr_cards'])
         self.assertEqual(secondary['commands'], settings.config['commands'])
@@ -1241,8 +1250,7 @@ class InstallCheckTests(unittest.TestCase):
                 ('P', 'operator = "pat"\ncards = true\n', True, 'owned here (cards = true)'),
                 ('S', 'operator = "pat"\ncards = false\n', True, 'not owned here (cards = false)'),
                 ('S0', '', True, 'not owned here (cards = false)'),
-                ('S0n', 'cards = false\n', False, 'not owned here (cards = false)'),
-                ('L', 'operator = "pat"\n', True, 'owned by the legacy rule')):
+                ('S0n', 'cards = false\n', False, 'not owned here (cards = false)')):
             with self.subTest(instance=label):
                 path = write_settings(self.root, crew='"secretary"')
                 text = path.read_text().replace('[yardr]', '[yardr]\nsource = "tgsecretary"\n'
@@ -1266,9 +1274,6 @@ class InstallCheckTests(unittest.TestCase):
                 self.assertIn('nudge offer ' + ('on (NudgeSession checked at runtime)' if 'operator' in keys else
                                                'off ([yardr] operator unset)' if read else
                                                'off (reactions.nudge_after 0)'), result.stdout)
-                if label == 'L':
-                    self.assertIn('WARN', result.stdout)
-                    self.assertIn('add cards = true here and cards = false to every other bridge', result.stdout)
                 if 'operator' not in keys:
                     self.assertIn('native yard socket: crew secretary, helper readable', result.stdout)
                     self.assertEqual([m for m, _ in native.calls if m == 'GetUser'], [])
@@ -1284,6 +1289,22 @@ class InstallCheckTests(unittest.TestCase):
                 else:
                     self.assertIn('native yard socket and current operator identity', result.stdout)
                 native.calls.clear()
+        with self.subTest(instance='refused-without-cards'):
+            path = write_settings(self.root, crew='"secretary"')
+            text = path.read_text().replace('[yardr]', '[yardr]\nsource = "tgsecretary"\n'
+                                            f'home = "{home}"\noperator = "pat"\n')
+            text += '\n[[topic]]\nname = "help"\ncrew = "helper"\n'
+            text += '\n[reactions]\non_accept = true\nseen = "🕊"\nread = "👀"\nnudge_after = 300\n'
+            path.write_text(text)
+            env = dict(HOME=str(self.root), PATH=str(self.root) + ':/usr/local/bin:/usr/bin:/bin',
+                       XDG_CONFIG_HOME=str(self.root / 'config'), XDG_STATE_HOME=str(self.root / 'state'))
+            result = subprocess.run([sys.executable, '-B', str(PACK / 'bridge/bridge.py'), '--settings',
+                                     str(path), 'check-install'], env=env, cwd=self.root,
+                                    capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+            print(f'Synthetic check-install refused-without-cards:\n{result.stdout}{result.stderr}', end='')
+            self.assertIn('settings: [yardr] cards is required with home and operator', result.stdout + result.stderr)
+            self.assertNotIn('native cards: owned here', result.stdout)
 
     def test_an_installed_release_checks_its_own_files_and_a_checkout_says_nothing(self):
         sums = {**self.model('large-v3-turbo-q5_0', b'turbo'), **self.model('silero-v6.2.0', b'vad')}
@@ -1361,7 +1382,7 @@ class InstallCheckTests(unittest.TestCase):
             ('lock_dir', source / 'locks', move, dict(lock_dir=f'"{source}/locks"')),
             ('state_dir', source / 'state', move, dict(state_dir=f'"{source}/state"')),
             ('health_file', source / 'health', move, dict(health_file=f'"{source}/health"')),
-            ('yardr.home', source / 'yard', move, dict(yardr=f'home = "{source}/yard"\noperator = "pat"\n')),
+            ('yardr.home', source / 'yard', move, dict(yardr=f'home = "{source}/yard"\noperator = "pat"\ncards = false\n')),
             ('[[command]] deploy handler', program, copy,
              dict(extra=f'\n[[command]]\nname = "deploy"\ndescription = "Deploy"\nhandler = "{program}"\n')),
             ('handler_write_paths entry 1', source / 'out', move, dict(handler_write_paths=f'["{source}/out"]')),
@@ -2035,7 +2056,7 @@ class InstanceTests(unittest.TestCase):
         self.natives[yard] = native
         self.addCleanup(native.close)
         path = write_settings(top, yard=f'"{yard}"', port=str(port), python=f'"{sys.executable}"')
-        text = path.read_text().replace('[yardr]', f'[yardr]\nhome = "{yard_home}"\noperator = "pat"')
+        text = path.read_text().replace('[yardr]', f'[yardr]\nhome = "{yard_home}"\noperator = "pat"\ncards = true')
         text = text.replace('bot_id = 999', f'bot_id = {bot_id}').replace('"test_bot"', f'"{yard}_bot"')
         path.write_text(text.replace(':8797/', f':{port + 1000}/'))
         return (path, self.home / f'.local/share/yardr-telegram/{yard}-telegram',
@@ -2257,6 +2278,8 @@ class InstanceTests(unittest.TestCase):
         text = text.replace('yard = "shared-secretary"', 'yard = "shared"\ncrew = "secretary"\nunit = "shared-secretary-telegram.service"')
         text = text.replace('[yardr]', f'lock_dir = "{self.root / "shared/private"}"\n\n[yardr]')
         text = text.replace('[yardr]', '[yardr]\nsource = "MyBot"').replace('/hooks/tgbridge', '/hooks/MyBot')
+        # The same yard has one card owner: the secondary reads but does not own.
+        text = text.replace('cards = true', 'cards = false')
         # The shared NativeSocket fixture maps both independent source identities.
         native = self.natives['shared']
         native.user['identities']['MyBot'] = {'id': '123', 'key': 'Pat'}

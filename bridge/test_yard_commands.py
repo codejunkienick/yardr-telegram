@@ -205,7 +205,7 @@ class QuotaCase(unittest.TestCase):
                     hook_url='http://127.0.0.1:8797/hooks/tgbridge', hook_secret='HOOKSECRET',
                     user_display_name='Pat', timezone='Asia/Tokyo', menu=(), agent='yardmaster',
                     yardr_home=str(self.home), yardr_operator='pat', yardr_bin=str(self.stub),
-                    yardr_quota=quota, commands=tuple(native))
+                    yardr_cards=True, yardr_quota=quota, commands=tuple(native))
         full.update(config)
         return b.Bridge(full, self.store, 'SECRET', 'CAPABILITY', request=self.telegram,
                         state_dir=self.root)
@@ -791,6 +791,7 @@ class SettingsQuotaCase(unittest.TestCase):
         if native:
             lines.append('home = "%s"' % self.home)
             lines.append('operator = "pat"')
+            lines.append('cards = true')
         marker = '\n[yardr]\n'
         start = text.index(marker)
         text = text[:start] + marker + '\n'.join(lines) + '\n' + text[start + len(marker):]

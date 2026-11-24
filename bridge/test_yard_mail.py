@@ -221,7 +221,8 @@ class MailCase(BridgeTestCase):
         self.home.chmod(0o700)
         self.yard = FakeYard(self.home)
         self.addCleanup(self.yard.close)
-        self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge', yardr_mail=True)
+        self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True, yardr_mail=True)
         self.clock, self.tick, self.plan, self.sent, self.starts = [0.0], 0, [], [], []
         self.logs = []
         self.make_bridge()
@@ -729,7 +730,7 @@ class MailSettingsTests(unittest.TestCase):
             home.mkdir(mode=0o700)
             path = write_settings(root)
             base = path.read_text()
-            native = base.replace('[yardr]\n', f'[yardr]\nhome = "{home}"\noperator = "pat"\n')
+            native = base.replace('[yardr]\n', f'[yardr]\nhome = "{home}"\noperator = "pat"\ncards = true\n')
             for text, error in ((base + '\n[yardr.mail]\n', 'needs \\[yardr\\] home and operator'),
                                 (native + '\n[yardr.mail]\nseq_floor = 1\n', 'unknown key yardr.mail.seq_floor'),
                                 (native.replace('[yardr]\n', '[yardr]\nmail = 1\n'), 'must be a table')):
@@ -800,7 +801,8 @@ class RealCoreMailTests(BridgeTestCase):
                 cli('user', 'set', 'pat', 'notify=tgbridge')
                 cli('user', 'add', 'sam')
                 cli('user', 'add', 'kim')
-                self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge', yardr_mail=True)
+                self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge',
+                                   yardr_cards=True, yardr_mail=True)
                 sent, plan = [], []
 
                 def telegram(url, body, timeout=20):

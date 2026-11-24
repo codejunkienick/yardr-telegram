@@ -1056,7 +1056,7 @@ class ReadStateTests(ReadStateCase):
             yard_home.mkdir(mode=0o700)
             p_ok = Path(tmp) / 'ok.toml'
             p_ok.write_text(
-                base_text.replace('[yardr]\n', f'[yardr]\nhome = "{yard_home}"\noperator = "pat"\n')
+                base_text.replace('[yardr]\n', f'[yardr]\nhome = "{yard_home}"\noperator = "pat"\ncards = true\n')
                 + f'\n[reactions]\nread = "{EYES}"\nnudge_after = 300\n'
             )
             p_ok.chmod(0o600)
@@ -2345,6 +2345,7 @@ class RealReadStateTests(BridgeTestCase):
                     yardr_home=str(home),
                     yardr_socket=str(home / 'yard.sock'),
                     yardr_operator='pat',
+                    yardr_cards=True,
                     yardr_source='tgbridge',
                     hook_url=f'http://127.0.0.1:{port}/hooks/tgbridge',
                     hook_secret=hook_secret,
@@ -2674,6 +2675,7 @@ class RealReadStateTests(BridgeTestCase):
                     yardr_home=str(home),
                     yardr_socket=str(home / 'yard.sock'),
                     yardr_operator='pat',
+                    yardr_cards=True,
                     yardr_source='tgbridge',
                     hook_url=f'http://127.0.0.1:{port}/hooks/tgbridge',
                     hook_secret=hook_secret,
@@ -3022,7 +3024,7 @@ class RealReadStateTests(BridgeTestCase):
             try:
                 cfg = dict(
                     self.config, agent='writer', yardr_home=str(home), yardr_socket=str(home / 'yard.sock'),
-                    yardr_operator='pat', yardr_source='tgbridge',
+                    yardr_operator='pat', yardr_source='tgbridge', yardr_cards=True,
                     hook_url=f'http://127.0.0.1:{port}/hooks/tgbridge', hook_secret=hook_secret,
                     reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND),
                 )

@@ -212,8 +212,8 @@ requirements are:
   also use ordinary chat questions and buttons.
   Source/bot bindings protect existing native callbacks; they do not route
   a yard-wide ask to a particular bot. All pollers share `lock_dir` so only
-  one can hold the yard's native-card lock. Legacy home+operator settings
-  retain ownership with a check-install warning to set `cards` explicitly.
+  one can hold the yard's native-card lock. `cards` is required wherever home
+  and operator are both set.
 
 ## Native operator approvals
 

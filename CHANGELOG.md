@@ -16,6 +16,9 @@ sees and does, not how the code is organised.
   pre-edit settings file, and restore it before `install.sh --rollback`.
 - **Breaking:** the stderr receipt line is now `BRIDGE_RECEIPT {...}`
   (same JSON). Delivery consumers must parse the new prefix.
+- **Breaking:** `[yardr] cards` is required with home and operator: settings
+  with both and no `cards` key are refused. Set `cards = true` on the one
+  bridge that owns this yard's native cards, `cards = false` on every other.
 
 ### Fixed
 
@@ -30,7 +33,6 @@ sees and does, not how the code is organised.
 - Message states on every bridge instance: `[yardr] home` alone enables
   read/done tracking; `operator` enables verified nudges independently of
   native-card ownership. New `cards` selects the single native-card owner.
-  Existing home+operator settings keep ownership with a migration warning.
   Startup and `check-install` report states and off reasons per instance;
   a shared-lock-directory fence refuses a second card owner for the same yard.
 - Unread-message Nudge offer (`[reactions] nudge_after`): when configured

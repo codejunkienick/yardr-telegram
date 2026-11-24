@@ -27,8 +27,8 @@ timezone = "Europe/Berlin"                  # times in notices; default UTC
 [yardr]
 # Every instance can read its crew's message states with home and reactions.read.
 # Add operator for verified /nudge and unread-message offers, after binding its identity.
-# Set cards = true on exactly one bridge per yard, false on every other bridge.
-# Without cards, home+operator keeps owning cards for compatibility (check-install warns).
+# cards is required with home and operator: set cards = true on exactly one
+# bridge per yard, false on every other bridge.
 # Single-file skill snapshots also require the core captured-snapshot capability
 # (a79f6f8162c8 or compatible); complete review parts precede weighted confirmation.
 # Herdr group add/set cards need core fc7375cf5ad4 or compatible, and nothing more here.

@@ -262,7 +262,8 @@ class SidingTests(BridgeTestCase):
         self.cli('depot', 'flow', 'sample', 'rotation.f')
         self.cli('group', 'add', 'keepers', '--runner', 'manual', '--members', 'pat', '--set', 'fold_after=24h')
         self.cli('route', 'add', '--stage', 'harbor', '--group', 'keepers', '--depot', 'sample')
-        self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge')
+        self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=True)
         self.counter = 76
         self.updates = []
         base = self.transport
@@ -1108,7 +1109,7 @@ class SidingTests(BridgeTestCase):
         b._validate_attachment_flags(parser, args)
         self.assertEqual(args.depot, 'sample')
         settings = write_settings(self.root)
-        settings.write_text(settings.read_text().replace('[yardr]', f'[yardr]\nhome = "{self.home}"\noperator = "pat"'))
+        settings.write_text(settings.read_text().replace('[yardr]', f'[yardr]\nhome = "{self.home}"\noperator = "pat"\ncards = true'))
         fake_bin = self.root / 'bin'
         fake_bin.mkdir()
         curl = fake_bin / 'curl'

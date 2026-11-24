@@ -350,8 +350,8 @@ The handler protocol is in `bridge/OPERATIONS.md`, "Commands".
 With `[yardr] cards = true` (requiring `home` and `operator`), `/decide`
 and the `decide:` prefix are the bridge's own (native cards, YARDR.md).
 Exactly one instance per yard owns these cards; the shared `lock_dir`
-fences a second owner at startup. Existing home+operator settings retain
-ownership with a `check-install` migration warning until `cards` is explicit.
+fences a second owner at startup. `cards` is required wherever home and
+operator are both set.
 Message states, `/nudge`, quota, model switching and mail do not require card ownership.
 Three ready add-ons are
 [telegram-quota](https://github.com/codejunkienick/telegram-quota), which adds

@@ -85,6 +85,7 @@ class NativeSwitchTests(unittest.TestCase):
         self.config = dict(bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
                            user_display_name='Pat', timezone='UTC', menu=(), agent='mayor',
                            yardr_home=str(self.home), yardr_source='tgbridge', yardr_operator='pat', yardr_bin=binary,
+                           yardr_cards=True,
                            yardr_switch_model=dict(crew='mayor', timeout=10, picks=self.picks), commands=())
         self.config['commands'] = (y.switch_model_command(self.config['yardr_switch_model']),)
         self.log = self.enterContext(patch('sys.stderr', io.StringIO()))
@@ -1861,7 +1862,7 @@ class NativeSwitchTests(unittest.TestCase):
         from test_bridge import write_settings, run_main
         path = write_settings(self.root)
         text = path.read_text()
-        text = text.replace('[yardr]\n', '[yardr]\nhome = ' + json.dumps(str(self.home)) + '\noperator = "pat"\nbin = ' + json.dumps(self.config['yardr_bin']) + '\n')
+        text = text.replace('[yardr]\n', '[yardr]\nhome = ' + json.dumps(str(self.home)) + '\noperator = "pat"\ncards = true\nbin = ' + json.dumps(self.config['yardr_bin']) + '\n')
         text += '\n[yardr.switch_model]\ncrew = "mayor"\n[[yardr.switch_model.picks]]\nid = "opus"\nlabel = "Opus"\nkind = "claude"\nmodel = "opus"\nargs = []\n'
         path.write_text(text)
         native = self.crew()
@@ -1913,6 +1914,7 @@ class SwitchUpgradeBoundaryTests(unittest.TestCase):
             bot_id=999, user_id=123, chat_id=123, account_id='test_bot', yard='test-city',
             user_display_name='Pat', timezone='UTC', menu=(), agent='mayor',
             yardr_home=str(self.home), yardr_source='tgbridge', yardr_operator='pat', yardr_bin=str(self.stub),
+            yardr_cards=True,
             yardr_switch_model=dict(crew='mayor', timeout=10, picks=tuple(self.picks)), commands=(),
         )
         self.config['commands'] = (y.switch_model_command(self.config['yardr_switch_model']),)

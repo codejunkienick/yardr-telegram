@@ -228,7 +228,7 @@ class InProcessBot:
                       agent=crew, hook_url=f'{yard.hook}/hooks/{source}', hook_secret=self.hook_secret,
                       user_display_name='Pat', timezone='UTC', yardr_source=source, **identity)
         if native:
-            config.update(yardr_home=str(yard.home), yardr_operator='pat')
+            config.update(yardr_home=str(yard.home), yardr_operator='pat', yardr_cards=True)
         self.sent, self.updates, self.next, self.before, self.after = [], [], 100, None, None
         self.bridge = b.Bridge(config, b.Store(state / 'telegram-bridge.sqlite3', 0), 'TOKEN-' + source, capability,
                                request=self.request, state_dir=state, sleep=lambda seconds: None)

@@ -692,6 +692,8 @@ class DecideNamespaceTests(BridgeTestCase):
         path = write_settings(root)
         text = path.read_text()
         if native:
+            if cards is None:
+                cards = True
             text = text.replace('[yardr]\n', f'[yardr]\nhome = "{home}"\noperator = "pat"\n')
         if cards is not None:
             text = text.replace('[yardr]\n', '[yardr]\ncards = ' + str(cards).lower() + '\n')
@@ -1149,7 +1151,7 @@ class RealDecideTests(BridgeTestCase):
         cli('bead', 'answer', 'sample-1', str(later), '--later')  # after the asker's notes, which bring it back
 
         self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_source='tgbridge',
-                           topics=(dict(name='ops', agent='yardmaster'),))
+                           yardr_cards=True, topics=(dict(name='ops', agent='yardmaster'),))
         self.store.record_topic('ops', OPS, 'created')
         ids = iter(range(77, 300))
         quote_refused = False

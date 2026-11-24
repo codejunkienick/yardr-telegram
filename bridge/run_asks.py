@@ -110,21 +110,28 @@ def validate_home(home):
     return path
 
 
+STREAM_LINE_MAX = 8 * 1024 * 1024
+
+
+def validate_stream_event(event):
+    """Validate one NDJSON event from GET /events?after=<seq>."""
+    required = {'seq', 'kind', 'actor', 'at'}
+    if (not isinstance(event, dict) or not required <= set(event)
+            or type(event['seq']) is not int or not 0 < event['seq'] < 2**64
+            or any(not isinstance(event[field], str) or not event[field]
+                   for field in ('kind', 'actor', 'at'))
+            or ('bead' in event and event['bead'] is not None
+                and (not isinstance(event['bead'], str) or not event['bead']))
+            or not isinstance(event.get('data', {}), dict)):
+        raise RPCAmbiguous('invalid native events row')
+    return event
+
+
 class YardSocketClient:
     def __init__(self, home, source, timeout=10):
         self.home, self.source, self.timeout = Path(home), source, timeout
 
-    def call(self, method, arguments):
-        # Self-replacement refuses reads before dispatch; writes always reconcile at their caller.
-        for attempt in range(3):
-            try:
-                return self._call(method, arguments)
-            except RPCUnavailable:
-                if method not in READS or attempt == 2:
-                    raise
-                time.sleep(.05 * (attempt + 1))
-
-    def _call(self, method, arguments):
+    def _connect_socket(self, label):
         path = self.home / 'yard.sock'
         try:
             info = path.lstat()
@@ -138,7 +145,21 @@ class YardSocketClient:
                 sock.close()
                 raise
         except OSError:
-            raise RPCUnavailable(f'native {method} unavailable before send') from None
+            raise RPCUnavailable(f'native {label} unavailable before send') from None
+        return sock
+
+    def call(self, method, arguments):
+        # Self-replacement refuses reads before dispatch; writes always reconcile at their caller.
+        for attempt in range(3):
+            try:
+                return self._call(method, arguments)
+            except RPCUnavailable:
+                if method not in READS or attempt == 2:
+                    raise
+                time.sleep(.05 * (attempt + 1))
+
+    def _call(self, method, arguments):
+        sock = self._connect_socket(method)
         with sock:
             data = canonical(arguments).encode()
             request = (f'POST /call/{method} HTTP/1.1\r\nHost: localhost\r\n'
@@ -191,6 +212,70 @@ class YardSocketClient:
                 return value.get('result')  # successful void calls serialize as {}
             except (OSError, ValueError, http.client.HTTPException, UnicodeError):
                 raise RPCAmbiguous(f'native {method} response uncertain') from None
+
+    def stream_events(self, after, stop_event=None, register_socket=None, on_open=None):
+        """Stream NDJSON events from GET /events?after=<after> on the native socket."""
+        if type(after) is not int or after < 0:
+            raise ValueError('after must be a non-negative integer')
+        sock = self._connect_socket('events')
+        if register_socket is not None:
+            register_socket(sock)
+        response = None
+        try:
+            request = (f'GET /events?after={after} HTTP/1.1\r\nHost: localhost\r\n'
+                       f'X-Yardr-Connection: {self.source}\r\nConnection: close\r\n\r\n').encode()
+            try:
+                sock.sendall(request)
+                response = http.client.HTTPResponse(sock)
+                response.begin()
+            except (OSError, http.client.HTTPException, ValueError):
+                if stop_event is not None and stop_event.is_set():
+                    return
+                raise RPCAmbiguous('native events response uncertain') from None
+            if response.status == 503:
+                raise RPCUnavailable('native events unavailable (503)')
+            if response.status != 200:
+                code = f'http_{response.status}'
+                raise RPCRefused(f'native events refused ({code})', code)
+            ctype = (response.getheader('Content-Type') or '').split(';', 1)[0].strip().lower()
+            if ctype != 'application/x-ndjson':
+                raise RPCAmbiguous('native events invalid content-type')
+            sock.settimeout(None)
+            if stop_event is not None and stop_event.is_set():
+                return
+            if on_open is not None:
+                on_open()
+            while stop_event is None or not stop_event.is_set():
+                try:
+                    raw = response.readline(STREAM_LINE_MAX + 1)
+                except (OSError, http.client.HTTPException, ValueError, UnicodeError):
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    raise RPCAmbiguous('native events response uncertain') from None
+                if not raw:
+                    return
+                if len(raw) > STREAM_LINE_MAX or not raw.endswith(b'\n'):
+                    raise RPCAmbiguous('native events response line invalid')
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line, object_pairs_hook=strict_object)
+                except (ValueError, UnicodeError):
+                    raise RPCAmbiguous('invalid native events row') from None
+                yield validate_stream_event(event)
+        finally:
+            if register_socket is not None:
+                register_socket(None)
+            if response is not None:
+                try:
+                    response.close()
+                except OSError:
+                    pass
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 def strict_object(pairs):

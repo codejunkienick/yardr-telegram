@@ -2179,9 +2179,16 @@ native calls are made.
   rejected (4xx) or ambiguous responses advance the row (logged once as
   `reaction not set (msg <id>): <reason>`); transient `not-sent` leaves
   the row open and retries the same key next round.
-- **Round and costs:** `read_states.refresh()` runs in `poll_once` after
-  `typed_nudge.refresh()`, at most once per 60 monotonic seconds and
-  only while an open (`landed` or `read`) row exists:
+- **Stream and fallback rounds:** While `run` is active with `[reactions] read`
+  and `[yardr] home`, a stream worker follows `GET /events?after=<seq>` on
+  `home/yard.sock` (starting from `Head` and reconnecting on any stream end
+  with the last `seq` seen): `inbox_read` (`session == ""`, matching crew,
+  `through >= seq`) moves `landed` to `read` at once, `replied` (matching
+  `source`, `crew`, `seq`) moves open rows to `done` at once, and matching
+  `hook` events resolve `crew` early. `read_states.refresh()` also runs in
+  `poll_once` after `typed_nudge.refresh()` and from the open-row fallback
+  timer at most once per 5 monotonic seconds, only while an open (`landed`
+  or `read`) row exists (zero native calls when idle):
   - *Recipient check (once per message):* resolves `crew` from the
     conversation (`_quota_agent`), then calls `EventsSince [seq-1, 1]`
     requiring one `hook` event with that `seq`, our source and
@@ -2212,7 +2219,9 @@ native calls are made.
   unsupported (`no such method`), or `crew` absent from
   `data.deliveries` moves the affected row(s) to `off` with a reason;
   unexpected `Events` array shapes are logged once without breaking
-  polling.
+  polling. On a core without `inbox_read` (or where `/events` is refused),
+  the bridge logs the fallback once and still moves rows to `read` via the
+  5 s `GetCrew` poll while rows remain open.
 - **Unread Nudge offer (`[reactions] nudge_after`):** an integer from `0` to
   `3600` (default `0`, off; a value above `0` without `read` refuses at load
   naming `reactions.nudge_after`). With `nudge_after > 0`, if the built-in

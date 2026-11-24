@@ -1,8 +1,11 @@
 """Track operator Telegram message read and done states from the yard.
 
 When [reactions] read is configured (with [yardr] home), each accepted
-operator message gets a `read_states` ledger row in state `landed`. A
-bounded native round at most once every 60 monotonic seconds checks:
+operator message gets a `read_states` ledger row in state `landed`. While the
+bridge runs, a stream worker follows `GET /events?after=<seq>` on the native
+socket to transition rows at once on `inbox_read` (line session `""`) and
+`replied`, while a fallback round runs at most once every 5 monotonic seconds
+only while open rows exist:
 
 - EventsSince [seq-1, 1] once per message: the configured crew must appear
   in data.deliveries from our source, else the row goes `off`.
@@ -18,8 +21,12 @@ bounded native round at most once every 60 monotonic seconds checks:
 Every reaction transition holds the reactions flock from row re-read
 through Telegram's answer and row update, stepping only forward.
 """
+import collections
 import json
 import secrets
+import socket
+import threading
+import time
 
 import run_asks as n
 
@@ -30,7 +37,7 @@ FIELDS = ('message_id', 'conversation_id', 'thread_id', 'seq', 'crew',
           'state', 'accepted_at', 'read_at', 'done_at', 'reason', 'offer_token')
 OPEN_STATES = ('landed', 'read')
 TERMINAL_STATES = ('done', 'manual', 'off', 'expired')
-ROUND_SECONDS = 60
+ROUND_SECONDS = 5
 EXPIRE_SECONDS = 24 * 3600
 EVENTS_MIN = 64
 EVENTS_MAX = 1024
@@ -78,8 +85,28 @@ class ReadStates:
         self.logged = None
         self.not_set_logged = set()
         self.last_round = None
+        self._last_round_wall = None
         self._nudge_supported = None
         self._offer_off_logged = set()
+        self._state_lock = threading.Lock()
+        self._round_lock = threading.Lock()
+        self._stream_cv = threading.Condition(self._state_lock)
+        self._poll_wake = threading.Event()
+        self._worker_stop = threading.Event()
+        self._stream_thread = None
+        self._poll_thread = None
+        self._stream_sock = None
+        self._stream_started = False
+        self._stream_connected = False
+        self._stream_broken = False
+        self._stream_start_seq = None
+        self._last_seq = None
+        self._inbox_read_seen = False
+        self._fallback_logged = False
+        self._stream_logged = None
+        self._stream_inbox_read = {}
+        self._stream_replied = set()
+        self._stream_replied_order = collections.deque(maxlen=512)
         if self.store is not None:
             with self.store.connect() as db:
                 if self.enabled:
@@ -121,9 +148,11 @@ class ReadStates:
         return int(self.bridge.reactions.get('nudge_after') or 0)
 
     def _log_offer_off(self, reason):
-        if reason not in self._offer_off_logged:
+        with self._state_lock:
+            if reason in self._offer_off_logged:
+                return
             self._offer_off_logged.add(reason)
-            self.bridge._log(reason)
+        self.bridge._log(reason)
 
     @property
     def ra(self):
@@ -138,15 +167,33 @@ class ReadStates:
 
     def log(self, words):
         # Said once while it stands, not on every poll.
-        if words != self.logged:
+        with self._state_lock:
+            changed = words is not None and words != self.logged
+            self.logged = words
+        if changed:
             self.bridge._log(words)
-        self.logged = words
 
     def _log_not_set(self, message_id, target_state, reason):
         key = (int(message_id), target_state, reason)
-        if key not in self.not_set_logged:
+        with self._state_lock:
+            if key in self.not_set_logged:
+                return
             self.not_set_logged.add(key)
-            self.bridge._log(f'reaction not set (msg {int(message_id)}): {reason}')
+        self.bridge._log(f'reaction not set (msg {int(message_id)}): {reason}')
+
+    def _log_stream_fallback(self, words):
+        with self._state_lock:
+            if self._fallback_logged:
+                return
+            self._fallback_logged = True
+        self.bridge._log(words)
+
+    def _log_stream_error(self, words):
+        with self._state_lock:
+            changed = words is not None and words != self._stream_logged
+            self._stream_logged = words
+        if changed:
+            self.bridge._log(words)
 
     def get(self, message_id):
         if self.store is None:
@@ -256,6 +303,7 @@ class ReadStates:
                 'VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL)',
                 (mid, conversation_id, thread_id, seq, state, accepted_at, read_at, done_at),
             )
+        self._poll_wake.set()
 
     def _open_rows(self):
         with self.store.connect() as db:
@@ -646,6 +694,10 @@ class ReadStates:
                 mid = row['message_id']
                 if (row['crew'] == crew and row['state'] == 'landed' and row['seq'] <= cursor
                         and mid not in pending_done_ids and mid not in attempted_done):
+                    self._detect_missing_inbox_read(row)
+                    latest = self.get(mid)
+                    if latest is None or latest['state'] != 'landed':
+                        continue
                     self.transition(mid, 'read')
 
         self._close_stale_offers()
@@ -840,23 +892,336 @@ class ReadStates:
                 self.bridge._log(f'read states offer {token}: nudge card not sent: {reason}')
                 trouble.append(f'read states offer {token}: {reason}')
 
-    def refresh(self):
+    def _save_crew(self, message_id, crew):
+        with self.store.connect() as db:
+            db.execute(
+                f"UPDATE {TABLE} SET crew=? WHERE message_id=? AND crew IS NULL AND state IN ('landed', 'read')",
+                (crew, int(message_id)),
+            )
+
+    def _resolve_row_crew(self, row, crew):
+        try:
+            self._check_recipient(row['seq'], crew)
+        except TRANSIENT:
+            return False
+        except _Off as off:
+            self._set_terminal(row['message_id'], OPEN_STATES, 'off', off.reason)
+            return False
+        self._save_crew(row['message_id'], crew)
+        return True
+
+    def _detect_missing_inbox_read(self, row):
+        client = self.bridge.yard_client()
+        if client is None:
+            return False
+        with self._state_lock:
+            if (not self._stream_started or not self._stream_connected
+                    or self._inbox_read_seen or self._fallback_logged
+                    or self._stream_start_seq is None or row['seq'] <= self._stream_start_seq):
+                return False
+        try:
+            head = client.call('Head', [])
+        except (TRANSIENT, n.RPCRefused, n.NativeError):
+            return False
+        if type(head) is not int or head < 0:
+            return False
+        with self._stream_cv:
+            deadline = time.monotonic() + 0.5
+            while (not self._worker_stop.is_set() and not self.bridge.stop.is_set()
+                   and self._stream_connected and not self._inbox_read_seen
+                   and (self._last_seq is None or self._last_seq < head)):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._stream_cv.wait(remaining)
+            caught_up = (self._stream_connected and not self._inbox_read_seen
+                         and self._last_seq is not None and self._last_seq >= head)
+        if not caught_up:
+            return False
+        latest = self.get(row['message_id'])
+        if latest is not None and latest['state'] == 'landed':
+            self._log_stream_fallback(
+                f'read states stream fallback: yard core did not emit inbox_read; polling every {ROUND_SECONDS}s'
+            )
+            return True
+        return False
+
+    def _row_crew(self, row, expected_crew):
+        if row['crew'] is not None:
+            return row['crew']
+        configured = self.bridge._quota_agent(self.bridge.conversation_for_id(row['conversation_id']))
+        if configured != expected_crew:
+            return None
+        return expected_crew if self._resolve_row_crew(row, expected_crew) else None
+
+    def _apply_inbox_read(self, reader, through):
+        pending_done_ids = set(self._pending_done_ids())
+        for row in self._open_rows():
+            mid = row['message_id']
+            if row['state'] != 'landed' or row['seq'] > through or mid in pending_done_ids:
+                continue
+            if self._row_crew(row, reader) == reader:
+                self.transition(mid, 'read')
+
+    def _apply_replied(self, crew, target_seq):
+        for row in self._open_rows():
+            if row['seq'] != target_seq:
+                continue
+            if self._row_crew(row, crew) == crew:
+                self.transition(row['message_id'], 'done')
+
+    def _apply_cached_stream_events(self):
+        with self._state_lock:
+            inbox_read = dict(self._stream_inbox_read)
+            replied = list(self._stream_replied_order)
+        if not inbox_read and not replied:
+            return
+        for row in self._open_rows():
+            configured = self.bridge._quota_agent(self.bridge.conversation_for_id(row['conversation_id']))
+            crew = row['crew'] or configured
+            if (crew, row['seq']) in replied:
+                if self._row_crew(row, crew) == crew:
+                    self.transition(row['message_id'], 'done')
+                    continue
+            through = inbox_read.get(crew)
+            if row['state'] == 'landed' and through is not None and row['seq'] <= through:
+                if self._row_crew(row, crew) == crew:
+                    self.transition(row['message_id'], 'read')
+
+    def _handle_hook_event(self, seq, data):
+        if data.get('source') != self.source:
+            return
+        deliveries = data.get('deliveries')
+        if (not isinstance(deliveries, dict)
+                or not all(isinstance(k, str) and isinstance(v, str) for k, v in deliveries.items())):
+            raise n.RPCAmbiguous('invalid native hook deliveries')
+        for row in self._open_rows():
+            if row['seq'] != seq or row['crew'] is not None:
+                continue
+            crew = self.bridge._quota_agent(self.bridge.conversation_for_id(row['conversation_id']))
+            if deliveries.get(crew):
+                self._save_crew(row['message_id'], crew)
+            else:
+                self._set_terminal(row['message_id'], OPEN_STATES, 'off', 'crew_not_in_deliveries')
+
+    def _handle_inbox_read_event(self, data):
+        reader = data.get('reader')
+        through = data.get('through')
+        session = data.get('session', '')
+        if (not isinstance(reader, str) or not reader
+                or type(through) is not int or through < 0
+                or not isinstance(session, str)):
+            raise n.RPCAmbiguous('invalid native inbox_read event')
+        with self._stream_cv:
+            self._inbox_read_seen = True
+            if session == '':
+                self._stream_inbox_read[reader] = max(self._stream_inbox_read.get(reader, 0), through)
+            self._stream_cv.notify_all()
+        if session != '':
+            return
+        self._apply_inbox_read(reader, through)
+
+    def _handle_replied_event(self, data):
+        if data.get('source') != self.source:
+            return
+        crew = data.get('crew')
+        target_seq = data.get('seq')
+        if not isinstance(crew, str) or not crew or type(target_seq) is not int or target_seq <= 0:
+            raise n.RPCAmbiguous('invalid native replied event')
+        pair = (crew, target_seq)
+        with self._state_lock:
+            if pair not in self._stream_replied:
+                if len(self._stream_replied_order) == self._stream_replied_order.maxlen:
+                    self._stream_replied.discard(self._stream_replied_order[0])
+                self._stream_replied_order.append(pair)
+                self._stream_replied.add(pair)
+        self._apply_replied(crew, target_seq)
+
+    def _handle_stream_event(self, event):
+        kind = event['kind']
+        data = event.get('data', {})
+        if kind == 'hook':
+            self._handle_hook_event(event['seq'], data)
+        elif kind == 'inbox_read':
+            self._handle_inbox_read_event(data)
+        elif kind == 'replied':
+            self._handle_replied_event(data)
+
+    def _stopped(self):
+        return self._worker_stop.is_set() or self.bridge.stop.is_set()
+
+    def _register_stream_sock(self, sock):
+        with self._state_lock:
+            self._stream_sock = sock
+
+    def _stream_loop(self):
+        backoff = 0.1
+        while not self._stopped():
+            client = self.bridge.yard_client()
+            if client is None:
+                return
+            opened_at = None
+            received = False
+            try:
+                with self._state_lock:
+                    after = self._last_seq
+                if after is None:
+                    head = client.call('Head', [])
+                    if type(head) is not int or not 0 <= head < 2**64:
+                        raise n.RPCAmbiguous('invalid native Head response')
+                    with self._stream_cv:
+                        self._last_seq = head
+                        self._stream_start_seq = head
+                        self._stream_cv.notify_all()
+                    after = head
+                    if self._has_open():
+                        self._poll_wake.set()
+
+                def on_open():
+                    nonlocal opened_at
+                    opened_at = time.monotonic()
+                    with self._stream_cv:
+                        self._stream_connected = True
+                        was_broken = self._stream_broken
+                        self._stream_broken = False
+                        self._stream_cv.notify_all()
+                    self._log_stream_error(None)
+                    if was_broken and self._has_open():
+                        self._poll_wake.set()
+
+                for event in client.stream_events(
+                        after, stop_event=self._worker_stop,
+                        register_socket=self._register_stream_sock, on_open=on_open):
+                    if self._stopped():
+                        break
+                    with self._stream_cv:
+                        if self._last_seq is not None and event['seq'] <= self._last_seq:
+                            raise n.RPCAmbiguous('native events stream out of order')
+                        self._last_seq = event['seq']
+                        self._stream_cv.notify_all()
+                    received = True
+                    backoff = 0.1
+                    self._handle_stream_event(event)
+                if self._stopped():
+                    break
+                with self._stream_cv:
+                    self._stream_connected = False
+                    self._stream_broken = True
+                    self._stream_cv.notify_all()
+                if opened_at is not None and (received or time.monotonic() - opened_at >= 1.0):
+                    backoff = 0.1
+            except n.RPCRefused as error:
+                with self._stream_cv:
+                    self._stream_connected = False
+                    self._stream_broken = True
+                    self._stream_cv.notify_all()
+                self._log_stream_fallback(
+                    f'read states stream fallback: native events stream refused ({error}); polling every {ROUND_SECONDS}s'
+                )
+                self._worker_stop.wait(30.0)
+                continue
+            except TRANSIENT as error:
+                with self._stream_cv:
+                    self._stream_connected = False
+                    self._stream_broken = True
+                    self._stream_cv.notify_all()
+                self._log_stream_error(f'read states stream: {error}')
+            except Exception as error:  # noqa: BLE001 - keep stream supervisor alive
+                with self._stream_cv:
+                    self._stream_connected = False
+                    self._stream_broken = True
+                    self._stream_cv.notify_all()
+                self._log_stream_error(f'read states stream failed: {type(error).__name__}')
+            if self._stopped():
+                break
+            self._worker_stop.wait(backoff)
+            backoff = min(backoff * 2, 5.0)
+
+    def _poll_loop(self):
+        while not self._stopped():
+            self._poll_wake.clear()
+            try:
+                if self._has_open():
+                    self._apply_cached_stream_events()
+                    last_wall = self._last_round_wall
+                    now_wall = time.monotonic()
+                    if last_wall is None or now_wall - last_wall >= ROUND_SECONDS:
+                        self.refresh(force=True)
+                        if self._stopped():
+                            break
+                    last_wall = self._last_round_wall
+                    if self._has_open():
+                        remaining = (ROUND_SECONDS - (time.monotonic() - last_wall)
+                                     if last_wall is not None else float(ROUND_SECONDS))
+                        self._poll_wake.wait(max(0.05, remaining))
+                        continue
+                self._poll_wake.wait()
+            except Exception as error:  # noqa: BLE001 - never stop poll loop
+                self.log(f'read states failed: {type(error).__name__}')
+                self._worker_stop.wait(float(ROUND_SECONDS))
+
+    def start(self):
         if not self.enabled or self.bridge.yard_client() is None or not self.config.get('yardr_home'):
             return
-        try:
-            if self.nudge_after > 0 and (not self.bridge.native_nudge() or not self.config.get('yardr_operator')):
-                self._log_offer_off('nudge offers off: built-in /nudge or [yardr] operator unavailable')
-            self._close_stale_offers()
-            now_mono = self.bridge.monotonic()
-            if self.last_round is not None and now_mono - self.last_round < ROUND_SECONDS:
+        with self._state_lock:
+            if self._stream_started:
                 return
-            if not self._has_open():
+            self._stream_started = True
+            self._worker_stop.clear()
+            self._poll_wake.clear()
+            self._stream_thread = threading.Thread(target=self._stream_loop, daemon=True, name='read-states-stream')
+            self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name='read-states-poll')
+            self._stream_thread.start()
+            self._poll_thread.start()
+
+    def stop(self):
+        with self._state_lock:
+            if not self._stream_started:
                 return
-            self.last_round = now_mono
-            trouble = self._run_round()
-            if trouble:
-                self.log(trouble[0])
-            else:
-                self.logged = None
-        except Exception as error:  # noqa: BLE001 - never break poll_once
-            self.log(f'read states failed: {type(error).__name__}')
+            self._worker_stop.set()
+            self._poll_wake.set()
+            sock = self._stream_sock
+            stream_thread = self._stream_thread
+            poll_thread = self._poll_thread
+            self._stream_cv.notify_all()
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if stream_thread is not None and stream_thread is not threading.current_thread():
+            stream_thread.join(timeout=5)
+        if poll_thread is not None and poll_thread is not threading.current_thread():
+            poll_thread.join(timeout=5)
+        with self._state_lock:
+            self._stream_started = False
+            self._stream_connected = False
+            self._stream_thread = None
+            self._poll_thread = None
+
+    def refresh(self, force=False):
+        if not self.enabled or self.bridge.yard_client() is None or not self.config.get('yardr_home'):
+            return
+        with self._round_lock:
+            try:
+                if self.nudge_after > 0 and (not self.bridge.native_nudge() or not self.config.get('yardr_operator')):
+                    self._log_offer_off('nudge offers off: built-in /nudge or [yardr] operator unavailable')
+                self._close_stale_offers()
+                now_mono = self.bridge.monotonic()
+                if not force and self.last_round is not None and now_mono - self.last_round < ROUND_SECONDS:
+                    return
+                if not self._has_open():
+                    return
+                self.last_round = now_mono
+                self._last_round_wall = time.monotonic()
+                trouble = self._run_round()
+                if trouble:
+                    self.log(trouble[0])
+                else:
+                    self.log(None)
+            except Exception as error:  # noqa: BLE001 - never break poll_once
+                self.log(f'read states failed: {type(error).__name__}')

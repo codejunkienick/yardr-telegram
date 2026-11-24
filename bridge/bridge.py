@@ -4777,6 +4777,7 @@ class Bridge:
                 self._log(line)
             if self.typing_seconds:
                 self._start_typing()
+            self.read_states.start()
             failures = 0
             while not self.stop.is_set():
                 try:
@@ -4791,6 +4792,7 @@ class Bridge:
                         raise TransportError('transport failed repeatedly; restarting preserves cursor') from None
                     self.stop.wait(min(failures * 2, 10))
         finally:
+            self.read_states.stop()
             server.shutdown()
             server.server_close()
 

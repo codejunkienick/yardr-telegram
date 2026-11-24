@@ -1,9 +1,10 @@
 # Operator message read and done receipts
 
-Design record, 2026-11-21: track each accepted operator Telegram message
+Design record, 2026-11-21 (stream update 2026-11-24): track each accepted operator Telegram message
 through `landed` (🕊), `read` (👀) and `done` (👌) using one replacing
-bot reaction per message (`setMessageReaction`), with zero yardr core
-changes and clean degradation when a build lacks a read.
+bot reaction per message (`setMessageReaction`), following the yard's native
+event stream (`GET /events?after=<seq>`) with clean fallback to cursor polling
+when a core lacks `inbox_read` or `/events`.
 
 ## Decisions
 
@@ -45,22 +46,33 @@ changes and clean degradation when a build lacks a read.
    or a `react` call (`CLI` or `/v1/react`) with the `done` emoji; `none`
    or any other emoji sets `manual` and stops tracking.
 
-4. **Cadence, locking and typing isolation.**
-   `read_states.refresh()` runs from `poll_once` right after
-   `typed_nudge.refresh()`, at most once per 60 monotonic seconds and
-   making zero native calls when no row is open (`landed` or `read`).
-   `landed` rows older than 24 h move to `expired` without a reaction.
-   Every reaction check, Telegram `setMessageReaction` and `read_states`
-   state update runs under the reactions `flock`, stepping only forward
-   (`landed -> read -> done`), using `readstate:<mid>:read|done` keys
-   ignored by `Store.sent_since` so typing windows survive a read.
+4. **Stream, cadence, locking and typing isolation.**
+   While `Bridge.run()` runs with `[reactions] read` and `[yardr] home`, a
+   stream worker asks `Head`, opens `GET /events?after=<seq>` on `yard.sock`,
+   and reconnects on any stream end with the last `seq` seen (`0.1` s initial
+   backoff, capped at `5` s). Each `inbox_read` (`data.session == ""`,
+   `data.reader == crew`, `data.through >= seq`) transitions open `landed` rows
+   to `read` at once, each matching `replied` (`data.source`, `data.crew`,
+   `data.seq`) transitions open rows to `done` at once, and each matching `hook`
+   resolves `crew` early; `/v1/send reply_to` and `react` continue to act
+   immediately. A background fallback round (`read_states.refresh()`, also
+   called from `poll_once`) runs at most once every `5` monotonic seconds
+   (`ROUND_SECONDS = 5`) only while open rows exist (`landed` or `read`),
+   making zero native calls when idle. If `/events` is refused or `GetCrew`
+   shows `cursor >= seq` after the stream caught up to `Head` without
+   `inbox_read`, the fallback reason is logged once. `landed` rows older than
+   24 h move to `expired` without a reaction. Every reaction check, Telegram
+   `setMessageReaction` and `read_states` state update runs under the reactions
+   `flock`, stepping only forward (`landed -> read -> done`), using
+   `readstate:<mid>:read|done` keys ignored by `Store.sent_since` so typing
+   windows survive a read.
 
 ```mermaid
 stateDiagram-v2
   [*] --> landed: hook 2xx seq (🕊 via on_accept)
-  landed --> read: GetCrew cursor >= seq (👀)
-  landed --> done: replied seq / reply_to / react done (👌)
-  read --> done: replied seq / reply_to / react done (👌)
+  landed --> read: inbox_read stream / GetCrew cursor >= seq (👀)
+  landed --> done: replied stream / Events / reply_to / react done (👌)
+  read --> done: replied stream / Events / reply_to / react done (👌)
   landed --> manual: react none or other
   read --> manual: react none or other
   landed --> off: crew not in deliveries / unsupported answer

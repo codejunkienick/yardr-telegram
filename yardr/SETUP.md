@@ -259,8 +259,11 @@ cards = true             # exactly one owner in this yard
 
 The home must exist, belong to the service user, and have no group/world
 write permission; `yard.sock` is the only native endpoint (no socket
-override). `[reactions] read` also needs `[yardr] home`; `nudge_after`
-needs `read`, `operator`, built-in `/nudge`, and `NudgeSession` (off otherwise).
+override). `[reactions] read` also needs `[yardr] home` (it follows the
+native `GET /events` stream for `inbox_read` and `replied`, falling back
+once-logged to a 5 s open-row poll on cores without `inbox_read`);
+`nudge_after` needs `read`, `operator`, built-in `/nudge`, and
+`NudgeSession` (off otherwise).
 Every instance can read with `home` alone; `cards = false` keeps all native
 cards and approvals off while allowing message states and operator nudges. The operator
 must keep their role and source identity, checked at every interaction.

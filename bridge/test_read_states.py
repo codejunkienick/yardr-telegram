@@ -6,7 +6,9 @@ import http.server
 import io
 import json
 from pathlib import Path
+import queue
 import re
+import socket
 import socketserver
 import sqlite3
 import subprocess
@@ -16,7 +18,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
@@ -35,7 +37,7 @@ REACTION_INVALID = (400, dict(ok=False, error_code=400, description='Bad Request
 
 
 class FakeReadYard:
-    """Minimal framed Unix RPC socket serving GetUser, EventsSince, GetCrew, Events and NudgeSession."""
+    """Minimal framed Unix RPC socket serving Head, GetUser, EventsSince, GetCrew, Events, NudgeSession and GET /events."""
 
     def __init__(self, root, crew='yardmaster', source='tgbridge'):
         self.root = Path(root)
@@ -48,6 +50,14 @@ class FakeReadYard:
         self.nudges = {}
         self.nudge_mode = None
         self.override = {}
+        self.head_seq = 0
+        self.stream_events = []
+        self.stream_requests = []
+        self.stream_mode = None
+        self._stream_lock = threading.Lock()
+        self._stream_cv = threading.Condition(self._stream_lock)
+        self._stream_sockets = set()
+        self._closed = False
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -55,6 +65,47 @@ class FakeReadYard:
 
             def log_message(self, *args):
                 pass
+
+            def do_GET(self):
+                parsed = urlsplit(self.path)
+                if parsed.path != '/events':
+                    self._send(404, {'error': {'code': 'not-found', 'message': 'not found'}})
+                    return
+                qs = parse_qs(parsed.query)
+                after = int(qs.get('after', ['0'])[0])
+                owner.stream_requests.append(after)
+                if owner.stream_mode == 'http_404':
+                    self._send(404, b'not found')
+                    return
+                if owner.stream_mode == 'http_503':
+                    self._send(503, b'replacing')
+                    return
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/x-ndjson')
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+                self.wfile.flush()
+                with owner._stream_lock:
+                    owner._stream_sockets.add(self.connection)
+                sent_seq = after
+                try:
+                    while not owner._closed:
+                        with owner._stream_cv:
+                            batch = [e for e in owner.stream_events if e['seq'] > sent_seq]
+                            if not batch and not owner._closed:
+                                owner._stream_cv.wait(timeout=0.5)
+                                batch = [e for e in owner.stream_events if e['seq'] > sent_seq]
+                        for ev in batch:
+                            line = (json.dumps(ev) + '\n').encode()
+                            chunk = f'{len(line):x}\r\n'.encode() + line + b'\r\n'
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                            sent_seq = ev['seq']
+                except OSError:
+                    pass
+                finally:
+                    with owner._stream_lock:
+                        owner._stream_sockets.discard(self.connection)
 
             def do_POST(self):
                 length = int(self.headers.get('Content-Length', '0'))
@@ -68,6 +119,12 @@ class FakeReadYard:
                         return
                     status, payload = outcome
                     self._send(status, payload)
+                    return
+                if method == 'Head':
+                    with owner._stream_lock:
+                        head = max([owner.head_seq, *owner.hook_events.keys(),
+                                    *(e['seq'] for e in owner.stream_events)], default=0)
+                    self._send(200, {'result': head})
                     return
                 if method == 'GetUser':
                     self._send(200, {'result': dict(name='pat', role='operator',
@@ -136,10 +193,40 @@ class FakeReadYard:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
+    def push_event(self, event):
+        with self._stream_cv:
+            self.stream_events.append(event)
+            self.head_seq = max(self.head_seq, event['seq'])
+            self._stream_cv.notify_all()
+
+    def drop_streams(self):
+        with self._stream_lock:
+            sockets = list(self._stream_sockets)
+        for s in sockets:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                s.close()
+            except OSError:
+                pass
+
     def close(self):
+        with self._stream_cv:
+            self._closed = True
+            self._stream_cv.notify_all()
+        self.drop_streams()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+
+
+def inbox_read_event(seq, reader='yardmaster', through=10, session=''):
+    return dict(
+        seq=seq, kind='inbox_read', actor=reader, at='2026-11-24T09:30:00Z',
+        data=dict(reader=reader, through=through, session=session),
+    )
 
 
 def hook_event(seq, source='tgbridge', deliveries=None):
@@ -201,7 +288,9 @@ class ReadStateCase(BridgeTestCase):
             seq = self.next_seq
             self.next_seq += 1
             if seq not in self.native.hook_events:
-                self.native.hook_events[seq] = hook_event(seq, source=self.SOURCE, deliveries={self.CREW: "all"})
+                ev = hook_event(seq, source=self.SOURCE, deliveries={self.CREW: "all"})
+                self.native.hook_events[seq] = ev
+                self.native.push_event(ev)
             return 200, dict(seq=seq)
         if url.endswith('/sendMessage'):
             self.calls.append((url, body))
@@ -289,6 +378,14 @@ class ReadStateCase(BridgeTestCase):
             reactions=dict(self.config['reactions'], nudge_after=nudge_after),
         )
 
+    def _wait_until(self, predicate, timeout=5.0, message='condition not met'):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        self.fail(message)
+
 
 
 class ReadStateTests(ReadStateCase):
@@ -338,15 +435,15 @@ class ReadStateTests(ReadStateCase):
         self.assertEqual(self.row(10)['state'], 'landed')
         self.assertEqual(self.reaction_emojis(), [DOVE])
 
-        # Round 2 before 60 s monotonic does nothing.
-        self.mono[0] += 59.0
+        # Round 2 before 5 s monotonic does nothing.
+        self.mono[0] += 4.0
         self.native.calls.clear()
         self.native.crew[self.CREW]['cursor'] = 10
         self.poll()
         self.assertEqual(self.native_methods(), [])
         self.assertEqual(self.row(10)['state'], 'landed')
 
-        # Round 2 at +60 s: EventsSince not called again, GetCrew moves landed -> read (eyes).
+        # Round 2 at +5 s: EventsSince not called again, GetCrew moves landed -> read (eyes).
         self.mono[0] += 1.0
         self.poll()
         self.assertEqual(self.native_methods(), ['GetCrew'])
@@ -1447,6 +1544,129 @@ class ReadStateTests(ReadStateCase):
         self.assertEqual(self._sends(), [])
         self.assertIsNone(self.row(10)['offer_token'])
 
+    def test_stream_inbox_read_and_replied_act_at_once_and_ignore_other_session_or_source(self):
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, message='stream did not connect')
+
+            self.drain(self.update(uid=10))
+            self.assertEqual(self.reaction_emojis(), [DOVE])
+
+            # Non-line session slice inbox_read must not mark a hook delivery read.
+            self.native.push_event(inbox_read_event(20, reader=self.CREW, through=10, session='hal'))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 20)
+            self.assertEqual(self.row(10)['state'], 'landed')
+
+            # Line session inbox_read transitions landed -> read at once without poll().
+            t0 = time.monotonic()
+            self.native.push_event(inbox_read_event(21, reader=self.CREW, through=10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0,
+                             message='inbox_read did not move row to read')
+            self.assertLess(time.monotonic() - t0, 2.0)
+            self.assertEqual(self.reaction_emojis(), [DOVE, EYES])
+
+            # Replied for another source is ignored; replied for our source moves read -> done at once.
+            self.native.push_event(replied_event(22, 10, crew=self.CREW, source='other-source',
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 22)
+            self.assertEqual(self.row(10)['state'], 'read')
+
+            self.native.push_event(replied_event(23, 10, crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'done', timeout=2.0,
+                             message='replied did not move row to done')
+            self.assertEqual(self.reaction_emojis(), [DOVE, EYES, OK_HAND])
+
+    def test_stream_drop_resumes_from_last_seq_without_lost_or_duplicate_reaction(self):
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, message='stream did not connect')
+
+            self.drain(self.update(uid=10), self.update(uid=11))
+            self.native.push_event(inbox_read_event(20, reader=self.CREW, through=10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+
+            # Drop active stream mid-run, queue events while disconnected, and verify resume after=20.
+            self.native.drop_streams()
+            self._wait_until(lambda: not self.bridge.read_states._stream_connected, timeout=2.0)
+            self.native.push_event(inbox_read_event(21, reader=self.CREW, through=11, session=''))
+            self.native.push_event(replied_event(22, 10, crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+
+            self._wait_until(
+                lambda: (self.row(10) or {}).get('state') == 'done'
+                and (self.row(11) or {}).get('state') == 'read',
+                timeout=3.0, message='stream did not resume missed events',
+            )
+            self.assertIn(20, self.native.stream_requests[1:])
+            msg10_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
+                            if url.endswith('/setMessageReaction') and body['message_id'] == 10]
+            msg11_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
+                            if url.endswith('/setMessageReaction') and body['message_id'] == 11]
+            self.assertEqual(msg10_emojis, [DOVE, EYES, OK_HAND])
+            self.assertEqual(msg11_emojis, [DOVE, EYES])
+
+    def test_stream_fallback_when_events_refused_or_inbox_read_absent(self):
+        # 1. HTTP 404 on /events logs fallback reason once and polls within 5 s.
+        self.native.stream_mode = 'http_404'
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: any('read states stream fallback:' in l for l in self.logs), timeout=2.0)
+            self.drain(self.update(uid=10))
+            self.native.crew[self.CREW]['cursor'] = 10
+            self.mono[0] += 5.0
+            self.poll()
+            self.assertEqual(self.row(10)['state'], 'read')
+            self.assertEqual(len([l for l in self.logs if 'read states stream fallback:' in l]), 1)
+        self.bridge.read_states.stop()
+
+        # 2. Stream open without inbox_read detects absence once when GetCrew cursor advances.
+        self.logs.clear()
+        self.native.stream_mode = None
+        self.restart()
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+            self.drain(self.update(uid=11), self.update(uid=12))
+            self.native.crew[self.CREW]['cursor'] = 12
+            self.mono[0] += 5.0
+            self.poll()
+            self.assertEqual(self.row(11)['state'], 'read')
+            self.assertEqual(self.row(12)['state'], 'read')
+            fallback_logs = [l for l in self.logs if 'did not emit inbox_read' in l]
+            self.assertEqual(len(fallback_logs), 1)
+
+    def test_bridge_run_starts_and_stops_read_states_stream(self):
+        ready = threading.Event()
+
+        def transport(url, body, *args, **kwargs):
+            if url.endswith('/getUpdates'):
+                if not ready.is_set():
+                    ready.set()
+                    return 200, dict(ok=True, result=[self.update(uid=10)])
+                self.bridge.stop.wait(0.05)
+                return 200, dict(ok=True, result=[])
+            return self.transport(url, body, *args, **kwargs)
+
+        self.bridge.request = transport
+        run_thread = threading.Thread(target=testports.run_bridge, args=(self.bridge,), daemon=True)
+        with patch.object(self.bridge, 'probe_with_retry', return_value=True), \
+                patch('sys.stdout', new_callable=io.StringIO), patch('sys.stderr', new_callable=io.StringIO):
+            run_thread.start()
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'landed', timeout=3.0)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=3.0)
+            self.native.push_event(inbox_read_event(20, reader=self.CREW, through=10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.bridge.stop.set()
+            run_thread.join(timeout=5)
+        self.assertFalse(run_thread.is_alive())
+        self.assertFalse(self.bridge.read_states._stream_started)
+
+
 class SecondaryReadStateTests(ReadStateCase):
     CREW = 'secretary'
     SOURCE = 'tgsecretary'
@@ -1454,6 +1674,18 @@ class SecondaryReadStateTests(ReadStateCase):
     BOT_ID = 998
 
     test_full_lifecycle_replace_not_stack_and_idle_call_counts = ReadStateTests.test_full_lifecycle_replace_not_stack_and_idle_call_counts
+    test_stream_inbox_read_and_replied_act_at_once_and_ignore_other_session_or_source = (
+        ReadStateTests.test_stream_inbox_read_and_replied_act_at_once_and_ignore_other_session_or_source
+    )
+    test_stream_drop_resumes_from_last_seq_without_lost_or_duplicate_reaction = (
+        ReadStateTests.test_stream_drop_resumes_from_last_seq_without_lost_or_duplicate_reaction
+    )
+    test_stream_fallback_when_events_refused_or_inbox_read_absent = (
+        ReadStateTests.test_stream_fallback_when_events_refused_or_inbox_read_absent
+    )
+    test_bridge_run_starts_and_stops_read_states_stream = (
+        ReadStateTests.test_bridge_run_starts_and_stops_read_states_stream
+    )
 
     def test_secondary_offer_and_read_only_degrade(self):
         self.assertFalse(self.bridge.native_decide())
@@ -2200,6 +2432,354 @@ class RealReadStateTests(BridgeTestCase):
                 print('Real core F (NudgeSession), crew', crew, 'cards', br.native_decide(), ':', self.binary,
                       'offer -> tap -> session_nudged -> outcome -> read')
             finally:
+                if second_server is not None:
+                    second_server.shutdown()
+                    second_server.server_close()
+                    second_worker.join(timeout=5)
+                callback.shutdown()
+                callback.server_close()
+                worker.join(timeout=5)
+                testyardr.stop(server)
+
+    def test_real_core_stream_ndfm_fallback_and_drop_resume(self):
+        class _UnixProxy:
+            def __init__(self, proxy_home, target_sock):
+                self.target_sock = str(target_sock)
+                self.drop_inbox_read = False
+                self.stream_afters = []
+                self._lock = threading.Lock()
+                self._active = []
+                owner = self
+
+                class Handler(socketserver.BaseRequestHandler):
+                    def handle(self):
+                        up = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                        up.connect(owner.target_sock)
+                        buf = b''
+                        while b'\r\n\r\n' not in buf:
+                            chunk = self.request.recv(4096)
+                            if not chunk:
+                                up.close()
+                                return
+                            buf += chunk
+                        head, rest = buf.split(b'\r\n\r\n', 1)
+                        req_line = head.split(b'\r\n', 1)[0].decode('ascii', 'replace')
+                        parts = req_line.split()
+                        is_stream = len(parts) >= 2 and parts[0] == 'GET' and parts[1].startswith('/events')
+                        if is_stream:
+                            qs = parse_qs(urlsplit(parts[1]).query)
+                            owner.stream_afters.append(int(qs.get('after', ['0'])[0]))
+                            with owner._lock:
+                                owner._active.append((self.request, up))
+                        up.sendall(head + b'\r\n\r\n' + rest)
+                        try:
+                            if is_stream and owner.drop_inbox_read:
+                                resp = http.client.HTTPResponse(up)
+                                resp.begin()
+                                self.request.sendall(
+                                    f'HTTP/1.1 {resp.status} {resp.reason}\r\n'
+                                    'Content-Type: application/x-ndjson\r\n'
+                                    'Transfer-Encoding: chunked\r\n\r\n'.encode()
+                                )
+                                while True:
+                                    line = resp.readline(1024 * 1024)
+                                    if not line:
+                                        break
+                                    try:
+                                        parsed = json.loads(line)
+                                        if parsed.get('kind') == 'inbox_read':
+                                            line = (json.dumps({
+                                                'seq': parsed['seq'], 'kind': 'proxy_filtered',
+                                                'actor': 'yard', 'at': parsed['at'],
+                                            }) + '\n').encode()
+                                    except ValueError:
+                                        pass
+                                    self.request.sendall(f'{len(line):x}\r\n'.encode() + line + b'\r\n')
+                                self.request.sendall(b'0\r\n\r\n')
+                                return
+
+                            def pump(src, dst):
+                                try:
+                                    while True:
+                                        data = src.recv(65536)
+                                        if not data:
+                                            break
+                                        dst.sendall(data)
+                                except OSError:
+                                    pass
+                                finally:
+                                    try:
+                                        dst.shutdown(socket.SHUT_WR)
+                                    except OSError:
+                                        pass
+
+                            t1 = threading.Thread(target=pump, args=(self.request, up), daemon=True)
+                            t1.start()
+                            pump(up, self.request)
+                            t1.join(timeout=2)
+                        except OSError:
+                            pass
+                        finally:
+                            if is_stream:
+                                with owner._lock:
+                                    if (self.request, up) in owner._active:
+                                        owner._active.remove((self.request, up))
+                            up.close()
+
+                class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+                    daemon_threads = True
+
+                proxy_home.mkdir(mode=0o700, exist_ok=True)
+                self.server = Server(str(proxy_home / 'yard.sock'), Handler)
+                self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                self.thread.start()
+
+            def drop_streams(self):
+                with self._lock:
+                    pairs = list(self._active)
+                for cli_sock, up_sock in pairs:
+                    for s in (cli_sock, up_sock):
+                        try:
+                            s.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        try:
+                            s.close()
+                        except OSError:
+                            pass
+
+            def close(self):
+                self.drop_streams()
+                self.server.shutdown()
+                self.server.server_close()
+                self.thread.join(timeout=5)
+
+        def wait_until(pred, timeout=10.0, msg='condition not met'):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if pred():
+                    return
+                time.sleep(0.02)
+            self.fail(msg)
+
+        with tempfile.TemporaryDirectory(prefix='tgrs-stream-', dir='/tmp') as tmp:
+            root = Path(tmp)
+            server, home, command, env, port, hook_secret, callback, worker = self._start_yard(root)
+            mono = [1000.0]
+            wall = [2000.0]
+            next_sent_id = [500]
+            logs = []
+            second_server = second_worker = proxy = None
+
+            def cli(*args, stdin=None):
+                result = subprocess.run(command + list(args), env=env, cwd=root, text=True,
+                                        capture_output=True, input=stdin, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                return result
+
+            def make_transport():
+                base = self.transport
+
+                def request(url, body, *args, **kwargs):
+                    if url.startswith(f'http://127.0.0.1:{port}/hooks/'):
+                        target = urlsplit(url)
+                        conn = http.client.HTTPConnection(target.hostname, target.port, timeout=10)
+                        try:
+                            conn.request('POST', target.path, json.dumps(body),
+                                         kwargs['headers'] | {'Content-Type': 'application/json'})
+                            resp = conn.getresponse()
+                            return resp.status, json.load(resp)
+                        finally:
+                            conn.close()
+                    if url.endswith('/sendMessage'):
+                        self.calls.append((url, body))
+                        mid = next_sent_id[0]
+                        next_sent_id[0] += 1
+                        return 200, dict(ok=True, result=dict(message_id=mid, chat=dict(id=123)))
+                    if url.endswith('/setMessageReaction'):
+                        self.calls.append((url, body))
+                        return 200, dict(ok=True, result=True)
+                    return base(url, body, *args, **kwargs)
+
+                return request
+
+            def emojis(mid):
+                return [body['reaction'][0]['emoji'] for url, body in self.calls
+                        if url.endswith('/setMessageReaction') and body['message_id'] == mid]
+
+            try:
+                cfg = dict(
+                    self.config, agent='writer', yardr_home=str(home), yardr_socket=str(home / 'yard.sock'),
+                    yardr_operator='pat', yardr_source='tgbridge',
+                    hook_url=f'http://127.0.0.1:{port}/hooks/tgbridge', hook_secret=hook_secret,
+                    reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND),
+                )
+                self.bridge = b.Bridge(cfg, self.store, 'SECRET', 'CAPABILITY', request=make_transport(),
+                                       request_multipart=self.multipart_transport,
+                                       request_download=self.download_transport, sleep=lambda s: None)
+                callback.RequestHandlerClass.bridge = self.bridge
+                secondary, second_server, second_worker = self.second_instance(root, cli, home, port, mono, wall)
+                secondary.sleep = lambda s: None
+                secondary.monotonic = time.monotonic
+
+                # Probe whether this real yardr binary emits inbox_read on GET /events.
+                probe_client = b.run_asks.YardSocketClient(home, 'tgbridge')
+                probe_head = probe_client.call('Head', [])
+                probe_stop = threading.Event()
+                probe_seen = []
+
+                def probe_watch():
+                    try:
+                        for ev in probe_client.stream_events(probe_head, stop_event=probe_stop):
+                            probe_seen.append(ev)
+                            if ev['kind'] == 'inbox_read':
+                                probe_stop.set()
+                                break
+                    except Exception:
+                        pass
+
+                t_probe = threading.Thread(target=probe_watch, daemon=True)
+                t_probe.start()
+                self.bridge.drain([self.update(99)])
+                self.bridge.reaction_queue.join()
+                probe_seq = self.bridge.read_states.get(99)['seq']
+                cli('inbox', '--crew', 'writer', '--ack', str(probe_seq))
+                deadline = time.monotonic() + 0.8
+                while time.monotonic() < deadline and not any(e['kind'] == 'inbox_read' for e in probe_seen):
+                    time.sleep(0.02)
+                probe_stop.set()
+                has_inbox_read = any(e['kind'] == 'inbox_read' for e in probe_seen)
+                # Finish msg 99 so open rows start empty.
+                cli('reply', str(probe_seq), '--crew', 'writer', 'probe done')
+                self.bridge.read_states._set_terminal(99, b.read_states.OPEN_STATES, 'done')
+
+                # 1. Start live stream on both primary (owner) and secondary (cards=False) instances.
+                with patch.object(self.bridge, '_log', side_effect=logs.append), \
+                        patch.object(secondary, '_log', side_effect=logs.append):
+                    self.bridge.read_states.start()
+                    secondary.read_states.start()
+                    self.addCleanup(self.bridge.read_states.stop)
+                    self.addCleanup(secondary.read_states.stop)
+                    wait_until(lambda: self.bridge.read_states._stream_connected
+                               and secondary.read_states._stream_connected,
+                               timeout=5.0, msg='real streams did not connect')
+
+                    self.bridge.drain([self.update(100)])
+                    self.bridge.reaction_queue.join()
+                    seq100 = self.bridge.read_states.get(100)['seq']
+                    self.assertEqual(emojis(100), [DOVE])
+
+                    t_ack = time.monotonic()
+                    cli('inbox', '--crew', 'writer', '--ack', str(seq100))
+                    limit = 2.0 if has_inbox_read else b.read_states.ROUND_SECONDS + 2.0
+                    wait_until(lambda: self.bridge.read_states.get(100)['state'] == 'read'
+                               and EYES in emojis(100), timeout=limit, msg='primary ack did not turn to eyes')
+                    primary_ack_elapsed = time.monotonic() - t_ack
+                    if has_inbox_read:
+                        self.assertLess(primary_ack_elapsed, 2.0)
+                    else:
+                        self.assertLessEqual(primary_ack_elapsed, b.read_states.ROUND_SECONDS + 2.0)
+                        wait_until(lambda: any('did not emit inbox_read' in l for l in logs), timeout=2.0)
+
+                    # replied moves read -> done at once (< 2 s) on both ndfm and upstream cores.
+                    t_rep = time.monotonic()
+                    cli('reply', str(seq100), '--crew', 'writer', 'Immediate stream reply')
+                    wait_until(lambda: self.bridge.read_states.get(100)['state'] == 'done'
+                               and OK_HAND in emojis(100), timeout=2.0, msg='replied did not turn to ok_hand')
+                    replied_elapsed = time.monotonic() - t_rep
+                    self.assertLess(replied_elapsed, 2.0)
+                    self.assertEqual(emojis(100), [DOVE, EYES, OK_HAND])
+
+                    # Secondary non-owner instance works identically for its crew.
+                    secondary.drain([self.update(101)])
+                    secondary.reaction_queue.join()
+                    seq101 = secondary.read_states.get(101)['seq']
+                    t_sec = time.monotonic()
+                    cli('inbox', '--crew', 'secretary', '--ack', str(seq101))
+                    wait_until(lambda: secondary.read_states.get(101)['state'] == 'read'
+                               and EYES in emojis(101), timeout=limit, msg='secondary ack did not turn to eyes')
+                    sec_elapsed = time.monotonic() - t_sec
+                    if has_inbox_read:
+                        self.assertLess(sec_elapsed, 2.0)
+                    env['TGBRIDGE_SECRET'] = 'SECOND_CAPABILITY'
+                    primary = self.bridge
+                    self.bridge = secondary
+                    try:
+                        cli('reply', str(seq101), '--crew', 'secretary', 'Secondary stream reply')
+                    finally:
+                        self.bridge = primary
+                    wait_until(lambda: secondary.read_states.get(101)['state'] == 'done'
+                               and OK_HAND in emojis(101), timeout=2.0)
+                    self.assertEqual(emojis(101), [DOVE, EYES, OK_HAND])
+
+                    self.bridge.read_states.stop()
+                    secondary.read_states.stop()
+
+                # 2. Stream drop mid-run through proxy against the real server -> resume with no lost/dup reaction.
+                proxy_home = root / 'proxy-home'
+                proxy = _UnixProxy(proxy_home, home / 'yard.sock')
+                proxy_store = b.Store(root / 'proxy.sqlite3', 0)
+                proxy_cfg = dict(cfg, yardr_home=str(proxy_home), yardr_socket=str(proxy_home / 'yard.sock'))
+                br_proxy = b.Bridge(proxy_cfg, proxy_store, 'SECRET', 'CAPABILITY', request=make_transport(),
+                                    sleep=lambda s: None)
+                proxy_logs = []
+                with patch.object(br_proxy, '_log', side_effect=proxy_logs.append):
+                    br_proxy.read_states.start()
+                    try:
+                        wait_until(lambda: br_proxy.read_states._stream_connected, timeout=5.0)
+                        br_proxy.drain([self.update(102)])
+                        br_proxy.reaction_queue.join()
+                        seq102 = br_proxy.read_states.get(102)['seq']
+                        wait_until(lambda: (br_proxy.read_states._last_seq or 0) >= seq102, timeout=2.0)
+                        last_before_drop = br_proxy.read_states._last_seq
+
+                        proxy.drop_streams()
+                        wait_until(lambda: not br_proxy.read_states._stream_connected, timeout=2.0)
+                        cli('inbox', '--crew', 'writer', '--ack', str(seq102))
+                        env['TGBRIDGE_SECRET'] = self.bridge.secret
+                        cli('reply', str(seq102), '--crew', 'writer', 'Reply while disconnected')
+
+                        wait_until(lambda: br_proxy.read_states.get(102)['state'] == 'done'
+                                   and OK_HAND in emojis(102), timeout=3.0,
+                                   msg='proxy stream did not resume missed events')
+                        self.assertIn(last_before_drop, proxy.stream_afters[1:])
+                        self.assertEqual(emojis(102).count(DOVE), 1)
+                        self.assertEqual(emojis(102).count(OK_HAND), 1)
+
+                        # 3. On an ndfm core, verify real-server fallback when inbox_read is stripped from stream.
+                        if has_inbox_read:
+                            proxy.drop_inbox_read = True
+                            br_fb = b.Bridge(proxy_cfg, b.Store(root / 'proxy-fb.sqlite3', 0), 'SECRET', 'CAPABILITY',
+                                             request=make_transport(), sleep=lambda s: None)
+                            fb_logs = []
+                            with patch.object(br_fb, '_log', side_effect=fb_logs.append):
+                                br_fb.read_states.start()
+                                try:
+                                    wait_until(lambda: br_fb.read_states._stream_connected, timeout=5.0)
+                                    br_fb.drain([self.update(103)])
+                                    br_fb.reaction_queue.join()
+                                    seq103 = br_fb.read_states.get(103)['seq']
+                                    t_fb = time.monotonic()
+                                    cli('inbox', '--crew', 'writer', '--ack', str(seq103))
+                                    wait_until(lambda: br_fb.read_states.get(103)['state'] == 'read'
+                                               and EYES in emojis(103),
+                                               timeout=b.read_states.ROUND_SECONDS + 2.0,
+                                               msg='real fallback poll did not turn to eyes within 5 s')
+                                    fb_elapsed = time.monotonic() - t_fb
+                                    self.assertLessEqual(fb_elapsed, b.read_states.ROUND_SECONDS + 2.0)
+                                    self.assertEqual(len([l for l in fb_logs if 'did not emit inbox_read' in l]), 1)
+                                finally:
+                                    br_fb.read_states.stop()
+                    finally:
+                        br_proxy.read_states.stop()
+                print(
+                    f'Real core stream ({self.binary}, ndfm={has_inbox_read}): '
+                    f'ack={primary_ack_elapsed:.3f}s, replied={replied_elapsed:.3f}s, '
+                    f'secondary_ack={sec_elapsed:.3f}s'
+                )
+            finally:
+                if proxy is not None:
+                    proxy.close()
                 if second_server is not None:
                     second_server.shutdown()
                     second_server.server_close()

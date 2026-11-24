@@ -103,7 +103,7 @@ description = "Show the agent's status"
 # [reactions]
 # on_accept = true                          # set `seen` once the yard has a message; default false: no reaction unless an agent runs react
 # seen = "👀"                               # default 👀 (set "🕊" when `read` is enabled)
-# read = "👀"                               # optional: mark read once the crew's inbox ack passes the hook seq (requires [yardr] home)
+# read = "👀"                               # optional: mark read on crew inbox_read stream (or 5s fallback poll) once ack passes hook seq (requires [yardr] home)
 # nudge_after = 300                         # optional: seconds unread before a Nudge offer while crew is idle/blocked (0-3600, default 0 off; requires read, home+operator, built-in /nudge and core NudgeSession; independent of cards)
 # done = "👌"                               # `yardr call tgbridge react reaction=done`; default 👌 (✅ is not an allowed reaction)
 

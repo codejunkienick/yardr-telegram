@@ -332,6 +332,11 @@ def skill_proposal(name):
     return json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
 
 
+def repo_edit_proposal(version=2):
+    name = 'repo_edit_v2' if version == 2 else 'repo_edit_v1'
+    return json.loads(Path(__file__).with_name('fixtures').joinpath(name + '.json').read_text())
+
+
 def upstream_proposal(name):
     # Captured from Bead on isolated aligned and upstream builds; only the temp
     # root (/synthetic), ask number, timestamp and device date are stabilized.
@@ -413,6 +418,10 @@ class NativeSocket:
         self.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         # The standing skill trees SkillDigest reads; a name not here is absent.
         self.skill_trees = {}
+        self.repo_edit_capability = dict(version=2, approval='version-digest', paths=16, text_bytes=65536,
+                                         context_bytes=8192, classes=['markdown', 'plain-text'], materialize=True)
+        self.repo_edit_status = {}
+        self.repo_edit_mode = None
         self.stale = ''
         # The crew and sessions a session nudge reads; the nudge requests it wrote.
         self.crew = {}
@@ -441,6 +450,29 @@ class NativeSocket:
                         self.reply({'error': {'code': 'error', 'message': 'no such method SkillDigest'}})
                         return
                     result = owner.skill_trees.get(args['name'], 'absent')
+                elif method == 'RepoEditCapabilities':
+                    if owner.repo_edit_mode == 'no-capability-method':
+                        self.reply({'error': {'code': 'error', 'message': 'no such method RepoEditCapabilities'}})
+                        return
+                    if owner.repo_edit_mode == 'bad-capability':
+                        result = dict(version=99, materialize=False)
+                    elif owner.repo_edit_mode == 'v1-capability':
+                        result = dict(version=1, approval='version-digest', paths=16, text_bytes=65536,
+                                      context_bytes=8192, classes=['markdown', 'plain-text'], materialize=False)
+                    else:
+                        result = dict(owner.repo_edit_capability) if isinstance(owner.repo_edit_capability, dict) else owner.repo_edit_capability
+                elif method == 'NativeEditStatus':
+                    if owner.repo_edit_mode == 'no-status-method':
+                        self.reply({'error': {'code': 'error', 'message': 'no such method NativeEditStatus'}})
+                        return
+                    if owner.repo_edit_mode == 'status-wire-error':
+                        self.send_error(503)
+                        return
+                    bead_id = args[0] if isinstance(args, list) and args else None
+                    if bead_id not in owner.repo_edit_status:
+                        self.reply({'error': {'code': 'not-found', 'message': 'no such bead'}})
+                        return
+                    result = dict(owner.repo_edit_status[bead_id])
                 elif method == 'Bead':
                     if owner.mode == 'unreadable':
                         self.send_error(503)
@@ -495,6 +527,13 @@ class NativeSocket:
                     if owner.mode == 'stale' and method == 'ApproveAsk':
                         self.reply({'error': {'code': 'error', 'message': owner.stale}})
                         return
+                    if method == 'ApproveAsk' and isinstance(target.get('run'), dict) and 'repo_edit' in target['run']:
+                        payload = target['run']['repo_edit']
+                        values = args.get('values') or {}
+                        if (values.get('repo_edit_version') != str(payload['request']['version'])
+                                or values.get('repo_edit_digest') != payload['digest']):
+                            self.reply({'error': {'code': 'error', 'message': f"ask {args['ask']}: repo edit values mismatched; nothing ran"}})
+                            return
                     if owner.mode != 'lost-open':
                         target['turn'] = target.get('turn', 0) + 1
                         target['state'] = {'ApproveAsk': 'answered', 'AnswerAsk': 'answered',
@@ -505,8 +544,19 @@ class NativeSocket:
                         if method == 'DeferAsk':
                             target['return_at'] = '2026-01-02T00:00:00Z'
                         if method == 'ApproveAsk':
-                            target['ran'] = dict(argv=target['run']['argv'],
-                                                   result=n.PENDING if owner.mode == 'carrying' else 'stored operation applied')
+                            if isinstance(target.get('run'), dict) and 'repo_edit' in target['run']:
+                                payload = target['run']['repo_edit']
+                                if payload['request']['version'] == 2:
+                                    reserved = owner.repo_edit_status and next(iter(owner.repo_edit_status)) or 'sample-2'
+                                    target['ran'] = dict(
+                                        argv=target['run']['argv'], result=n.PENDING,
+                                        pending_reason=f"reserved held bead {reserved}; the yard's server prepares it for review",
+                                    )
+                                else:
+                                    target['ran'] = dict(argv=target['run']['argv'], result='stored operation applied')
+                            else:
+                                target['ran'] = dict(argv=target['run']['argv'],
+                                                     result=n.PENDING if owner.mode == 'carrying' else 'stored operation applied')
                     if owner.mode == 'lost-unreadable':
                         owner.mode = 'unreadable'
                         return
@@ -715,6 +765,10 @@ class NativeCase(BridgeTestCase):
         self.native.user = dict(name='pat', role='operator', identities={'tgbridge': {'id': '123'}})
         self.native.group = dict(name='drafters', runner='herdr', config=dict(kind='claude', model='claude-opus-4'), limit=1)
         self.native.skill_trees = dict(SKILL_TREES)
+        self.native.repo_edit_capability = dict(version=2, approval='version-digest', paths=16, text_bytes=65536,
+                                                context_bytes=8192, classes=['markdown', 'plain-text'], materialize=True)
+        self.native.repo_edit_status = {}
+        self.native.repo_edit_mode = None
         self.calls.clear()
         self.sent_count = 0
         self.documents.clear()
@@ -2560,7 +2614,7 @@ class NativeTests(NativeCase):
                 self.assertFalse(any(method == 'ApproveAsk' for method, _ in self.writes()))
 
     def test_weight_requires_bound_confirm_cancel_expiry_nonce_and_one_use(self):
-        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal, repo_edit_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 if factory is proposal:
@@ -2672,7 +2726,7 @@ class NativeTests(NativeCase):
                 confirmed = self.press('confirm', uid=55)
                 self.bridge.inbound(dict(update_id=55, callback_query=confirmed))
                 self.bridge.inbound(dict(update_id=56, callback_query=confirmed))
-                self.assertEqual(self.row()['state'], 'approved')
+                self.assertEqual(self.row()['state'], 'carrying' if factory is repo_edit_proposal else 'approved')
                 self.assertEqual(len(self.writes()), 2)
                 self.assertTrue(self.writes()[-1][1]['weighed'])
                 for url, body in self.calls:
@@ -2743,7 +2797,7 @@ class NativeTests(NativeCase):
                         changed = dict(base, **{key: value})
                         self.assert_bound_source_change_stales(base, changed)
 
-        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal, repo_edit_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -2813,7 +2867,7 @@ class NativeTests(NativeCase):
                     self.assertEqual(self.writes(), [])
 
     def test_same_operator_two_homes_and_conversations_cannot_cross(self):
-        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal):
+        for factory in (proposal, group_add_proposal, group_set_proposal, source_proposal, pack_proposal, repo_edit_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.create()
@@ -4985,7 +5039,7 @@ class NativeTests(NativeCase):
                 if tag == 'a' and attrs.get('href', '').startswith('data:text/plain;base64,'):
                     self.files.append((attrs['download'], base64.b64decode(attrs['href'].split(',', 1)[1], validate=True)))
         script = Path(__file__).resolve().parents[1] / 'scripts/preview_run_asks.py'
-        for flag in ('--source', '--pack', '--group-add', '--group-set', '--group-set-effort'):
+        for flag in ('--source', '--pack', '--group-add', '--group-set', '--group-set-effort', '--repo-edit'):
             with self.subTest(preview=flag):
                 result = subprocess.run([sys.executable, '-B', str(script), flag, '--dense-bundle'],
                     env=dict(HOME=self.tmp.name, PATH=self.tmp.name + ':/usr/local/bin:/usr/bin:/bin'),
@@ -5154,7 +5208,7 @@ class NativeTests(NativeCase):
     def bundle_document_delivery(self):
         original = self.bridge.request_multipart
         failures = ('transient', 'ambiguous', 'size', 'missing-size', 'boolean-size', 'rejected', 'crash-after-receipt')
-        for extension, failure, factory in ((ext, failure, factory) for factory in (pack_proposal, general_proposal)
+        for extension, failure, factory in ((ext, failure, factory) for factory in (pack_proposal, general_proposal, repo_edit_proposal)
                                             for ext in ('.md', '.txt') for failure in failures):
             with self.subTest(document_failure=failure, extension=extension, payload=factory.__name__):
                 self.reset_native(factory())
@@ -6021,7 +6075,7 @@ class NativeTests(NativeCase):
                 self.assertEqual(n.queue_kind(queue_entry(ask)), ('terminal-only run', False))
 
     def test_bundle_drift_rechecks_during_transport_retry_and_repost(self):
-        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal, general_proposal):
+        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal, general_proposal, repo_edit_proposal):
             with self.subTest(payload=factory.__name__):
                 original = self.bridge.request
                 multipart = self.bridge.request_multipart
@@ -6072,7 +6126,7 @@ class NativeTests(NativeCase):
                 self.bridge.request_multipart = multipart
 
     def test_bundle_home_replacement_cannot_reuse_identical_native_proposal(self):
-        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal, general_proposal):
+        for factory in (group_add_proposal, group_set_proposal, source_proposal, pack_proposal, general_proposal, repo_edit_proposal):
             with self.subTest(payload=factory.__name__):
                 self.reset_native(factory())
                 self.assertTrue(self.create()['delivered'])
@@ -6862,6 +6916,305 @@ class NativeTests(NativeCase):
         self.assertEqual((body['chat_id'], body['message_thread_id']), (123, 12))
         self.assertTrue(body['reply_markup']['inline_keyboard'][0][0]['callback_data'].startswith('askcard:'))
         self.assertEqual(self.writes(), [])
+
+    def test_native_repo_edit_requires_exact_capability_and_matches_canonical_json(self):
+        self.assertEqual(
+            n.repo_edit.go_json({'b': 9007199254740993, 'a': '<>&\b\f\n\r\t\x01\u2028\u2029α雪🙂"\\'}),
+            r'{"a":"\u003c\u003e\u0026\b\f\n\r\t\u0001\u2028\u2029α雪🙂\"\\","b":9007199254740993}',
+        )
+        v2 = repo_edit_proposal(2)
+        v1 = repo_edit_proposal(1)
+        self.assertEqual(n.queue_kind(queue_entry(v2)), ('run', True))
+        self.assertEqual(n.queue_kind(queue_entry(v1)), ('run', True))
+
+        # Without RepoEditCapabilities, repo-edit cards refuse locally and /decide treats them
+        # as terminal-only while all existing native cards continue normally.
+        for bad_mode, ask_data in (
+                ('no-capability-method', v2),
+                ('bad-capability', v2),
+                ('v1-capability', v2),
+                (None, v1),
+        ):
+            with self.subTest(capability_mode=bad_mode, version=ask_data['run']['repo_edit']['request']['version']):
+                self.native.beads = None
+                self.reset_native(copy.deepcopy(ask_data))
+                self.native.repo_edit_mode = bad_mode
+                result = self.create()
+                self.assertFalse(result['delivered'], result)
+                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+                self.assertEqual((self.sent_count, len(self.documents), self.writes()), (0, 0, []))
+                self.assertIsNone(self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', 7)))
+                self.native.beads = {'sample-1': dict(self.native.bead, asks=[copy.deepcopy(ask_data)])}
+                try:
+                    listed = self.bridge.run_asks.queue()
+                    self.assertFalse(self.bridge.run_asks.showable(listed[0]))
+                    notice, opened = self.bridge.run_asks.decide_open('sample-1', 7, '123')
+                    self.assertIsNone(opened)
+                    self.assertIn('cannot show whole', notice)
+                finally:
+                    self.native.beads = None
+
+        # Existing non-repo-edit run card still sends & approves cleanly when RepoEditCapabilities is absent.
+        self.reset_native(proposal())
+        self.native.repo_edit_mode = 'no-capability-method'
+        self.assertTrue(self.create()['delivered'])
+        self.press()
+        self.assertEqual(self.row()['state'], 'approved')
+
+        # Baseline v1 core capability matches v1 fixture cleanly.
+        self.reset_native(copy.deepcopy(v1))
+        self.native.repo_edit_mode = 'v1-capability'
+        self.assertTrue(self.create()['delivered'])
+        self.assertEqual(len(self.documents), 1)
+        doc_text = self.documents[0][2].decode('utf-8')
+        facts_v1, _, _ = review_parts(doc_text)
+        self.assertIn('Review route: version 1 capture-only (pending carrying; no write)', facts_v1)
+        self.press()
+        self.press('confirm', uid=41)
+        self.assertEqual(self.writes()[-1][0], 'ApproveAsk')
+        self.assertEqual(self.writes()[-1][1]['values'], {
+            'repo_edit_version': '1',
+            'repo_edit_digest': v1['run']['repo_edit']['digest'],
+        })
+
+    def test_native_repo_edit_validation_refuses_mutated_fields(self):
+        base = repo_edit_proposal(2)
+
+        def rehash(ask):
+            payload = ask['run']['repo_edit']
+            payload['digest'] = n.repo_edit.repo_edit_digest(payload)
+            ask['run']['does'] = n.repo_edit.expected_does(payload)
+
+        def mutate_bad_run_key(ask):
+            ask['run']['extra'] = True
+
+        def mutate_bad_digest(ask):
+            ask['run']['repo_edit']['digest'] = '0' * 64
+
+        def mutate_bad_seen(ask):
+            ask['run']['seen'] = {'repo edit': '0' * 64, 'repo binding': ask['run']['repo_edit']['binding']}
+
+        def mutate_bad_author(ask):
+            ask['run']['repo_edit']['author'] = 'Other Author <other@example.invalid>'
+            rehash(ask)
+
+        def mutate_bad_weight(ask):
+            ask['weight'] = []
+
+        def mutate_bad_command(ask):
+            ask['run']['command'] = 'yardr depot edit other'
+
+        def mutate_bad_diff(ask):
+            ask['run']['repo_edit']['files'][0]['diff'] = '--- wrong\n'
+            rehash(ask)
+
+        def mutate_bad_does(ask):
+            ask['run']['does'][-1] = 'Forged does sentence.'
+
+        def mutate_noop_edit(ask):
+            chg = ask['run']['repo_edit']['files'][0]
+            ask['run']['repo_edit']['request']['files'][0]['text'] = chg['old_text']
+            chg['new_text'] = chg['old_text']
+            chg['new_sha256'] = chg['old_sha256']
+            rehash(ask)
+
+        def mutate_secret_path(ask):
+            ask['run']['repo_edit']['request']['files'][1]['path'] = '.env'
+            ask['run']['repo_edit']['files'][1]['path'] = '.env'
+            rehash(ask)
+
+        def mutate_ext_path(ask):
+            ask['run']['repo_edit']['request']['files'][1]['path'] = 'docs/run.sh'
+            ask['run']['repo_edit']['files'][1]['path'] = 'docs/run.sh'
+            rehash(ask)
+
+        def mutate_huge_context(ask):
+            ask['context'] = ['x' * 9000]
+
+        def mutate_v1_with_route(ask):
+            ask['run']['repo_edit']['request']['version'] = 1
+            rehash(ask)
+
+        cases = [
+            ('run_key', mutate_bad_run_key),
+            ('digest', mutate_bad_digest),
+            ('seen', mutate_bad_seen),
+            ('author', mutate_bad_author),
+            ('weight', mutate_bad_weight),
+            ('command', mutate_bad_command),
+            ('diff', mutate_bad_diff),
+            ('does', mutate_bad_does),
+            ('noop', mutate_noop_edit),
+            ('secret_path', mutate_secret_path),
+            ('ext_path', mutate_ext_path),
+            ('context_size', mutate_huge_context),
+            ('v1_route', mutate_v1_with_route),
+        ]
+        for label, mutate in cases:
+            with self.subTest(mutation=label):
+                bad = copy.deepcopy(base)
+                mutate(bad)
+                if label != 'context_size':
+                    self.assertEqual(n.queue_kind(queue_entry(bad)), ('terminal-only run', False), label)
+                self.reset_native(bad)
+                result = self.create()
+                self.assertFalse(result['delivered'], (label, result))
+                self.assertEqual((self.sent_count, len(self.documents), self.writes()), (0, 0, []))
+
+    def test_native_repo_edit_document_card_confirm_and_status_lifecycle(self):
+        v2 = repo_edit_proposal(2)
+        payload = v2['run']['repo_edit']
+        doc_modes = []
+        orig_multipart = self.bridge.request_multipart
+
+        def record_mode(url, fields, field, path, timeout):
+            doc_modes.append(Path(path).stat().st_mode & 0o777)
+            return orig_multipart(url, fields, field, path, timeout)
+
+        self.reset_native(copy.deepcopy(v2))
+        self.native.repo_edit_status['sample-2'] = {
+            'state': 'pending', 'step': 'queued', 'bead': 'sample-2',
+            'depot': 'synthetic', 'operation': payload['request']['operation'], 'digest': payload['digest'],
+        }
+        with patch.object(self.bridge, 'request_multipart', side_effect=record_mode):
+            receipt = self.create()
+        self.assertTrue(receipt['delivered'], receipt)
+        self.assertEqual(doc_modes, [0o600])
+        self.assertEqual(len(self.documents), 1)
+        doc_fields, doc_path, doc_bytes = self.documents[0]
+        doc_text = doc_bytes.decode('utf-8')
+        review_parts(doc_text)
+        self.assertEqual(review_content(doc_text, f'Old UTF-8 text "{payload["files"][0]["path"]}"'), payload['files'][0]['old_text'])
+        self.assertEqual(review_content(doc_text, f'New UTF-8 text "{payload["files"][0]["path"]}"'), payload['files'][0]['new_text'])
+        self.assertEqual(review_content(doc_text, f'Full diff "{payload["files"][0]["path"]}"'), payload['files'][0]['diff'])
+        self.assertEqual(review_content(doc_text, f'New UTF-8 text "{payload["files"][1]["path"]}"'), payload['files'][1]['new_text'])
+        for change in payload['files']:
+            path = change['path']
+            for side, present in (('Old', change['before']), ('New', change['after'])):
+                if present:
+                    self.assertEqual(review_content(doc_text, f'{side} UTF-8 text "{path}"'), change[side.lower() + '_text'])
+            self.assertEqual(review_content(doc_text, f'Full diff "{path}"'), change['diff'])
+            for field in ('old_blob', 'old_mode', 'new_mode', 'old_sha256', 'new_sha256'):
+                if change.get(field):
+                    self.assertIn(n.review_escape(field + ' ' + change[field]), doc_text)
+        self.assertEqual(review_content(doc_text, 'Subject'), payload['request']['subject'])
+        self.assertIn(payload['author'], doc_text)
+        self.assertIn(payload['digest'], doc_text)
+        self.assertIn('rollback', doc_text.lower())
+
+        sends = [body for url, body in self.calls if url.endswith('/sendMessage')]
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0]['reply_parameters']['message_id'], 77)
+        card_text = b.html_visible_text(sends[0]['text'])[0]
+        for expected in ('README.md', 'docs/new.md', 'old-note.txt', payload['digest'],
+                         payload['author'], payload['request']['operation']):
+            self.assertIn(expected, card_text)
+
+        # First tap arms 60s confirm step and writes nothing.
+        self.press()
+        self.assertEqual(self.writes(), [])
+        row = self.row()
+        self.assertIn('nonce', row['pending'])
+        confirm_body = self.edits()[-1]['text']
+        self.assertIn('from review-' + row['proposal'] + '.md', confirm_body)
+
+        # Wrong origin / nonce / typed reply / expired timer write nothing.
+        with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation) as relay:
+            self.reply('7', uid=41)
+            relay.assert_called_once()
+        self.assertEqual(self.row()['state'], 'open')
+        self.assertEqual(self.row()['pending'], row['pending'])
+        self.assertEqual(self.writes(), [])
+        self.press('confirm', uid=42, chat=dict(id=999, type='private'))
+        self.assertEqual(self.writes(), [])
+        clock = [1000]
+        self.reset_native(copy.deepcopy(v2))
+        with patch.object(self.bridge.run_asks, 'now', side_effect=lambda: clock[0]):
+            self.create()
+            self.press(uid=43)
+            clock[0] += 61
+            self.press('confirm', uid=44)
+        self.assertEqual(self.writes(), [])
+        self.assertIsNone(self.row()['pending'])
+
+        # Confirm sends repo_edit_version and repo_edit_digest and relays carrying -> prepared -> reviewed -> landed.
+        self.reset_native(copy.deepcopy(v2))
+        self.native.repo_edit_status['sample-2'] = {
+            'state': 'pending', 'step': 'queued', 'bead': 'sample-2',
+            'depot': 'synthetic', 'operation': payload['request']['operation'], 'digest': payload['digest'],
+        }
+        self.create()
+        self.press(uid=45)
+        self.press('confirm', uid=46)
+        self.assertEqual(self.writes()[-1][1]['values'], {
+            'repo_edit_version': '2',
+            'repo_edit_digest': payload['digest'],
+        })
+        self.assertTrue(self.writes()[-1][1]['weighed'])
+        self.assertEqual(self.row()['state'], 'carrying')
+        self.assertIn('reserved held bead sample-2', self.edits()[-1]['text'])
+
+        self.native.ask['ran'] = dict(
+            argv=v2['run']['argv'],
+            result='prepared sample-2 as commit abcdef123456 on branch yard/sample-2 in worktree /tmp/wt; released to review for review',
+        )
+        self.native.repo_edit_status['sample-2'] = {
+            'state': 'prepared', 'step': 'done', 'bead': 'sample-2',
+            'depot': 'synthetic', 'operation': payload['request']['operation'], 'digest': payload['digest'],
+            'head': 'abcdef123456', 'branch': 'yard/sample-2',
+        }
+        self.bridge.run_asks.refresh()
+        self.assertIn('not landed or installed', self.edits()[-1]['text'])
+        self.assertIn('branch yard/sample-2', self.edits()[-1]['text'])
+
+        self.native.repo_edit_status['sample-2']['state'] = 'reviewed'
+        self.bridge.run_asks.refresh()
+        self.assertIn('in assembly (reviewed; not landed or installed)', self.edits()[-1]['text'])
+
+        self.native.repo_edit_status['sample-2'].update(state='landed', landed='fedcba654321')
+        self.bridge.run_asks.refresh()
+        self.assertIn('source landed; not installed or live', self.edits()[-1]['text'])
+        self.assertTrue(self.row()['native_edit_terminal'])
+        calls_before = len([c for c in self.native.calls if c[0] == 'NativeEditStatus'])
+        self.bridge.run_asks.refresh()
+        calls_after = len([c for c in self.native.calls if c[0] == 'NativeEditStatus'])
+        self.assertEqual(calls_before, calls_after)
+
+        # Mismatched NativeEditStatus fails closed in decide_closed.
+        self.native.repo_edit_status['sample-2']['digest'] = 'f' * 64
+        with self.assertRaises(n.NativeError):
+            self.bridge.run_asks.decide_closed('sample-1', 7)
+        self.native.repo_edit_status['sample-2']['digest'] = payload['digest']
+        for field, value in (('state', []), ('state', {}), ('state', 'unknown'), ('step', []), ('extra', 'future')):
+            with self.subTest(status_field=field, value=value):
+                original_status = copy.deepcopy(self.native.repo_edit_status['sample-2'])
+                self.native.repo_edit_status['sample-2'][field] = value
+                try:
+                    with self.assertRaises(n.NativeError):
+                        self.bridge.run_asks.decide_closed('sample-1', 7)
+                finally:
+                    self.native.repo_edit_status['sample-2'] = original_status
+        self.assertIn('source landed; not installed or live', self.bridge.run_asks.decide_closed('sample-1', 7))
+
+        # Stale core refusal on ApproveAsk retires the card as stale repo edit.
+        self.reset_native(copy.deepcopy(v2))
+        self.create()
+        self.press(uid=47)
+        self.native.mode = 'stale'
+        self.native.stale = 'ask 7: repo edit changed; capture a new proposal, nothing ran'
+        self.press('confirm', uid=48)
+        self.assertEqual(self.row()['state'], 'stale')
+        self.assertIn('Stale repo edit proposal; nothing ran.', self.edits()[-1]['text'])
+
+        # /decide opens into a City topic thread too.
+        self.reset_native(copy.deepcopy(v2))
+        self.store.record_topic('ops', 12, 'created')
+        self.native.beads = {'sample-1': dict(self.native.bead, asks=[copy.deepcopy(v2)])}
+        notice, opened = self.bridge.run_asks.decide_open('sample-1', 7, '123:topic:12')
+        self.assertIsNone(notice)
+        self.assertEqual(opened[1], '123:topic:12')
+        topic_send = [body for url, body in self.calls if url.endswith('/sendMessage')][-1]
+        self.assertEqual(topic_send['message_thread_id'], 12)
 
 
 class NativeSettingsTests(unittest.TestCase):
@@ -8387,8 +8740,6 @@ class RealNativeTests(BridgeTestCase):
         root = Path(self.tmp.name)
         server, home, command, env = testyardr.start(root, binary)
         try:
-            if not testyardr.aligned(home):
-                self.skipTest('set TGBRIDGE_TEST_YARDR to an aligned or upstream yardr build')
             client, cli, _ = self.exercise_source_limit_and_trust(binary, root, home, command, env)
             self.exercise_source_adds(root, home, cli, client)
             self.exercise_source_packs(root, home, cli, client, command, env)
@@ -9997,8 +10348,6 @@ class RealNativeTests(BridgeTestCase):
         root = Path(self.tmp.name)
         server, home, command, env = testyardr.start(root, binary)
         try:
-            if not testyardr.aligned(home):
-                self.skipTest('set TGBRIDGE_TEST_YARDR to an aligned or upstream yardr build')
             client = n.YardSocketClient(home, 'tgbridge')
 
             def cli(*args, actor='pat', ok=True):
@@ -10173,5 +10522,476 @@ class RealNativeTests(BridgeTestCase):
             press(row, 'decline')
             self.assertEqual(current(declined['ask'])['state'], 'declined')
             self.assertEqual((group('reviewers'), writes('reviewers')), (None, 0))
+        finally:
+            testyardr.stop(server)
+
+    def test_real_native_repo_edit_end_to_end_and_boundaries(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr binary required for isolated native integration')
+        root = Path(self.tmp.name)
+        server, home, command, env = testyardr.start(root, binary)
+        try:
+            client, cli, _ = self.exercise_source_limit_and_trust(binary, root, home, command, env)
+            if not testyardr.serves(home, 'RepoEditCapabilities'):
+                with self.assertRaises(n.RPCUnsupported):
+                    client.call('RepoEditCapabilities', {})
+                self.bridge.run_asks = n.RunAsks(self.bridge)
+                v2_refused = self.bridge.api_run_ask(dict(bead='sample-1', ask=1, key='public-core-ok'))
+                self.assertTrue(v2_refused['delivered'], v2_refused)
+                bad = copy.deepcopy(repo_edit_proposal(2))
+                with patch.object(self.bridge.run_asks, 'fetch', return_value=(dict(id='sample-1', title='Synthetic'), bad)):
+                    rejected = self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='no-cap-refuse'))
+                self.assertFalse(rejected['delivered'])
+                self.assertTrue(rejected['reason'].endswith(n.FALLBACK), rejected)
+                self.skipTest('core serves no RepoEditCapabilities')
+
+            cap = client.call('RepoEditCapabilities', {})
+            version = cap['version']
+            self.assertIn(version, (1, 2))
+            self.assertIs(cap['materialize'], version == 2)
+
+            depot = root / 'depot'
+            depot.mkdir()
+            for args in (['init', '-q', '-b', 'main', str(depot)],):
+                subprocess.run(['git', *args], env=env, check=True, capture_output=True)
+            (depot / 'README.md').write_text('Old guide <alpha> & "beta".\nline two\n')
+            (depot / 'remove.txt').write_text('Retire me\r\n')
+            (depot / 'keep.md').write_text('unchanged\n')
+            yardr_dir = depot / '.yardr'
+            yardr_dir.mkdir()
+            test_log = root / 'test-env.log'
+            test_script = yardr_dir / 'test'
+            test_script.write_text(
+                f'#!/bin/sh\nset -eu\nprintf "base=%s landing=%s\\n" "${{YARDR_BASE-unset}}" "${{YARDR_LANDING-unset}}" >> "{test_log}"\ntest ! -f fail.txt\n'
+            )
+            test_script.chmod(0o755)
+            for args in (
+                ['-C', str(depot), 'add', '.'],
+                ['-C', str(depot), '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid',
+                 'commit', '-q', '-m', 'Initial commit'],
+            ):
+                subprocess.run(['git', *args], env=env, check=True, capture_output=True)
+
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            landed_log = root / 'landed.log'
+            merge_local = bin_dir / 'merge-local'
+            merge_local.write_text(
+                '#!/bin/sh\nset -eu\n'
+                f'BIN="{binary}"\n'
+                'BASE=$(git -C "$YARDR_DEPOT_PATH" rev-parse "$YARDR_BASE")\n'
+                'HEAD=$(git -C "$YARDR_DEPOT_PATH" rev-parse "$YARDR_BRANCH")\n'
+                '"$BIN" --home "$YARDR_HOME" --actor pat depot edit verify "$YARDR_BEAD" --base "$BASE" --head "$HEAD" --test "$YARDR_TEST"\n'
+                'YARDR_LANDING=1 sh -c "$YARDR_TEST"\n'
+                '"$BIN" --home "$YARDR_HOME" --actor pat depot edit verify "$YARDR_BEAD" --base "$BASE" --head "$HEAD" --test "$YARDR_TEST"\n'
+                'git -C "$YARDR_DEPOT_PATH" merge --ff-only "$YARDR_BRANCH"\n'
+                '"$BIN" --home "$YARDR_HOME" --actor pat bead advance "$YARDR_BEAD" --to merged --note "landed $HEAD"\n'
+                f'printf "landed=%s\\n" "$HEAD" >> "{landed_log}"\n'
+            )
+            merge_local.chmod(0o755)
+
+            cli('depot', 'add', 'synthetic', str(depot), '--base', 'main', '--test', '.yardr/test')
+            cli('bead', 'create', 'Repository edit approvals', '--id', 'sample-2', '--depot', 'synthetic')
+            for g in ('builders', 'reviewers', 'experts'):
+                cli('group', 'add', g, '--runner', 'herdr', '--set', 'kind=codex')
+            cli('group', 'add', 'assembly', '--runner', 'exec', '--set', f'cmd={merge_local}')
+            cli('group', 'add', 'decisions', '--runner', 'manual')
+            flow_file = root / 'native.flow'
+            flow_file.write_text(
+                'backlog -> new | decide\n'
+                'new -> review on done | decide on question | backlog\n'
+                'review -> review-expert on done | review-expert on changes | approved on done-safe\n'
+                'review-expert -> approved on done | repair on changes | decide on question\n'
+                'repair -> review-expert on done | decide on question\n'
+                'approved -> merged on done | decide on failed\n'
+                'decide -> backlog | new | repair | review-expert | approved\n'
+                'merged terminal\n'
+            )
+            cli('flow', 'set', 'native', '-f', str(flow_file))
+            cli('depot', 'flow', 'synthetic', 'native')
+            for stage, grp in (('backlog', 'decisions'), ('new', 'builders'), ('review', 'reviewers'),
+                               ('review-expert', 'experts'), ('repair', 'builders'),
+                               ('approved', 'assembly'), ('decide', 'decisions')):
+                cli('route', 'add', '--stage', stage, '--depot', 'synthetic', '--group', grp)
+
+            self.config.update(topics=(dict(name='ops', agent='yardmaster'),))
+            self.bridge.topic_settings = self.config['topics']
+            self.store.record_topic('ops', 12, 'created')
+            clock = [1000]
+
+            def reload_run_asks():
+                self.bridge.run_asks = n.RunAsks(self.bridge, now=lambda: clock[0])
+
+            reload_run_asks()
+            updates = iter(range(90000, 91000))
+
+            def poll(batch):
+                telegram = self.bridge.telegram
+                def fetched(method, body, timeout=15):
+                    return (200, dict(ok=True, result=batch)) if method == 'getUpdates' else telegram(method, body, timeout)
+                with patch.object(self.bridge, 'telegram', side_effect=fetched):
+                    self.bridge.poll_once()
+
+            def propose(op, files, subject='docs: Update repository text'):
+                head = subprocess.check_output(['git', '-C', str(depot), 'rev-parse', 'HEAD'], text=True).strip()
+                spec = dict(version=version, depot='synthetic', base_ref='main', base_commit=head,
+                            operation=op, subject=subject, files=files)
+                spec_path = root / f'{op}.json'
+                spec_path.write_text(json.dumps(spec))
+                r = subprocess.run([binary, '--home', str(home), '--actor', 'proposer', 'depot', 'edit', 'synthetic',
+                                    '--proposal', str(spec_path), '--bead', 'sample-2', '--to', 'pat',
+                                    '--context', f'Synthetic {op}'], env=env, cwd=root, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                return client.call('Bead', dict(bead='sample-2', viewer='pat'))['asks'][-1]
+
+            def current(ask_no):
+                return next(a for a in client.call('Bead', dict(bead='sample-2', viewer='pat'))['asks'] if a['ask'] == ask_no)
+
+            def open_beads():
+                return json.loads(cli('bead', 'list', '--json'))
+
+            def event(row, action='approve', uid=None, thread=12, sender=None, **changes):
+                if action == 'confirm':
+                    action += ':' + self.bridge.run_asks.get(row['id'])['pending']['nonce']
+                message = dict(message_id=row['message_id'], chat=dict(id=123, type='private'),
+                               message_thread_id=thread, is_topic_message=True,
+                               **{'from': dict(id=999, is_bot=True)})
+                message.update(changes)
+                if thread is None:
+                    message.pop('message_thread_id')
+                    message.pop('is_topic_message')
+                return dict(update_id=next(updates) if uid is None else uid, callback_query=dict(
+                    id='cb-' + str(next(updates)), data=f"runask:{row['id']}:{action}",
+                    message=message, **{'from': sender or dict(id=123, is_bot=False)}))
+
+            def press(row, action='approve', **changes):
+                update = event(row, action, **changes)
+                poll([update])
+                return update
+
+            # Exercise the checked-in run_ask declaration through the real source HTTP path.
+            import yaml
+            with patch.dict(os.environ, env, clear=True):
+                port = self.start_callback_server()
+            declaration = yaml.safe_load((Path(__file__).resolve().parents[1] / 'yardr/tgbridge.yaml').read_text())
+            source = root / 'native-bridge.yaml'
+            source.write_text(yaml.safe_dump(dict(name='tgbridge', base=f'http://127.0.0.1:{port}',
+                credential=dict(env='TGBRIDGE_SECRET', header='Authorization: Bearer {credential}'),
+                calls={'run_ask': declaration['calls']['run_ask']})))
+            credential = root / 'native-bridge.env'
+            credential.write_text('TGBRIDGE_SECRET=CAPABILITY\n')
+            credential.chmod(0o600)
+            cli('source', 'add', str(source))
+            cli('source', 'set', 'tgbridge', 'env_file=' + str(credential))
+            cli('source', 'set', 'tgbridge', 'calls_per_hour=600')
+            cli('source', 'set', 'tgbridge', 'updates_per_hour=600')
+
+            def publish(ask, key, topic=True):
+                args = ['bead=sample-2', 'ask=' + str(ask['ask']), 'key=' + key]
+                if topic:
+                    args.append('topic=ops')
+                return json.loads(cli('call', 'tgbridge', 'run_ask', *args, '--json'))
+
+            head_readme = subprocess.check_output(['git', '-C', str(depot), 'rev-parse', 'HEAD:README.md'], text=True).strip()
+            head_remove = subprocess.check_output(['git', '-C', str(depot), 'rev-parse', 'HEAD:remove.txt'], text=True).strip()
+            files_edit = [
+                {'path': 'README.md', 'blob': head_readme, 'mode': '100644',
+                 'text': 'New guide <α雪🙂> & "beta".\nno trailing lf'},
+                {'path': 'docs/new.md', 'absent': True, 'text': 'Created note\nSecond line\n'},
+                {'path': 'remove.txt', 'blob': head_remove, 'mode': '100644', 'delete': True, 'text': ''},
+            ]
+
+            # 1. /decide lists and opens a repo_edit card into a City topic, delivering 1 document + 1 bound card.
+            main_ask = propose('op-main', files_edit)
+            queue_entries = self.bridge.run_asks.queue()
+            entry = next(e for e in queue_entries if e['bead'] == 'sample-2' and e['ask'] == main_ask['ask'])
+            self.assertTrue(self.bridge.run_asks.showable(entry))
+            before_docs = len(self.documents)
+            notice, opened = self.bridge.run_asks.decide_open('sample-2', main_ask['ask'], '123:topic:12')
+            self.assertIsNone(notice)
+            self.assertEqual(opened[1], '123:topic:12')
+            self.assertEqual(len(self.documents), before_docs + 1)
+            doc_text = self.documents[-1][2].decode('utf-8')
+            review_parts(doc_text)
+            self.assertEqual(review_content(doc_text, 'New UTF-8 text "README.md"'), files_edit[0]['text'])
+            row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', main_ask['ask']))
+            self.assertEqual(row['conversation'], '123:topic:12')
+
+            # Approve arms 60s Confirm without creating any bead or commit; expired confirm and wrong topic write nothing.
+            beads_before = len(open_beads())
+            press(row, 'approve')
+            self.assertEqual(len(open_beads()), beads_before)
+            self.assertEqual(current(main_ask['ask'])['state'], 'open')
+            press(row, 'confirm', thread=99)
+            self.assertEqual(current(main_ask['ask'])['state'], 'open')
+            clock[0] += 61
+            press(row, 'confirm')
+            self.assertIsNone(self.bridge.run_asks.get(row['id'])['pending'])
+            self.assertEqual(current(main_ask['ask'])['state'], 'open')
+
+            # V1 core path: confirm writes capture-only answer with repo_edit_version='1' and skips v2 materialization.
+            if version == 1:
+                press(row, 'approve')
+                press(row, 'confirm')
+                self.assertEqual(current(main_ask['ask'])['state'], 'answered')
+                self.assertEqual(len(open_beads()), beads_before)
+                self.skipTest('v1 capture-only core (materialize=false); v2 materialization skipped')
+
+            # Bound identities and native ownership are checked even with a live confirmation.
+            press(row, 'confirm:' + '0' * 16)
+            press(row, 'approve')
+            for changes in (dict(message_id=row['message_id'] + 1),
+                            dict(chat=dict(id=456, type='private')),
+                            {'from': dict(id=998, is_bot=True)},
+                            dict(sender=dict(id=456, is_bot=False)),
+                            dict(forward_date=123), dict(thread=99)):
+                press(row, 'confirm', **changes)
+                self.assertEqual(current(main_ask['ask'])['state'], 'open')
+                self.assertEqual(len(open_beads()), beads_before)
+            with patch.object(self.bridge, '_relay', return_value=self.bridge.conversation):
+                for words in ('7', 'approve', 'confirm'):
+                    poll([dict(update_id=next(updates), message=dict(message_id=next(updates), text=words,
+                        chat=dict(id=123, type='private'), message_thread_id=12, is_topic_message=True,
+                        reply_to_message=dict(message_id=row['message_id'], **{'from': dict(id=999, is_bot=True)}),
+                        **{'from': dict(id=123, is_bot=False)}))])
+            self.assertEqual(current(main_ask['ask'])['state'], 'open')
+            original_home = self.config['yardr_home']
+            self.config['yardr_home'] = str(root / 'missing-yard')
+            try:
+                reload_run_asks()
+                press(row, 'confirm')
+                self.assertEqual(current(main_ask['ask'])['state'], 'open')
+            finally:
+                self.config['yardr_home'] = original_home
+                reload_run_asks()
+            self.assertEqual(len(open_beads()), beads_before)
+
+            # A title/card drift and dirty captured file each refuse the existing card.
+            cli('bead', 'update', 'sample-2', '--title', 'Changed proposal owner title')
+            press(row, 'confirm')
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
+            file_ask = propose('op-file-drift', files_edit)
+            self.assertTrue(publish(file_ask, 'key-file')['delivered'])
+            file_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', file_ask['ask']))
+            press(file_row, 'approve')
+            before = (depot / 'README.md').read_bytes()
+            try:
+                (depot / 'README.md').write_text('Unapproved dirty file\n')
+                press(file_row, 'confirm')
+                self.assertEqual(current(file_ask['ask'])['state'], 'open')
+                self.assertEqual(len(open_beads()), beads_before)
+            finally:
+                (depot / 'README.md').write_bytes(before)
+
+            # Uncertain sends remain reserved through restart, with no working controls.
+            for phase in ('document', 'card'):
+                with self.subTest(native_uncertain_delivery=phase):
+                    ask = propose('op-uncertain-' + phase, files_edit)
+                    key = 'key-uncertain-' + phase
+                    sends_before = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+                    def unknown(*args, **kwargs):
+                        raise b.RequestUnconfirmed('synthetic uncertain send')
+                    if phase == 'document':
+                        with patch.object(self.bridge, 'request_multipart', side_effect=unknown):
+                            self.assertFalse(publish(ask, key)['delivered'])
+                    else:
+                        request = self.bridge.request
+                        def unknown_card(url, body, *args, **kwargs):
+                            if url.endswith('/sendMessage'):
+                                return unknown()
+                            return request(url, body, *args, **kwargs)
+                        with patch.object(self.bridge, 'request', side_effect=unknown_card):
+                            self.assertFalse(publish(ask, key)['delivered'])
+                    reload_run_asks()
+                    self.assertFalse(publish(ask, key)['delivered'])
+                    blocked = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', ask['ask']))
+                    self.assertIsNone(blocked['message_id'])
+                    self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends_before)
+                    self.assertEqual(current(ask['ask'])['state'], 'open')
+                    self.assertEqual(len(open_beads()), beads_before)
+
+            # A card receipt can commit before the native row; restart reuses that receipt.
+            crash_ask = propose('op-card-crash', files_edit)
+            save = self.bridge.run_asks.save
+            def crash_after_card(value):
+                if value['ask'] == crash_ask['ask'] and value['message_id'] is not None:
+                    raise RuntimeError('synthetic crash after card receipt')
+                save(value)
+            with patch.object(self.bridge.run_asks, 'save', side_effect=crash_after_card):
+                with self.assertRaises(RuntimeError):
+                    self.bridge.api_run_ask(dict(bead='sample-2', ask=crash_ask['ask'], key='key-card-crash'))
+            sent = len(self.calls), len(self.documents)
+            reload_run_asks()
+            self.assertTrue(publish(crash_ask, 'key-card-crash', topic=False)['delivered'])
+            self.assertEqual((len(self.calls), len(self.documents)), sent)
+            crash_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', crash_ask['ask']))
+            press(crash_row, 'decline', thread=None)
+            self.assertEqual(current(crash_ask['ask'])['state'], 'declined')
+            collision = publish(file_ask, 'key-card-crash', topic=False)
+            self.assertFalse(collision['delivered'])
+            self.assertEqual(collision['reason'], 'idempotency_key_conflict')
+
+            # 2. Stale drift (base advance after card) refuses Confirm cleanly with zero patch beads created.
+            stale_ask = propose('op-stale', [{'path': 'docs/stale.md', 'absent': True, 'text': 'stale\n'}],
+                                subject='docs: Stale test')
+            r_stale = self.bridge.api_run_ask(dict(bead='sample-2', ask=stale_ask['ask'], key='key-stale', topic='ops'))
+            self.assertTrue(r_stale['delivered'])
+            stale_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', stale_ask['ask']))
+            (depot / 'keep.md').write_text('moved base\n')
+            subprocess.run(['git', '-C', str(depot), 'add', 'keep.md'], env=env, check=True, capture_output=True)
+            subprocess.run(['git', '-C', str(depot), '-c', 'user.name=S', '-c', 'user.email=s@e.invalid',
+                            'commit', '-q', '-m', 'Advance base'], env=env, check=True, capture_output=True)
+            press(stale_row, 'approve')
+            press(stale_row, 'confirm')
+            self.assertEqual(self.bridge.run_asks.get(stale_row['id'])['state'], 'stale')
+            self.assertEqual(len(open_beads()), beads_before)
+
+            # Refresh main_ask on the new base (since base moved!) and test Decline + Crash/Replay + Full Land.
+            dec_ask = propose('op-decline', [{'path': 'docs/decl.md', 'absent': True, 'text': 'declined\n'}],
+                              subject='docs: Declined edit')
+            self.assertTrue(publish(dec_ask, 'key-dec')['delivered'])
+            press(self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', dec_ask['ask'])), 'decline')
+            self.assertEqual(current(dec_ask['ask'])['state'], 'declined')
+            self.assertEqual(len(open_beads()), beads_before)
+
+            # Crash after document delivery before card send -> restart -> idempotent replay reuses doc without double-send.
+            final_ask = propose('op-final', [
+                {'path': 'README.md', 'blob': head_readme, 'mode': '100644', 'text': files_edit[0]['text']},
+                {'path': 'docs/new.md', 'absent': True, 'text': files_edit[1]['text']},
+                {'path': 'remove.txt', 'blob': head_remove, 'mode': '100644', 'delete': True, 'text': ''},
+            ], subject='docs: Final materialized edit')
+            orig_reserve = self.bridge._reserve_and_deliver
+            def crash_before_card_send(delivery_key, identity, send_fn):
+                if delivery_key.endswith(':send'):
+                    raise RuntimeError('simulated crash after document send, before card reserve')
+                return orig_reserve(delivery_key, identity, send_fn)
+            docs_before = len(self.documents)
+            with patch.object(self.bridge, '_reserve_and_deliver', side_effect=crash_before_card_send):
+                with self.assertRaises(RuntimeError):
+                    self.bridge.api_run_ask(dict(bead='sample-2', ask=final_ask['ask'], key='key-final', topic='ops'))
+            self.assertEqual(len(self.documents), docs_before + 1)
+            reload_run_asks()
+            replay = self.bridge.api_run_ask(dict(bead='sample-2', ask=final_ask['ask'], key='key-final', topic='ops'))
+            self.assertTrue(replay['delivered'], replay)
+            self.assertEqual(len(self.documents), docs_before + 1)
+            final_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', final_ask['ask']))
+
+            # Lost ApproveAsk reply simulation -> restart / poll reconciles canonical bead with AT MOST ONE patch bead.
+            press(final_row, 'approve')
+            real_call = self.bridge.run_asks.client.call
+            def drop_approve_reply(method, args):
+                value = real_call(method, args)
+                if method == 'ApproveAsk':
+                    raise n.RPCAmbiguous('simulated lost reply after commit')
+                return value
+            with patch.object(self.bridge.run_asks.client, 'call', side_effect=drop_approve_reply):
+                press(final_row, 'confirm')
+            # Restart both store server and bridge after the committed approval reply is lost.
+            testyardr.stop(server)
+            server = testyardr.restart(root, binary, home, command, env)
+            reload_run_asks()
+            poll([])
+            final_row = self.bridge.run_asks.get(final_row['id'])
+            reserved = final_row.get('native_bead')
+            self.assertTrue(reserved, final_row)
+            self.assertEqual(len([b_item for b_item in open_beads() if b_item['id'] == reserved]), 1)
+
+            # Wait for real server carry to prepare commit + run .yardr/test + release bead to review.
+            deadline = time.monotonic() + 25
+            prepared_status = None
+            while time.monotonic() < deadline:
+                poll([])
+                st = self.bridge.run_asks.get(final_row['id']).get('native_edit_status', {})
+                if st.get('state') == 'prepared':
+                    prepared_status = st
+                    break
+                time.sleep(0.1)
+            self.assertIsNotNone(prepared_status, 'server carry did not prepare commit in time')
+            self.assertEqual(prepared_status['depot'], 'synthetic')
+            edits = [body for url, body in self.calls if url.endswith('/editMessageText')]
+            self.assertIn('not landed or installed', edits[-1]['text'])
+            commit_author = subprocess.check_output(
+                ['git', '-C', str(depot), 'show', '-s', '--format=%an <%ae>', prepared_status['branch']], text=True).strip()
+            commit_msg = subprocess.check_output(
+                ['git', '-C', str(depot), 'show', '-s', '--format=%B', prepared_status['branch']], text=True).strip()
+            self.assertEqual(commit_author, n.repo_edit.AUTHOR_IDENTITY)
+            self.assertEqual(commit_msg, 'docs: Final materialized edit')
+            self.assertIn(f"base={final_ask['run']['repo_edit']['head']} landing=unset", test_log.read_text())
+
+            # Review advances through its configured stages before normal assembly dispatch.
+            cli('bead', 'done', reserved)
+            self.assertEqual(client.call('Bead', dict(bead=reserved, viewer='pat'))['stage'], 'review-expert')
+            cli('bead', 'done', reserved)
+            self.assertEqual(client.call('Bead', dict(bead=reserved, viewer='pat'))['stage'], 'approved')
+            daemon_proc = subprocess.Popen(command + ['daemon', '--interval', '200ms'], env=env, cwd=root,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 25
+                landed_status = None
+                while time.monotonic() < deadline:
+                    poll([])
+                    st = self.bridge.run_asks.get(final_row['id']).get('native_edit_status', {})
+                    if st.get('state') == 'landed':
+                        landed_status = st
+                        break
+                    time.sleep(0.1)
+            finally:
+                testyardr.stop(daemon_proc)
+            self.assertIsNotNone(landed_status, f"assembly merge-local did not land commit in time; status={client.call('NativeEditStatus', [reserved])}; show={cli('bead', 'show', reserved)}")
+            edits = [body for url, body in self.calls if url.endswith('/editMessageText')]
+            self.assertIn('source landed; not installed or live', edits[-1]['text'])
+            self.assertEqual((depot / 'README.md').read_text(), files_edit[0]['text'])
+            self.assertEqual((depot / 'docs/new.md').read_text(), files_edit[1]['text'])
+            self.assertFalse((depot / 'remove.txt').exists())
+            self.assertIn('landing=1', test_log.read_text())
+            self.assertTrue(landed_log.exists())
+            self.assertEqual((depot / 'keep.md').read_bytes(), b'moved base\n')
+            self.assertEqual(subprocess.check_output(['git', '-C', str(depot), 'rev-parse', 'HEAD'], text=True).strip(), prepared_status['head'])
+            replay_before = len(open_beads())
+            press(final_row, 'approve')
+            self.assertEqual(len(open_beads()), replay_before)
+
+            collision_spec = dict(version=version, depot='synthetic', base_ref='main',
+                base_commit=prepared_status['head'], operation='op-final', subject='docs: Different edit',
+                files=[dict(path='collision.txt', absent=True, text='Other bytes\n')])
+            collision_path = root / 'collision.json'
+            collision_path.write_text(json.dumps(collision_spec))
+            before_collision = client.call('Head', [])
+            result = subprocess.run([*command, 'depot', 'edit', 'synthetic', '--proposal', str(collision_path),
+                '--bead', 'sample-2', '--to', 'pat', '--context', 'Synthetic operation collision'],
+                cwd=root, env=env, capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('operation', result.stderr)
+            self.assertEqual(client.call('Head', []), before_collision)
+            self.assertEqual(len(open_beads()), replay_before)
+
+            # A test failure is reported canonically and survives another full restart without a second bead.
+            failed_ask = propose('op-test-failed', [dict(path='fail.txt', absent=True, text='Synthetic failure\n')])
+            self.assertTrue(publish(failed_ask, 'key-test-failed')['delivered'])
+            failed_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', failed_ask['ask']))
+            press(failed_row, 'approve')
+            press(failed_row, 'confirm')
+            failed_bead = self.bridge.run_asks.get(failed_row['id'])['native_bead']
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                poll([])
+                failed_status = self.bridge.run_asks.get(failed_row['id']).get('native_edit_status', {})
+                if failed_status.get('state') in ('failed', 'held'):
+                    break
+                time.sleep(.1)
+            self.assertIn(failed_status.get('state'), ('failed', 'held'))
+            self.assertIn('approved, failed', self.bridge.run_asks.get(failed_row['id'])['display']['footer'])
+            self.assertFalse((depot / 'fail.txt').exists())
+            self.assertEqual(len(open_beads()), replay_before + 1)
+            testyardr.stop(server)
+            server = testyardr.restart(root, binary, home, command, env)
+            reload_run_asks()
+            poll([])
+            self.assertEqual(client.call('NativeEditStatus', [failed_bead]), failed_status)
+            self.assertEqual(len(open_beads()), replay_before + 1)
+            print(f'Native repo_edit v{version}: declaration run_ask, /decide, private/topic routing, '
+                  'binding refusals, base/file/card drift, delivery and RPC crashes, replay/collision, '
+                  'core+ledger restart, exact commit/test/review/assembly landing and failed-test status verified')
         finally:
             testyardr.stop(server)

@@ -51,7 +51,7 @@ class PublicReadinessTests(unittest.TestCase):
         # The reviewed synthetic captures pass only as these exact bytes at their pinned paths.
         images = Path(__file__).resolve().parents[2] / 'docs/images'
         (self.repo / 'docs/images').mkdir(parents=True)
-        for name in ('native-card-confirmation.png', 'review-bundle.png'):
+        for name in ('native-card-confirmation.png', 'native-repo-edit.png', 'review-bundle.png'):
             (self.repo / 'docs/images' / name).write_bytes((images / name).read_bytes())
         self.commit()
         target = self.root / 'review'
@@ -62,13 +62,14 @@ class PublicReadinessTests(unittest.TestCase):
         manifest = json.loads((target / 'manifest.json').read_text())
         self.assertEqual(manifest['commit'], self.git('rev-parse', 'HEAD'))
         self.assertEqual(manifest['tree'], self.git('rev-parse', 'HEAD^{tree}'))
-        self.assertEqual(summary['files'], 6)
+        self.assertEqual(summary['files'], 7)
         archive = target / manifest['archive']
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), manifest['archive_sha256'])
         with tarfile.open(archive) as tar:
             self.assertEqual(sorted(tar.getnames()), ['LICENSE', 'README.md', 'bridge', 'bridge/test_bridge.py',
                                                      'docs', 'docs/images',
                                                      'docs/images/native-card-confirmation.png',
+                                                     'docs/images/native-repo-edit.png',
                                                      'docs/images/review-bundle.png', 'helper'])
             for entry in manifest['files']:
                 content = (self.repo / entry['path']).read_bytes()

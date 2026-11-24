@@ -258,6 +258,7 @@ normal use through the declared source requires its application first.
 | `/quota`, `/switch_model` (`/mayor_model` migration alias) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1` (`crew switch capabilities --json`), not present on `52e22d57` (refuses before mutation) | `/quota` PASS [F]; `/switch_model` requires `crew_handoff_switch v1`, not present on `v0.17.0` | `/switch_model` verified on landed core `bd7f54b4` (`NativeSwitchTests` [F], `crew_handoff_switch v1`); local core is not a public release; resolve/supersede pending switches before core downgrade |
 | skill add, crew/group skills= | Unsupported; skill card refuses whole, /decide terminal-only [G] | Unsupported [G] | Fork-only: direct `skill add` (operator, users, crew; no card/grant) |
 | [Skill removal and assignment cards](../bridge/OPERATIONS.md#native-skill-administration-cards) | Unavailable: no `SkillDigest`, filing refused; test skips classified [I] | Unavailable [I] | Fork-only skill cores `5dedfc56`, `9677728c`, `29fcd40d` (not installed); same `run_ask`; operator Approve+Confirm |
+| [Repository edit proposals (`depot edit`)](../bridge/OPERATIONS.md#native-repository-edit-proposals) | Unavailable: no `RepoEditCapabilities`; card refuses cleanly, `/decide` lists terminal-only; existing cards unaffected; test skips classified [L] | Unavailable [L] | Fork-only core contract (`RepoEditCapabilities`, `depot edit`, `NativeEditStatus`): v1 capture-only tested on `e50e27b0`, v2 materialization + `merge-local` landing verified on isolated candidate `d5296bea` (not installed or live); same `run_ask`; operator Approve+Confirm |
 | [The yard's nudge cards](../bridge/OPERATIONS.md#the-yards-nudge-cards) | Absent: no nudge row, the yard files no card; none sent, nothing logged [J] | Not tested | Optional local core feature (yard-filed `session nudge` run ask, `session_nudged`) until upstream accepts the row; local core `9174cd60` (not installed); same run card, operator Approve; no grant |
 | [Read and done reactions](../bridge/OPERATIONS.md#read-and-done-from-the-yard) | Native PASS (`RealReadStateTests`, `ReadStateTests`) [K] | Not tested (covered on upstream `d4df23f3` and installed `e50e27b0`) | Read-only socket reads (`GetCrew`, `EventsSince`, `Events`); requires `[reactions] read` and `[yardr] home`; degrades off on missing/unsupported responses |
 | [Unread nudge offer](../bridge/OPERATIONS.md#read-and-done-from-the-yard) | Off cleanly on `079be513` (0 cards, 0 writes) [K] | Not tested | Optional `[reactions] nudge_after` + built-in `/nudge` + `NudgeSession` (verified on `e50e27b0`); probes once and caches `RPCUnsupported` |
@@ -309,6 +310,15 @@ RPC/store where stated):
   accept point `seq`, duplicate delivery, `yardr inbox --ack`, `yardr reply`,
   `react` overrides, `/v1/send` `reply_to`, typing preservation, restart key replay,
   racing `react done`, 24 h expiry, unread Nudge offer cards, and degrade paths.
+- [L] [bridge/test_run_asks.py](../bridge/test_run_asks.py),
+  `NativeTests.test_native_repo_edit_*` (capability probe, Go-compatible digest,
+  strict schema/path/diff/does validation, 0600 document, 60s Confirm gate,
+  `NativeEditStatus` lifecycle) and
+  `RealNativeTests.test_real_native_repo_edit_end_to_end_and_boundaries`
+  (skips cleanly without `RepoEditCapabilities`; verifies v1 capture-only on
+  `e50e27b0` and full v2 carry/`merge-local` landing on isolated candidate
+  `d5296bea`), including checked-in declaration transport, production poll order,
+  delivery/RPC failures, both core and bridge restart, and failed preparation.
 
 Long polling, topics, buttons/menu/add-ons, typing, media, silent replies and
 optional local transcription are bridge features covered by its offline

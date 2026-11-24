@@ -170,6 +170,65 @@ def bundle_cards(source=False, pack=False):
     return cards
 
 
+def repo_edit_cards():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
+    from test_run_asks import NativeTests, repo_edit_proposal
+    case = NativeTests()
+    case.setUp()
+    case.config['yard'] = 'example'
+    cards = []
+
+    def capture(label, body, group='states'):
+        rows = body.get('reply_markup', {}).get('inline_keyboard', [])
+        controls = ''.join('<div class="buttons">' + ''.join('<button>' + escape(item['text']) + '</button>'
+                           for item in row) + '</div>' for row in rows)
+        reply = body.get('reply_parameters', {}).get('message_id')
+        navigation = 'Reply to document message ' + str(reply) if reply else ''
+        cards.append(f'<section class="{group}"><h2>' + escape(label) + '</h2><article>'
+                     + '<div class="navigation">' + escape(navigation) + '</div><div class="body">'
+                     + body['text'] + '</div>' + controls + '</article></section>')
+
+    try:
+        v2 = repo_edit_proposal(2)
+        payload = v2['run']['repo_edit']
+        case.reset_native(v2)
+        case.native.bead = dict(id='sample-1', title='Review proposed repository edit')
+        case.native.repo_edit_status['sample-2'] = {
+            'state': 'pending', 'step': 'queued', 'bead': 'sample-2',
+            'depot': 'synthetic', 'operation': payload['request']['operation'], 'digest': payload['digest'],
+        }
+        receipt = case.create()
+        if not receipt['delivered']:
+            raise RuntimeError('synthetic repo-edit preview refused')
+        document = document_card(case.documents[-1])
+        document['text'] = document['text'].replace('<details>', '<details open>')
+        capture('Complete review document · one UTF-8 Markdown file · mode 0600', document, 'bundle')
+        sends = [body for url, body in case.calls if url.endswith('/sendMessage')]
+        capture('Bound compact approval card · replies to document', sends[-1], 'states')
+        case.press()
+        capture('Confirm gate (60 s) · first tap writes nothing', case.edits()[-1], 'states')
+        case.press('confirm', uid=50)
+        capture('Approved, carrying · reserved held bead', case.edits()[-1], 'states')
+        case.native.ask['ran'] = dict(
+            argv=v2['run']['argv'],
+            result='prepared sample-2 as commit abcdef123456 on branch yard/sample-2 in worktree /synthetic/wt; released to review for review',
+        )
+        case.native.repo_edit_status['sample-2'] = {
+            'state': 'prepared', 'step': 'done', 'bead': 'sample-2',
+            'depot': 'synthetic', 'operation': payload['request']['operation'], 'digest': payload['digest'],
+            'head': 'abcdef123456', 'branch': 'yard/sample-2',
+        }
+        case.bridge.run_asks.refresh()
+        capture('Prepared · branch and commit (not landed or installed)', case.edits()[-1], 'states')
+        case.native.repo_edit_status['sample-2'].update(state='landed', landed='fedcba654321')
+        case.bridge.run_asks.refresh()
+        capture('Landed on base (source landed; not installed or live)', case.edits()[-1], 'states')
+    finally:
+        case.doCleanups()
+        case.tearDown()
+    return cards
+
+
 def depot_cards():
     # Genuine depot captures through the same offline bridge transport and state machine.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bridge'))
@@ -523,6 +582,8 @@ def main():
         cards = bundle_cards(pack=True)
     if '--depot' in sys.argv:
         cards = depot_cards()
+    if '--repo-edit' in sys.argv:
+        cards = repo_edit_cards()
     if len(sys.argv) == 1:
         cards += bundle_cards(pack=True)
     if '--decisions' in sys.argv:
@@ -542,10 +603,13 @@ def main():
         heading = 'Explicit Markdown · actual emitted HTML'
     if '--depot' in sys.argv:
         heading = 'Native depot pack · complete document and approval states'
+    if '--repo-edit' in sys.argv:
+        heading = 'Native repository edit · complete document, approval card and outcome states (fork-only contract)'
     if '--general' in sys.argv:
         heading = 'Unchecked native general command · complete word review and decision'
     if '--skill' in sys.argv:
         heading = 'Optional skill administration · removal and assignment cards (fork-only skill core)'
+    body_class = 'repo-edit' if '--repo-edit' in sys.argv else ''
     print('''<!doctype html><meta charset="utf-8"><title>Synthetic native card preview</title>
 <style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#e9f0f5;color:#183044;font:15px/1.45 sans-serif}
@@ -556,7 +620,11 @@ b{font-weight:700}.footer{white-space:pre-wrap;border-top:1px solid #d9e5ed;padd
 .buttons{display:flex;gap:8px;margin-top:16px}button{flex:1;border:0;border-radius:7px;padding:11px 5px;background:#e2eff9;color:#226295;font-weight:600}
 .navigation{font-size:12px;color:#496175;margin-bottom:8px}section{min-width:0}
 details{white-space:normal}details pre{max-height:680px;overflow:auto}summary{cursor:pointer;margin:8px 0}
-</style><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid" style="--columns:''' + str(2 if '--confirm' in sys.argv else min(len(cards), 3)) + '''">'''
+body.repo-edit .grid{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);align-items:start}
+body.repo-edit section.bundle{grid-column:1;grid-row:1 / span 5}
+body.repo-edit section.states{grid-column:2}
+body.repo-edit details pre{max-height:none;overflow:visible}
+</style><body class="''' + body_class + '''"><h1>''' + escape(heading) + '''</h1><p class="note">Offline HTML preview · synthetic canonical fixtures · no Telegram or macOS runtime claim</p><div class="grid" style="--columns:''' + str(2 if '--confirm' in sys.argv else min(len(cards), 3)) + '''">'''
           + ''.join(cards) + '''</div><script>
 const view = new URLSearchParams(location.search).get('view');
 if (view === 'bundle' || view === 'states') {

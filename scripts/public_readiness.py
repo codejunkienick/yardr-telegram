@@ -31,6 +31,7 @@ REVIEWED_BINARIES = {
     'vendor/wheels/markdown_it_py-4.2.0-py3-none-any.whl': '9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a',
     'vendor/wheels/mdurl-0.1.2-py3-none-any.whl': '84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8',
     'docs/images/native-card-confirmation.png': '57ba182adcaf3b324587763823e2d6c597b0dcba3db52c19b291a9698ea127e8',
+    'docs/images/native-repo-edit.png': '8e63cd204d63308cd94a4444841884ce02deccaa4b6e1c4f11f9a80841fac85a',
     'docs/images/review-bundle.png': '55fae6e155178a8af861ff5b877017fcdcddea44c078d1bfdac0683aa98dfec4',
 }
 

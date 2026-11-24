@@ -1,8 +1,9 @@
 """The yardr build the native integration tests drive, and an isolated server of it.
 
 TGBRIDGE_TEST_YARDR names the build by absolute path; unset, the yardr on PATH.
-Whether a build predates the alignment is read from its running server: the
-probe is a wire-level request, not a version string.
+Optional families are checked on their own read RPCs, never inferred from
+version strings or the presence of skills. The historical alignment probe
+is used only by the retired pre-alignment fixture.
 """
 import ctypes
 import http.client

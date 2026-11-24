@@ -196,6 +196,12 @@ for the outstanding contracts and required passing check.
   [skill removal and assignment cards](bridge/OPERATIONS.md#native-skill-administration-cards)
   are fork-only too; public core reports them unavailable. Basic SETUP steps 1–11 omit native home/operator and
   native-card grants.
+- Optional [native repository edit proposals (`depot edit`)](bridge/OPERATIONS.md#native-repository-edit-proposals)
+  require a core serving `RepoEditCapabilities` (v1 capture-only or v2
+  materialized flow/review/`merge-local` landing with `NativeEditStatus`).
+  They are fork-only until upstream accepts those core contracts and an
+  operator installs/activates them; public cores without `RepoEditCapabilities`
+  refuse repo-edit cards locally without affecting any existing native cards.
 - Optional native cards require the per-build contracts in the
   [capability table](docs/public-readiness.md#capabilities-and-grants).
   Public `52e22d57` supports the tested group fields (not group-set `model=`),

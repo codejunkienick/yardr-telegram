@@ -220,3 +220,17 @@ Recaptured from core `29fcd40d` it is identical, and the same setup on
 `5dedfc56` reproduces `skill_rm.json` byte for byte: the two differ only in
 that sentence. Its tree digest is the same `spare` tree, so both name one
 `SKILL_TREES` entry.
+
+# Native repo-edit fixtures
+
+`repo_edit_v2.json` and `repo_edit_v1.json` are full Bead ask responses
+captured from isolated synthetic git depots running `yardr depot edit` on the
+candidate v2 core (`ff3012a7`, `RepoEditCapabilities` version 2 with
+`materialize: true`) and baseline v1 capture-only core (`e50e27b0`,
+`RepoEditCapabilities` version 1 with `materialize: false`). Each edits
+`README.md` (with `<`, `>`, `&`, quotes, non-ASCII text and no trailing LF),
+creates `docs/new.md` (with U+2028 line separator), and deletes `old-note.txt`
+(CRLF). Only the temporary depot path (`/synthetic/depot`), ask number,
+timestamp and matched proposal digest/does line are stabilized; `v2` binds a
+synthetic `native` flow with `exec` assembly (`merge-local`) and `v1` captures
+the same edits without materialization.

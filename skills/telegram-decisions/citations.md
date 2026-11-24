@@ -53,6 +53,7 @@ The rows live only here; SKILL.md holds none.
 | pack | bridge/OPERATIONS.md | ### Native group add and set review | supported group runners, settings, prompts and refusals |
 | pack | bridge/OPERATIONS.md | ### Source-add declaration and command review | validated declaration and relative command file bundles |
 | pack | bridge/OPERATIONS.md | ### Source pack bundles | source-kind directory and embedded pack proposals; terminal fallback |
+| pack | bridge/OPERATIONS.md | ### Native repository edit proposals | fork-only `depot edit` capability probe, digest/diff review document, Approve+Confirm and `NativeEditStatus` lifecycle |
 | pack | bridge/OPERATIONS.md | ## Ordinary native ask cards | canonical ordinary decisions, recipient, refusals, input and recovery |
 | pack | bridge/OPERATIONS.md | ## Delivery recovery | definitely unsent same-key retry and ambiguous-delivery reconciliation |
 | pack | bridge/OPERATIONS.md | ## Siding status and the plain fold | filters, the exact proposal, status-only cards, subset replies, release cards and the undo |

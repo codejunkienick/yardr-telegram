@@ -24,6 +24,10 @@ _markdown_spec = importlib.util.spec_from_file_location('card_markdown', Path(__
 markdown = importlib.util.module_from_spec(_markdown_spec)
 _markdown_spec.loader.exec_module(markdown)
 
+_repo_edit_spec = importlib.util.spec_from_file_location('repo_edit', Path(__file__).resolve().with_name('repo_edit.py'))
+repo_edit = importlib.util.module_from_spec(_repo_edit_spec)
+_repo_edit_spec.loader.exec_module(repo_edit)
+
 
 CAP = 3500
 PACK_PARTS = 128
@@ -38,7 +42,8 @@ STALE_PROPOSAL = 'Proposal changed' + FALLBACK
 REPLACED_PROPOSAL = 'Proposal changed; replaced by a newer card'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
-         'NextStages', 'GetBead', 'Head', 'Events', 'Notes', 'SkillDigest', 'UserInbox', 'Conversation')
+         'NextStages', 'GetBead', 'Head', 'Events', 'Notes', 'SkillDigest', 'UserInbox', 'Conversation',
+         'RepoEditCapabilities', 'NativeEditStatus')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
@@ -192,6 +197,10 @@ class YardSocketClient:
                         raise RPCUnsupported('run_ask_skill_cards_unavailable; this yard has no skill topic' + FALLBACK)
                     if method == 'NudgeSession' and error['code'] == 'error' and error['message'] == 'no such method NudgeSession':
                         raise RPCUnsupported('native_nudge_unavailable; this yard has no session nudge')
+                    if method == 'RepoEditCapabilities' and error['code'] == 'error' and error['message'] == 'no such method RepoEditCapabilities':
+                        raise RPCUnsupported('run_ask_repo_edit_unavailable; this yard has no repo edit cards' + FALLBACK)
+                    if method == 'NativeEditStatus' and error['code'] == 'error' and error['message'] == 'no such method NativeEditStatus':
+                        raise RPCUnsupported('run_ask_repo_edit_status_unavailable' + FALLBACK)
                     code =error['code'] if error['code'] in {'not-found', 'taken', 'at-limit', 'conflict', 'ambiguous', 'replacing', 'error'} else 'unknown'
                     if (method == 'ApproveAsk' and code == 'error'
                             and re.fullmatch(rf"ask {arguments.get('ask')} was good until (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] "
@@ -199,14 +208,16 @@ class YardSocketClient:
                                              r"Decline it; it is asked again if it is still wanted\.", error['message'])):
                         raise RPCExpired('Native general card expired; nothing ran. Native ask remains open; decline it.', code)
                     if (method == 'ApproveAsk' and code == 'error'
-                            and (error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (
+                            and ((error['message'].startswith(tuple(f"ask {arguments.get('ask')}{prefix}" for prefix in (
                                 ' was written when the source ', ' was written from another declaration of the source ',
                                 ' was written when the skill ', ' was written when the group ', ' was written when the crew member ',
-                                ' was carded under ', ' says ', ' was written from ', ': was written from ')))
-                                 or re.match(rf"ask {arguments.get('ask')}: pack .+: the pin is sha256:[0-9a-f]{{64}}, "
-                                             r'and the directory .+ as read has sha256:[0-9a-f]{64}:', error['message'])
-                                 or re.match(rf"ask {arguments.get('ask')}: pack .+: its plan asks or refuses, so no card can apply it: ", error['message']))
-                            and error['message'].endswith('Nothing ran. Decline it; it is asked again if it is still wanted.')):
+                                ' was carded under ', ' says ', ' was written from ', ': was written from ', ': repo edit:')))
+                                  or re.match(rf"ask {arguments.get('ask')}: pack .+: the pin is sha256:[0-9a-f]{{64}}, "
+                                              r'and the directory .+ as read has sha256:[0-9a-f]{64}:', error['message'])
+                                  or re.match(rf"ask {arguments.get('ask')}: pack .+: its plan asks or refuses, so no card can apply it: ", error['message']))
+                                 and error['message'].endswith('Nothing ran. Decline it; it is asked again if it is still wanted.')
+                                 or error['message'] == f"ask {arguments.get('ask')}: repo edit changed; capture a new proposal, nothing ran"
+                                 or error['message'] == 'repo edit: the review route changed since capture; capture a new proposal, nothing ran')):
                         raise RPCStale('native proposal is stale; nothing ran', code)
                     raise RPCRefused(f'native {method} refused ({code})', code)
                 return value.get('result')  # successful void calls serialize as {}
@@ -1009,6 +1020,12 @@ def validate_run_card(ask):
     run, weight = ask['run'], ask.get('weight', [])
     if 'general' in run:
         return validate_general(ask)
+    if 'repo_edit' in run or (isinstance(run.get('argv'), list) and run['argv'][:2] == ['depot', 'edit']):
+        try:
+            repo_edit.validate_repo_edit(ask, file_hash=file_hash)
+        except repo_edit.RepoEditError as error:
+            raise NativeError(str(error) + FALLBACK) from None
+        return run['argv']
     # A group card's prompt text may ride beside it; parse_group holds it to the text the card shows.
     group = isinstance(run.get('argv'), list) and run['argv'][:2] in GROUP_ROWS
     if set(run) - (RUN_KNOWN | ({'role'} if group else set())):
@@ -1211,7 +1228,60 @@ def outcome(ask, options):
     return footer
 
 
-def run_outcome(ask):
+def repo_edit_reserved_bead(ran):
+    """Extract the reserved patch bead id from a v2 repo-edit answer's pending_reason or result."""
+    pending_reason = ran.get('pending_reason', '')
+    if isinstance(pending_reason, str):
+        match = re.match(rf'^reserved held bead ({BEAD_ID});', pending_reason)
+        if match:
+            return match[1]
+    result = ran.get('result', '')
+    if isinstance(result, str):
+        match = re.match(rf'^prepared ({BEAD_ID}) as commit ', result)
+        if match:
+            return match[1]
+    return None
+
+
+def validate_repo_edit_status(status, reserved_bead, payload):
+    """Validate NativeEditStatus against the reserved bead and approved repo-edit payload."""
+    required = {'state', 'step', 'bead', 'depot', 'operation', 'digest'}
+    allowed = required | {'head', 'branch', 'worktree', 'words', 'landed'}
+    if (not isinstance(status, dict) or not required <= set(status) or set(status) - allowed
+            or not isinstance(status['state'], str)
+            or status['state'] not in {'pending', 'preparing', 'prepared', 'reviewed', 'held', 'failed', 'landed', 'withdrawn'}
+            or status['bead'] != reserved_bead
+            or status['depot'] != payload['request']['depot']
+            or status['operation'] != payload['request']['operation']
+            or status['digest'] != payload['digest']):
+        raise NativeError('invalid native edit status')
+    out = {}
+    for key, value in status.items():
+        out[key] = text(value, 'edit_status.' + key, controls=(key == 'words'))
+    return out
+
+
+def repo_edit_status_line(edit_status):
+    st = edit_status['state']
+    bead = edit_status['bead']
+    branch = edit_status.get('branch', '')
+    head = edit_status.get('head', '')
+    if st == 'landed':
+        landed = edit_status.get('landed') or head
+        return f"Patch bead {bead} · branch {branch} · landed commit {landed} (source landed; not installed or live)"
+    if st == 'withdrawn':
+        return f"Patch bead {bead} · withdrawn before landing"
+    if st == 'reviewed':
+        return f"Patch bead {bead} · branch {branch} · commit {head} · in assembly (reviewed; not landed or installed)"
+    if st == 'prepared':
+        return f"Patch bead {bead} · branch {branch} · commit {head} (prepared for review; not landed or installed)"
+    if st in ('held', 'failed'):
+        words = edit_status.get('words', '')
+        return f"Patch bead {bead} · {st}" + (f': {words}' if words else '')
+    return ''
+
+
+def run_outcome(ask, edit_status=None):
     """(state, canonical outcome) of a run ask that is answered, declined or taken back."""
     state = ask['state']
     if state == 'answered':
@@ -1222,12 +1292,30 @@ def run_outcome(ask):
             raise NativeError('invalid native ran response')
         result = text(ran.get('result'), 'ran.result', controls=True)
         pending_reason = text(ran.get('pending_reason', ''), 'ran.pending_reason', controls=True)
+        is_repo_edit = isinstance(ask.get('run'), dict) and 'repo_edit' in ask['run']
         state = 'failed' if ran.get('failed') else 'carrying' if result == PENDING else 'approved'
-        label = {'failed': '✕ approved, failed', 'carrying': '⏳ approved, to be carried out',
-                 'approved': '✓ approval recorded' if not result else '✓ approved, ran'}[state]
+        if is_repo_edit and state != 'carrying':
+            st = edit_status['state'] if edit_status else None
+            if state == 'failed' or st in ('held', 'failed'):
+                label = '✕ approved, held' if st == 'held' else '✕ approved, failed'
+            elif st == 'landed':
+                label = '✓ approved, landed (not installed)'
+            elif st == 'withdrawn':
+                label = '✕ approved, withdrawn'
+            elif st in ('prepared', 'reviewed') or result.startswith('prepared '):
+                label = '✓ approved, prepared (not landed or installed)'
+            else:
+                label = '✓ approval recorded' if not result else '✓ approved, ran'
+        else:
+            label = {'failed': '✕ approved, failed', 'carrying': '⏳ approved, to be carried out',
+                     'approved': '✓ approval recorded' if not result else '✓ approved, ran'}[state]
         footer = label + ': ' + text(ask['run'].get('command'), 'run.command') + '\n' + result
         if pending_reason:
             footer += '\n' + pending_reason
+        if is_repo_edit and edit_status is not None:
+            status_line = repo_edit_status_line(edit_status)
+            if status_line:
+                footer += '\n' + status_line
         if 'general' in ask['run'] and ran.get('failed') and result == GENERAL_STOPPED:
             footer += '\nUNKNOWN command outcome. Independently inspect effects before requesting a fresh human decision; never replay automatically.'
         return state, footer
@@ -2946,7 +3034,8 @@ class RunAsks:
         if 'run' not in ask:
             value.update(options=ask['options'], recommend=ask.get('recommend', 0), why=ask.get('why', ''),
                          about=ask.get('about', []), since=ask['since'])
-        if ('run' not in ask or 'general' in ask['run'] or skill_kind(ask['run'].get('argv', []))
+        if ('run' not in ask or 'general' in ask['run'] or 'repo_edit' in ask['run']
+                or skill_kind(ask['run'].get('argv', []))
                 or ask['run'].get('argv', [])[:2] in (['source', 'add'], ['pack', 'apply'], *GROUP_ROWS)):
             try:
                 home = Path(self.config['yardr_home'])
@@ -3116,6 +3205,10 @@ class RunAsks:
             bead, ask = self.fetch(row['bead'], row['ask'], row.get('kind', 'run'))
             if ask['state'] == 'open':
                 self.require_depot_cutover(bead['id'], ask)
+                if isinstance(ask.get('run'), dict) and 'repo_edit' in ask['run']:
+                    cap = self.repo_edit_capability()
+                    if ask['run']['repo_edit']['request']['version'] != cap['version']:
+                        raise NativeError('run_ask_repo_edit_version_mismatch' + FALLBACK)
                 bundle = row.get('bundle')
                 if bundle is not None:
                     document = bundle.get('document')
@@ -3179,6 +3272,8 @@ class RunAsks:
         command = ask['run']['command']
         if 'general' in ask['run']:
             command = 'the complete verbatim argv in review-' + row['proposal'] + '.md'
+        elif 'repo_edit' in ask['run']:
+            command = f"{ask['run']['command']} from review-{row['proposal']}.md"
         available = 4096 - units(row['plain'] + '\n' + prefix + suffix)
         if available < 1:
             raise NativeError('run_ask_confirmation_too_large' + FALLBACK)
@@ -3283,6 +3378,44 @@ class RunAsks:
                 self.settle(row, ask)
             return receipt
 
+    def repo_edit_capability(self):
+        """Query RepoEditCapabilities cleanly; unsupported cores refuse repo-edit cards locally."""
+        try:
+            cap = self.client.call('RepoEditCapabilities', {})
+            return repo_edit.validate_capability(cap)
+        except RPCUnsupported:
+            raise NativeError('run_ask_repo_edit_unavailable' + FALLBACK) from None
+        except repo_edit.RepoEditError as error:
+            raise NativeError(str(error) + FALLBACK) from None
+
+    def repo_edit_status(self, ask, row=None):
+        """Read NativeEditStatus for an answered v2 repo-edit ask when supported and non-terminal."""
+        run = ask.get('run')
+        if not isinstance(run, dict) or 'repo_edit' not in run or ask.get('state') != 'answered':
+            return None
+        if row is not None and row.get('native_edit_terminal'):
+            return row.get('native_edit_status')
+        ran = ask.get('ran') or {}
+        reserved = repo_edit_reserved_bead(ran) or (row.get('native_bead') if row else None)
+        if not reserved:
+            return None
+        if row is not None and row.get('native_bead') != reserved:
+            row['native_bead'] = reserved
+        try:
+            status = self.client.call('NativeEditStatus', [reserved])
+        except (RPCUnsupported, RPCAmbiguous):
+            return None
+        except RPCRefused as error:
+            if error.code == 'not-found':
+                return None
+            raise
+        validated = validate_repo_edit_status(status, reserved, run['repo_edit'])
+        if row is not None:
+            row['native_edit_status'] = validated
+            if validated['state'] in ('landed', 'withdrawn') or ran.get('failed'):
+                row['native_edit_terminal'] = True
+        return validated
+
     def card(self, bead, ask, kind, proposal):
         """(plain, html, bundle) of a new card; one Telegram cannot show whole raises a FALLBACK error."""
         if kind == 'decision':
@@ -3291,6 +3424,16 @@ class RunAsks:
             return (*render_decision(self.config, bead, ask), None)
         if 'general' in ask['run']:
             return general_bundle(self.config, bead, ask, proposal)
+        if 'repo_edit' in ask['run']:
+            cap = self.repo_edit_capability()
+            try:
+                return repo_edit.render_repo_edit_bundle(
+                    self.config, bead, ask, proposal, capability=cap, file_hash=file_hash,
+                    canonical=canonical, quote_line=quote_line, line_endings=line_endings,
+                    review_bundle=review_bundle)
+            except repo_edit.RepoEditError as error:
+                suffix = FALLBACK if str(error) == 'run_ask_repo_edit_version_mismatch' else ''
+                raise NativeError(str(error) + suffix) from None
         if ask['run']['argv'][:2] == ['source', 'add']:
             return source_bundle(self.config, bead, ask, proposal)
         if ask['run']['argv'][:2] == ['pack', 'apply']:
@@ -3493,7 +3636,8 @@ class RunAsks:
         state = ask['state']
         if state in ('open', 'put aside'):
             return False
-        state, footer = run_outcome(ask)
+        edit_status = self.repo_edit_status(ask, row)
+        state, footer = run_outcome(ask, edit_status=edit_status)
         row.update(state=state, pending=None, uncertain=False)
         self.save(row)
         receipt = self.display(row, footer, [])
@@ -3912,7 +4056,12 @@ class RunAsks:
             method = 'DeferAsk'
         else:
             method = 'ApproveAsk' if action == 'approve' else 'DeclineAsk'
-            args.update(dict(weighed=weighed, values={}) if action == 'approve' else dict(words='Declined in Telegram'))
+            values = {}
+            if action == 'approve' and isinstance(ask.get('run'), dict) and 'repo_edit' in ask['run']:
+                payload = ask['run']['repo_edit']
+                values = dict(repo_edit_version=str(payload['request']['version']),
+                              repo_edit_digest=payload['digest'])
+            args.update(dict(weighed=weighed, values=values) if action == 'approve' else dict(words='Declined in Telegram'))
         if decision:
             method += 'Expected'
             args['turn'] = turn
@@ -3943,11 +4092,11 @@ class RunAsks:
             self.display(row, footer)
             return footer
         argv = ask['run']['argv'] if refused and isinstance(refusal, RPCStale) else []
-        if argv[:2] in (['source', 'add'], ['pack', 'apply']) or skill_kind(argv):
+        if argv[:2] in (['source', 'add'], ['pack', 'apply'], ['depot', 'edit']) or skill_kind(argv):
             row.update(state='stale', pending=None, uncertain=False)
             self.save(row)
             kind = (('depot pack' if depot_pack(ask['run'].get('pack')) else 'source pack') if argv[:2] == ['pack', 'apply']
-                    else 'skill' if skill_kind(argv) else 'source')
+                    else 'skill' if skill_kind(argv) else 'repo edit' if argv[:2] == ['depot', 'edit'] else 'source')
             self.display(row, 'Stale ' + kind + ' proposal; nothing ran. Decline it in the yard and ask again.', [])
             return str(refusal)
         footer = str(refusal) if refused and isinstance(refusal, RPCUnsupported) else 'The yard refused this action; read the card again'
@@ -4129,7 +4278,11 @@ class RunAsks:
         if ask.get('state') not in ('put aside', 'answered', 'declined', 'taken back'):
             raise NativeError('invalid native ask state')
         if isinstance(ask.get('run'), dict) and ask['state'] != 'put aside':
-            return f'Ask {label} is no longer open: ' + run_outcome(ask)[1]
+            edit_status = None
+            if 'repo_edit' in ask['run'] and ask['state'] == 'answered':
+                validate_run_card(ask)
+                edit_status = self.repo_edit_status(ask)
+            return f'Ask {label} is no longer open: ' + run_outcome(ask, edit_status=edit_status)[1]
         options = ask.get('options') or []
         if not isinstance(options, list) or not all(isinstance(o, dict) and isinstance(o.get('label'), str) for o in options):
             raise NativeError('invalid native options')

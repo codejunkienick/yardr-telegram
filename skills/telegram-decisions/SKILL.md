@@ -175,6 +175,12 @@ return `run_ask_invalid_source_pack_use_terminal` with
 `use yardr pack apply <dir> in a terminal`. Bundles deliver the complete review
 document before the compact approval card. Weighty cards require Approve, then
 Confirm on that same card within 60 seconds; typed numbers never approve.
+Repository-edit proposals (`depot edit`, fork-only until cores serve
+`RepoEditCapabilities` and `NativeEditStatus`) deliver the full UTF-8 before/after
+bytes, diffs, depot test command and review/assembly route in that Markdown
+document first, then a bound compact weighty card that carries a reserved patch
+bead through review and assembly (`not landed or installed` until `landed`, and
+never installed/live automatically).
 The linked sections hold the human's review and confirmation procedure.
 
 ### Siding status and the plain fold

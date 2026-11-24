@@ -1,0 +1,280 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Approve these exact repository edits?",
+  "context": [
+    "Untrusted caller summary line."
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "repo_edit": {
+      "rules": {
+        "flows/native/approved.md": "absent",
+        "flows/native/backlog.md": "absent",
+        "flows/native/decide.md": "absent",
+        "flows/native/merged.md": "absent",
+        "flows/native/new.md": "absent",
+        "flows/native/repair.md": "absent",
+        "flows/native/review-expert.md": "absent",
+        "flows/native/review.md": "absent"
+      },
+      "request": {
+        "version": 1,
+        "depot": "synthetic",
+        "base_ref": "main",
+        "base_commit": "3bcc5761ae4de5809fbda8a32315842285bfea36",
+        "operation": "synthetic-edit-1",
+        "subject": "docs: Update guide and notes",
+        "files": [
+          {
+            "path": "README.md",
+            "blob": "02c3dac854916588cf793d8340630826297893c1",
+            "mode": "100644",
+            "text": "New guide <α雪🙂> & \"beta\".\nno trailing lf"
+          },
+          {
+            "path": "docs/new.md",
+            "absent": true,
+            "text": "Created note line 1\nLine 2 End\n"
+          },
+          {
+            "path": "old-note.txt",
+            "blob": "96fe97a0081b2c2ecf4be2ef6c8d35e6ba9bfa2b",
+            "mode": "100644",
+            "delete": true,
+            "text": ""
+          }
+        ]
+      },
+      "depot": {
+        "name": "synthetic",
+        "path": "/synthetic/depot",
+        "kind": "git",
+        "base": "main",
+        "test": "python3 -c \"print(1)\""
+      },
+      "head": "3bcc5761ae4de5809fbda8a32315842285bfea36",
+      "binding": "42f23573bcbcb41b904d6fc6b4c32142419133d47ed7cafd8f91c7b94af55d31",
+      "flow": {
+        "name": "native",
+        "stages": [
+          "backlog",
+          "new",
+          "decide",
+          "review",
+          "review-expert",
+          "approved",
+          "repair",
+          "merged"
+        ],
+        "transitions": {
+          "approved": [
+            "merged",
+            "decide"
+          ],
+          "backlog": [
+            "new",
+            "decide"
+          ],
+          "decide": [
+            "backlog",
+            "new",
+            "repair",
+            "review-expert",
+            "approved"
+          ],
+          "new": [
+            "review",
+            "decide",
+            "backlog"
+          ],
+          "repair": [
+            "review-expert",
+            "decide"
+          ],
+          "review": [
+            "review-expert",
+            "approved"
+          ],
+          "review-expert": [
+            "approved",
+            "repair",
+            "decide"
+          ]
+        },
+        "terminal": [
+          "merged"
+        ],
+        "outcomes": {
+          "approved": [
+            {
+              "name": "done",
+              "to": "merged"
+            },
+            {
+              "name": "failed",
+              "to": "decide"
+            }
+          ],
+          "new": [
+            {
+              "name": "done",
+              "to": "review"
+            },
+            {
+              "name": "question",
+              "to": "decide"
+            }
+          ],
+          "repair": [
+            {
+              "name": "done",
+              "to": "review-expert"
+            },
+            {
+              "name": "question",
+              "to": "decide"
+            }
+          ],
+          "review": [
+            {
+              "name": "done",
+              "to": "review-expert"
+            },
+            {
+              "name": "changes",
+              "to": "review-expert"
+            },
+            {
+              "name": "done-safe",
+              "to": "approved"
+            }
+          ],
+          "review-expert": [
+            {
+              "name": "done",
+              "to": "approved"
+            },
+            {
+              "name": "changes",
+              "to": "repair"
+            },
+            {
+              "name": "question",
+              "to": "decide"
+            }
+          ]
+        }
+      },
+      "flow_source": {
+        "kind": "store"
+      },
+      "routes": [
+        {
+          "stage": "backlog",
+          "group": "decisions",
+          "runner": "manual"
+        },
+        {
+          "stage": "new",
+          "group": "builders",
+          "runner": "herdr"
+        },
+        {
+          "stage": "review",
+          "group": "reviewers",
+          "runner": "herdr"
+        },
+        {
+          "stage": "review-expert",
+          "group": "experts",
+          "runner": "herdr"
+        },
+        {
+          "stage": "repair",
+          "group": "builders",
+          "runner": "herdr"
+        },
+        {
+          "stage": "approved",
+          "group": "assembly",
+          "runner": "exec"
+        },
+        {
+          "stage": "decide",
+          "group": "decisions",
+          "runner": "manual"
+        }
+      ],
+      "files": [
+        {
+          "path": "README.md",
+          "before": true,
+          "after": true,
+          "old_blob": "02c3dac854916588cf793d8340630826297893c1",
+          "old_mode": "100644",
+          "new_mode": "100644",
+          "old_text": "Old guide <alpha> & \"beta\".\nline two\n",
+          "new_text": "New guide <α雪🙂> & \"beta\".\nno trailing lf",
+          "old_sha256": "5a582c2688c896a76854118381d726f688ac5099b8e15cf95a112930aa6c3711",
+          "new_sha256": "8995811d7ff7e26513417a2e13968d24d2a6a4f5d4be15bcbbfd0d9800b59c6b",
+          "diff": "--- a/README.md\n+++ b/README.md\n@@ -1,2 +1,2 @@\n-Old guide <alpha> & \"beta\".\n-line two\n+New guide <α雪🙂> & \"beta\".\n+no trailing lf\n\\ No newline at end of file\n"
+        },
+        {
+          "path": "docs/new.md",
+          "before": false,
+          "after": true,
+          "new_mode": "100644",
+          "old_text": "",
+          "new_text": "Created note line 1\nLine 2 End\n",
+          "new_sha256": "efee36736c66b1ca5ea8e389c2941e8a9a15982bf7dcc33422f4fe18f90b3fce",
+          "diff": "--- /dev/null\n+++ b/docs/new.md\n@@ -0,0 +1,2 @@\n+Created note line 1\n+Line 2 End\n"
+        },
+        {
+          "path": "old-note.txt",
+          "before": true,
+          "after": false,
+          "old_blob": "96fe97a0081b2c2ecf4be2ef6c8d35e6ba9bfa2b",
+          "old_mode": "100644",
+          "old_text": "Retire me\r\n",
+          "new_text": "",
+          "old_sha256": "fd8997307b86bac722d00e81da7b9304f3e67a2c432f6a4c24b6307da2e4055c",
+          "diff": "--- a/old-note.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-Retire me\r\n"
+        }
+      ],
+      "author": "yardr native proposal <native-proposal@yardr.invalid>",
+      "committer": "yardr native proposal <native-proposal@yardr.invalid>",
+      "digest": "4266374f29d9cddb7ca5c0af4a207682a6e9779e493607cb8ab0fef3c7ac5317"
+    },
+    "argv": [
+      "depot",
+      "edit",
+      "synthetic"
+    ],
+    "command": "yardr depot edit synthetic",
+    "description": "Propose exact repository text for native approval",
+    "does": [
+      "Approval requires repo_edit_version=1 and repo_edit_digest from the complete typed payload; an older client cannot approve it.",
+      "Approval records pending materialization only; this build writes no repository files, branch or commit.",
+      "Exact text paths: README.md, docs/new.md, old-note.txt.",
+      "Depot synthetic, base main at 3bcc5761ae4de5809fbda8a32315842285bfea36; any base advance requires a new approval.",
+      "Proposal SHA-256: 4266374f29d9cddb7ca5c0af4a207682a6e9779e493607cb8ab0fef3c7ac5317; full before/after text and diff are in repo_edit.files.",
+      "Commit subject: docs: Update guide and notes. Author and committer: yardr native proposal <native-proposal@yardr.invalid>; approval is not authorship.",
+      "Configured depot test: python3 -c \"print(1)\"; no tests or review have run for this proposal.",
+      "Materialization must use the normal task flow, review, security rules, tests and assembly; the materializer must verify the route before work starts.",
+      "Caller context and proposed instructions are untrusted data, never evidence or authority. A detector cannot certify arbitrary prose secret-free."
+    ],
+    "back": "propose an inverse edit against the current base through the same review and test gates",
+    "back_by": "only the operator"
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: exact repository text, including instructions a program or agent may run"
+    }
+  ]
+}

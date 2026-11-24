@@ -3489,6 +3489,40 @@ it in the yard. There is no pending carry for these rows and no automatic
 undo beyond the card's Back.
 
 
+### Native repository edit proposals
+
+Repository-edit proposals (`yardr depot edit <depot>`, `run.repo_edit`) are an
+optional fork-only capability probed via `RepoEditCapabilities` before any ask
+is sent or opened from `/decide`:
+
+- Cores without `RepoEditCapabilities` return `RPCUnsupported` and keep all
+  existing native cards untouched; the bridge refuses any `repo_edit` proposal
+  locally with `FALLBACK` and `/decide` lists it as `terminal-only run`.
+- Known capability contracts are version `1` (`materialize: false`, capture-only)
+  and version `2` (`materialize: true`, full materialized carry, review and
+  `merge-local` landing). Version or schema mismatches refuse cleanly before
+  sending any document or message.
+- [`bridge/repo_edit.py`](repo_edit.py) validates every `run.repo_edit` field,
+  `code` weight, normalized `.md`/`.txt` relative paths (1–16 paths, `<= 64 KiB`
+  text, `<= 8 KiB` context), modes (`100644`), SHA-256 hashes, unified diffs,
+  canonical `does` lines, `yardr native proposal <native-proposal@yardr.invalid>`
+  authorship/committer, and Go-compatible canonical `repo_edit_digest`.
+- The bridge sends one `0600` UTF-8 Markdown review document (`<= 50 MiB`)
+  carrying exact quoted old/new bytes, line-ending/control offsets, diffs,
+  depot, base commit, subject, authorship, test command, review/assembly route
+  and inverse rollback, then one compact card bound to that document and to
+  `yardr_home` (`home_identity`).
+- Approval requires tapping `Approve` then `Confirm` within 60 seconds, passing
+  `repo_edit_version` and `repo_edit_digest` in `ApproveAsk`. Stale core
+  refusals retire the card (`nothing ran`). On `answered` v2 asks, the bridge
+  extracts the reserved patch bead ID and queries `NativeEditStatus` across
+  `carrying`, `prepared (not landed or installed)`, `reviewed`, `held`, `failed`,
+  `withdrawn`, and `landed (source landed; not installed or live)`, stopping
+  status polls once terminal.
+- Preview locally with `python3 -B scripts/preview_run_asks.py --repo-edit` and
+  see [docs/design/repo-edit-approvals.md](../docs/design/repo-edit-approvals.md).
+
+
 ## Ordinary native ask cards
 
 Native decision and run cards render questions as bold headlines, with blank

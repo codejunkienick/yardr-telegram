@@ -2639,13 +2639,70 @@ never retried automatically. The relay reuses the provider id
 `<id>-transcript`, so a retry after a lost answer is the same delivery `id`,
 which the yard records once rather than as a second follow-up.
 
+## Linked-yard crew mail
+
+To mirror mail for local crew in the paired private chat, use the native
+`[yardr]` home, source and operator settings with this table.
+
+```toml
+[yardr.peer_mail]
+crew = ["yardmaster"]
+```
+
+List each approved local crew name once. Check which linked yards can
+exchange mail with that crew, and confirm the operator has approved exporting
+their mail to this bot before enabling the setting. The daemon verifies the
+owner-held socket, the current operator role and the paired Telegram identity
+on the configured source. Native reads use the existing socket and source.
+
+The first verified daemon start saves the native event Head before opening
+the stream. Incoming mail enters the queue when the yard accepts it. Outgoing
+mail enters when the yard confirms delivery to the peer. The local store
+sequence at those two points sets the display order. Mail already present or
+queued at activation stays outside the window. The stream ignores ordinary
+yard mail, human inboxes, unlisted crew, and unrelated transport events.
+Post-activation confirmations follow a renamed link, and removal discards
+its outstanding correlations. Each part identifies its direction and parties
+and carries a part number. Files stay in the yard with a reference in part
+one. A direct reply to any part is consumed before commands, attachments or
+yard relay, including after restart or disable. Ordinary replies still relay.
+
+Keep the private SQLite database across restarts. It binds the native cursor
+and delivery keys to this yard, operator, source and paired bot and chat.
+Queued bodies and unfinished rendered parts are kept privately only while
+they are needed. The native cursor and the Telegram inbound offset advance
+independently. A dropped stream replays from the last committed cursor.
+Identity changes, a missing native checkpoint or a delivery-key conflict
+pause the mirror and appear in the bridge journal. Inspect and restore the
+expected binding or store before resuming.
+
+The worker retries a provably unsent part on the same key with a bounded
+backoff. It also honors Telegram's `retry_after` for a definitive 429. An
+attempt that may have reached Telegram is never automatically resent. The
+journal names its `peermail:<letter-seq>:<part>` key, and later parts mark
+the earlier part unconfirmed. Compare the private chat, the native letter
+and the saved receipt to reconcile that part. Keep the receipts and reply
+references even after reconciliation. The reference on each post lets the
+bridge recognize replies when Telegram accepted a send and its receipt was lost.
+
+Install a reviewed release through the existing instance's install and
+preflight procedure. The authorized operator enables the setting, restarts
+the unit and checks new mail in both directions, an inert direct reply and a
+normal inbound update. To pause delivery, remove the table and restart on a
+release with reply protection. Re-enabling the same scope resumes from its
+saved cursor, including qualifying mail during the pause if the native
+stream retains it. A newly added name gets its own current watermark.
+Removing a name during an enabled run's next start discards its outstanding
+work. Before rolling back to a release without reply protection, account for
+the mirror posts still visible in the chat before resuming polling.
+
 ## Delivery recovery
 
 `<state_dir>/telegram-bridge.sqlite3` stores the inbound offset and outbound
-fingerprints/receipts, without message bodies, with two exceptions: the asks
-table keeps an ask's question text, ordered options and answer so one tap
-answers, edits and relays exactly once, and the message log keeps whole
-message texts ("The message log"). Keep it across
+fingerprints and receipts. The asks table keeps question text, ordered
+options and answers so one tap answers, edits and relays exactly once. The
+message log keeps whole message texts ("The message log"). The linked-yard
+mirror keeps pending letter bodies and reply evidence. Keep the database across
 restarts and back it up privately. A token-wide `flock` (`<lock_dir>/telegram-bot-<bot_id>.lock`)
 prevents two copies of this bridge consuming one bot even with different state
 directories. It cannot exclude unrelated bot clients.

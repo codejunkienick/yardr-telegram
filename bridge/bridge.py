@@ -98,6 +98,8 @@ def valid_reaction_emoji(value):
     return (isinstance(value, str) and 0 < len(value) <= REACTION_MAX_CHARS
             and not any(c.isspace() or (c.isascii() and c.isalnum()) for c in value)
             and not Bridge._CONTROL_RE.search(value))
+
+
 PACK_DIR = Path(__file__).resolve().parents[1]
 # The path the bridge was started by, links kept: an installed instance's
 # unit and launcher name <root>/current/bridge/bridge.py, and render-unit says so.
@@ -142,6 +144,10 @@ sys.modules['read_states'] = read_states
 _mail_spec = importlib.util.spec_from_file_location('yard_mail', Path(__file__).resolve().with_name('yard_mail.py'))
 yard_mail = importlib.util.module_from_spec(_mail_spec)
 _mail_spec.loader.exec_module(yard_mail)
+sys.modules['yard_mail'] = yard_mail
+_peer_mail_spec = importlib.util.spec_from_file_location('peer_mail', Path(__file__).resolve().with_name('peer_mail.py'))
+peer_mail = importlib.util.module_from_spec(_peer_mail_spec)
+_peer_mail_spec.loader.exec_module(peer_mail)
 voice_transcribe = importlib.util.module_from_spec(_transcriber_spec)
 _transcriber_spec.loader.exec_module(voice_transcribe)
 SETTINGS_ENV = 'TELEGRAM_BRIDGE_SETTINGS'
@@ -540,6 +546,14 @@ def text_offers_lettered_options(visible):
     return 'A' in letters and 'B' in letters
 
 
+def reserved_delivery_key(key):
+    if key.startswith(yard_mail.KEY_PREFIX):
+        return RESERVED_KEY
+    if key.startswith(peer_mail.KEY_PREFIX):
+        return 'keys starting peermail: are reserved for the peer mail mirror'
+    return None
+
+
 def resendable(receipt):
     """A saved receipt that is not final: every attempt of that send failed
     before any request byte left this host. Only the bridge writes it (no
@@ -631,6 +645,7 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS switch_model_taps (update_id INTEGER PRIMARY KEY, '
                        'pick TEXT NOT NULL, crew TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL)')
             model_switch.initialize(db)
+            peer_mail.initialize(db)
 
     @contextlib.contextmanager
     def connect(self):
@@ -720,9 +735,17 @@ class Store:
             row = db.execute('SELECT fingerprint, receipt FROM deliveries WHERE key=?', (key,)).fetchone()
         return None if row is None else (row[0], json.loads(row[1]))
 
-    def finish(self, key, receipt):
+    def finish(self, key, receipt, mirror=False):
         with self.connect() as db:
             db.execute('UPDATE deliveries SET receipt=? WHERE key=?', (json.dumps(receipt), key))
+            if mirror:
+                # A confirmed reply target survives a crash before the worker advances the part.
+                message_id = int(receipt['message_id']) if receipt.get('delivered') is True else None
+                uncertain = receipt.get('metadata', {}).get('reason') == yard_mail.AMBIGUOUS
+                updated = db.execute('UPDATE peer_mail_parts SET attempted=?, message_id=? WHERE key=?',
+                                     (uncertain or message_id is not None, message_id, key))
+                if updated.rowcount != 1:
+                    raise peer_mail.MirrorError('peer mail reply evidence is missing')
 
     def record_ask(self, ask_id, question, fmt, options, kind='text', conversation_id=None):
         """Remember one crew ask button group: the first record wins, so a
@@ -1192,6 +1215,7 @@ class Bridge:
         self.model_switch = model_switch.ModelSwitch(self)
         self.yard_mail = yard_mail.YardMail(self, html_visible_text, resendable)
         self.stop = threading.Event()
+        self.peer_mail = peer_mail.PeerMail(self, resendable)
         self.last_heartbeat = None
         # The bot as the start probe's getMe described it; None until then.
         self.me = None
@@ -1216,8 +1240,8 @@ class Bridge:
             raise TransportError('Telegram response unconfirmed')
         return status, data
 
-    def _send(self, method, attempt_once):
-        """One outbound Telegram send under its reservation and publish_lock.
+    def _send(self, method, attempt_once, attempts=SEND_ATTEMPTS):
+        """One outbound Telegram send under its reservation.
 
         `attempt_once(timeout)` makes one request. Returns its (status, data)
         when Telegram answered below HTTP 500 (a 4xx is the caller's definite
@@ -1229,7 +1253,7 @@ class Bridge:
         Every failed attempt logs one line: method, attempt, curl exit, phase
         and milliseconds, never text, URL, token or chat."""
         started = self.monotonic()
-        for attempt in range(1, SEND_ATTEMPTS + 1):
+        for attempt in range(1, attempts + 1):
             begun = self.monotonic()
             timeout = min(SEND_ATTEMPT_TIMEOUT, SEND_BUDGET - (begun - started))
             try:
@@ -1239,22 +1263,22 @@ class Bridge:
                     raise RequestUnconfirmed(f'Telegram answered HTTP {status}; outcome unconfirmed', 0, verdict[1])
                 return status, data
             except RequestNotSent as error:
-                self._log_attempt(method, attempt, 'not sent', error, begun)
-                if attempt == SEND_ATTEMPTS:
+                self._log_attempt(method, attempt, 'not sent', error, begun, attempts)
+                if attempt == attempts:
                     raise
                 delay = SEND_RETRY_DELAYS[attempt - 1]
                 if SEND_BUDGET - (self.monotonic() - started) - delay < SEND_MIN_ATTEMPT:
                     raise
                 self.sleep(delay)
             except TransportError as error:
-                self._log_attempt(method, attempt, 'unconfirmed', error, begun)
+                self._log_attempt(method, attempt, 'unconfirmed', error, begun, attempts)
                 raise
 
-    def _log_attempt(self, method, attempt, outcome, error, begun):
+    def _log_attempt(self, method, attempt, outcome, error, begun, attempts=SEND_ATTEMPTS):
         code = getattr(error, 'exit_code', None)
         phase = getattr(error, 'phase', 'unknown')
         ms = max(0, round((self.monotonic() - begun) * 1000))
-        self._log(f'telegram {method} attempt {attempt}/{SEND_ATTEMPTS} {outcome}: '
+        self._log(f'telegram {method} attempt {attempt}/{attempts} {outcome}: '
                   f"curl exit {'-' if code is None else code}, phase {phase}, {ms} ms")
 
     def post_to_yard(self, body):
@@ -2130,6 +2154,8 @@ class Bridge:
         if (chat.get('type') != 'private' or type(chat.get('id')) is not int or chat['id'] != self.config['chat_id']
             or type(sender.get('id')) is not int or sender['id'] != self.config['user_id'] or sender.get('is_bot') is not False):
             return
+        if self.peer_mail.is_reply(message):
+            return
         # Forwarded content is not an instruction authored by the paired user:
         # it never runs a command or /start, and reaches the agent only quoted
         # under a forwarded header.
@@ -2969,22 +2995,26 @@ class Bridge:
     def delivery_fingerprint(identity):
         return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
-    def _reserve_and_deliver(self, key, identity, deliver_fn, retry_undelivered=False):
+    def _reserve_and_deliver(self, key, identity, deliver_fn, retry_undelivered=False, mirror=False):
         """The one ledger reservation path for every send: reserve the key
-        durably under publish_lock before Telegram is contacted, return a
+        durably before Telegram is contacted, return a
         saved receipt instead of sending again, and finish with the result
         of deliver_fn(pending). retry_undelivered: see Store.reserve."""
         fingerprint = self.delivery_fingerprint(identity)
-        with self.publish_lock:
-            pending = self.receipt(reason='ambiguous_delivery_requires_manual_reconciliation')
+        # The bot lock and reserved namespace give the mirror worker exclusive ownership of its keys.
+        with contextlib.nullcontext() if mirror else self.publish_lock:
+            pending = self.receipt(reason=yard_mail.AMBIGUOUS)
             try:
-                cached = self.store.reserve(key, fingerprint, pending, retry_undelivered)
+                cached = self.store.reserve(key, fingerprint, self.not_sent() if mirror else pending, retry_undelivered)
             except TransportError:
                 return self.receipt(reason='idempotency_key_conflict')
             if cached:
                 return cached
             result = deliver_fn(pending)
-            self.store.finish(key, result)
+            if mirror:
+                self.store.finish(key, result, mirror=True)
+            else:
+                self.store.finish(key, result)
             return result
 
     def _command_message(self, key, action, thread_id=None):
@@ -3490,7 +3520,7 @@ class Bridge:
                 and sent.get('chat', {}).get('id') == self.config['chat_id'])
 
     def _deliver_text(self, text, reply, pending, plain=None, method='sendMessage', extra=None, fallback_reason=None,
-                      not_modified=False, before_attempt=None):
+                      not_modified=False, before_attempt=None, mirror=False):
         """Send text; `plain` is set for HTML, and is the one fallback body
         sent (under the same key, same reservation) when Telegram cannot parse
         the markup. The first send was then definitively not delivered, so
@@ -3509,7 +3539,21 @@ class Bridge:
                 if before_attempt is not None:
                     before_attempt()
                 return self.telegram(method, body, timeout)
-            status, data = self._send(method, attempt)
+            status, data = self._send(method, attempt, attempts=1) if mirror else self._send(method, attempt)
+            if mirror:
+                if self.peer_mail.confirmed(status, data):
+                    return self.receipt(True, message_id=str(data['result']['message_id']))
+                code = data.get('error_code')
+                if type(code) is int and status == code and 400 <= code < 500 and data.get('ok') is False:
+                    if code == 429:
+                        receipt = self.not_sent()
+                        parameters = data.get('parameters')
+                        delay = parameters.get('retry_after') if isinstance(parameters, dict) else None
+                        if type(delay) is int and 0 < delay < 2**31:
+                            receipt['metadata']['retry_at'] = time.time() + delay
+                        return receipt
+                    return self.receipt(reason=f'telegram_rejected_not_sent_{code}')
+                return pending
             if self._confirmed(status, data):
                 if fallback_reason is not None:
                     return self.receipt(True, message_id=str(data['result']['message_id']),
@@ -3677,7 +3721,7 @@ class Bridge:
         except TransportError:
             return pending
 
-    def publish(self, request, format_fallback_reason=None, resend_on_429=False, start_by=None):
+    def publish(self, request, format_fallback_reason=None, resend_on_429=False, start_by=None, mirror=False):
         """Send one request on the paired chat's conversation, on a
         configured, recorded topic's or on a served auto topic's, bound or
         not (OPERATIONS.md, "Topics"); any other conversation is
@@ -3690,6 +3734,10 @@ class Bridge:
         (monotonic), checked once the send holds publish_lock, nothing is
         sent and the send is saved as not sent."""
         conversation = request.get('conversation')
+        if mirror:
+            if conversation != self.conversation:
+                return self.receipt(reason='recipient_not_authorized')
+            return self._publish(request, mirror=True)
         if conversation == self.conversation:
             receipt = self._publish(request, format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
                                     start_by=start_by)
@@ -3780,8 +3828,8 @@ class Bridge:
         key = request.get('key') or key_header
         if not isinstance(key, str) or not key.strip():
             raise ApiError('key is required, in the body or the Idempotency-Key header')
-        if key.startswith(yard_mail.KEY_PREFIX):
-            raise ApiError(RESERVED_KEY)
+        if reason := reserved_delivery_key(key):
+            raise ApiError(reason)
         conversation = self._api_conversation(request)
         fmt = request.get('format')
         format_fallback_reason = None
@@ -3870,8 +3918,8 @@ class Bridge:
         if not body:
             raise ApiError('title or text is required')
         given = request.get('key') or key_header
-        if isinstance(given, str) and given.startswith(yard_mail.KEY_PREFIX):
-            raise ApiError(RESERVED_KEY)
+        if isinstance(given, str) and (reason := reserved_delivery_key(given)):
+            raise ApiError(reason)
         conversation = self._api_conversation(request)
 
         def notice(line=None):
@@ -3891,6 +3939,8 @@ class Bridge:
         key = request.get('key') or key_header
         if not isinstance(key, str) or not key.strip():
             raise ApiError('key is required')
+        if key.startswith(peer_mail.KEY_PREFIX):
+            raise ApiError(reserved_delivery_key(key))
         saved = self.store.saved_receipt(key)
         if isinstance(saved, dict) and saved.get('delivered') is True and saved.get('message_id') not in (None, ''):
             return dict(message_id=str(saved['message_id']))
@@ -3985,6 +4035,8 @@ class Bridge:
         key = request.get('key') or key_header
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9._:@-]{1,200}', key):
             raise ApiError('siding-card requires an idempotency key')
+        if key.startswith(peer_mail.KEY_PREFIX):
+            raise ApiError(reserved_delivery_key(key))
         conversation = self._api_conversation(request)
         silent = self._api_bool(request.get('silent'), 'silent')
         try:
@@ -4007,6 +4059,8 @@ class Bridge:
         key = request.get('key') or key_header
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9._:@-]{1,200}', key):
             raise ApiError(command + ' requires an idempotency key')
+        if key.startswith(peer_mail.KEY_PREFIX):
+            raise ApiError(reserved_delivery_key(key))
         conversation = self._api_conversation(request)
         silent = self._api_bool(request.get('silent'), 'silent')
         try:
@@ -4046,10 +4100,14 @@ class Bridge:
         return dict(ok=True, bot=self.account, last_poll_ok=last)
 
     def _publish(self, request, thread_id=None, text_fallback=True, format_fallback_reason=None, resend_on_429=False,
-                 start_by=None):
+                 start_by=None, mirror=False):
         key, text = request.get('idempotency_key'), request.get('text')
         if not isinstance(key, str) or not key.strip() or len(key) > 256:
             return self.receipt(reason='stable_idempotency_key_required')
+        if key.startswith(peer_mail.KEY_PREFIX) != mirror:
+            return self.receipt(reason='idempotency_key_conflict')
+        if mirror and set(request) != {'conversation', 'idempotency_key', 'text', 'text_options'}:
+            return self.receipt(reason='idempotency_key_conflict')
         # Plain is the default and carries no 'format' key into the
         # fingerprint, so every existing caller and ledger row is unchanged;
         # 'html' is part of the identity, so one key with another format is a
@@ -4194,7 +4252,13 @@ class Bridge:
                 extra['disable_notification'] = True
             if thread_id is not None:
                 extra['message_thread_id'] = thread_id
-            if attachments is not None:
+            if mirror:
+                def begin():
+                    self.peer_mail.before_send()
+                    self.store.finish(key, pending, mirror=True)
+
+                receipt = self._deliver_text(text, reply, pending, before_attempt=begin, mirror=True)
+            elif attachments is not None:
                 receipt = self._deliver_album(attachments, text, reply, pending, plain, extra=extra or None,
                                               text_fallback=text_fallback)
             elif attachment is not None:
@@ -4213,7 +4277,7 @@ class Bridge:
             if receipt.get('delivered') is True and format_fallback_reason is not None:
                 receipt = dict(receipt, format_fallback_reason=format_fallback_reason)
             return receipt
-        return self._reserve_and_deliver(key, request, deliver)
+        return self._reserve_and_deliver(key, request, deliver, mirror=mirror)
 
     # ---- pinned messages: one bot message per slot, edited in place ----
     PIN_SLOT_RE = re.compile(r'[a-z0-9_-]{1,32}')
@@ -4902,6 +4966,7 @@ class Bridge:
             for line in message_state_report(self.config):
                 self._log(line)
             self.read_states.start()
+            self.peer_mail.start()
             if self.typing_seconds:
                 self._start_typing()
             failures = 0
@@ -4918,6 +4983,7 @@ class Bridge:
                         raise TransportError('transport failed repeatedly; restarting preserves cursor') from None
                     self.stop.wait(min(failures * 2, 10))
         finally:
+            self.peer_mail.stop()
             self.read_states.stop()
             server.shutdown()
             server.server_close()
@@ -5260,7 +5326,8 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
                  'pairing_update_id', 'bot', 'menu', 'transcribe', 'crew', 'command',
                  'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
 # The yard this bridge relays to (YARDR.md, "Settings").
-YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model', 'mail'}
+YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model',
+              'mail', 'peer_mail'}
 # The native /quota table ([yardr.quota]): its presence turns /quota on.
 YARDR_QUOTA_KEYS = {'timeout', 'groups', 'machine_login', 'machine'}
 # The native /switch_model table ([yardr.switch_model]) and each of its picks.
@@ -5814,6 +5881,16 @@ def load_settings(path, home=None):
         config['yardr_switch_model'] = switch
     if mail_table is not None:
         config['yardr_mail'] = True
+    if 'peer_mail' in yardr:
+        if not operator_acts:
+            raise SettingsError('settings: [yardr.peer_mail] needs [yardr] home and operator together')
+        peer_settings = _table(yardr, 'peer_mail', {'crew'}, required=True)
+        crew = peer_settings.get('crew')
+        if (not isinstance(crew, list) or not crew
+                or any(not isinstance(name, str) or not peer_mail.NAME.fullmatch(name) for name in crew)
+                or len(crew) != len(set(crew))):
+            raise SettingsError('settings: [yardr.peer_mail] crew needs a non-empty list of unique crew names')
+        config['yardr_peer_mail'] = tuple(crew)
     # The crew member: internally the bridge's agent, as the ledger names it.
     agent = _text_setting(data.get('crew', 'yardmaster'), 'crew')
     config['agent'] = agent
@@ -6533,10 +6610,15 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
             check(False, f'{what} file must be an owner-only regular file')
     if settings.config.get('yardr_home'):
         try:
-            client = run_asks.YardSocketClient(settings.config['yardr_home'], settings.config['yardr_source'])
+            client = run_asks.YardSocketClient(settings.config['yardr_home'], settings.config['yardr_source'],
+                                              verify_owner=bool(settings.config.get('yardr_peer_mail')))
             if settings.config.get('yardr_operator'):
                 run_asks.verify_operator(client, settings.config)
                 check(True, 'native yard socket and current operator identity')
+                for crew in settings.config.get('yardr_peer_mail', ()):
+                    peer_mail.verify_crew(client, crew)
+                if settings.config.get('yardr_peer_mail'):
+                    check(True, 'peer mail crew names are readable')
             else:
                 crews = list(dict.fromkeys([settings.config['agent']] + [t['agent'] for t in settings.config.get('topics', ())]))
                 for crew in crews:
@@ -6856,8 +6938,8 @@ def main():
     elif args.command == 'send':
         if not args.body_file or not args.idempotency_key:
             parser.error('send requires --body-file and --idempotency-key (reuse the key for retries)')
-        if args.idempotency_key.startswith(yard_mail.KEY_PREFIX):
-            parser.error(RESERVED_KEY)
+        if reason := reserved_delivery_key(args.idempotency_key):
+            parser.error(reason)
         conversation = _outbound_conversation(bridge, args)
         message_id = _dispatch_outbound(bridge, args, args.body_file.read_text(), conversation)
         print('Telegram delivery confirmed; message ID ' + str(message_id))

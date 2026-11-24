@@ -584,6 +584,7 @@ class SwitchModelSettingsTests(unittest.TestCase):
 
 # The example's tables under another: its header, then (parent, section).
 NESTED_TABLES = {'[yardr.quota]': ('yardr', 'quota'), '[yardr.switch_model]': ('yardr', 'switch_model'),
+                 '[yardr.peer_mail]': ('yardr', 'peer_mail'),
                  '[[yardr.switch_model.picks]]': ('switch_model', 'picks')}
 
 
@@ -594,8 +595,10 @@ class ExampleSettingsTests(unittest.TestCase):
     EXPECTED = {
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
-        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model'},
+        'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model',
+                  'peer_mail'},
         'quota': {'timeout', 'groups', 'machine_login', 'machine'},
+        'peer_mail': {'crew'},
         'switch_model': {'crew', 'timeout', 'picks'},
         'picks': {'id', 'label', 'kind', 'model', 'args', 'env_file'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},
@@ -704,6 +707,8 @@ class ExampleSettingsTests(unittest.TestCase):
                                            'topic', 'auto_topics'}
                 loaded['yardr'] |= set(data['yardr'])
                 loaded['quota'] |= set(data['yardr']['quota'])
+                loaded['peer_mail'] |= set(data['yardr']['peer_mail'])
+                self.assertEqual(settings.config['yardr_peer_mail'], ('yardmaster',))
                 loaded['switch_model'] |= set(data['yardr']['switch_model'])
                 loaded['picks'] |= set(data['yardr']['switch_model']['picks'][0])
                 self.assertEqual([command['name'] for command in settings.config['commands'] if 'native' in command],

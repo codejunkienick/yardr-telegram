@@ -15,6 +15,7 @@ import shlex
 import socket
 import stat
 import string
+import struct
 import tempfile
 import time
 import unicodedata
@@ -43,7 +44,7 @@ REPLACED_PROPOSAL = 'Proposal changed; replaced by a newer card'
 RECONCILE = 'Card delivery unconfirmed; decide in Footplate or the yard and delete this Telegram card manually'
 READS = ('Bead', 'GetUser', 'UserAsks', 'GetGroup', 'GetDepot', 'Groups', 'Routes', 'Settings', 'ListBeads', 'SidingBeads',
          'NextStages', 'GetBead', 'Head', 'Events', 'Notes', 'SkillDigest', 'UserInbox', 'Conversation',
-         'RepoEditCapabilities', 'NativeEditStatus')
+         'RepoEditCapabilities', 'NativeEditStatus', 'GetCrew', 'Peers', 'PeerOutbox', 'EventsSince')
 WEIGHTS = {'credential', 'as-user', 'outside', 'code', 'trust', 'reads'}
 CONFIRM_SECONDS = 60
 CONFIRM_EXPIRED = 'Confirmation expired; nothing ran. Tap Approve again.'
@@ -133,11 +134,13 @@ def validate_stream_event(event):
 
 
 class YardSocketClient:
-    def __init__(self, home, source, timeout=10):
+    def __init__(self, home, source, timeout=10, verify_owner=False):
         self.home, self.source, self.timeout = Path(home), source, timeout
+        self.verify_owner = verify_owner
 
     def _connect_socket(self, label):
-        path = self.home / 'yard.sock'
+        home = validate_home(self.home) if self.verify_owner else self.home
+        path = home / 'yard.sock'
         try:
             info = path.lstat()
             if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
@@ -146,7 +149,11 @@ class YardSocketClient:
             sock.settimeout(self.timeout)
             try:
                 sock.connect(str(path))
-            except OSError:
+                if self.verify_owner and hasattr(socket, 'SO_PEERCRED'):
+                    _, uid, _ = struct.unpack('iII', sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    if uid != os.getuid():
+                        raise RPCUnavailable('native socket server must have the same UID')
+            except (OSError, RPCUnavailable):
                 sock.close()
                 raise
         except OSError:

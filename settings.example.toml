@@ -101,14 +101,17 @@ description = "Show the agent's status"
 # [reactions]
 # on_accept = true                          # set `seen` once the yard has a message; default false: no reaction unless an agent runs react
 # seen = "👀"                               # default 👀 (set "🕊" when `read` is enabled)
-# read = "👀"                               # optional: mark read on crew inbox_read stream (or 5s fallback poll) once ack passes hook seq (requires [yardr] home)
+# read = "👀"                               # optional: mark read on crew inbox_shown/inbox_read stream (or 5s fallback poll) once shown or ack passes hook seq (requires [yardr] home)
+# working = "✍"                             # optional: emoji while crew stays in a working turn past working_after seconds; default ✍ (on Telegram's allowed reaction list)
+# working_after = 15                        # optional: seconds after read before `working` while crew stays working (0-3600, default 15; 0 disables working)
 # nudge_after = 300                         # optional: seconds unread before a Nudge offer while crew is idle/blocked (0-3600, default 0 off; requires read, home+operator, built-in /nudge and core NudgeSession; independent of cards)
 # done = "👌"                               # `yardr call tgbridge react reaction=done`; default 👌 (✅ is not an allowed reaction)
 
-# "typing..." in the chat after each message the yard accepts, until the next
-# send (OPERATIONS.md, "Typing").
+# "typing..." in the chat while a crew member works on an open message (from the
+# yard's event stream), or after each accepted message when no stream is running
+# (OPERATIONS.md, "Typing").
 # [typing]
-# seconds = 300                             # the longest it shows after the latest accepted message, 0-900; default 0: never
+# seconds = 600                             # safety cap per working turn (or timer window without a stream), 0-900; default 0: never (600 recommended when enabled)
 
 # Topics in the paired private chat, each its own conversation (OPERATIONS.md,
 # "Topics"): `bridge.py topics` creates each once and prints the yardr subscribe

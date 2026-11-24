@@ -31,6 +31,7 @@ from test_typed_nudge import nudged  # noqa: E402
 PACK = Path(__file__).resolve().parents[1] / 'yardr'
 DOVE = '\U0001F54A'
 EYES = '\U0001F440'
+WORKING = '\u270D'
 OK_HAND = '\U0001F44C'
 THUMBS_UP = '\U0001F44D'
 REACTION_INVALID = (400, dict(ok=False, error_code=400, description='Bad Request: REACTION_INVALID'))
@@ -251,6 +252,20 @@ def replied_event(seq, target_seq, crew='yardmaster', source='tgbridge', journal
     )
 
 
+def crew_status_event(seq, crew='yardmaster', status='working', was='', user=''):
+    data = dict(crew=crew, status=status, was=was)
+    if user:
+        data['user'] = user
+    return dict(seq=seq, id=str(seq), kind='crew_status', actor='yard', at='2026-11-24T09:31:00Z', data=data)
+
+
+def crew_stopped_event(seq, crew='yardmaster', reason='stopped', user=''):
+    data = dict(crew=crew, reason=reason)
+    if user:
+        data['user'] = user
+    return dict(seq=seq, id=str(seq), kind='crew_stopped', actor='yard', at='2026-11-24T09:32:00Z', data=data)
+
+
 class ReadStateCase(BridgeTestCase):
     CREW = 'yardmaster'
     SOURCE = 'tgbridge'
@@ -269,6 +284,8 @@ class ReadStateCase(BridgeTestCase):
         self.next_sent_id = 77
         self.reaction_answer = (200, dict(ok=True, result=True))
         self.send_answer = None
+        self.chat_actions = []
+        self.chat_action_answer = (200, dict(ok=True, result=True))
         self.logs = []
         self.config.update(
             yardr_home=str(self.yard_dir),
@@ -323,6 +340,11 @@ class ReadStateCase(BridgeTestCase):
         if url.endswith('/editMessageText'):
             self.calls.append((url, body))
             return 200, dict(ok=True, result=dict(message_id=body['message_id'], chat=dict(id=123)))
+        if url.endswith('/sendChatAction'):
+            self.chat_actions.append((self.mono[0], body))
+            if isinstance(self.chat_action_answer, Exception):
+                raise self.chat_action_answer
+            return self.chat_action_answer
         return super().transport(url, body, *args, **kwargs)
 
     def poll(self, *updates):
@@ -991,6 +1013,7 @@ class ReadStateTests(ReadStateCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(DOVE, result.stdout)
         self.assertIn(EYES, result.stdout)
+        self.assertIn(WORKING, result.stdout)
         self.assertIn(OK_HAND, result.stdout)
 
         secondary = subprocess.run([sys.executable, '-B', str(script), '--instance', 'secondary'],
@@ -999,7 +1022,7 @@ class ReadStateTests(ReadStateCase):
         self.assertIn('crew secretary · native cards not owned here', secondary.stdout)
         self.assertIn('✓ Nudge typed', secondary.stdout)
         self.assertNotIn('outcome unreadable', secondary.stdout)
-        for emoji in (DOVE, EYES, OK_HAND):
+        for emoji in (DOVE, EYES, WORKING, OK_HAND):
             self.assertIn(emoji, secondary.stdout)
 
     def test_nudge_after_settings_validation(self):
@@ -1738,6 +1761,313 @@ class ReadStateTests(ReadStateCase):
         self.assertFalse(run_thread.is_alive())
         self.assertFalse(self.bridge.read_states._stream_started)
 
+    def test_stream_working_reaction_lifecycle_idle_revert_multi_row_and_quick_reply(self):
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+
+            # 1. Quick answer inside working_after (14s after read) goes eyes -> ok_hand directly.
+            self.drain(self.update(uid=10))
+            seq10 = self.row(10)['seq']
+            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+
+            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
+            self.mono[0] += 14.0
+            self.poll()
+            self.assertEqual(self.row(10)['state'], 'read')
+            self.native.push_event(replied_event(22, seq10, crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'done', timeout=2.0)
+            msg10_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
+                            if url.endswith('/setMessageReaction') and body['message_id'] == 10]
+            self.assertEqual(msg10_emojis, [DOVE, EYES, OK_HAND])
+
+            # 1b. Non-line-session crew_status is ignored; working_after is anchored on read_mono
+            #     (not working_since), so a row read >= 15s moves to working once crew starts working.
+            self.native.push_event(crew_status_event(23, crew=self.CREW, status='idle', was='working'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'idle')
+            self.drain(self.update(uid=11))
+            seq11 = self.row(11)['seq']
+            self.native.push_event(inbox_shown_event(24, reader=self.CREW, through=seq11, session=''))
+            self._wait_until(lambda: (self.row(11) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(crew_status_event(25, crew=self.CREW, status='working', was='idle', user='hal'))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 25)
+            self.mono[0] += 30.0
+            self.poll()
+            self.assertEqual(self.row(11)['state'], 'read')
+            self.native.push_event(crew_status_event(26, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: (self.row(11) or {}).get('state') == 'working', timeout=2.0)
+            self.native.push_event(replied_event(27, seq11, crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.row(11) or {}).get('state') == 'done', timeout=2.0)
+
+            # 2. Multi-row open for the same crew: both move read -> working past working_after,
+            #    both revert working -> read on idle (resetting read_mono), and a second turn
+            #    waits working_after from the return to read before re-sending working under a new key.
+            self.native.push_event(crew_status_event(28, crew=self.CREW, status='idle', was='working'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'idle')
+            self.drain(self.update(uid=12), self.update(uid=13))
+            seq13 = self.row(13)['seq']
+            self.native.push_event(inbox_shown_event(29, reader=self.CREW, through=seq13, session=''))
+            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'read'
+                             and (self.row(13) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(crew_status_event(30, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
+            self.mono[0] += 15.0
+            self.poll()
+            self.assertEqual(self.row(12)['state'], 'working')
+            self.assertEqual(self.row(13)['state'], 'working')
+
+            # Idle reverts both rows back to read (no stale working) and resets read_mono.
+            self.native.push_event(crew_status_event(31, crew=self.CREW, status='idle', was='working'))
+            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'read'
+                             and (self.row(13) or {}).get('state') == 'read', timeout=2.0)
+
+            # Second working turn stays read at 14s after returning to read, then moves at 15s.
+            self.native.push_event(crew_status_event(32, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
+            self.mono[0] += 14.0
+            self.poll()
+            self.assertEqual(self.row(12)['state'], 'read')
+            self.assertEqual(self.row(13)['state'], 'read')
+            self.mono[0] += 1.0
+            self.poll()
+            self.assertEqual(self.row(12)['state'], 'working')
+            self.assertEqual(self.row(13)['state'], 'working')
+
+            # Replying to msg 12 moves working -> done; idle then moves msg 13 -> read while msg 12 stays done.
+            self.native.push_event(replied_event(33, self.row(12)['seq'], crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'done', timeout=2.0)
+            self.native.push_event(crew_status_event(34, crew=self.CREW, status='idle', was='working'))
+            self._wait_until(lambda: (self.row(13) or {}).get('state') == 'read', timeout=2.0)
+            self.assertEqual(self.row(12)['state'], 'done')
+            msg12_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
+                            if url.endswith('/setMessageReaction') and body['message_id'] == 12]
+            self.assertEqual(msg12_emojis, [DOVE, EYES, WORKING, EYES, WORKING, OK_HAND])
+            msg13_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
+                            if url.endswith('/setMessageReaction') and body['message_id'] == 13]
+            self.assertEqual(msg13_emojis, [DOVE, EYES, WORKING, EYES, WORKING, EYES])
+
+            # 3. Transient not-sent on working -> read retries cleanly under the same key.
+            self.native.push_event(crew_status_event(35, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
+            self.mono[0] += 15.0
+            self.poll()
+            self.assertEqual(self.row(13)['state'], 'working')
+            self.reaction_answer = b.RequestNotSent('network request not sent', 7, 'connect')
+            self.native.push_event(crew_status_event(36, crew=self.CREW, status='idle', was='working'))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 36)
+            self.assertEqual(self.row(13)['state'], 'working')
+            self.reaction_answer = (200, dict(ok=True, result=True))
+            self.poll()
+            self.assertEqual(self.row(13)['state'], 'read')
+            self.bridge.read_states.stop()
+
+        # 4. Pre-existing stale working row reverts to read on start/connect when crew is not working.
+        with self.store.connect() as db:
+            db.execute("UPDATE read_states SET state='working', turn=3 WHERE message_id=13")
+        self.restart()
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: (self.row(13) or {}).get('state') == 'read', timeout=2.0)
+            self.bridge.read_states.stop()
+
+        # 5. working_after = 0 disables the working reaction while keeping read/done active.
+        self.restart(reactions=dict(self.config['reactions'], working_after=0))
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+            self.drain(self.update(uid=14))
+            seq14 = self.row(14)['seq']
+            self.native.push_event(inbox_shown_event(40, reader=self.CREW, through=seq14, session=''))
+            self._wait_until(lambda: (self.row(14) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(crew_status_event(41, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
+            self.mono[0] += 60.0
+            self.poll()
+            self.assertEqual(self.row(14)['state'], 'read')
+            self.native.push_event(replied_event(42, seq14, crew=self.CREW, source=self.SOURCE,
+                                                 journal=self.CREW + '-journal'))
+            self._wait_until(lambda: (self.row(14) or {}).get('state') == 'done', timeout=2.0)
+            msg14_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
+                            if url.endswith('/setMessageReaction') and body['message_id'] == 14]
+            self.assertEqual(msg14_emojis, [DOVE, EYES, OK_HAND])
+
+    def test_stream_typing_driven_by_crew_status_and_fallback_without_stream(self):
+        self.native.crew['secretary'] = dict(name='secretary', journal='secretary-journal',
+                                             state='running', status='idle', cursor=0)
+        self.restart(
+            typing=dict(seconds=10),
+            topics=(dict(name='ops', agent='secretary'), dict(name='web', agent=self.CREW)),
+        )
+        self.store.record_topic('ops', 7, 'created')
+        self.store.record_topic('web', 9, 'created')
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+
+            # Accepted message in landed while crew idle -> no typing.
+            self.drain(self.update(uid=10))
+            seq10 = self.row(10)['seq']
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions, [])
+
+            # Reached read while crew still idle -> still no typing.
+            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions, [])
+
+            # Working turn starts -> typing sent immediately and repeated every 4s, surviving read -> working.
+            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: self.bridge.read_states.typing_targets() != {})
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions, [(1000.0, dict(chat_id=123, action='typing'))])
+            self.mono[0] = 1004.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 2)
+
+            # Topic message for another crew (secretary, idle) gets no typing while self.CREW works.
+            self.native.hook_events[self.next_seq] = hook_event(
+                self.next_seq, source=self.SOURCE, deliveries={'secretary': 'all'}
+            )
+            u_ops = dict(update_id=11, message=dict(
+                message_id=11, text='ops msg', message_thread_id=7, is_topic_message=True,
+                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+            ))
+            self.drain(u_ops)
+            self.native.push_event(inbox_shown_event(22, reader='secretary', through=self.row(11)['seq'], session=''))
+            self._wait_until(lambda: (self.row(11) or {}).get('state') == 'read', timeout=2.0)
+            self.mono[0] = 1008.0
+            self.bridge._typing_tick()
+            self.assertEqual([b for _, b in self.chat_actions], [dict(chat_id=123, action='typing')] * 3)
+
+            # Transitioning msg 10 to working (✍) does not interrupt typing; cap at 10s stops it.
+            self.mono[0] = 1015.0
+            self.poll()
+            self.assertEqual(self.row(10)['state'], 'working')
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 3)  # capped at 1000 + 10 = 1010
+
+            # Idle stops typing and reverts msg 10 -> read; a newer open row in topic web switches thread.
+            self.native.push_event(crew_status_event(23, crew=self.CREW, status='idle', was='working'))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 3)
+
+            u_web = dict(update_id=12, message=dict(
+                message_id=12, text='web msg', message_thread_id=9, is_topic_message=True,
+                chat=dict(id=123, type='private'), **{'from': dict(id=123, is_bot=False)},
+            ))
+            self.drain(u_web)
+            self.native.push_event(inbox_shown_event(24, reader=self.CREW, through=self.row(12)['seq'], session=''))
+            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(crew_status_event(25, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: self.bridge.read_states.typing_targets().get(self.CREW, (None,))[0] == 9)
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions[-1][1], dict(chat_id=123, action='typing', message_thread_id=9))
+
+            # Ledger send stops typing at once before replied arrives.
+            self.assertTrue(self.bridge.publish(self.publish(key='stop-typing-send'))['delivered'])
+            self.mono[0] = 1020.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 4)
+
+            # Newer open row in the same working turn moves thread/mark without resetting the turn cap.
+            self.native.push_event(crew_status_event(26, crew=self.CREW, status='idle', was='working'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'idle')
+            self.native.push_event(crew_status_event(27, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: self.bridge.read_states.typing_targets().get(self.CREW, (None,))[0] == 9)
+            self.bridge._typing_tick()  # t=1020, cap for this turn is 1030
+            self.assertEqual(len(self.chat_actions), 5)
+            # Send stops typing for msg 12, then msg 13 arrives at t=1026 in same turn -> resumes up to cap 1030.
+            self.assertTrue(self.bridge.publish(self.publish(key='stop-before-newer-row'))['delivered'])
+            self.mono[0] = 1026.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 5)
+            self.drain(self.update(uid=13))
+            self.native.push_event(inbox_shown_event(28, reader=self.CREW, through=self.row(13)['seq'], session=''))
+            self._wait_until(lambda: self.bridge.read_states.typing_targets().get(self.CREW, (None, 0))[1] == 13)
+            self.bridge._typing_tick()  # resumes in General (thread None) at t=1026
+            self.assertEqual(self.chat_actions[-1], (1026.0, dict(chat_id=123, action='typing')))
+            self.mono[0] = 1030.0
+            self.bridge._typing_tick()  # stops at original turn cap 1030 (not 1036)
+            self.assertEqual(len(self.chat_actions), 6)
+            self.bridge.read_states.stop()
+
+        # Without a live stream (refused /events), accept-timer typing behaviour stays unchanged.
+        self.chat_actions.clear()
+        self.native.stream_mode = 'http_404'
+        self.restart(typing=dict(seconds=10))
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: any('read states stream fallback:' in l for l in self.logs), timeout=2.0)
+            self.drain(self.update(uid=14))
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 1)
+            self.mono[0] += 4.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 2)
+            self.mono[0] += 6.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 2)
+
+    def test_stream_break_reverts_working_row_to_read(self):
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+
+            self.drain(self.update(uid=10))
+            seq10 = self.row(10)['seq']
+            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
+            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
+            self.mono[0] += 15.0
+            self.poll()
+            self.assertEqual(self.row(10)['state'], 'working')
+
+            self.native.stream_mode = 'http_404'
+            self.native.drop_streams()
+            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0,
+                             message='stream break did not revert working row to read')
+            self.assertEqual(self.bridge.read_states._crew_status, {})
+
+    def test_stream_drop_falls_back_to_accept_timer_typing(self):
+        self.restart(typing=dict(seconds=10))
+        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
+            self.bridge.read_states.start()
+            self.addCleanup(self.bridge.read_states.stop)
+            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
+
+            # Accepted while live stream is up and crew is idle -> no typing yet, window kept for fallback.
+            self.drain(self.update(uid=10))
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions, [])
+
+            # Live stream drops -> accept-timer typing takes over for the already-accepted message.
+            self.native.stream_mode = 'http_404'
+            self.native.drop_streams()
+            self._wait_until(lambda: not self.bridge.read_states.stream_active(), timeout=2.0)
+            self.mono[0] = 1003.0
+            self.bridge._typing_tick()
+            self.assertEqual(self.chat_actions, [(1003.0, dict(chat_id=123, action='typing'))])
+            self.mono[0] = 1007.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 2)
+            self.mono[0] = 1010.0
+            self.bridge._typing_tick()
+            self.assertEqual(len(self.chat_actions), 2)
+
 
 class SecondaryReadStateTests(ReadStateCase):
     CREW = 'secretary'
@@ -1757,6 +2087,12 @@ class SecondaryReadStateTests(ReadStateCase):
     )
     test_bridge_run_starts_and_stops_read_states_stream = (
         ReadStateTests.test_bridge_run_starts_and_stops_read_states_stream
+    )
+    test_stream_working_reaction_lifecycle_idle_revert_multi_row_and_quick_reply = (
+        ReadStateTests.test_stream_working_reaction_lifecycle_idle_revert_multi_row_and_quick_reply
+    )
+    test_stream_break_reverts_working_row_to_read = (
+        ReadStateTests.test_stream_break_reverts_working_row_to_read
     )
 
     def test_secondary_offer_and_read_only_degrade(self):
@@ -2640,6 +2976,7 @@ class RealReadStateTests(BridgeTestCase):
             mono = [1000.0]
             wall = [2000.0]
             next_sent_id = [500]
+            chat_actions = []
             logs = []
             second_server = second_worker = proxy = None
 
@@ -2670,6 +3007,9 @@ class RealReadStateTests(BridgeTestCase):
                         return 200, dict(ok=True, result=dict(message_id=mid, chat=dict(id=123)))
                     if url.endswith('/setMessageReaction'):
                         self.calls.append((url, body))
+                        return 200, dict(ok=True, result=True)
+                    if url.endswith('/sendChatAction'):
+                        chat_actions.append((time.monotonic(), body))
                         return 200, dict(ok=True, result=True)
                     return base(url, body, *args, **kwargs)
 
@@ -2918,6 +3258,68 @@ class RealReadStateTests(BridgeTestCase):
                                     br_fb.read_states.stop()
                     finally:
                         br_proxy.read_states.stop()
+
+                # 4. Real crew_status working reaction (👀 -> ✍ -> 👀 -> 👌) and typing.
+                if fixture is not None:
+                    work_cfg = dict(
+                        cfg,
+                        reactions=dict(on_accept=True, seen=DOVE, read=EYES, working=WORKING,
+                                       working_after=1, done=OK_HAND),
+                        typing=dict(seconds=600),
+                    )
+                    br_work = b.Bridge(work_cfg, b.Store(root / 'work.sqlite3', 10), 'SECRET', 'CAPABILITY',
+                                       request=make_transport(), request_multipart=self.multipart_transport,
+                                       request_download=self.download_transport, sleep=lambda s: None)
+                    callback.RequestHandlerClass.bridge = br_work
+                    chat_actions.clear()
+                    br_work.read_states.start()
+                    br_work._start_typing()
+                    try:
+                        wait_until(lambda: br_work.read_states._stream_connected, timeout=5.0)
+                        daemon('start', 'writer')
+                        br_work.drain([self.update(107)])
+                        br_work.reaction_queue.join()
+                        seq107 = br_work.read_states.get(107)['seq']
+                        cli('inbox', '--crew', 'writer', '--ack', str(seq107))
+                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'read'
+                                   and EYES in emojis(107), timeout=limit)
+                        self.assertEqual(chat_actions, [])
+
+                        daemon('status', 'writer', 'working')
+                        wait_until(lambda: len(chat_actions) >= 1, timeout=3.0,
+                                   msg='real crew_status working did not send typing')
+                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'working'
+                                   and WORKING in emojis(107), timeout=4.0,
+                                   msg='real crew_status working did not set working reaction')
+
+                        daemon('status', 'writer', 'idle')
+                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'read'
+                                   and emojis(107)[-1] == EYES, timeout=3.0,
+                                   msg='real crew_status idle did not return working to read')
+                        actions_at_idle = len(chat_actions)
+                        time.sleep(1.2)
+                        self.assertEqual(len(chat_actions), actions_at_idle)
+
+                        daemon('status', 'writer', 'working')
+                        wait_until(lambda: len(chat_actions) > actions_at_idle, timeout=3.0)
+                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'working'
+                                   and emojis(107).count(WORKING) == 2, timeout=4.0)
+                        env['TGBRIDGE_SECRET'] = br_work.secret
+                        cli('reply', str(seq107), '--crew', 'writer', 'Done after working')
+                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'done'
+                                   and OK_HAND in emojis(107), timeout=3.0)
+                        actions_at_done = len(chat_actions)
+                        time.sleep(1.2)
+                        self.assertEqual(len(chat_actions), actions_at_done)
+                        self.assertEqual(emojis(107), [DOVE, EYES, WORKING, EYES, WORKING, OK_HAND])
+                    finally:
+                        callback.RequestHandlerClass.bridge = self.bridge
+                        br_work.stop.set()
+                        br_work.typing_wake.set()
+                        if br_work.typing_worker is not None:
+                            br_work.typing_worker.join(timeout=5)
+                        br_work.read_states.stop()
+
                 shown_note = f', shown={shown_elapsed:.3f}s' if shown_elapsed is not None else ''
                 print(
                     f'Real core stream ({self.binary}, ndfm={has_inbox_read}, w5pt={has_inbox_shown}): '

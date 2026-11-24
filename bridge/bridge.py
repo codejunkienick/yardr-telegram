@@ -72,14 +72,20 @@ NOT_SENT_REASON = 'transport_unavailable_not_sent'
 RESERVED_KEY = 'keys starting yardmail: are the bridge\'s own (whole mail)'
 # Reactions on the paired user's messages ([reactions]): none unless
 # on_accept is set or an agent asks. Telegram's reaction list has no check
-# mark, so "done" defaults to the OK hand.
-REACTIONS_KEYS = {'on_accept', 'seen', 'done', 'read', 'nudge_after'}
+# mark, so "done" defaults to the OK hand; "working" defaults to ✍ (on
+# Telegram's allowed reaction list).
+REACTIONS_KEYS = {'on_accept', 'seen', 'done', 'read', 'working', 'working_after', 'nudge_after'}
 REACTIONS_DEFAULTS = dict(on_accept=False, seen='\U0001F440', done='\U0001F44C')
+REACTIONS_WORKING_DEFAULT = '\u270D'
+REACTIONS_WORKING_AFTER_DEFAULT = 15
+REACTIONS_WORKING_AFTER_MAX = 3600
 REACTIONS_NUDGE_AFTER_MAX = 3600
 REACTION_MAX_CHARS = 16
 # The typing indicator ([typing]): none unless seconds > 0. Telegram shows a
 # chat action for at most 5 s, so the worker repeats it every 4 s; it looks
-# at the ledger every second for the send that ends the window.
+# at the ledger every second for the send that ends the window. When
+# read_states has a live event stream, typing follows working turns capped by
+# `seconds` (600 recommended when enabled).
 TYPING_KEYS = {'seconds'}
 TYPING_DEFAULTS = dict(seconds=0)
 TYPING_MAX_SECONDS = 900
@@ -1144,6 +1150,7 @@ class Bridge:
         # so none sleeps).
         self.typing_seconds = dict(TYPING_DEFAULTS, **(config.get('typing') or {}))['seconds']
         self.typing_windows = {}
+        self.typing_stream_windows = {}
         self.typing_lock = threading.Lock()
         self.typing_wake = threading.Event()
         self.typing_wait = typing_wait or self.typing_wake.wait
@@ -2341,7 +2348,10 @@ class Bridge:
         extended window stays the same window, so a chat action in flight
         on it still counts toward its one failure log, and counts its
         extensions, so an end the worker decided before one leaves it open.
-        Never raises."""
+        When read_states has an active event stream, the timer window is still
+        recorded (without sending from it while live) so a dropped stream can
+        fall back to accept-timer typing for already-accepted messages. Never
+        raises."""
         with self.typing_lock:
             window = self.typing_windows.get(thread)
         now = self.monotonic()
@@ -2378,17 +2388,126 @@ class Bridge:
             self.typing_wait(TYPING_TICK)
         with self.typing_lock:
             self.typing_windows.clear()
+            self.typing_stream_windows.clear()
 
     def _typing_tick(self):
-        """One look at every open typing window, each on its own: a look that
-        fails unexpectedly ends its window alone."""
+        """One look at every open typing window (or active stream-driven crew
+        turns when read_states has a live event stream), each on its own."""
+        if not self.typing_seconds:
+            return
+        targets = self.read_states.typing_targets()
+        if targets is not None:
+            now = self.monotonic()
+            with self.typing_lock:
+                for thread, window in list(self.typing_windows.items()):
+                    if now >= window['end']:
+                        del self.typing_windows[thread]
+            self._typing_stream_tick(targets)
+            return
         with self.typing_lock:
+            self.typing_stream_windows.clear()
             windows = [(window, window['extended']) for window in self.typing_windows.values()]
         for window, extended in windows:
             try:
                 self._typing_look(window, extended)
             except Exception:  # noqa: BLE001 - the worker must outlive any single look
                 self._end_typing(window, extended, 'typing_failed')
+
+    def _typing_stream_tick(self, targets):
+        """Drive typing per working crew from the read_states event stream:
+        send every TYPING_INTERVAL in the newest open (read/working) row's
+        thread while working, stopping on idle, on send, or at the cap."""
+        now = self.monotonic()
+        with self.typing_lock:
+            for crew in list(self.typing_stream_windows):
+                if crew not in targets:
+                    del self.typing_stream_windows[crew]
+            entries = []
+            for crew, (thread, newest_mid, turn_seq) in targets.items():
+                win = self.typing_stream_windows.get(crew)
+                is_new_turn = (win is None or win['turn_seq'] != turn_seq)
+                has_newer_row = (not is_new_turn and win['newest_mid'] < newest_mid)
+                entries.append((crew, thread, newest_mid, turn_seq, win, is_new_turn, has_newer_row))
+        for crew, thread, newest_mid, turn_seq, win, is_new_turn, has_newer_row in entries:
+            if is_new_turn:
+                try:
+                    mark = self.store.deliveries_mark()
+                except Exception:  # noqa: BLE001 - a send it cannot see must not leave typing on
+                    self._log(self._typing_line(thread, 'ledger_unavailable'))
+                    win = dict(crew=crew, thread=thread, end=now, mark=0, due=now,
+                               failed=True, stopped=True, rejected=False,
+                               turn_seq=turn_seq, newest_mid=newest_mid)
+                    with self.typing_lock:
+                        self.typing_stream_windows[crew] = win
+                    continue
+                win = dict(crew=crew, thread=thread, end=now + self.typing_seconds, mark=mark, due=now,
+                           failed=False, stopped=False, rejected=False,
+                           turn_seq=turn_seq, newest_mid=newest_mid)
+                with self.typing_lock:
+                    self.typing_stream_windows[crew] = win
+            elif has_newer_row:
+                if now >= win['end'] or (win.get('rejected') and win['thread'] == thread and win['stopped']):
+                    with self.typing_lock:
+                        win['thread'] = thread
+                        win['newest_mid'] = newest_mid
+                        win['stopped'] = True
+                    continue
+                try:
+                    mark = self.store.deliveries_mark()
+                except Exception:  # noqa: BLE001 - a send it cannot see must not leave typing on
+                    self._typing_failed(win, 'ledger_unavailable')
+                    with self.typing_lock:
+                        win['thread'] = thread
+                        win['newest_mid'] = newest_mid
+                        win['stopped'] = True
+                    continue
+                with self.typing_lock:
+                    thread_changed = win['thread'] != thread
+                    was_stopped = win['stopped']
+                    win['thread'] = thread
+                    win['newest_mid'] = newest_mid
+                    win['mark'] = mark
+                    win['stopped'] = False
+                    if thread_changed:
+                        win['failed'] = False
+                        win['rejected'] = False
+                    if thread_changed or was_stopped:
+                        win['due'] = now
+            elif win['stopped']:
+                continue
+            elif win['thread'] != thread:
+                with self.typing_lock:
+                    win['thread'] = thread
+                    win['due'] = now
+                    win['failed'] = False
+                    win['rejected'] = False
+            if now >= win['end']:
+                win['stopped'] = True
+                continue
+            try:
+                sent = self.store.sent_since(win['mark'])
+            except Exception:  # noqa: BLE001 - a send it cannot see must not leave typing on
+                self._typing_failed(win, 'ledger_unavailable')
+                win['stopped'] = True
+                continue
+            if sent:
+                win['stopped'] = True
+                continue
+            with self.typing_lock:
+                due = now >= win['due']
+                if due:
+                    win['due'] = now + TYPING_INTERVAL
+            if due:
+                try:
+                    reason = self._send_typing(win)
+                except Exception:  # noqa: BLE001 - the worker must outlive any single look
+                    reason = 'typing_failed'
+                if reason is not None:
+                    self._typing_failed(win, reason)
+                    with self.typing_lock:
+                        win['stopped'] = True
+                        if reason.startswith('telegram_rejected_'):
+                            win['rejected'] = True
 
     def _typing_look(self, window, extended):
         """End the window at its end time or once the ledger holds a send
@@ -4775,9 +4894,9 @@ class Bridge:
             print(ready, flush=True)
             for line in message_state_report(self.config):
                 self._log(line)
+            self.read_states.start()
             if self.typing_seconds:
                 self._start_typing()
-            self.read_states.start()
             failures = 0
             while not self.stop.is_set():
                 try:
@@ -5695,12 +5814,18 @@ def load_settings(path, home=None):
     if 'reactions' in data:
         reactions = dict(REACTIONS_DEFAULTS, **_table(data, 'reactions', REACTIONS_KEYS))
         _bool_setting(reactions['on_accept'], 'reactions.on_accept')
-        for name in ('seen', 'done') + (('read',) if 'read' in reactions else ()):
+        for name in ('seen', 'done') + tuple(k for k in ('read', 'working') if k in reactions):
             if not valid_reaction_emoji(reactions[name]):
                 raise SettingsError(f'settings: reactions.{name} must be one emoji: at most '
                                     f'{REACTION_MAX_CHARS} characters, no space, letter or digit')
         if 'read' in reactions and not native.get('yardr_home'):
             raise SettingsError('settings: reactions.read needs [yardr] home')
+        if 'working' in reactions and 'read' not in reactions:
+            raise SettingsError('settings: reactions.working needs reactions.read')
+        if 'working_after' in reactions:
+            _int_setting(reactions['working_after'], 'reactions.working_after', 0, REACTIONS_WORKING_AFTER_MAX)
+            if reactions['working_after'] > 0 and 'read' not in reactions:
+                raise SettingsError('settings: reactions.working_after needs reactions.read')
         if 'nudge_after' in reactions:
             _int_setting(reactions['nudge_after'], 'reactions.nudge_after', 0, REACTIONS_NUDGE_AFTER_MAX)
             if reactions['nudge_after'] > 0 and 'read' not in reactions:
@@ -6262,6 +6387,14 @@ def message_state_report(config):
     crews = list(dict.fromkeys([config.get('agent', 'yardmaster')] + [t['agent'] for t in (config.get('topics') or ())]))
     read = ('on (' + reactions['read'] + '; crew ' + ', '.join(crews) + ')' if reading
             else 'off (reactions.read unset)')
+    working_after = reactions.get('working_after', REACTIONS_WORKING_AFTER_DEFAULT)
+    working_emoji = reactions.get('working', REACTIONS_WORKING_DEFAULT)
+    if not reading:
+        working = 'off (reactions.read unset)'
+    elif working_after <= 0:
+        working = 'off (reactions.working_after 0)'
+    else:
+        working = f'on ({working_emoji} after {working_after}s)'
     done = 'on (' + reactions['done'] + '; react' + (' and replies)' if reading else '; replies off without reactions.read)')
     after = reactions.get('nudge_after', 0)
     reason = None
@@ -6277,7 +6410,7 @@ def message_state_report(config):
     prefix = 'WARN  ' if after and reason else ''
     account = config.get('account_id', config.get('bot_username'))
     report = [prefix + 'message states (' + account + '): landed ' + landed + '; read ' + read
-              + '; done ' + done + '; nudge offer ' + offer]
+              + '; working ' + working + '; done ' + done + '; nudge offer ' + offer]
     if run_asks.owns_cards(config):
         if config.get('yardr_cards_legacy') or 'yardr_cards' not in config:
             report.append('WARN  native cards: owned by the legacy rule (home and operator); add cards = true here '

@@ -41,13 +41,20 @@ sees and does, not how the code is organised.
   outcome path, closing automatically if the message is read or answered
   first, and staying off cleanly on cores without `NudgeSession`.
 
-- Read and done message reactions (`[reactions] read`): when configured
-  with `[yardr] home`, accepted operator messages track `landed` (🕊 via
-  `seen`) → `read` (👀 once the crew member's inbox acknowledgement passes
-  the delivering hook `seq`) → `done` (👌 on `yardr reply <seq>`, `/v1/send`
-  with `reply_to`, or `react done`). Works against unmodified upstream
-  yardr (`GetCrew`, `EventsSince`, `Events`) and degrades off cleanly when
-  unavailable.
+- Read, working and done message reactions (`[reactions] read`, `working`,
+  `working_after`) and activity-driven typing (`[typing] seconds`): when
+  `[reactions] read` is configured with `[yardr] home`, accepted operator
+  messages track `landed` (🕊 via `seen`) → `read` (👀 on `inbox_shown` /
+  `inbox_read`, or 5 s `GetCrew` fallback) → `working` (✍ after
+  `working_after` seconds, default `15`, `0` off, while the crew stays in a
+  working turn on `crew_status`, returning to 👀 on idle) → `done` (👌 on
+  `replied`, `yardr reply <seq>`, `/v1/send` with `reply_to`, or `react done`).
+  With `[typing] seconds > 0` (600 recommended) and a live event stream,
+  typing shows in the thread of each working crew's newest open (`read` /
+  `working`) message only while that crew is working and stops on idle, send,
+  or the safety cap; without a live stream, the accept-timer behaviour stays
+  unchanged. Works against unmodified upstream yardr (`GetCrew`,
+  `EventsSince`, `Events`) and degrades off cleanly when unavailable.
 
 - The yard's nudge cards: when a core files a `session nudge` card for a
   harness that stopped on an error, the bridge sends it once in the paired

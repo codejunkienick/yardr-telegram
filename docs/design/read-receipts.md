@@ -1,7 +1,7 @@
 # Operator message read and done receipts
 
 Design record, 2026-11-21 (stream update 2026-11-24): track each accepted operator Telegram message
-through `landed` (🕊), `read` (👀) and `done` (👌) using one replacing
+through `landed` (🕊), `read` (👀), `working` (✍) and `done` (👌) using one replacing
 bot reaction per message (`setMessageReaction`), following the yard's native
 event stream (`GET /events?after=<seq>`) with clean fallback to cursor polling
 when a core lacks `inbox_read` or `/events`.
@@ -56,31 +56,48 @@ when a core lacks `inbox_read` or `/events`.
    `data.reader == crew`, `data.through >= seq`) transitions open `landed` rows
    to `read` (👀) at once — 👀 means the yard has shown the message to the crew
    member (`inbox_shown`) or the crew acked it (`inbox_read`), and whichever
-   arrives first moves the row. Each matching `replied` (`data.source`, `data.crew`,
-   `data.seq`) transitions open rows to `done` at once, and each matching `hook`
-   resolves `crew` early; `/v1/send reply_to` and `react` continue to act
-   immediately. A background fallback round (`read_states.refresh()`, also
-   called from `poll_once`) runs at most once every `5` monotonic seconds
-   (`ROUND_SECONDS = 5`) only while open rows exist (`landed` or `read`),
-   making zero native calls when idle. If `/events` is refused or `GetCrew`
-   shows `cursor >= seq` after the stream caught up to `Head` without
+   arrives first moves the row. Each line-session `crew_status` (`data.user`
+   absent/empty, `data.crew == crew`, `data.status` in `working|idle|blocked|unknown`)
+   and `crew_stopped` tracks that crew's turn status: when `working_after`
+   seconds (default `15`, `0` off) have elapsed since the row reached 👀
+   (reset when a row returns to `read` on idle) while the crew is in `working`,
+   every open `read` row for that crew moves to
+   `working` (✍, verified on Telegram Bot API's `ReactionTypeEmoji` list); if
+   the crew leaves `working` without replying, every `working` row returns to
+   `read` (👀), and repeated cycles use `readstate:<mid>:<state>:<turn>` keys.
+   Each matching `replied` (`data.source`, `data.crew`, `data.seq`) transitions
+   open rows (`landed`, `read`, `working`) to `done` (👌) at once, and each
+   matching `hook` resolves `crew` early; `/v1/send reply_to` and `react`
+   continue to act immediately. A background fallback round (`read_states.refresh()`,
+   also called from `poll_once`) runs at most once every `5` monotonic seconds
+   (`ROUND_SECONDS = 5`) only while open rows exist (`landed`, `read` or
+   `working`), making zero native calls when idle. If `/events` is refused or
+   `GetCrew` shows `cursor >= seq` after the stream caught up to `Head` without
    `inbox_read`, the fallback reason is logged once (cores without `inbox_shown`
    behave identically via `inbox_read` and the 5 s poll, with no new fallback
    logged). `landed` rows older than
    24 h move to `expired` without a reaction. Every reaction check, Telegram
    `setMessageReaction` and `read_states` state update runs under the reactions
-   `flock`, stepping only forward (`landed -> read -> done`), using
-   `readstate:<mid>:read|done` keys ignored by `Store.sent_since` so typing
-   windows survive a read.
+   `flock`, stepping forward (`landed -> read -> working -> done`, with `working -> read`
+   on idle), using `readstate:<mid>:...` keys ignored by `Store.sent_since` so
+   typing windows survive read and working reactions. When `[typing] seconds > 0`
+   and the stream is active, typing runs only while a crew is `working` and has
+   an open (`read`/`working`) row, in the thread of that crew's newest open
+   row, stopping on idle, send, or the `seconds` safety cap; without a live
+   stream, the accept-timer window stays unchanged.
 
 ```mermaid
 stateDiagram-v2
   [*] --> landed: hook 2xx seq (🕊 via on_accept)
   landed --> read: inbox_shown / inbox_read stream / GetCrew cursor >= seq (👀)
+  read --> working: crew_status working past working_after (✍)
+  working --> read: crew_status idle / crew_stopped (👀)
   landed --> done: replied stream / Events / reply_to / react done (👌)
   read --> done: replied stream / Events / reply_to / react done (👌)
+  working --> done: replied stream / Events / reply_to / react done (👌)
   landed --> manual: react none or other
   read --> manual: react none or other
+  working --> manual: react none or other
   landed --> off: crew not in deliveries / unsupported answer
   landed --> expired: 24 h
 ```

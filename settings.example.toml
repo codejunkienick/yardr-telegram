@@ -102,8 +102,8 @@ description = "Show the agent's status"
 # on_accept = true                          # set `seen` once the yard has a message; default false: no reaction unless an agent runs react
 # seen = "👀"                               # default 👀 (set "🕊" when `read` is enabled)
 # read = "👀"                               # optional: mark read on crew inbox_shown/inbox_read stream (or 5s fallback poll) once shown or ack passes hook seq (requires [yardr] home)
-# working = "✍"                             # optional: emoji while crew stays in a working turn past working_after seconds; default ✍ (on Telegram's allowed reaction list)
-# working_after = 15                        # optional: seconds after read before `working` while crew stays working (0-3600, default 15; 0 disables working)
+# working = "✍"                             # ignored legacy key (kept so existing settings load; check-install warns)
+# working_after = 15                        # ignored legacy key (kept so existing settings load; check-install warns)
 # nudge_after = 300                         # optional: seconds unread before a Nudge offer while crew is idle/blocked (0-3600, default 0 off; requires read, home+operator, built-in /nudge and core NudgeSession; independent of cards)
 # done = "👌"                               # `yardr call tgbridge react reaction=done`; default 👌 (✅ is not an allowed reaction)
 

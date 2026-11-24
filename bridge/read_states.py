@@ -4,9 +4,9 @@ When [reactions] read is configured (with [yardr] home), each accepted
 operator message gets a `read_states` ledger row in state `landed`. While the
 bridge runs, a stream worker follows `GET /events?after=<seq>` on the native
 socket to transition rows at once on `inbox_shown`, `inbox_read` (line session
-`""`), `crew_status` (line session `""`, `working` after `working_after` seconds
-returning to `read` on idle) and `replied`, while a fallback round runs at most
-once every 5 monotonic seconds only while open rows exist:
+`""`) and `replied` (and tracks `crew_status` / `crew_stopped` for stream typing
+without changing any reaction), while a fallback round runs at most once every
+5 monotonic seconds only while open rows exist:
 
 - EventsSince [seq-1, 1] once per message: the configured crew must appear
   in data.deliveries from our source, else the row goes `off`.
@@ -15,13 +15,14 @@ once every 5 monotonic seconds only while open rows exist:
   `landed` -> `read` with the configured `read` emoji.
 - Events [journal, n] (64..1024) only after a non-reaction/non-readstate
   delivery row newer than the stored mark: `replied` matching seq, source
-  and crew moves `landed`/`read`/`working` -> `done` with `done` emoji. The
-  mark advances after two rounds with no newer send.
+  and crew moves `landed`/`read` -> `done` with `done` emoji. The mark
+  advances after two rounds with no newer send.
 - `landed` rows older than 24 h move to `expired` without a reaction.
 
-Every reaction transition holds the reactions flock from row re-read
-through Telegram's answer and row update, stepping only forward (except
-`working` returning to `read` on idle).
+Any legacy ledger row still in `working` settles once to `read` on the first
+refresh after upgrade. Every reaction transition holds the reactions flock
+from row re-read through Telegram's answer and row update, stepping only
+forward.
 """
 import collections
 import json
@@ -37,11 +38,10 @@ META_TABLE = 'read_states_meta'
 OVERRIDE_TABLE = 'read_state_overrides'
 FIELDS = ('message_id', 'conversation_id', 'thread_id', 'seq', 'crew',
           'state', 'accepted_at', 'read_at', 'done_at', 'reason', 'offer_token', 'turn')
-OPEN_STATES = ('landed', 'read', 'working')
+OPEN_STATES = ('landed', 'read')
+LEGACY_OPEN_STATES = ('landed', 'read', 'working')
 TERMINAL_STATES = ('done', 'manual', 'off', 'expired')
 CREW_STATUSES = ('working', 'idle', 'blocked', 'unknown')
-DEFAULT_WORKING_EMOJI = '\u270D'
-DEFAULT_WORKING_AFTER = 15
 ROUND_SECONDS = 5
 EXPIRE_SECONDS = 24 * 3600
 EVENTS_MIN = 64
@@ -114,7 +114,6 @@ class ReadStates:
         self._stream_replied_order = collections.deque(maxlen=512)
         self._crew_status = {}
         self._crew_turn_seq = {}
-        self._read_mono = {}
         if self.store is not None:
             with self.store.connect() as db:
                 if self.enabled:
@@ -154,16 +153,6 @@ class ReadStates:
     @property
     def enabled(self):
         return bool(self.bridge.reactions.get('read'))
-
-    @property
-    def working_emoji(self):
-        return self.bridge.reactions.get('working', DEFAULT_WORKING_EMOJI)
-
-    @property
-    def working_after(self):
-        if 'working_after' in self.bridge.reactions:
-            return int(self.bridge.reactions['working_after'])
-        return DEFAULT_WORKING_AFTER
 
     @property
     def nudge_after(self):
@@ -238,7 +227,7 @@ class ReadStates:
             if row is not None:
                 return row[0] != 'landed'
             ov = db.execute(f'SELECT state FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,)).fetchone()
-        return ov is not None and ov[0] in ('read', 'working', 'done', 'manual')
+        return ov is not None and ov[0] in ('read', 'done', 'manual')
 
     def _max_send(self, db):
         return db.execute(
@@ -329,9 +318,6 @@ class ReadStates:
                 'VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, 0)',
                 (mid, conversation_id, thread_id, seq, state, accepted_at, read_at, done_at),
             )
-        if state == 'read':
-            with self._state_lock:
-                self._read_mono[mid] = self.bridge.monotonic()
         self._poll_wake.set()
 
     def _open_rows(self):
@@ -368,50 +354,46 @@ class ReadStates:
                 db.execute(f'UPDATE {TABLE} SET state=?, reason=? WHERE message_id=? AND state=?',
                            (new_state, reason, mid, row['state']))
                 db.execute(f'DELETE FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,))
-        with self._state_lock:
-            self._read_mono.pop(mid, None)
         self.close_offer(mid)
         self.bridge.typing_wake.set()
         return True
 
     def transition(self, message_id, target_state):
-        """Step one message to `read`, `working` or `done` under the reactions
-        flock: re-read the row, deliver through the ledger under
-        readstate:<mid>:<target_state>[:<turn>], and update the row inside the
-        same flock. Transient not-sent leaves the row unchanged for retry."""
+        """Step one message to `read` or `done` under the reactions flock:
+        re-read the row, deliver through the ledger under readstate:<mid>:<state>
+        (or readstate:<mid>:read:settle for legacy `working` rows), and update the
+        row inside the same flock. Transient not-sent leaves the row unchanged."""
         if not self.enabled or self.store is None:
             return None
-        if target_state not in ('read', 'working', 'done'):
-            raise ValueError('read state target must be read, working or done')
-        emoji = self.working_emoji if target_state == 'working' else self.bridge.reactions.get(target_state)
+        if target_state not in ('read', 'done'):
+            raise ValueError('read state target must be read or done')
+        emoji = self.bridge.reactions.get(target_state)
         if not emoji:
             return None
         mid = int(message_id)
-        allowed = ('landed', 'working') if target_state == 'read' else ('read',) if target_state == 'working' else OPEN_STATES
+        allowed = ('landed', 'working') if target_state == 'read' else LEGACY_OPEN_STATES
         advanced = False
         with self.bridge._reaction_lock():
             row = self.get(mid)
             if row is None or row['state'] not in allowed:
-                if row is not None and row['state'] not in OPEN_STATES:
+                if row is not None and row['state'] not in LEGACY_OPEN_STATES:
                     with self.store.connect() as db:
                         db.execute(f'DELETE FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,))
                 return None
             with self.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if target_state in ('read', 'working'):
+                if target_state == 'read':
                     ov = db.execute(f'SELECT state FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,)).fetchone()
                     if ov is not None and ov[0] in ('pending_done', 'done', 'manual'):
                         return None
                 else:
                     self._save_pending_done(db, mid, self.now())
-            turn = int(row.get('turn') or 0)
             if target_state == 'done':
                 key = f'readstate:{mid}:done'
-            elif target_state == 'read' and row['state'] == 'landed' and turn == 0:
-                key = f'readstate:{mid}:read'
+            elif row['state'] == 'working':
+                key = f'readstate:{mid}:read:settle'
             else:
-                turn += 1
-                key = f'readstate:{mid}:{target_state}:{turn}'
+                key = f'readstate:{mid}:read'
             receipt = self.bridge._deliver_reaction(mid, emoji, key, once=False)
             delivered = receipt.get('delivered') is True
             reason = None
@@ -428,22 +410,14 @@ class ReadStates:
                     db.execute(f'UPDATE {TABLE} SET state=?, read_at=?, reason=? WHERE message_id=?',
                                ('read', now, reason, mid))
                 elif target_state == 'read':
-                    db.execute(f'UPDATE {TABLE} SET state=?, reason=?, turn=? WHERE message_id=?',
-                               ('read', reason, turn, mid))
-                elif target_state == 'working':
-                    db.execute(f'UPDATE {TABLE} SET state=?, reason=?, turn=? WHERE message_id=?',
-                               ('working', reason, turn, mid))
+                    db.execute(f'UPDATE {TABLE} SET state=?, read_at=coalesce(read_at, ?), reason=? WHERE message_id=?',
+                               ('read', now, reason, mid))
                 else:
                     db.execute(f'UPDATE {TABLE} SET state=?, done_at=?, reason=? WHERE message_id=?',
                                ('done', now, reason, mid))
                     db.execute(f'DELETE FROM {OVERRIDE_TABLE} WHERE message_id=?', (mid,))
             advanced = True
         if advanced:
-            with self._state_lock:
-                if target_state == 'read':
-                    self._read_mono[mid] = self.bridge.monotonic()
-                elif target_state == 'done':
-                    self._read_mono.pop(mid, None)
             self.close_offer(mid)
             self.bridge.typing_wake.set()
         return receipt
@@ -471,7 +445,7 @@ class ReadStates:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute(f'SELECT state FROM {TABLE} WHERE message_id=?', (mid,)).fetchone()
             if row is not None:
-                if row[0] not in OPEN_STATES:
+                if row[0] not in LEGACY_OPEN_STATES:
                     return
                 if target == 'done':
                     db.execute(
@@ -499,11 +473,6 @@ class ReadStates:
                     db.execute(f'UPDATE {OVERRIDE_TABLE} SET state=?, at=? WHERE message_id=?', (target, now, mid))
                 return
         if row is not None:
-            with self._state_lock:
-                if target == 'read' and row[0] == 'landed':
-                    self._read_mono[mid] = self.bridge.monotonic()
-                elif target in ('done', 'manual'):
-                    self._read_mono.pop(mid, None)
             self.bridge.typing_wake.set()
 
     def on_reply(self, reply_to):
@@ -519,7 +488,7 @@ class ReadStates:
                 db.execute('BEGIN IMMEDIATE')
                 row = db.execute(f'SELECT state FROM {TABLE} WHERE message_id=?', (mid,)).fetchone()
                 if row is not None:
-                    if row[0] not in OPEN_STATES:
+                    if row[0] not in LEGACY_OPEN_STATES:
                         return
                     self._save_pending_done(db, mid, self.now())
                 else:
@@ -675,7 +644,7 @@ class ReadStates:
                 recipient_incomplete = True
                 continue
             except _Off as off:
-                self._set_terminal(row['message_id'], OPEN_STATES, 'off', off.reason)
+                self._set_terminal(row['message_id'], LEGACY_OPEN_STATES, 'off', off.reason)
                 trouble.append(f'read states off (msg {row["message_id"]}): {off.reason}')
                 continue
             with self.store.connect() as db:
@@ -993,69 +962,14 @@ class ReadStates:
                     targets[crew] = (row['thread_id'], row['message_id'], st['turn_seq'])
         return targets
 
-    def _revert_working_rows(self, crew):
-        pending_done_ids = set(self._pending_done_ids())
-        for row in self._open_rows():
-            mid = row['message_id']
-            if row['state'] != 'working' or mid in pending_done_ids:
-                continue
-            if self._row_crew_or_configured(row) == crew:
-                self.transition(mid, 'read')
-
-    def _working_step(self):
+    def _settle_legacy_working(self):
         if not self.enabled or self.store is None:
             return
-        now_mono = self.bridge.monotonic()
-        working_after = self.working_after
-        stream_active = self.stream_active()
         pending_done_ids = set(self._pending_done_ids())
         for row in self._open_rows():
             mid = row['message_id']
-            if mid in pending_done_ids:
-                continue
-            crew = self._row_crew_or_configured(row)
-            if not crew:
-                continue
-            with self._state_lock:
-                st = self._crew_status.get(crew)
-                is_working = st is not None and st['status'] == 'working'
-            if row['state'] == 'working':
-                if not is_working:
-                    self.transition(mid, 'read')
-            elif row['state'] == 'read' and working_after > 0 and is_working and stream_active:
-                with self._state_lock:
-                    read_mono = self._read_mono.get(mid)
-                if read_mono is None:
-                    age = max(0.0, self.now() - row['read_at']) if row['read_at'] is not None else 0.0
-                    read_mono = now_mono - age
-                    with self._state_lock:
-                        self._read_mono[mid] = read_mono
-                if now_mono >= read_mono + working_after:
-                    self.transition(mid, 'working')
-
-    def _next_working_wait(self):
-        if not self.enabled or self.store is None or self.working_after <= 0 or not self.stream_active():
-            return None
-        now_mono = self.bridge.monotonic()
-        working_after = self.working_after
-        min_wait = None
-        for row in self._open_rows():
-            if row['state'] != 'read':
-                continue
-            crew = self._row_crew_or_configured(row)
-            if not crew:
-                continue
-            with self._state_lock:
-                st = self._crew_status.get(crew)
-                if st is None or st['status'] != 'working':
-                    continue
-                read_mono = self._read_mono.get(row['message_id'])
-            if read_mono is None:
-                age = max(0.0, self.now() - row['read_at']) if row['read_at'] is not None else 0.0
-                read_mono = now_mono - age
-            wait = max(0.0, read_mono + working_after - now_mono)
-            min_wait = wait if min_wait is None else min(min_wait, wait)
-        return min_wait
+            if row['state'] == 'working' and mid not in pending_done_ids:
+                self.transition(mid, 'read')
 
     def _resolve_row_crew(self, row, crew):
         try:
@@ -1063,7 +977,7 @@ class ReadStates:
         except TRANSIENT:
             return False
         except _Off as off:
-            self._set_terminal(row['message_id'], OPEN_STATES, 'off', off.reason)
+            self._set_terminal(row['message_id'], LEGACY_OPEN_STATES, 'off', off.reason)
             return False
         self._save_crew(row['message_id'], crew)
         return True
@@ -1160,7 +1074,7 @@ class ReadStates:
             if deliveries.get(crew):
                 self._save_crew(row['message_id'], crew)
             else:
-                self._set_terminal(row['message_id'], OPEN_STATES, 'off', 'crew_not_in_deliveries')
+                self._set_terminal(row['message_id'], LEGACY_OPEN_STATES, 'off', 'crew_not_in_deliveries')
 
     def _handle_inbox_event(self, kind, data):
         reader = data.get('reader')
@@ -1201,16 +1115,14 @@ class ReadStates:
             turn_seq = self._crew_turn_seq.get(crew, 0)
             self._crew_status[crew] = dict(status='idle', since=None, turn_seq=turn_seq)
             self._stream_cv.notify_all()
-        self._revert_working_rows(crew)
-        self._poll_wake.set()
         self.bridge.typing_wake.set()
 
     def _seed_crew_status(self):
         """Seed cached crew status at stream start from each open row crew's
-        current GetCrew state, so a crew already in a working turn gets its
-        working reaction and stream typing without waiting for its next
-        crew_status event. A crew that is not working, is already cached, or
-        cannot be read stays as it is. Never raises."""
+        current GetCrew state, so a crew already in a working turn gets
+        stream typing without waiting for its next crew_status event. A crew
+        that is not working, is already cached, or cannot be read stays as it
+        is. Never raises."""
         try:
             rows = self._open_rows()
         except Exception:  # noqa: BLE001 - best effort; crew_status events still drive status
@@ -1262,7 +1174,6 @@ class ReadStates:
             since = prev['since'] if was_working else now_mono
             self._crew_status[crew] = dict(status='working', since=since, turn_seq=turn_seq)
             self._stream_cv.notify_all()
-        self._poll_wake.set()
         self.bridge.typing_wake.set()
 
     def _handle_crew_stopped_event(self, data):
@@ -1383,7 +1294,7 @@ class ReadStates:
             try:
                 if self._has_open():
                     self._apply_cached_stream_events()
-                    self._working_step()
+                    self._settle_legacy_working()
                     last_wall = self._last_round_wall
                     now_wall = time.monotonic()
                     if last_wall is None or now_wall - last_wall >= ROUND_SECONDS:
@@ -1394,9 +1305,6 @@ class ReadStates:
                     if self._has_open():
                         remaining = (ROUND_SECONDS - (time.monotonic() - last_wall)
                                      if last_wall is not None else float(ROUND_SECONDS))
-                        next_working = self._next_working_wait()
-                        if next_working is not None:
-                            remaining = min(remaining, next_working)
                         self._poll_wake.wait(max(0.05, remaining))
                         continue
                 self._poll_wake.wait()
@@ -1456,7 +1364,7 @@ class ReadStates:
                 if self.nudge_after > 0 and (not self.bridge.native_nudge() or not self.config.get('yardr_operator')):
                     self._log_offer_off('nudge offers off: built-in /nudge or [yardr] operator unavailable')
                 self._close_stale_offers()
-                self._working_step()
+                self._settle_legacy_working()
                 now_mono = self.bridge.monotonic()
                 if not force and self.last_round is not None and now_mono - self.last_round < ROUND_SECONDS:
                     return

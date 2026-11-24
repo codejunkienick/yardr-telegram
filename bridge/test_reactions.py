@@ -51,7 +51,7 @@ class ReactionSettingsTests(unittest.TestCase):
                          '\U0001F468‍\U0001F4BB')
 
     def test_a_bad_emoji_refuses_naming_its_key(self):
-        for key in ('seen', 'done', 'read', 'working'):
+        for key in ('seen', 'done', 'read'):
             for value in ('""', '"ok"', '"\U0001F44D \U0001F44D"', '"a\U0001F44D"', '"1"', '"\\u0001"',
                           '"' + '\U0001F44D' * 17 + '"', '5', 'true'):
                 with self.subTest(key=key, value=value), \
@@ -62,16 +62,6 @@ class ReactionSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(b.SettingsError, r'reactions\.read'):
             self.load('read = "\U0001F440"\n')
 
-    def test_working_settings_require_read_and_validate_range(self):
-        with self.assertRaisesRegex(b.SettingsError, r'reactions\.working needs reactions\.read'):
-            self.load('working = "\u270D"\n')
-        with self.assertRaisesRegex(b.SettingsError, r'reactions\.working_after needs reactions\.read'):
-            self.load('working_after = 15\n')
-        self.assertEqual(self.load('working_after = 0\n').config['reactions']['working_after'], 0)
-        for bad in (-1, 3601, 'true', '"15"'):
-            with self.subTest(bad=bad), self.assertRaisesRegex(b.SettingsError, r'reactions\.working_after'):
-                self.load(f'working_after = {bad}\n')
-
     def test_read_loads_with_yardr_home(self):
         home = self.root / 'yard'
         home.mkdir(mode=0o700)
@@ -80,10 +70,6 @@ class ReactionSettingsTests(unittest.TestCase):
         path.write_text(text + '\n[reactions]\non_accept = true\nseen = "\U0001F54A"\nread = "\U0001F440"\n')
         reactions = b.load_settings(path).config['reactions']
         self.assertEqual(reactions, dict(on_accept=True, seen='\U0001F54A', read='\U0001F440', done=OK_HAND))
-        path.write_text(text + '\n[reactions]\non_accept = true\nseen = "\U0001F54A"\nread = "\U0001F440"\nworking = "\u270D"\nworking_after = 20\n')
-        reactions = b.load_settings(path).config['reactions']
-        self.assertEqual(reactions, dict(on_accept=True, seen='\U0001F54A', read='\U0001F440',
-                                         working='\u270D', working_after=20, done=OK_HAND))
 
     def test_on_accept_must_be_a_boolean(self):
         with self.assertRaisesRegex(b.SettingsError, 'reactions.on_accept must be true or false'):

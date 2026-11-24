@@ -96,7 +96,7 @@ default yard.
 | `[[command]]` | no | the yard's own commands and buttons, run by its own handlers ("Commands" below) |
 | `handler_write_paths` | no | directories the unit lets command handlers write, besides the bridge's own |
 | `[transcribe]` | no | voice transcription (below); off by default |
-| `[reactions]` | no | `on_accept`, `seen`, `done`, `read`, `working`, `working_after`, `nudge_after`: the `seen` reaction on each accepted message, optional yard-backed `read`/`working`/`done` tracking and unread Nudge offer ("Reactions" below) and the emoji `react` sets; no reaction ever without `on_accept = true`, `read` or a `react` call |
+| `[reactions]` | no | `on_accept`, `seen`, `done`, `read`, `nudge_after` (plus ignored legacy `working`, `working_after`): the `seen` reaction on each accepted message, optional yard-backed `read`/`done` tracking and unread Nudge offer ("Reactions" below) and the emoji `react` sets; no reaction ever without `on_accept = true`, `read` or a `react` call |
 | `[typing]` | no | `seconds` (0-900, default 0): with a live event stream, "typing..." follows real crew activity in the newest open row's thread, capped by `seconds` as a safety cap; without one, "typing..." shows after each accepted message until the next send, at most this long ("Typing" below); no chat action ever with 0 |
 | `[[topic]]` `name`, `crew` | no | topics of the paired chat, each its own conversation, created once by `topics` ("Topics" below); at most 50 |
 | `[auto_topics]` | no | `enabled` (default false): serve the topics the paired user creates in the chat ("Topics the user creates" below); without it only the `[[topic]]` tables are served |
@@ -2029,15 +2029,15 @@ repeat never stacks a second reaction and edits nothing the user wrote.
 | `on_accept` | `false` | `true` sets `seen` on each message once the yard has accepted it ("Inbound") |
 | `seen` | `"👀"` | the emoji for "the yard has the message" (with `read` enabled, typically `"🕊"`) |
 | `read` | unset (off) | optional emoji set once the yard has shown the message to the target crew (`inbox_shown`) or the crew's inbox cursor passes the message's hook `seq` (`inbox_read` / `GetCrew`; typically `"👀"`; requires `[yardr] home`) |
-| `working` | `"✍"` | optional emoji set once a `read` message's crew stays in a `working` turn past `working_after` seconds (requires `read`; `"✍"` is on Telegram's allowed list) |
-| `working_after` | `15` | integer seconds from `0` to `3600` (`0` disables `working`); seconds after reaching `read` while the crew stays `working` before setting `working` (requires `read` when above `0`) |
+| `working` | ignored | ignored since the working reaction was removed (accepted so existing settings load; `check-install` warns) |
+| `working_after` | ignored | ignored since the working reaction was removed (accepted so existing settings load; `check-install` warns) |
 | `nudge_after` | `0` (off) | integer seconds from `0` to `3600` (`0` off); when unread past this age while the crew is `running` and `idle` or `blocked`, offers one Nudge confirm card (requires `read`) |
 | `done` | `"👌"` | the emoji for "the work this message asked for is finished or answered" |
 
 An emoji value is a non-empty string of at most 16 characters with no
 whitespace, control character or ASCII letter or digit; anything else, and
 an unknown key in the table, refuses at load naming the key. Telegram allows
-only the emoji of its fixed reaction list (👀, ✍, 👌, 👍, 🫡 and 💯 among them;
+only the emoji of its fixed reaction list (👀, 👌, 👍, 🫡 and 💯 among them;
 ✅ and ✔ are not on it), and answers 400 for any other. A file without the
 table loads exactly as before.
 
@@ -2129,15 +2129,16 @@ accept point inserts rows; commands, ask answers, button presses and
 transcripts do not. When `read` is absent, no rows are inserted and no
 native calls are made.
 
-- **States:** `landed` (initial), `read`, `working`, and terminal `done`,
-  `manual`, `off`, `expired`. Terminal rows are never read again.
+- **States:** `landed` (initial), `read`, and terminal `done`, `manual`,
+  `off`, `expired`. Terminal rows are never read again. Any legacy row left in
+  `working` settles once to `read` (👀) on the first refresh after upgrade.
 - **Keys and locking:** `seen` still uses `reaction:<mid>:accept` (and
-  skips any row already past `landed`). Read, working and done transitions use
+  skips any row already past `landed`). Read and done transitions use
   one helper under the reactions `flock`, re-reading the row and stepping
-  forward (`landed -> read -> working -> done`, with `working -> read` on idle),
-  delivering via `readstate:<mid>:read`, `readstate:<mid>:done`, or
-  `readstate:<mid>:working|read:<turn>`. `Store.sent_since`
-  ignores `readstate:*` keys so a typing window survives read and working reactions;
+  forward (`landed -> read -> done`), delivering via `readstate:<mid>:read`
+  (or `readstate:<mid>:read:settle` when settling a legacy `working` row) and
+  `readstate:<mid>:done`. `Store.sent_since` ignores `readstate:*` keys so a
+  typing window survives read reactions;
   `agent_reacted` still watches only `reaction:<mid>:*`. Delivered,
   rejected (4xx) or ambiguous responses advance the row (logged once as
   `reaction not set (msg <id>): <reason>`); transient `not-sent` leaves
@@ -2148,12 +2149,11 @@ native calls are made.
   with the last `seq` seen): `inbox_shown` or `inbox_read` (`session == ""`,
   matching crew, `through >= seq`) moves `landed` to `read` at once — 👀 means
   the yard has shown the message to the crew member (`inbox_shown`) or the crew
-  acked it (`inbox_read`), whichever arrives first — line-session `crew_status`
-  (`user == ""`, matching crew) and `crew_stopped` drive `working` (✍ after
-  `working_after` seconds, default `15`, `0` off, while the crew stays
-  `working`, returning to `read` 👀 if the crew leaves `working` without
-  replying), `replied` (matching `source`, `crew`, `seq`) moves open rows to
-  `done` at once, and matching `hook` events resolve `crew` early.
+  acked it (`inbox_read`), whichever arrives first — `replied` (matching
+  `source`, `crew`, `seq`) moves open rows to `done` at once, matching `hook`
+  events resolve `crew` early, and line-session `crew_status` (`user == ""`,
+  matching crew) and `crew_stopped` drive stream typing without changing any
+  reaction.
   `read_states.refresh()` also runs in `poll_once` after
   `typed_nudge.refresh()` and from the open-row fallback timer at most once per
   5 monotonic seconds, only while an open (`landed`, `read` or `working`) row
@@ -2238,9 +2238,9 @@ exactly as before.
 When `[typing] seconds` is above 0 and `[reactions] read` is active with a live
 native event stream (`read_states` connected on `GET /events`), typing follows
 real crew activity from `crew_status` (and `crew_stopped`): while a crew
-member is in a `working` turn and has at least one open (`read` or `working`)
+member is in a `working` turn and has at least one open (`read`)
 row, the typing worker refreshes `sendChatAction` (`typing`) every 4 seconds
-in the thread of that crew's newest open (`read`/`working`) row, and stops
+in the thread of that crew's newest open (`read`) row, and stops
 immediately when that crew leaves `working`, when all its open rows finish,
 on any non-accept/non-readstate ledger send (`Store.sent_since`), or when
 `seconds` elapses as a safety cap; a send-stopped window resumes when the

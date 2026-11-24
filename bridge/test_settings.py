@@ -1270,7 +1270,6 @@ class InstallCheckTests(unittest.TestCase):
                 self.assertIn('native cards: ' + ownership, result.stdout)
                 self.assertIn('message states (test_bot): landed ' + ('on (🕊)' if read else 'off'), result.stdout)
                 self.assertIn('read ' + ('on (👀; crew secretary, helper)' if read else 'off (reactions.read unset)'), result.stdout)
-                self.assertIn('working ' + ('on (✍ after 15s)' if read else 'off (reactions.read unset)'), result.stdout)
                 self.assertIn('done on (👌; react' + (' and replies)' if read else '; replies off'), result.stdout)
                 self.assertIn('nudge offer ' + ('on (NudgeSession checked at runtime)' if 'operator' in keys else
                                                'off ([yardr] operator unset)' if read else

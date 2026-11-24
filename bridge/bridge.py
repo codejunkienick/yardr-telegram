@@ -72,13 +72,10 @@ NOT_SENT_REASON = 'transport_unavailable_not_sent'
 RESERVED_KEY = 'keys starting yardmail: are the bridge\'s own (whole mail)'
 # Reactions on the paired user's messages ([reactions]): none unless
 # on_accept is set or an agent asks. Telegram's reaction list has no check
-# mark, so "done" defaults to the OK hand; "working" defaults to ✍ (on
-# Telegram's allowed reaction list).
+# mark, so "done" defaults to the OK hand. `working` and `working_after` stay
+# accepted as ignored legacy keys so existing settings keep loading.
 REACTIONS_KEYS = {'on_accept', 'seen', 'done', 'read', 'working', 'working_after', 'nudge_after'}
 REACTIONS_DEFAULTS = dict(on_accept=False, seen='\U0001F440', done='\U0001F44C')
-REACTIONS_WORKING_DEFAULT = '\u270D'
-REACTIONS_WORKING_AFTER_DEFAULT = 15
-REACTIONS_WORKING_AFTER_MAX = 3600
 REACTIONS_NUDGE_AFTER_MAX = 3600
 REACTION_MAX_CHARS = 16
 # The typing indicator ([typing]): none unless seconds > 0. Telegram shows a
@@ -5825,18 +5822,12 @@ def load_settings(path, home=None):
     if 'reactions' in data:
         reactions = dict(REACTIONS_DEFAULTS, **_table(data, 'reactions', REACTIONS_KEYS))
         _bool_setting(reactions['on_accept'], 'reactions.on_accept')
-        for name in ('seen', 'done') + tuple(k for k in ('read', 'working') if k in reactions):
+        for name in ('seen', 'done') + (('read',) if 'read' in reactions else ()):
             if not valid_reaction_emoji(reactions[name]):
                 raise SettingsError(f'settings: reactions.{name} must be one emoji: at most '
                                     f'{REACTION_MAX_CHARS} characters, no space, letter or digit')
         if 'read' in reactions and not native.get('yardr_home'):
             raise SettingsError('settings: reactions.read needs [yardr] home')
-        if 'working' in reactions and 'read' not in reactions:
-            raise SettingsError('settings: reactions.working needs reactions.read')
-        if 'working_after' in reactions:
-            _int_setting(reactions['working_after'], 'reactions.working_after', 0, REACTIONS_WORKING_AFTER_MAX)
-            if reactions['working_after'] > 0 and 'read' not in reactions:
-                raise SettingsError('settings: reactions.working_after needs reactions.read')
         if 'nudge_after' in reactions:
             _int_setting(reactions['nudge_after'], 'reactions.nudge_after', 0, REACTIONS_NUDGE_AFTER_MAX)
             if reactions['nudge_after'] > 0 and 'read' not in reactions:
@@ -6398,14 +6389,6 @@ def message_state_report(config):
     crews = list(dict.fromkeys([config.get('agent', 'yardmaster')] + [t['agent'] for t in (config.get('topics') or ())]))
     read = ('on (' + reactions['read'] + '; crew ' + ', '.join(crews) + ')' if reading
             else 'off (reactions.read unset)')
-    working_after = reactions.get('working_after', REACTIONS_WORKING_AFTER_DEFAULT)
-    working_emoji = reactions.get('working', REACTIONS_WORKING_DEFAULT)
-    if not reading:
-        working = 'off (reactions.read unset)'
-    elif working_after <= 0:
-        working = 'off (reactions.working_after 0)'
-    else:
-        working = f'on ({working_emoji} after {working_after}s)'
     done = 'on (' + reactions['done'] + '; react' + (' and replies)' if reading else '; replies off without reactions.read)')
     after = reactions.get('nudge_after', 0)
     reason = None
@@ -6421,7 +6404,7 @@ def message_state_report(config):
     prefix = 'WARN  ' if after and reason else ''
     account = config.get('account_id', config.get('bot_username'))
     report = [prefix + 'message states (' + account + '): landed ' + landed + '; read ' + read
-              + '; working ' + working + '; done ' + done + '; nudge offer ' + offer]
+              + '; done ' + done + '; nudge offer ' + offer]
     if run_asks.owns_cards(config):
         report.append('native cards: owned here (cards = true)')
     else:
@@ -6461,6 +6444,11 @@ def install_problems(settings, which=shutil.which, sums=None, hasher=_sha256, pl
 
     for line in message_state_report(settings.config):
         check(True, line)
+    reactions = settings.config.get('reactions') or {}
+    deprecated_reactions = [f'reactions.{k}' for k in ('working', 'working_after') if k in reactions]
+    if deprecated_reactions:
+        verb = 'is' if len(deprecated_reactions) == 1 else 'are'
+        warn(f"{', '.join(deprecated_reactions)} {verb} no longer used (ignored)")
     if reason := settings.config.get('yardr_nudge_disabled'):
         warn(reason)
 

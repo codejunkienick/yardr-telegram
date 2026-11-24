@@ -1013,7 +1013,7 @@ class ReadStateTests(ReadStateCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(DOVE, result.stdout)
         self.assertIn(EYES, result.stdout)
-        self.assertIn(WORKING, result.stdout)
+        self.assertNotIn(WORKING, result.stdout)
         self.assertIn(OK_HAND, result.stdout)
 
         secondary = subprocess.run([sys.executable, '-B', str(script), '--instance', 'secondary'],
@@ -1022,7 +1022,8 @@ class ReadStateTests(ReadStateCase):
         self.assertIn('crew secretary · native cards not owned here', secondary.stdout)
         self.assertIn('✓ Nudge typed', secondary.stdout)
         self.assertNotIn('outcome unreadable', secondary.stdout)
-        for emoji in (DOVE, EYES, WORKING, OK_HAND):
+        self.assertNotIn(WORKING, secondary.stdout)
+        for emoji in (DOVE, EYES, OK_HAND):
             self.assertIn(emoji, secondary.stdout)
 
     def test_nudge_after_settings_validation(self):
@@ -1761,143 +1762,148 @@ class ReadStateTests(ReadStateCase):
         self.assertFalse(run_thread.is_alive())
         self.assertFalse(self.bridge.read_states._stream_started)
 
-    def test_stream_working_reaction_lifecycle_idle_revert_multi_row_and_quick_reply(self):
+    def test_crew_status_changes_make_zero_reaction_calls(self):
         with patch.object(self.bridge, '_log', side_effect=self.logs.append):
             self.bridge.read_states.start()
             self.addCleanup(self.bridge.read_states.stop)
             self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
 
-            # 1. Quick answer inside working_after (14s after read) goes eyes -> ok_hand directly.
             self.drain(self.update(uid=10))
             seq10 = self.row(10)['seq']
             self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
             self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
+            self.assertEqual(self.reaction_emojis(), [DOVE, EYES])
 
-            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
-            self.mono[0] += 14.0
-            self.poll()
-            self.assertEqual(self.row(10)['state'], 'read')
-            self.native.push_event(replied_event(22, seq10, crew=self.CREW, source=self.SOURCE,
+            # Non-line-session and three line-session working/idle turns make zero reaction calls.
+            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle', user='hal'))
+            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 21)
+            seq_ev = 22
+            for _ in range(3):
+                self.native.push_event(crew_status_event(seq_ev, crew=self.CREW, status='working', was='idle'))
+                seq_ev += 1
+                self._wait_until(
+                    lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working'
+                )
+                self.mono[0] += 20.0
+                self.poll()
+                self.assertEqual(self.row(10)['state'], 'read')
+                self.native.push_event(crew_status_event(seq_ev, crew=self.CREW, status='idle', was='working'))
+                seq_ev += 1
+                self._wait_until(
+                    lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'idle'
+                )
+                self.poll()
+                self.assertEqual(self.row(10)['state'], 'read')
+            self.assertEqual(self.reaction_emojis(), [DOVE, EYES])
+
+            self.native.push_event(replied_event(seq_ev, seq10, crew=self.CREW, source=self.SOURCE,
                                                  journal=self.CREW + '-journal'))
             self._wait_until(lambda: (self.row(10) or {}).get('state') == 'done', timeout=2.0)
-            msg10_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
-                            if url.endswith('/setMessageReaction') and body['message_id'] == 10]
-            self.assertEqual(msg10_emojis, [DOVE, EYES, OK_HAND])
+            self.assertEqual(self.reaction_emojis(), [DOVE, EYES, OK_HAND])
 
-            # 1b. Non-line-session crew_status is ignored; working_after is anchored on read_mono
-            #     (not working_since), so a row read >= 15s moves to working once crew starts working.
-            self.native.push_event(crew_status_event(23, crew=self.CREW, status='idle', was='working'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'idle')
-            self.drain(self.update(uid=11))
-            seq11 = self.row(11)['seq']
-            self.native.push_event(inbox_shown_event(24, reader=self.CREW, through=seq11, session=''))
-            self._wait_until(lambda: (self.row(11) or {}).get('state') == 'read', timeout=2.0)
-            self.native.push_event(crew_status_event(25, crew=self.CREW, status='working', was='idle', user='hal'))
-            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 25)
-            self.mono[0] += 30.0
-            self.poll()
-            self.assertEqual(self.row(11)['state'], 'read')
-            self.native.push_event(crew_status_event(26, crew=self.CREW, status='working', was='idle'))
-            self._wait_until(lambda: (self.row(11) or {}).get('state') == 'working', timeout=2.0)
-            self.native.push_event(replied_event(27, seq11, crew=self.CREW, source=self.SOURCE,
-                                                 journal=self.CREW + '-journal'))
-            self._wait_until(lambda: (self.row(11) or {}).get('state') == 'done', timeout=2.0)
-
-            # 2. Multi-row open for the same crew: both move read -> working past working_after,
-            #    both revert working -> read on idle (resetting read_mono), and a second turn
-            #    waits working_after from the return to read before re-sending working under a new key.
-            self.native.push_event(crew_status_event(28, crew=self.CREW, status='idle', was='working'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'idle')
-            self.drain(self.update(uid=12), self.update(uid=13))
-            seq13 = self.row(13)['seq']
-            self.native.push_event(inbox_shown_event(29, reader=self.CREW, through=seq13, session=''))
-            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'read'
-                             and (self.row(13) or {}).get('state') == 'read', timeout=2.0)
-            self.native.push_event(crew_status_event(30, crew=self.CREW, status='working', was='idle'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
-            self.mono[0] += 15.0
-            self.poll()
-            self.assertEqual(self.row(12)['state'], 'working')
-            self.assertEqual(self.row(13)['state'], 'working')
-
-            # Idle reverts both rows back to read (no stale working) and resets read_mono.
-            self.native.push_event(crew_status_event(31, crew=self.CREW, status='idle', was='working'))
-            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'read'
-                             and (self.row(13) or {}).get('state') == 'read', timeout=2.0)
-
-            # Second working turn stays read at 14s after returning to read, then moves at 15s.
-            self.native.push_event(crew_status_event(32, crew=self.CREW, status='working', was='idle'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
-            self.mono[0] += 14.0
-            self.poll()
-            self.assertEqual(self.row(12)['state'], 'read')
-            self.assertEqual(self.row(13)['state'], 'read')
-            self.mono[0] += 1.0
-            self.poll()
-            self.assertEqual(self.row(12)['state'], 'working')
-            self.assertEqual(self.row(13)['state'], 'working')
-
-            # Replying to msg 12 moves working -> done; idle then moves msg 13 -> read while msg 12 stays done.
-            self.native.push_event(replied_event(33, self.row(12)['seq'], crew=self.CREW, source=self.SOURCE,
-                                                 journal=self.CREW + '-journal'))
-            self._wait_until(lambda: (self.row(12) or {}).get('state') == 'done', timeout=2.0)
-            self.native.push_event(crew_status_event(34, crew=self.CREW, status='idle', was='working'))
-            self._wait_until(lambda: (self.row(13) or {}).get('state') == 'read', timeout=2.0)
-            self.assertEqual(self.row(12)['state'], 'done')
-            msg12_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
-                            if url.endswith('/setMessageReaction') and body['message_id'] == 12]
-            self.assertEqual(msg12_emojis, [DOVE, EYES, WORKING, EYES, WORKING, OK_HAND])
-            msg13_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
-                            if url.endswith('/setMessageReaction') and body['message_id'] == 13]
-            self.assertEqual(msg13_emojis, [DOVE, EYES, WORKING, EYES, WORKING, EYES])
-
-            # 3. Transient not-sent on working -> read retries cleanly under the same key.
-            self.native.push_event(crew_status_event(35, crew=self.CREW, status='working', was='idle'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
-            self.mono[0] += 15.0
-            self.poll()
-            self.assertEqual(self.row(13)['state'], 'working')
-            self.reaction_answer = b.RequestNotSent('network request not sent', 7, 'connect')
-            self.native.push_event(crew_status_event(36, crew=self.CREW, status='idle', was='working'))
-            self._wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= 36)
-            self.assertEqual(self.row(13)['state'], 'working')
-            self.reaction_answer = (200, dict(ok=True, result=True))
-            self.poll()
-            self.assertEqual(self.row(13)['state'], 'read')
-            self.bridge.read_states.stop()
-
-        # 4. Pre-existing stale working row reverts to read on start/connect when crew is not working.
+    def test_legacy_working_row_settles_to_read_then_done_on_reply(self):
+        # Set up two rows that reached read, then simulate pre-upgrade legacy `working` rows.
+        self.drain(self.update(uid=10), self.update(uid=11))
+        self.native.crew[self.CREW]['cursor'] = self.row(11)['seq']
+        self.poll()
+        self.assertEqual(self.row(10)['state'], 'read')
+        self.assertEqual(self.row(11)['state'], 'read')
         with self.store.connect() as db:
-            db.execute("UPDATE read_states SET state='working', turn=3 WHERE message_id=13")
-        self.restart()
-        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
-            self.bridge.read_states.start()
-            self.addCleanup(self.bridge.read_states.stop)
-            self._wait_until(lambda: (self.row(13) or {}).get('state') == 'read', timeout=2.0)
-            self.bridge.read_states.stop()
+            db.execute("UPDATE read_states SET state='working', turn=5 WHERE message_id IN (10, 11)")
 
-        # 5. working_after = 0 disables the working reaction while keeping read/done active.
-        self.restart(reactions=dict(self.config['reactions'], working_after=0))
+        # Transient not-sent on msg 11 leaves it working and retries the same settle key on next refresh.
+        self.restart()
+        self.calls.clear()
+        self.reaction_answer = lambda body: (_ for _ in ()).throw(b.RequestNotSent('connect failed', 7, 'connect')) \
+            if body['message_id'] == 11 else (200, dict(ok=True, result=True))
         with patch.object(self.bridge, '_log', side_effect=self.logs.append):
-            self.bridge.read_states.start()
-            self.addCleanup(self.bridge.read_states.stop)
-            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
-            self.drain(self.update(uid=14))
-            seq14 = self.row(14)['seq']
-            self.native.push_event(inbox_shown_event(40, reader=self.CREW, through=seq14, session=''))
-            self._wait_until(lambda: (self.row(14) or {}).get('state') == 'read', timeout=2.0)
-            self.native.push_event(crew_status_event(41, crew=self.CREW, status='working', was='idle'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
-            self.mono[0] += 60.0
-            self.poll()
-            self.assertEqual(self.row(14)['state'], 'read')
-            self.native.push_event(replied_event(42, seq14, crew=self.CREW, source=self.SOURCE,
-                                                 journal=self.CREW + '-journal'))
-            self._wait_until(lambda: (self.row(14) or {}).get('state') == 'done', timeout=2.0)
-            msg14_emojis = [body['reaction'][0]['emoji'] for url, body in self.calls
-                            if url.endswith('/setMessageReaction') and body['message_id'] == 14]
-            self.assertEqual(msg14_emojis, [DOVE, EYES, OK_HAND])
+            self.bridge.read_states.refresh()
+        self.assertEqual(self.row(10)['state'], 'read')
+        self.assertEqual(self.row(10)['turn'], 5)
+        self.assertEqual(self.row(11)['state'], 'working')
+        self.assertEqual(
+            [(body['message_id'], body['reaction'][0]['emoji'])
+             for url, body in self.calls if url.endswith('/setMessageReaction') and body['message_id'] == 10],
+            [(10, EYES)],
+        )
+
+        self.calls.clear()
+        self.reaction_answer = (200, dict(ok=True, result=True))
+        self.bridge.read_states.refresh()
+        self.assertEqual(self.row(11)['state'], 'read')
+        self.assertEqual(self.row(11)['turn'], 5)
+        self.assertEqual(self.reaction_emojis(), [EYES])
+
+        # Subsequent refresh does not re-react; reply moves settled rows to done.
+        self.calls.clear()
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self.reaction_emojis(), [])
+        self.assertTrue(self.bridge.publish(self.publish(key='reply-after-settle'))['delivered'])
+        self.native.journal_events[self.CREW + '-journal'].append(
+            replied_event(501, self.row(10)['seq'], crew=self.CREW, source=self.SOURCE, journal=self.CREW + '-journal')
+        )
+        self.mono[0] += 60.0
+        self.poll()
+        self.assertEqual(self.row(10)['state'], 'done')
+        self.assertEqual(self.row(10)['turn'], 5)
+        self.assertEqual(self.reaction_emojis(), [OK_HAND])
+
+    def test_deprecated_working_settings_load_and_check_install_warns_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / 'yard'
+            home.mkdir(mode=0o700)
+            path = write_settings(root)
+            base_text = path.read_text()
+
+            # With working and working_after (even without reactions.read): loads cleanly and warns once.
+            path.write_text(base_text + '\n[reactions]\nworking = "✍"\nworking_after = 15\n')
+            loaded = b.load_settings(path)
+            self.assertEqual(loaded.config['reactions']['working'], WORKING)
+            self.assertEqual(loaded.config['reactions']['working_after'], 15)
+            report = b.message_state_report(loaded.config)
+            self.assertFalse(any('working' in line or WORKING in line for line in report), report)
+            warns = [line for ok, line in b.install_problems(loaded, platform='linux') if ok and line.startswith('WARN  ')]
+            dep_warns = [line for line in warns if 'reactions.working' in line]
+            self.assertEqual(len(dep_warns), 1, warns)
+            self.assertIn('reactions.working_after', dep_warns[0])
+            self.assertIn('no longer used', dep_warns[0])
+
+            # With reactions.read and [yardr] home: CLI check-install exits 0 and emits one WARN line.
+            fake_yard = FakeReadYard(home, crew='yardmaster', source='tgbridge')
+            self.addCleanup(fake_yard.close)
+            path.write_text(
+                base_text.replace('[yardr]', f'[yardr]\nhome = "{home}"\n')
+                + '\n[reactions]\non_accept = true\nseen = "🕊"\nread = "👀"\nworking = "✍"\nworking_after = 15\n'
+            )
+            loaded = b.load_settings(path)
+            self.assertEqual(loaded.config['reactions']['working'], WORKING)
+            self.assertEqual(loaded.config['reactions']['working_after'], 15)
+            env = dict(HOME=str(root), PATH=str(root) + ':/usr/local/bin:/usr/bin:/bin',
+                       XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'))
+            result = subprocess.run(
+                [sys.executable, '-B', str(Path(__file__).resolve().parent / 'bridge.py'),
+                 '--settings', str(path), 'check-install'],
+                env=env, cwd=root, capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            lines = [line for line in result.stdout.splitlines() if 'reactions.working' in line]
+            self.assertEqual(len(lines), 1, result.stdout)
+            self.assertTrue(lines[0].startswith('WARN  '), lines[0])
+            self.assertIn('reactions.working_after', lines[0])
+            self.assertIn('no longer used', lines[0])
+            msg_lines = [line for line in result.stdout.splitlines() if 'message states (' in line]
+            self.assertEqual(len(msg_lines), 1, result.stdout)
+            self.assertNotIn(WORKING, msg_lines[0])
+            self.assertNotIn('working ', msg_lines[0])
+
+            # Single key (working_after = 0) also warns once.
+            path.write_text(base_text + '\n[reactions]\nworking_after = 0\n')
+            single_warns = [line for ok, line in b.install_problems(b.load_settings(path), platform='linux')
+                            if ok and 'reactions.working_after' in line]
+            self.assertEqual(len(single_warns), 1, single_warns)
+            self.assertNotIn('reactions.working,', single_warns[0])
 
     def test_stream_typing_driven_by_crew_status_and_fallback_without_stream(self):
         self.native.crew['secretary'] = dict(name='secretary', journal='secretary-journal',
@@ -1925,7 +1931,7 @@ class ReadStateTests(ReadStateCase):
             self.bridge._typing_tick()
             self.assertEqual(self.chat_actions, [])
 
-            # Working turn starts -> typing sent immediately and repeated every 4s, surviving read -> working.
+            # Working turn starts -> typing sent immediately and repeated every 4s, with no working reaction.
             self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
             self._wait_until(lambda: self.bridge.read_states.typing_targets() != {})
             self.bridge._typing_tick()
@@ -1949,14 +1955,14 @@ class ReadStateTests(ReadStateCase):
             self.bridge._typing_tick()
             self.assertEqual([b for _, b in self.chat_actions], [dict(chat_id=123, action='typing')] * 3)
 
-            # Transitioning msg 10 to working (✍) does not interrupt typing; cap at 10s stops it.
+            # Msg 10 stays in read (no working reaction); cap at 10s stops typing.
             self.mono[0] = 1015.0
             self.poll()
-            self.assertEqual(self.row(10)['state'], 'working')
+            self.assertEqual(self.row(10)['state'], 'read')
             self.bridge._typing_tick()
             self.assertEqual(len(self.chat_actions), 3)  # capped at 1000 + 10 = 1010
 
-            # Idle stops typing and reverts msg 10 -> read; a newer open row in topic web switches thread.
+            # Idle stops typing; a newer open row in topic web switches thread.
             self.native.push_event(crew_status_event(23, crew=self.CREW, status='idle', was='working'))
             self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
             self.bridge._typing_tick()
@@ -2020,28 +2026,6 @@ class ReadStateTests(ReadStateCase):
             self.bridge._typing_tick()
             self.assertEqual(len(self.chat_actions), 2)
 
-    def test_stream_break_reverts_working_row_to_read(self):
-        with patch.object(self.bridge, '_log', side_effect=self.logs.append):
-            self.bridge.read_states.start()
-            self.addCleanup(self.bridge.read_states.stop)
-            self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
-
-            self.drain(self.update(uid=10))
-            seq10 = self.row(10)['seq']
-            self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
-            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
-            self.native.push_event(crew_status_event(21, crew=self.CREW, status='working', was='idle'))
-            self._wait_until(lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working')
-            self.mono[0] += 15.0
-            self.poll()
-            self.assertEqual(self.row(10)['state'], 'working')
-
-            self.native.stream_mode = 'http_404'
-            self.native.drop_streams()
-            self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0,
-                             message='stream break did not revert working row to read')
-            self.assertEqual(self.bridge.read_states._crew_status, {})
-
     def test_stream_drop_falls_back_to_accept_timer_typing(self):
         self.restart(typing=dict(seconds=10))
         with patch.object(self.bridge, '_log', side_effect=self.logs.append):
@@ -2084,7 +2068,7 @@ class ReadStateTests(ReadStateCase):
             self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
             self.mono[0] += 15.0
             self.poll()
-            self.assertEqual(self.row(10)['state'], 'working')
+            self.assertEqual(self.row(10)['state'], 'read')
             self.bridge._typing_tick()
             self.assertEqual(self.chat_actions, [(1015.0, dict(chat_id=123, action='typing'))])
             self.bridge.read_states.stop()
@@ -2097,7 +2081,7 @@ class ReadStateTests(ReadStateCase):
             self.addCleanup(self.bridge.read_states.stop)
             self._wait_until(lambda: self.bridge.read_states._stream_connected, timeout=2.0)
 
-            # Idle crew at start: nothing seeded, no spurious working past working_after.
+            # Idle crew at start: nothing seeded, row stays read.
             self.assertEqual(self.bridge.read_states._crew_status, {})
             self.native.push_event(inbox_shown_event(20, reader=self.CREW, through=seq10, session=''))
             self._wait_until(lambda: (self.row(10) or {}).get('state') == 'read', timeout=2.0)
@@ -2122,7 +2106,8 @@ class ReadStateTests(ReadStateCase):
                 lambda: (self.bridge.read_states._crew_status.get(self.CREW) or {}).get('status') == 'working',
                 timeout=3.0, message='reconnect did not seed working crew status')
             self.poll()
-            self.assertEqual(self.row(10)['state'], 'working')
+            self.assertEqual(self.row(10)['state'], 'read')
+            self.assertEqual(self.bridge.read_states.typing_targets().get(self.CREW, (None, 0))[1], 10)
             self.bridge.read_states.stop()
 
     def test_stream_typing_resumes_for_older_open_row_after_send(self):
@@ -2231,12 +2216,6 @@ class SecondaryReadStateTests(ReadStateCase):
     )
     test_bridge_run_starts_and_stops_read_states_stream = (
         ReadStateTests.test_bridge_run_starts_and_stops_read_states_stream
-    )
-    test_stream_working_reaction_lifecycle_idle_revert_multi_row_and_quick_reply = (
-        ReadStateTests.test_stream_working_reaction_lifecycle_idle_revert_multi_row_and_quick_reply
-    )
-    test_stream_break_reverts_working_row_to_read = (
-        ReadStateTests.test_stream_break_reverts_working_row_to_read
     )
     test_stream_start_seeds_working_crew_status = (
         ReadStateTests.test_stream_start_seeds_working_crew_status
@@ -3411,12 +3390,11 @@ class RealReadStateTests(BridgeTestCase):
                     finally:
                         br_proxy.read_states.stop()
 
-                # 4. Real crew_status working reaction (👀 -> ✍ -> 👀 -> 👌) and typing.
+                # 4. Real crew_status typing without any working reaction (👀 -> 👌).
                 if fixture is not None:
                     work_cfg = dict(
                         cfg,
-                        reactions=dict(on_accept=True, seen=DOVE, read=EYES, working=WORKING,
-                                       working_after=1, done=OK_HAND),
+                        reactions=dict(on_accept=True, seen=DOVE, read=EYES, done=OK_HAND),
                         typing=dict(seconds=600),
                     )
                     br_work = b.Bridge(work_cfg, b.Store(root / 'work.sqlite3', 10), 'SECRET', 'CAPABILITY',
@@ -3440,22 +3418,19 @@ class RealReadStateTests(BridgeTestCase):
                         daemon('status', 'writer', 'working')
                         wait_until(lambda: len(chat_actions) >= 1, timeout=3.0,
                                    msg='real crew_status working did not send typing')
-                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'working'
-                                   and WORKING in emojis(107), timeout=4.0,
-                                   msg='real crew_status working did not set working reaction')
+                        self.assertEqual(br_work.read_states.get(107)['state'], 'read')
+                        self.assertEqual(emojis(107), [DOVE, EYES])
 
                         daemon('status', 'writer', 'idle')
-                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'read'
-                                   and emojis(107)[-1] == EYES, timeout=3.0,
-                                   msg='real crew_status idle did not return working to read')
+                        wait_until(lambda: (br_work.read_states._crew_status.get('writer') or {}).get('status') == 'idle',
+                                   timeout=3.0)
                         actions_at_idle = len(chat_actions)
                         time.sleep(1.2)
                         self.assertEqual(len(chat_actions), actions_at_idle)
 
                         daemon('status', 'writer', 'working')
                         wait_until(lambda: len(chat_actions) > actions_at_idle, timeout=3.0)
-                        wait_until(lambda: br_work.read_states.get(107)['state'] == 'working'
-                                   and emojis(107).count(WORKING) == 2, timeout=4.0)
+                        self.assertEqual(br_work.read_states.get(107)['state'], 'read')
                         env['TGBRIDGE_SECRET'] = br_work.secret
                         cli('reply', str(seq107), '--crew', 'writer', 'Done after working')
                         wait_until(lambda: br_work.read_states.get(107)['state'] == 'done'
@@ -3463,7 +3438,7 @@ class RealReadStateTests(BridgeTestCase):
                         actions_at_done = len(chat_actions)
                         time.sleep(1.2)
                         self.assertEqual(len(chat_actions), actions_at_done)
-                        self.assertEqual(emojis(107), [DOVE, EYES, WORKING, EYES, WORKING, OK_HAND])
+                        self.assertEqual(emojis(107), [DOVE, EYES, OK_HAND])
                     finally:
                         callback.RequestHandlerClass.bridge = self.bridge
                         br_work.stop.set()

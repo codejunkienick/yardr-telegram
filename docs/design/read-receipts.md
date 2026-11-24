@@ -29,7 +29,9 @@ when a core lacks `inbox_read` or `/events`.
    member that never received the message would still pass its seq;
    therefore `EventsSince [seq-1, 1]` verifies once per message that the
    `hook` event came from our source and names the conversation's crew
-   (`_quota_agent`) in `data.deliveries`. Read means `GetCrew.cursor >= seq`.
+   (`_quota_agent`) in `data.deliveries`. Read means the yard has shown the message
+   to the crew member (`inbox_shown`) or the crew acked it (`inbox_read`,
+   `GetCrew.cursor >= seq`).
    *Degrades off:* if `EventsSince` is unsupported, refused or returns a
    mismatched event, or if the crew is not in `data.deliveries`, the row
    moves to `off`.

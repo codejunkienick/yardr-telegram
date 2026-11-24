@@ -2820,8 +2820,8 @@ class RealReadStateTests(BridgeTestCase):
                         wait_until(lambda: (self.bridge.read_states._last_seq or 0) >= hal_head, timeout=3.0)
                         self.assertEqual(self.bridge.read_states.get(104)['state'], 'landed')
 
-                        daemon('shown', 'writer', '', str(seq104))
                         t_shown = time.monotonic()
+                        daemon('shown', 'writer', '', str(seq104))
                         wait_until(lambda: self.bridge.read_states.get(104)['state'] == 'read'
                                    and EYES in emojis(104), timeout=2.0,
                                    msg='real inbox_shown did not turn to eyes within 2 s')
@@ -2851,8 +2851,8 @@ class RealReadStateTests(BridgeTestCase):
                         secondary.drain([self.update(106)])
                         secondary.reaction_queue.join()
                         seq106 = secondary.read_states.get(106)['seq']
-                        daemon('shown', 'secretary', '', str(seq106))
                         t_sec_shown = time.monotonic()
+                        daemon('shown', 'secretary', '', str(seq106))
                         wait_until(lambda: secondary.read_states.get(106)['state'] == 'read'
                                    and EYES in emojis(106), timeout=2.0,
                                    msg='secondary real inbox_shown did not turn to eyes within 2 s')

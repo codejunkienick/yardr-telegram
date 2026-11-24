@@ -52,6 +52,7 @@ def _parse_unittest_flags(raw_args):
     parser.add_argument('-c', '--catch', action='store_true')
     parser.add_argument('--locals', action='store_true')
     parser.add_argument('-k', '--test-name-pattern', action='append', dest='patterns')
+    parser.add_argument('-p', '--pattern', default=None)
     known, rest = parser.parse_known_args(raw_args)
     flags = [a for a in raw_args if a not in rest]
     # Reconstruct exact flag list cleanly for forwarding.
@@ -111,7 +112,7 @@ def _run_worker(suite_dir, result_path, raw_args, test_ids):
     return 0 if result.wasSuccessful() else 1
 
 
-def _discover_suite(suite_dir, patterns):
+def _discover_suite(suite_dir, patterns, discover_pattern=None):
     """Return ordered list of leaf test IDs discovered in `suite_dir`."""
     suite_path = str(ROOT / suite_dir)
     added = suite_path not in sys.path
@@ -123,7 +124,8 @@ def _discover_suite(suite_dir, patterns):
             loader.testNamePatterns = [
                 p if ('*' in p or '?' in p or '[' in p) else f'*{p}*' for p in patterns
             ]
-        discovered = loader.discover(suite_path, top_level_dir=suite_path)
+        discovered = loader.discover(suite_path, pattern=discover_pattern or 'test*.py',
+                                     top_level_dir=suite_path)
         return [case.id() for case in _iter_cases(discovered)]
     finally:
         if added and suite_path in sys.path:
@@ -155,11 +157,11 @@ def _priority(suite_dir, label, test_ids):
     return (size + len(test_ids) * 100, label)
 
 
-def _build_units(patterns):
+def _build_units(patterns, discover_pattern=None):
     """Build work units across both suites without losing or duplicating any test."""
     units = []
     for suite_dir in SUITES:
-        ids = _discover_suite(suite_dir, patterns)
+        ids = _discover_suite(suite_dir, patterns, discover_pattern)
         by_module = {}
         for tid in ids:
             mod = tid.split('.', 1)[0]
@@ -204,8 +206,12 @@ def _partition_port_range(raw, slots):
     return ranges
 
 
-def _run_target(args, unittest_args):
+def _run_target(args, unittest_args, serial=False):
     """Run a single file or explicit positional targets directly with unittest."""
+    env = None
+    if serial:
+        env = os.environ.copy()
+        env['TGBRIDGE_TEST_JOBS'] = '1'
     if len(args) == 1:
         candidate = Path(args[0])
         if candidate.is_file():
@@ -216,17 +222,22 @@ def _run_target(args, unittest_args):
                     return subprocess.run(
                         [sys.executable, '-B', '-m', 'unittest', 'discover', '-s', suite_dir,
                          '-p', resolved.name, *unittest_args],
-                        cwd=ROOT,
+                        cwd=ROOT, env=env,
                     ).returncode
-    return subprocess.run([sys.executable, '-B', '-m', 'unittest', *args, *unittest_args], cwd=ROOT).returncode
+    return subprocess.run([sys.executable, '-B', '-m', 'unittest', *args, *unittest_args],
+                          cwd=ROOT, env=env).returncode
 
 
-def _run_serial(unittest_args, has_pattern=False):
+def _run_serial(unittest_args, has_pattern=False, discover_pattern=None):
     ran_any = False
+    env = os.environ.copy()
+    env['TGBRIDGE_TEST_JOBS'] = '1'
+    pattern_args = ['-p', discover_pattern] if discover_pattern else []
     for suite_dir in SUITES:
         rc = subprocess.run(
-            [sys.executable, '-B', '-m', 'unittest', 'discover', '-s', suite_dir, *unittest_args],
-            cwd=ROOT,
+            [sys.executable, '-B', '-m', 'unittest', 'discover', '-s', suite_dir,
+             *pattern_args, *unittest_args],
+            cwd=ROOT, env=env,
         ).returncode
         if rc == 0:
             ran_any = True
@@ -263,7 +274,15 @@ def _default_jobs():
                 return value
         except ValueError:
             pass
-    return min(os.cpu_count() or 1, DEFAULT_JOBS_CAP)
+    cpus = os.cpu_count() or 1
+    base = min(cpus, DEFAULT_JOBS_CAP)
+    if base <= 1:
+        return base
+    try:
+        load1 = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        return base
+    return min(base, max(2, cpus - int(load1)))
 
 
 def main(argv=None):
@@ -283,25 +302,40 @@ def main(argv=None):
         print(
             'usage: sh scripts/test.sh [--serial] [-j N] [unittest options | test file]\n'
             '  --serial         run bridge then yardr/tests serially\n'
-            '  -j, --jobs N     worker process count (default: min(cpus, 8) or $TGBRIDGE_TEST_JOBS)\n'
+            '  -j, --jobs N     worker process count (default: min(cpus, 8) scaled down under load, or $TGBRIDGE_TEST_JOBS)\n'
             '  <file>           run one test file (e.g. bridge/test_albums.py)\n'
-            '  unittest flags   -v, -f/--failfast, -b/--buffer, -k PATTERN, ...'
+            '  unittest flags   -v, -q, -f/--failfast, -b/--buffer, -c/--catch, --locals, -k PATTERN, -p PATTERN'
         )
         return 0
 
     known, unittest_args, positional = _parse_unittest_flags(remaining)
+    for arg in positional:
+        if arg.startswith('-') and len(arg) > 1:
+            sys.stderr.write(
+                f'sh scripts/test.sh: unsupported option {arg!r}; supported options: '
+                '--serial, -j N, -v, -q, -f, -b, -c, --locals, -k PATTERN, -p PATTERN, <test file>\n'
+            )
+            return 2
+    if positional and known.pattern:
+        sys.stderr.write(
+            'sh scripts/test.sh: -p/--pattern cannot be combined with explicit test targets; '
+            'run without targets to filter by pattern, or pass a file path alone\n'
+        )
+        return 2
+    has_filter = bool(known.patterns) or bool(known.pattern)
     if positional:
-        return _run_target(positional, unittest_args)
+        serial_mode = top_args.serial or (top_args.jobs is not None and top_args.jobs <= 1)
+        return _run_target(positional, unittest_args, serial_mode)
     if top_args.serial:
-        return _run_serial(unittest_args, bool(known.patterns))
+        return _run_serial(unittest_args, has_filter, known.pattern)
 
     jobs = top_args.jobs if top_args.jobs is not None else _default_jobs()
     if jobs <= 1:
-        return _run_serial(unittest_args, bool(known.patterns))
+        return _run_serial(unittest_args, has_filter, known.pattern)
 
-    units = _build_units(known.patterns)
+    units = _build_units(known.patterns, known.pattern)
     if not units:
-        return _run_serial(unittest_args, bool(known.patterns))
+        return _run_serial(unittest_args, has_filter, known.pattern)
 
     worker_count = min(jobs, len(units))
     port_ranges = _partition_port_range(os.environ.get('TEST_PORT_RANGE'), worker_count)

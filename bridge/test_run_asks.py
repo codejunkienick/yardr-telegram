@@ -711,6 +711,12 @@ class NativeSocket:
         self.thread.join()
 
 
+def _fixture_workers():
+    if os.environ.get('TGBRIDGE_TEST_JOBS') == '1':
+        return 1
+    return min(os.cpu_count() or 1, 4)
+
+
 class NativeCase(BridgeTestCase):
     """A bridge on the fake native socket and fake Telegram; carries no tests."""
 
@@ -844,6 +850,19 @@ class NativeCase(BridgeTestCase):
 
         native = self.native
         def direct_call(client_self, method, arguments):
+            # Conservative: the replica models no native mode, so any set mode fails loudly.
+            if native.mode is not None:
+                raise AssertionError(
+                    f'fast native path does not model native.mode={native.mode!r}; '
+                    'run without _use_fast_native for mode-based cases')
+            if native.read_statuses:
+                raise AssertionError(
+                    f'fast native path does not model read_statuses={native.read_statuses!r}; '
+                    'run without _use_fast_native for mode-based cases')
+            if native.repo_edit_mode is not None:
+                raise AssertionError(
+                    f'fast native path does not model repo_edit_mode={native.repo_edit_mode!r}; '
+                    'run without _use_fast_native for mode-based cases')
             payload = json.loads(n.canonical(arguments))
             status, raw = native.dispatch(method, payload, client_self.source)
             if status != 200 or raw is None or len(raw) > 8 * 1024 * 1024:
@@ -925,6 +944,33 @@ class NativeTests(NativeCase):
         self.native.mode = 'duplicate-json'
         self.assertFalse(self.create()['delivered'])
         self.assertEqual((self.sent_count, self.documents, self.writes()), (0, [], []))
+
+    def test_fast_native_refuses_unmodelled_modes(self):
+        self._use_fast_native()
+        self.reset_native(proposal())
+        client = self.bridge.run_asks.client
+        self.assertIsNotNone(client)
+        with self.subTest(mode='native.mode'):
+            self.native.mode = 'refused'
+            try:
+                with self.assertRaisesRegex(AssertionError, r'native\.mode'):
+                    client.call('GetUser', {'name': 'pat'})
+            finally:
+                self.native.mode = None
+        with self.subTest(mode='read_statuses'):
+            self.native.read_statuses = [503]
+            try:
+                with self.assertRaisesRegex(AssertionError, 'read_statuses'):
+                    client.call('GetUser', {'name': 'pat'})
+            finally:
+                self.native.read_statuses = []
+        with self.subTest(mode='repo_edit_mode'):
+            self.native.repo_edit_mode = 'no-capability-method'
+            try:
+                with self.assertRaisesRegex(AssertionError, 'repo_edit_mode'):
+                    client.call('GetUser', {'name': 'pat'})
+            finally:
+                self.native.repo_edit_mode = None
 
     def test_depot_pack_review_and_envelope_fail_closed(self):
         self._use_fast_native()
@@ -3988,7 +4034,7 @@ class NativeTests(NativeCase):
             run_fixtures(only_names)
             return
 
-        workers = 1 if os.environ.get('TGBRIDGE_TEST_JOBS') == '1' else min(os.cpu_count() or 1, 4)
+        workers = _fixture_workers()
         if workers <= 1:
             run_fixtures(None)
         else:
@@ -11066,6 +11112,20 @@ class RealNativeTests(BridgeTestCase):
                   'core+ledger restart, exact commit/test/review/assembly landing and failed-test status verified')
         finally:
             testyardr.stop(server)
+
+
+class FixtureWorkerTests(unittest.TestCase):
+    def test_serial_env_yields_one_worker(self):
+        with patch.dict(os.environ, {'TGBRIDGE_TEST_JOBS': '1'}):
+            self.assertEqual(_fixture_workers(), 1)
+
+    def test_default_workers_cap_at_four(self):
+        with patch.dict(os.environ):
+            os.environ.pop('TGBRIDGE_TEST_JOBS', None)
+            with patch.object(os, 'cpu_count', return_value=16):
+                self.assertEqual(_fixture_workers(), 4)
+            with patch.object(os, 'cpu_count', return_value=2):
+                self.assertEqual(_fixture_workers(), 2)
 
 
 if __name__ == '__main__':

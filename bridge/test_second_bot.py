@@ -38,27 +38,6 @@ MAYOR_CALLS = ('send', 'react', 'pin', 'unpin', 'ask_close')
 # The shape of the crew add the authority contract proposes, with synthetic paths.
 MAYOR_ARGS = ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort=medium',
               '-c', 'mcp_servers.figma.enabled=false', '-c', 'mcp_servers.posthog.enabled=false']
-# The ledger's tables as a previous owner wrote them, before the native and message-log tables.
-ORIGINAL_SCHEMA = '''
-CREATE TABLE cursor (id INTEGER PRIMARY KEY, offset INTEGER NOT NULL);
-CREATE TABLE deliveries (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL);
-CREATE TABLE asks (ask_id TEXT PRIMARY KEY, question TEXT NOT NULL, format TEXT NOT NULL, options TEXT NOT NULL,
-  message_id INTEGER, answered INTEGER NOT NULL DEFAULT 0, answer TEXT, update_id INTEGER,
-  relayed INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'text');
-ALTER TABLE asks ADD COLUMN decided INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE asks ADD COLUMN conversation_id TEXT;
-CREATE TABLE accepted (id INTEGER PRIMARY KEY CHECK (id = 1), message_id INTEGER NOT NULL, accepted_at TEXT NOT NULL);
-CREATE TABLE accepted_conversations (conversation_id TEXT PRIMARY KEY, message_id INTEGER NOT NULL,
-  accepted_at TEXT NOT NULL);
-CREATE TABLE pins (slot TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1, message_id INTEGER,
-  revision INTEGER NOT NULL DEFAULT 0, fingerprint TEXT);
-CREATE TABLE topics (name TEXT PRIMARY KEY, thread_id INTEGER NOT NULL UNIQUE, source TEXT NOT NULL,
-  recorded_at TEXT NOT NULL);
-CREATE TABLE topic_attempts (name TEXT PRIMARY KEY, attempt INTEGER NOT NULL);
-CREATE TABLE auto_topics (thread_id INTEGER PRIMARY KEY, name TEXT, name_implicit INTEGER NOT NULL DEFAULT 0,
-  agent TEXT NOT NULL, detected_at TEXT NOT NULL, bound_at TEXT);
-'''
-
 # A fake curl: Bot API calls go to a fake Telegram kept in one JSON file under a lock, which
 # forgets updates below the offset a poll confirms; every other URL goes to the real curl.
 FAKE_CURL = r'''#!{python}

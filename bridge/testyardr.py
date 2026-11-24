@@ -96,13 +96,27 @@ def stop(server):
         server.wait(timeout=10)
 
 
+def _log_tail(log_path, lines=20):
+    """The last lines of the hook server log for a failure message; teardown deletes the file."""
+    try:
+        text = log_path.read_text()
+    except OSError:
+        return ''
+    return '\n'.join(text.splitlines()[-lines:])
+
+
 def restart_with_hook(root, server, command, env, cli, port=None):
-    """Restart an isolated yard with a hook listener and return its bound port."""
+    """Restart an isolated yard with a hook listener and return its bound port.
+
+    A restart whose assigned port stays taken moves to a fresh port; the caller
+    takes the returned port as the yard's address.
+    """
     requested = port
+    moved = False
     log_path = root / 'hook-server.log'
     try:
         for _ in range(3):
-            if requested is None:
+            if requested is None or moved:
                 # The core settings require a concrete port. Keep it reserved through setup.
                 with testports.bind_test_server(http.server.BaseHTTPRequestHandler) as probe:
                     port = probe.server_address[1]
@@ -121,15 +135,21 @@ def restart_with_hook(root, server, command, env, cli, port=None):
                 failed = re.search(r'hook receiver not started[^\n]*', text)
                 if failed:
                     if 'address already in use' in failed[0]:
+                        # Another worker holds this port for its whole test; move to a fresh port.
+                        moved = True
                         break
-                    raise AssertionError('isolated hook receiver could not open its loopback listener')
+                    raise AssertionError('isolated hook receiver could not open its loopback listener: '
+                                         + _log_tail(log_path))
                 status = server.poll()
                 if status is not None:
-                    raise AssertionError(f'isolated yard exited with status {status} before hook readiness')
+                    raise AssertionError(f'isolated yard exited with status {status} before hook readiness: '
+                                         + _log_tail(log_path))
                 if time.monotonic() > deadline:
-                    raise AssertionError('isolated hook receiver did not report readiness within 30 seconds')
+                    raise AssertionError('isolated hook receiver did not report readiness within 30 seconds: '
+                                         + _log_tail(log_path))
                 time.sleep(.02)
-        raise AssertionError('isolated hook receiver hit a port collision on all three attempts')
+        raise AssertionError('isolated hook receiver hit a port collision on all three attempts: '
+                             + _log_tail(log_path))
     except BaseException:
         stop(server)
         raise

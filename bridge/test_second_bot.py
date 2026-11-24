@@ -85,6 +85,14 @@ if wait:
 print(json.dumps(answer))
 print(f'{{status}} 0.001 0.002 0', end='')
 '''
+# A process holding a loopback port it reports, for forced hook-port collisions.
+PORT_HOLDER = '''import socket, time
+held = socket.socket()
+held.bind(('127.0.0.1', 0))
+held.listen(1)
+print(held.getsockname()[1], flush=True)
+time.sleep(300)
+'''
 
 
 def install_env(home, bin_dir):
@@ -391,6 +399,26 @@ seconds = 0
                 process.kill()
                 process.wait(timeout=10)
 
+    def hold_port(self):
+        """A live process holding a free loopback port, with the port it reports."""
+        holder = subprocess.Popen([sys.executable, '-c', PORT_HOLDER], stdout=subprocess.PIPE,
+                                  text=True, cwd=self.root)
+        self.addCleanup(self.release_holder, holder)
+        reported = holder.stdout.readline().strip()
+        holder.stdout.close()
+        self.assertTrue(reported.isdigit(), 'the holder reported no port')
+        return holder, int(reported)
+
+    @staticmethod
+    def release_holder(holder):
+        if holder.poll() is None:
+            holder.terminate()
+            try:
+                holder.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                holder.kill()
+                holder.wait(timeout=10)
+
     def test_installed_mayor_bot_reaches_its_inbox_and_answers_through_its_own_source(self):
         yard = Yard(self, self.root)
         settings, root, env, capability, state = self.install_mayor(yard)
@@ -571,3 +599,32 @@ seconds = 0
               f'through a yard and a bridge restart; {len(sent)} Telegram writes, '
               f'{len(receipts)} durable reply receipt(s); cross-credential 403 x3; ungranted/revoked/native calls '
               'refused; stale and foreign taps ran nothing; second poller refused by the lock, previous owner by 409')
+
+    def test_restart_moves_to_a_fresh_hook_port_when_its_port_is_taken(self):
+        yard = Yard(self, self.root)
+        holder, taken = self.hold_port()
+        # The yard's assigned port is now held by another process through the restart.
+        yard.cli('settings', 'set', 'hook_addr', f'127.0.0.1:{taken}')
+        yard.hook_port = taken
+        yard.restart()
+        self.assertIsNone(holder.poll(), 'the holder must outlive the restart')
+        self.assertNotEqual(yard.hook_port, taken)
+        self.assertEqual(yard.hook, f'http://127.0.0.1:{yard.hook_port}')
+        self.assertEqual(yard.cli('settings', 'get', 'hook_addr').strip(), f'127.0.0.1:{yard.hook_port}')
+        req = urllib.request.Request(f'{yard.hook}/hooks/taken-port-probe', data=b'{}',
+                                     headers={'Content-Type': 'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as answered:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(answered.exception.code, 404)
+        answered.exception.close()
+
+    def test_hook_start_failure_reports_the_server_log_tail(self):
+        if os.geteuid() == 0:
+            self.skipTest('a privileged hook port binds as root')
+        yard = Yard(self, self.root)
+        yard.cli('settings', 'set', 'hook_addr', '127.0.0.1:80')
+        yard.hook_port = 80
+        with self.assertRaises(AssertionError) as failed:
+            yard.restart()
+        self.assertIn('hook receiver not started', str(failed.exception))
+        self.assertIn('permission denied', str(failed.exception))

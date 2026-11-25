@@ -258,6 +258,12 @@ class PeerMailTests(BridgeTestCase):
         self.queue_letter(9201)
         with self.assertRaisesRegex(b.peer_mail.MirrorError, 'not configured and recorded'):
             bridge.peer_mail.deliver_next()
+        # A name with an escaped line break pauses on one line that names no topic.
+        bridge.config['yardr_peer_mail_topic'] = 'ops\nlab'
+        with self.assertRaises(b.peer_mail.MirrorError) as paused:
+            bridge.peer_mail.deliver_next()
+        self.assertEqual(str(paused.exception), 'peer mail topic is not configured and recorded')
+        bridge.config['yardr_peer_mail_topic'] = 'ops'
         self.assertEqual(self.calls, [])
         with self.store.connect() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_work').fetchone(), (1,))
@@ -941,15 +947,15 @@ class RealPeerMailTests(BridgeTestCase):
         uid = 10
         batch = []
         for part in parts:
-            batch.append(self.direct_reply(uid, part))
+            batch.append(in_topic(self.direct_reply(uid, part), part['message_thread_id']))
             uid += 1
-        photo = self.photo_message(uid)
+        photo = in_topic(self.photo_message(uid), parts[0]['message_thread_id'])
         photo['message']['reply_to_message'] = parts[0]
         batch.append(photo)
         uid += 1
         batch.append(self.direct_reply(uid, ordinary_post, 'normal reply'))
         uid += 1
-        batch.append(self.direct_reply(uid, web_post, 'topic reply'))
+        batch.append(in_topic(self.direct_reply(uid, web_post, 'topic reply'), WEB))
         uid += 1
         batch.append(self.update(uid))
         uid += 1
@@ -964,7 +970,7 @@ class RealPeerMailTests(BridgeTestCase):
         self.assertEqual(self.download_calls, [])
         self.assertEqual(len(self.hooks), 4)
         self.assertEqual([hook['conversation'] for hook in self.hooks],
-                         ['123', '123', '123', '123:topic:9'])
+                         ['123', '123:topic:9', '123', '123:topic:9'])
         self.assertEqual(self.store.offset(), 10 + len(batch))
         print(f'Peer mail topic threads {sorted({m.get("message_thread_id") for m in parts})}; '
               f'{len(parts)} parts ignored in replies; inbound offset {self.store.offset()}')

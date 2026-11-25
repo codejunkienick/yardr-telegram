@@ -4737,7 +4737,19 @@ class Bridge:
                 unserved = len(self._unshadowed_auto_topics())
                 if unserved:
                     lines.append(f'auto topics: {unserved} recorded, not served (auto_topics off)')
-            return lines, all(name in rows for name in names)
+            # The peer mail topic is checked by its exact name against the ledger
+            # (topic_by_name, what the mirror resolves); Telegram is not contacted.
+            selected = self.config.get('yardr_peer_mail_topic')
+            found = None
+            if selected is not None:
+                found = self.topic_by_name(selected)
+                if found is None:
+                    recorded = 'not recorded in the ledger (no [[topic]] of that exact name has a thread id)'
+                else:
+                    recorded = f"recorded in the ledger as thread {found['thread_id']}"
+                lines.append('peer mail topic: ' + recorded)
+                lines.append('peer mail topic: Telegram reach not checked here (no call); the first mirror post confirms it')
+            return lines, all(name in rows for name in names) and (selected is None or found is not None)
 
     def subscribe_line(self, crew, topic=None, thread=None):
         """The command that routes one topic's messages to a crew member in
@@ -7039,7 +7051,7 @@ def main():
         for line in lines:
             print(line)
         if not complete:
-            raise TransportError('not every [[topic]] has a thread id')
+            raise TransportError('not every [[topic]] has a thread id, or the peer mail topic is not recorded')
     else:
         # Token-wide lock survives alternate state directories; never unlink while locked.
         with contextlib.ExitStack() as locks:

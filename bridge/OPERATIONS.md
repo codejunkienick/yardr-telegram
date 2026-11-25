@@ -1695,9 +1695,10 @@ subscribe: yardr subscribe <crew> <source> --scope all --where type=message --wh
 
 and with it off or absent, when the ledger holds such topics, one line
 `auto topics: <n> recorded, not served (auto_topics off)`.
-It exits 0 only when every `[[topic]]` has a thread id, else 1 after
-printing every line. It edits and deletes nothing, and changes nothing in
-the yard.
+It exits 0 only when every `[[topic]]` has a thread id, and, with
+`[yardr.peer_mail] topic` set, that name is one of them (the lines
+`peer mail topic: …` print either way); else 1 after printing every line.
+It edits and deletes nothing, and changes nothing in the yard.
 
 Run each printed `subscribe:` line once in the yard, before anyone writes in
 that topic (`yardr/SETUP.md`, step 8); a crew member subscribed to several
@@ -2678,21 +2679,31 @@ one. A direct reply to any part is consumed before commands, attachments or
 yard relay, including after restart or disable. Ordinary replies still relay.
 
 Before enabling a `topic`, run `<root>/bin/telegram-bridge topics` and
-require exit 0: every `[[topic]]` then has its thread id recorded. The
-mirror resolves the name through that same recorded route on every send.
+require exit 0. With a `topic` set, exit 0 means every `[[topic]]` has its
+thread id recorded and the `topic` is exactly one of those names (case
+counts): the run prints `peer mail topic: recorded in the ledger as thread
+<id>`, else it fails with `peer mail topic: not recorded in the ledger`, and
+with no `[[topic]]` tables it fails too. That run never calls Telegram for the
+topic: `peer mail topic: Telegram reach not checked here` says so, and the
+first mirror post confirms it (a thread Telegram does not know pauses the
+letter). The mirror resolves the name through that same recorded route on
+every send.
 Every part of one letter goes to the same conversation and thread the
 letter claimed, on General or in the topic, and a retry reuses the same
 delivery key and body, so a retry never moves a part. When the topic is
 missing, removed, unrecorded, recorded with a thread id outside 1 to
 2147483647, or stale at Telegram, delivery pauses and the journal
-names the topic; nothing falls back to General, and the affected
-work and its claim stay queued. Changing the setting moves only
-letters claimed afterwards: an unfinished letter keeps its claimed
-conversation and thread, and a claimed thread that no longer resolves
-pauses that letter until its topic is recorded again. Recording the topic
-resumes the paused work with no resend of confirmed parts. Upgrading a
-General mirror with unfinished letters and adding a `topic` keeps those
-letters on General; only letters queued afterwards claim the topic.
+records the pause (a claimed letter's line names its thread id); nothing
+falls back to General, and the affected work and its claim stay queued.
+Changing the setting moves only letters claimed afterwards: an unfinished
+letter keeps its claimed conversation and thread, and a claimed thread that
+no longer resolves pauses that letter. Recording that original thread id
+again resumes the paused work with no resend of confirmed parts; a new thread
+recorded under the same name does not resume the claim, since only the
+original recorded thread id can be served. Upgrading a General mirror with
+unfinished letters and adding a `topic`: a letter already started (its parts
+rendered or sent) keeps General, and a letter not yet started claims the topic
+at its first send, whichever release queued it.
 Removing a crew name discards that name's queued letters with their claims.
 
 Keep the private SQLite database across restarts. It binds the native cursor

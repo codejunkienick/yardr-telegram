@@ -296,6 +296,24 @@ class TopicsTests(BridgeTestCase):
         self.assertEqual(self.run_topics(), (['topic ops: thread 501 (recorded earlier)', subscribe('ops'),
                                               'topic web: thread 502 (recorded earlier)', subscribe('web', 'helper')], True))
         self.assertEqual(self.calls, [])
+        # The peer mail topic is preflighted by its exact name in the ledger; no Telegram call.
+        recorded = 'peer mail topic: recorded in the ledger as thread 501'
+        missing = 'peer mail topic: not recorded in the ledger (no [[topic]] of that exact name has a thread id)'
+        reach = 'peer mail topic: Telegram reach not checked here (no call); the first mirror post confirms it'
+        self.bridge.config['yardr_peer_mail_topic'] = 'ops'
+        self.assertEqual(self.run_topics(), (['topic ops: thread 501 (recorded earlier)', subscribe('ops'),
+                                              'topic web: thread 502 (recorded earlier)', subscribe('web', 'helper'),
+                                              recorded, reach], True))
+        for name in ('OPS', 'lab', 'ops\nweb'):
+            with self.subTest(selected=name):
+                self.bridge.config['yardr_peer_mail_topic'] = name
+                lines, complete = self.run_topics()
+                self.assertEqual((lines[-2:], complete), ([missing, reach], False))
+        self.bridge = self.make_bridge(topics=())
+        self.bridge.config['yardr_peer_mail_topic'] = 'ops'
+        lines, complete = self.run_topics()
+        self.assertEqual((lines[0], lines[-2:], complete), ('no [[topic]] tables in the settings', [missing, reach], False))
+        self.assertEqual(self.calls, [])
 
     def test_a_new_settings_topic_alone_is_created(self):
         self.run_topics()
@@ -593,7 +611,7 @@ class TopicsCliTests(unittest.TestCase):
 
     def test_a_topic_without_a_thread_id_prints_every_line_and_exits_1(self):
         self.answer = lambda url, body: GET_ME if url.endswith('/getMe') else (502, {'ok': False, 'error_code': 502})
-        with self.assertRaisesRegex(b.TransportError, r'^not every \[\[topic\]\] has a thread id$'):
+        with self.assertRaisesRegex(b.TransportError, r'^not every \[\[topic\]\] has a thread id, or the peer mail topic is not recorded$'):
             self.cli()
         self.assertEqual([line.split(' (')[0] for line in self.out.splitlines()],
                          ['topic ops: not created', 'topic web: not created'])

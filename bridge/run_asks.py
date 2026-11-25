@@ -3626,6 +3626,16 @@ class RunAsks:
         except (OSError, UnicodeError):
             raise NativeError('native_pack_document_unavailable') from None
 
+    def reissued_card_receipt(self, row):
+        """The delivered receipt of the replacement card a reissue opened for this decision row, else None."""
+        if row.get('kind') != 'decision' or not row.get('replaced_by'):
+            return None
+        current = self.resolve_row(row)
+        generation = self.generation(current, current['turn']) if current is not row else None
+        if generation is None or generation.get('message_id') is None:
+            return None
+        return self.bridge.receipt(True, message_id=str(generation['message_id']))
+
     def send_card(self, row):
         b = self.bridge
         blocked = []
@@ -3648,6 +3658,10 @@ class RunAsks:
                     self.ensure(row)
                 except NativeError:
                     pass
+                # A decision the post-lock ensure reissued: its replacement card is this ask's card now.
+                replacement = self.reissued_card_receipt(row)
+                if replacement is not None:
+                    return dict(replacement, conversation=dict(b.conversation, conversation_id=row['conversation']))
             raise error
         def deliver(markup, plain, reply, pending, extra):
             # Siding cards share this send; the ask recheck is for run and decision rows only.
@@ -3675,7 +3689,7 @@ class RunAsks:
                     receipt = b._reserve_and_deliver(part['key'], identity,
                         lambda pending: deliver(part['html'], part['plain'], reply, pending, extra))
                     if blocked:
-                        raise_blocked()
+                        return raise_blocked()
                     if not receipt.get('delivered'):
                         return dict(receipt, conversation=dict(b.conversation, conversation_id=row['conversation']))
                     part['message_id'] = int(receipt['message_id'])
@@ -3701,7 +3715,7 @@ class RunAsks:
                             return b.not_sent()
                     receipt = b._reserve_and_deliver(document['key'], identity, send_document)
                     if blocked:
-                        raise_blocked()
+                        return raise_blocked()
                     if not receipt.get('delivered'):
                         return dict(receipt, conversation=dict(b.conversation, conversation_id=row['conversation']))
                     if type(receipt.get('document_size')) is not int or receipt['document_size'] != document['size']:
@@ -3715,7 +3729,7 @@ class RunAsks:
         receipt = b._reserve_and_deliver(key, identity,
                     lambda pending: deliver(row['html'], row['plain'], previous, pending, extra))
         if blocked:
-            raise_blocked()
+            return raise_blocked()
         if receipt.get('delivered'):
             row['message_id'] = int(receipt['message_id'])
             if row.get('kind') == 'decision' and not self.generation(row, row['turn']):

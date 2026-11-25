@@ -797,6 +797,44 @@ class DecideTests(DecideCase):
         finally:
             self.bridge.request = base
 
+    def test_decision_retry_retitled_mid_send_opens_the_replacement_card(self):
+        base = self.bridge.request
+        self.bridge.sleep = lambda _: None
+        down, retitle = [True], [False]
+
+        def transport(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'askcard:' in str(body.get('reply_markup')):
+                if retitle[0]:
+                    # The bead is retitled after the send reserved its key; this attempt is not sent.
+                    retitle[0] = False
+                    self.native.beads['sample-1']['title'] = 'Retitled sample'
+                    raise b.RequestNotSent('synthetic transient')
+                if down[0]:
+                    raise b.RequestNotSent('synthetic transient')
+            return base(url, body, *args, **kwargs)
+        cards = lambda: [s for s in self.sends() if 'askcard:' in str(s.get('reply_markup'))]
+        self.bridge.request = transport
+        try:
+            # 1. The first /decide send is definitely not sent.
+            self.command('/decide sample-1#7', 1)
+            self.assertIn('not confirmed sent', self.sends()[-1]['text'])
+            stale_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-1', 7))
+            self.assertIsNone(stale_row['message_id'])
+            # 2. The retry is retitled mid-send: one replacement card opens, and /decide reports it as opened.
+            down[0], retitle[0] = False, True
+            before, sent_before = len(cards()), len(self.sends())
+            self.command('/decide sample-1#7', 2)
+            self.assertNotIn('run_ask_stale_proposal', [s['text'] for s in self.sends()[sent_before:] if 'text' in s])
+            self.assertEqual(len(cards()), before + 1)
+            self.assertIn('Retitled sample', cards()[-1]['text'])
+            fresh_row = self.bridge.run_asks.resolve_row(self.bridge.run_asks.get(stale_row['id']))
+            self.assertNotEqual(fresh_row['id'], stale_row['id'])
+            self.assertEqual(fresh_row['state'], 'open')
+            self.assertIsNotNone(self.bridge.run_asks.generation(fresh_row, fresh_row['turn'])['message_id'])
+            self.assertEqual(self.bridge.run_asks.get(stale_row['id'])['state'], 'stale')
+        finally:
+            self.bridge.request = base
+
     def test_run_card_upgrade_events_outage_holds_row_for_retry(self):
         self.command('/decide run-1#3', 1)
         row = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-1', 3))

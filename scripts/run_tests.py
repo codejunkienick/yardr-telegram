@@ -186,6 +186,54 @@ def _build_units(patterns, discover_pattern=None):
     return units
 
 
+def _host_go_caches():
+    """Real GOMODCACHE/GOCACHE for fixture builds; workers run with an empty HOME.
+
+    testyardr builds its Go fixtures with GOPROXY=off, which only reads the
+    module cache. Under a worker's empty HOME the go tool resolves both caches
+    to a bare directory and the build fails, so the parent (which still has
+    the real HOME) resolves them once here and each worker inherits them.
+    Explicitly set values always win; a missing go tool just yields nothing.
+    """
+    caches = {}
+    for key in ('GOMODCACHE', 'GOCACHE'):
+        value = os.environ.get(key, '').strip()
+        if value:
+            caches[key] = value
+    missing = [key for key in ('GOMODCACHE', 'GOCACHE') if key not in caches]
+    if missing:
+        try:
+            probe = subprocess.run(['go', 'env', *missing], capture_output=True, text=True, timeout=30,
+                                   env=dict(os.environ, GOTOOLCHAIN='local'))
+        except (OSError, subprocess.TimeoutExpired):
+            probe = None
+        if probe is not None and probe.returncode == 0:
+            for key, line in zip(missing, probe.stdout.splitlines()):
+                if line.strip():
+                    caches[key] = line.strip()
+    return caches
+
+
+def _worker_env(home_dir, tmp_dir, go_caches, slot_port_range):
+    """Isolated worker env: empty HOME/TMPDIR plus the host Go caches.
+
+    An exported-but-empty GOMODCACHE/GOCACHE must not shadow the probed host
+    paths: Go reads an empty value as unset and resolves both caches under
+    the worker's empty HOME, so the offline fixture build fails. Explicit
+    non-blank values always win.
+    """
+    env = os.environ.copy()
+    env['HOME'] = str(home_dir)
+    for key, value in go_caches.items():
+        if not env.get(key, '').strip():
+            env[key] = value
+    env['TMPDIR'] = str(tmp_dir)
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
+    if slot_port_range is not None:
+        env['TEST_PORT_RANGE'] = slot_port_range
+    return env
+
+
 def _partition_port_range(raw, slots):
     """Split TEST_PORT_RANGE across worker slots when wide enough, else None."""
     if not raw or slots <= 1:
@@ -353,6 +401,7 @@ def main(argv=None):
 
     worker_count = min(jobs, len(units))
     port_ranges = _partition_port_range(os.environ.get('TEST_PORT_RANGE'), worker_count)
+    go_caches = _host_go_caches()
     script_path = str(Path(__file__).resolve())
     run_tmp = Path(tempfile.mkdtemp(prefix='yt-', dir='/tmp'))
     work_q = queue.Queue()
@@ -381,12 +430,7 @@ def main(argv=None):
             home_dir.mkdir(parents=True, mode=0o700)
             tmp_dir.mkdir(parents=True, mode=0o700)
             result_path = unit_dir / 'result.json'
-            env = os.environ.copy()
-            env['HOME'] = str(home_dir)
-            env['TMPDIR'] = str(tmp_dir)
-            env['PYTHONDONTWRITEBYTECODE'] = '1'
-            if slot_port_range is not None:
-                env['TEST_PORT_RANGE'] = slot_port_range
+            env = _worker_env(home_dir, tmp_dir, go_caches, slot_port_range)
             cmd = [
                 sys.executable, '-B', script_path, '--worker',
                 suite_dir, str(result_path), *unittest_args, '--', *test_ids,

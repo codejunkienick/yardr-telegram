@@ -202,6 +202,136 @@ def general_store_fixture(root):
     return store_fixture(root, 'general')
 
 
+def _version_tuple(text):
+    """Numeric prefix of a dotted version as a tuple; '1.27.4' -> (1, 27, 4)."""
+    parts = []
+    for piece in str(text).split('.'):
+        digits = ''
+        for ch in piece:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _version_at_least(have, need):
+    """True when version tuple have satisfies need, padding the shorter one."""
+    width = max(len(have), len(need))
+    return (have + (0,) * width)[:width] >= (need + (0,) * width)[:width]
+
+
+def _go_requirement(source):
+    """(minimum version, exact toolchain version or None) from source go.mod."""
+    need, exact = (), None
+    try:
+        text = (Path(source) / 'go.mod').read_text()
+    except OSError:
+        return need, exact
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) < 2:
+            continue
+        if words[0] == 'go':
+            need = _version_tuple(words[1])
+        elif words[0] == 'toolchain':
+            exact = _version_tuple(words[1].removeprefix('go'))
+    return need, exact
+
+
+def _cached_toolchain_go(source, build_env, platform=None):
+    """Absolute path of an extracted cached toolchain go satisfying source.
+
+    Switching toolchains verifies the toolchain against the checksum database
+    even with GOPROXY=off, so a cold sumdb ticket breaks the offline fixture
+    on the switch itself. Running the already-extracted cached toolchain
+    directly never switches and stays offline. None when no runnable cached
+    toolchain fits, and the caller falls back to the switching go.
+    """
+    modcache = build_env.get('GOMODCACHE', '').strip()
+    if not modcache:
+        return None
+    if platform is None:
+        try:
+            probe = subprocess.run(['go', 'env', 'GOOS', 'GOARCH'], capture_output=True, text=True, timeout=30,
+                                   env=dict(build_env, GOTOOLCHAIN='local'))
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if probe.returncode != 0:
+            return None
+        lines = probe.stdout.splitlines()
+        if len(lines) < 2 or not all(line.strip() for line in lines[:2]):
+            return None
+        platform = (lines[0].strip(), lines[1].strip())
+    goos, goarch = platform
+    need, exact = _go_requirement(source)
+    suffix = '.%s-%s' % (goos, goarch)
+    best = None
+    for entry in sorted((Path(modcache) / 'golang.org').glob('toolchain@*')):
+        middle = entry.name.partition('-go')[2]
+        if not middle or not middle.endswith(suffix):
+            continue
+        version = _version_tuple(middle[:len(middle) - len(suffix)])
+        if not version:
+            continue
+        binary = entry / 'bin' / 'go'
+        if not (binary.is_file() and os.access(binary, os.X_OK)):
+            continue
+        if exact is not None:
+            if _version_at_least(version, exact) and _version_at_least(exact, version):
+                return str(binary)
+        elif _version_at_least(version, need):
+            if best is None or not _version_at_least(version, best[0]):
+                best = (version, str(binary))
+    return best[1] if best else None
+
+
+def _fallback_go(source, build_env):
+    """Absolute path of the local go when it builds source offline, else None.
+
+    The probe runs with GOTOOLCHAIN=local so a source needing a newer
+    toolchain never verifies or fetches it from the network; the caller
+    reports the missing warmed cache instead of attempting the switch.
+    """
+    probe_env = dict(build_env, GOTOOLCHAIN='local')
+    try:
+        probe = subprocess.run(['go', 'env', 'GOROOT', 'GOVERSION'], cwd=source,
+                               capture_output=True, text=True, timeout=30, env=probe_env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if probe.returncode != 0:
+        return None
+    lines = probe.stdout.splitlines()
+    if len(lines) < 2 or not lines[0].strip():
+        return None
+    goroot, have = lines[0].strip(), _version_tuple(lines[1].strip().removeprefix('go'))
+    need, exact = _go_requirement(source)
+    if exact is not None:
+        ok = _version_at_least(have, exact) and _version_at_least(exact, have)
+    elif need:
+        ok = _version_at_least(have, need)
+    else:
+        ok = True
+    if not ok:
+        return None
+    candidate = Path(goroot) / 'bin' / 'go'
+    if not (candidate.is_file() and os.access(candidate, os.X_OK)):
+        return None
+    return str(candidate)
+
+
+def _fixture_want(source):
+    """Human wording of the Go version source go.mod needs, for errors."""
+    need, exact = _go_requirement(source)
+    if exact is not None:
+        return 'go' + '.'.join(str(n) for n in exact)
+    if need:
+        return 'go' + '.'.join(str(n) for n in need) + ' or newer'
+    return 'the go.mod toolchain'
+
+
 def store_fixture(root, name):
     """Build fixtures/<name>/store_fixture.go offline against the unchanged candidate source; None without one."""
     source = os.environ.get('TGBRIDGE_TEST_YARDR_SOURCE')
@@ -217,9 +347,41 @@ def store_fixture(root, name):
     shutil.copyfile(source / 'go.sum', fixture / 'go.sum')
     shutil.copyfile(Path(__file__).parent / 'fixtures' / name / 'store_fixture.go', fixture / 'main.go')
     binary = fixture / 'fixture'
-    goroot = subprocess.check_output(['go', 'env', 'GOROOT'], cwd=source, text=True).strip()
-    result = subprocess.run(['nice', '-n10', str(Path(goroot) / 'bin/go'), 'build', '-mod=mod', '-o', str(binary), '.'],
-                            cwd=fixture, env=dict(os.environ, GOPROXY='off', GOSUMDB='off', GOTOOLCHAIN='local'),
+    # The parallel gate runs each worker with an empty HOME, so the module and
+    # build caches must be named explicitly: under the empty HOME the go tool
+    # resolves them to a bare directory and the offline build fails with
+    # `module lookup disabled by GOPROXY=off`. GOPROXY=off keeps the build
+    # offline; the toolchain stays on automatic so the warmed cache's newer
+    # toolchain is used (GOTOOLCHAIN=local refuses a source that needs it, and
+    # GOSUMDB=off refuses to verify the cached toolchain). The build runs
+    # through the extracted cached toolchain itself: asking the switching go
+    # for GOROOT verifies the toolchain against the checksum database despite
+    # GOPROXY=off, which breaks the offline fixture on a cold sumdb ticket.
+    # The fallback stays offline too: it probes the local go with
+    # GOTOOLCHAIN=local and reports the missing warmed cache when the local
+    # go cannot build the source.
+    build_env = dict(os.environ, GOPROXY='off')
+    for key in ('GOMODCACHE', 'GOCACHE'):
+        if not build_env.get(key):
+            try:
+                value = subprocess.check_output(
+                    ['go', 'env', key], cwd=source, text=True, timeout=30,
+                    env=dict(build_env, GOTOOLCHAIN='local')).strip()
+            except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+                value = ''
+            if value:
+                build_env[key] = value
+    go_binary = _cached_toolchain_go(source, build_env)
+    if go_binary is None:
+        go_binary = _fallback_go(source, build_env)
+        if go_binary is None:
+            raise AssertionError(
+                'synthetic native store fixture needs a warmed Go toolchain cache for '
+                'TGBRIDGE_TEST_YARDR_SOURCE go.mod (%s); no extracted cached toolchain '
+                'and the local go cannot build it offline' % _fixture_want(source))
+        build_env = dict(build_env, GOTOOLCHAIN='local')
+    result = subprocess.run(['nice', '-n10', go_binary, 'build', '-mod=mod', '-o', str(binary), '.'],
+                            cwd=fixture, env=build_env,
                             capture_output=True, text=True, timeout=120)
     if result.returncode:
         raise AssertionError('synthetic native store fixture did not build: ' + result.stderr)

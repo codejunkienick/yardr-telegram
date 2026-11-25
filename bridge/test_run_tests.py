@@ -175,5 +175,35 @@ class DefaultJobsTests(unittest.TestCase):
             self.assertEqual(run_tests._default_jobs(), 8)
 
 
+class WorkerEnvTests(unittest.TestCase):
+    def _env(self, exported):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.update(exported)
+            return run_tests._worker_env(
+                '/w/home', '/w/tmp',
+                {'GOMODCACHE': '/warm/mod', 'GOCACHE': '/warm/build'},
+                '9000-9007')
+
+    def test_blank_cache_vars_inherit_probed_paths(self):
+        env = self._env({'GOMODCACHE': '', 'GOCACHE': '   '})
+        self.assertEqual(env['GOMODCACHE'], '/warm/mod')
+        self.assertEqual(env['GOCACHE'], '/warm/build')
+
+    def test_unset_cache_vars_inherit_probed_paths(self):
+        env = self._env({})
+        self.assertEqual(env['GOMODCACHE'], '/warm/mod')
+        self.assertEqual(env['GOCACHE'], '/warm/build')
+
+    def test_explicit_cache_vars_win(self):
+        env = self._env({'GOMODCACHE': '/mine/mod', 'GOCACHE': '/mine/build'})
+        self.assertEqual(env['GOMODCACHE'], '/mine/mod')
+        self.assertEqual(env['GOCACHE'], '/mine/build')
+
+    def test_isolates_home_and_tmpdir(self):
+        env = self._env({})
+        self.assertEqual((env['HOME'], env['TMPDIR']), ('/w/home', '/w/tmp'))
+        self.assertEqual(env['TEST_PORT_RANGE'], '9000-9007')
+
+
 if __name__ == '__main__':
     unittest.main()

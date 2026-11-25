@@ -217,9 +217,11 @@ not tested here. The bridge public main was
 reviewed source refresh before upstream links it. Recompute the publication
 range at audit time rather than reusing an older candidate's counts.
 
-Before installable presentation, select a public release containing formats
-and guarded answers, build that exact core and re-check the exact final bridge
-candidate. Record pack check/apply and the basic hook-to-reply adoption slice,
+Before installable presentation, select a public release containing formats,
+guarded answers and per-ask tell keys (`notify.key`), build that exact core
+and re-check the exact final bridge candidate. A release without `notify.key`
+refuses the current pack at declaration parsing, including hook-only setup.
+Record pack check/apply and the basic hook-to-reply adoption slice,
 classify per-capability limits, and check the instance's rendered `<root>/pack`
 before any operator-owned apply. Local aligned hashes below and in SETUP are
 historical capability baselines, not public release tags or install targets.

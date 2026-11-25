@@ -911,6 +911,93 @@ class TellTests(BridgeTestCase):
         [(method, body)] = self.telegram_calls()
         self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?\nTap /decide to answer.')
 
+    def test_a_keyed_multiword_ask_tell_points_at_decide(self):
+        self.with_owner()
+        key = 'ask:' + 'beef' * 8
+        tell = dict(conversation='123', title='Pat Example asks', text='Lower the test limit?', key=key)
+        with patch.object(b.time, 'time', return_value=6000.0):
+            status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'Pat Example asks\nLower the test limit?\nTap /decide to answer.')
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        self.assertTrue(self.store.saved_receipt(ledger)['delivered'])
+        # A retry after a lost response, in the next minute, sends nothing more.
+        with patch.object(b.time, 'time', return_value=6060.0):
+            status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(len(self.telegram_calls()), 1)
+        # Without the key the same words go the ordinary minute-keyed way.
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='Pat Example asks',
+                                                    text='Raise the test limit?'))
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(self.telegram_calls()[-1][1]['text'], 'Pat Example asks\nRaise the test limit?')
+
+    def test_a_keyed_multiword_ask_option_preview_still_gets_its_pointer(self):
+        self.with_owner()
+        question = 'Which window?\nA: Morning\nB: Afternoon'
+        for title, stub in (('Pat Example asks', 'cafe'), ('Pat\nExample asks', 'caff')):
+            with self.subTest(title=title):
+                before = len(self.telegram_calls())
+                status, answer = self.call('/v1/tell', dict(conversation='123', title=title, text=question,
+                                                            key='ask:' + stub * 8))
+                self.assertEqual(status, 200)
+                self.assertTrue(answer['delivered'])
+                [(method, body)] = self.telegram_calls()[before:]
+                self.assertEqual(body['text'], title + '\n' + question + '\nTap /decide to answer.')
+
+    def test_a_keyed_multiword_pointer_proving_not_sent_answers_503_and_its_retry_sends(self):
+        self.with_owner()
+        self.cut_telegram()
+        key = 'ask:' + 'dec0' * 8
+        tell = dict(conversation='123', title='Pat Example asks', text='Lower the test limit?', key=key)
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual((status, answer), (503, dict(error='tell unfinished; retry')))
+        self.assertEqual(self.telegram_calls(), [])
+        self.bridge.request = self.transport
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'Pat Example asks\nLower the test limit?\nTap /decide to answer.')
+
+    def test_an_ask_tell_key_is_validated_before_scoping(self):
+        self.with_owner()
+        # A blank key is refused, never sent under a scope hiding it.
+        for title in ('yardmaster asks', 'Pat Example asks'):
+            with self.subTest(title=title):
+                status, answer = self.call('/v1/tell', dict(conversation='123', title=title,
+                                                            text='Lower the test limit?', key='   '))
+                self.assertEqual(status, 200)
+                self.assertEqual(answer, dict(delivered=False, conversation='123',
+                                              reason='stable_idempotency_key_required',
+                                              failure_kind='permanent'))
+        # Past the native cap of 200 an ask's key is refused too.
+        for length in (201, 256):
+            with self.subTest(length=length):
+                status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks',
+                                                            text='Lower the test limit?', key='k' * length))
+                self.assertEqual(status, 200)
+                self.assertEqual(answer, dict(delivered=False, conversation='123',
+                                              reason='stable_idempotency_key_required',
+                                              failure_kind='permanent'))
+        self.assertEqual(self.telegram_calls(), [])
+        # An explicit key up to the native cap still goes under its scoped key.
+        key = 'k' * 200
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?', key=key)
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        self.assertTrue(self.store.saved_receipt(ledger)['delivered'])
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(len(self.telegram_calls()), 1)
+
     def test_a_crash_between_reserve_and_finish_leaves_an_ask_tell_ambiguous(self):
         self.with_owner()
         key = 'ask:' + 'ab12' * 8
@@ -1003,6 +1090,31 @@ class TellTests(BridgeTestCase):
         self.assertEqual(answer['reason'], 'telegram_rejected_not_sent_429')
         self.assertEqual(len(self.telegram_calls()), 2)
 
+    def test_an_inconsistent_telegram_429_stays_ambiguous_and_retries_nothing(self):
+        self.with_owner()
+        key = 'ask:' + 'f00d' * 8
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?', key=key)
+        attempts = []
+
+        def inconsistent(url, body, *args, **kwargs):
+            attempts.append(body)
+            return 200, dict(ok=False, error_code=429, parameters=dict(retry_after=3))
+
+        self.bridge.request = inconsistent
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, dict(delivered=False, conversation='123',
+                                      reason='ambiguous_delivery_requires_manual_reconciliation',
+                                      failure_kind='permanent'))
+        self.assertEqual(len(attempts), 1)
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        self.assertFalse(b.resendable(self.store.saved_receipt(ledger)))
+        # The retry replays the ambiguity instead of sending again.
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertFalse(answer['delivered'])
+        self.assertEqual(len(attempts), 1)
+
     def test_a_retry_with_changed_words_after_a_proven_not_sent_delivers(self):
         self.with_owner()
         self.cut_telegram()
@@ -1049,6 +1161,54 @@ class TellTests(BridgeTestCase):
         self.assertEqual(answer, dict(delivered=True, message_id='71', conversation='123'))
         self.assertEqual(self.telegram_calls(), [])
 
+    def test_an_asks_shaped_ordinary_keyed_tell_stays_on_its_raw_key(self):
+        self.with_owner()
+        for title, key in (('mail from Pat asks', 'release-note-7'),
+                           ('Pat Example asks', 'release-note-8')):
+            with self.subTest(title=title):
+                before = len(self.telegram_calls())
+                tell = dict(conversation='123', title=title, text='hello', key=key)
+                status, answer = self.call('/v1/tell', tell)
+                self.assertEqual(status, 200)
+                self.assertTrue(answer['delivered'])
+                [(method, body)] = self.telegram_calls()[before:]
+                self.assertEqual(body['text'], f'{title}\nhello')
+                self.assertTrue(self.store.saved_receipt(key)['delivered'])
+                scoped = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+                self.assertIsNone(self.store.saved_receipt(scoped))
+                status, answer = self.call('/v1/tell', tell)
+                self.assertEqual(status, 200)
+                self.assertTrue(answer['delivered'])
+                self.assertEqual(len(self.telegram_calls()), before + 1)
+
+    def test_a_native_ask_replays_its_pre_upgrade_raw_receipt(self):
+        self.with_owner()
+        key = 'ask:' + 'a1b2' * 8
+        said = 'Pat Example asks\nLower the test limit?'
+        request = dict(conversation=self.bridge.conversation, idempotency_key=key, text=said)
+        self.assertIsNone(self.store.reserve(key, b.Bridge.delivery_fingerprint(request),
+                                             self.bridge.receipt(reason=b.yard_mail.AMBIGUOUS)))
+        self.store.finish(key, self.bridge.receipt(True, message_id='72'))
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='Pat Example asks',
+                                                    text='Lower the test limit?', key=key))
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, dict(delivered=True, message_id='72', conversation='123'))
+        self.assertEqual(self.telegram_calls(), [])
+        scoped = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        self.assertIsNone(self.store.saved_receipt(scoped))
+
+    def test_a_256_char_explicit_key_on_an_ordinary_tell_still_sends(self):
+        key = 'm' * 256
+        tell = dict(conversation='123', title='mail from kim', text='hello', key=key)
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertTrue(self.store.saved_receipt(key)['delivered'])
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(len(self.telegram_calls()), 1)
+
     def test_a_keyed_ask_tell_off_the_card_owner_proving_not_sent_answers_503(self):
         self.with_owner(cards=False)
         self.cut_telegram()
@@ -1073,9 +1233,10 @@ class TellTests(BridgeTestCase):
 
 
 class RealCoreAskTellTests(BridgeTestCase):
-    """Two asks of a real isolated core: each its own keyed tell through the
-    real declaration, one pointer each, and a retry after a lost response, a
-    minute later or past a bridge restart, sends nothing more."""
+    """Two asks of a real isolated core, plus one from a multi-word actor:
+    each its own keyed tell through the real declaration, one pointer each,
+    and a retry after a lost response, a minute later or past a bridge
+    restart, sends nothing more."""
 
     call = YardApiTests.call
     telegram_calls = YardApiTests.telegram_calls
@@ -1088,8 +1249,9 @@ class RealCoreAskTellTests(BridgeTestCase):
             root = Path(tmp)
             server, home, command, env = testyardr.start(root, binary)
 
-            def cli(*args, stdin=None):
-                result = subprocess.run(command + list(args), env=env, cwd=root, input=stdin,
+            def cli(*args, stdin=None, actor='pat'):
+                run = command if actor == 'pat' else [binary, '--home', str(home), '--actor', actor]
+                result = subprocess.run(run + list(args), env=env, cwd=root, input=stdin,
                                         text=True, capture_output=True, timeout=60)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return result.stdout
@@ -1125,32 +1287,33 @@ class RealCoreAskTellTests(BridgeTestCase):
                 cli('user', 'key', 'pat', 'tgbridge', stdin='TGBRIDGE_CONVERSATION=123\n')
                 cli('user', 'set', 'pat', 'notify=tgbridge', 'tell=asks')
                 bead = cli('bead', 'create', 'two decisions').strip().split()[-1]
-                questions = ('Lower the test limit?', 'Raise the test limit?')
-                for question in questions:
+                asks = (('pat', 'Lower the test limit?'), ('pat', 'Raise the test limit?'),
+                        ('Pat Example', 'Which window?'))
+                for actor, question in asks:
                     cli('bead', 'ask', bead, question, '--to', 'pat',
-                        '--context', 'first line', '--context', 'second line')
+                        '--context', 'first line', '--context', 'second line', actor=actor)
                 log = (root / 'daemon.log').open('w')
                 daemon = subprocess.Popen(command + ['daemon'], env=env, cwd=root,
                                           stdout=log, stderr=subprocess.STDOUT)
                 deadline = time.monotonic() + 90
-                while len(tells) < 2 and time.monotonic() < deadline and daemon.poll() is None:
+                while len(tells) < 3 and time.monotonic() < deadline and daemon.poll() is None:
                     time.sleep(0.2)
                 log.close()
                 tail = '\n'.join((root / 'daemon.log').read_text().splitlines()[-15:])
                 self.assertIsNone(daemon.poll(), 'daemon exited before telling:\n' + tail)
-                self.assertEqual(len(tells), 2, 'two keyed tells within 90 s:\n' + tail)
+                self.assertEqual(len(tells), 3, 'three keyed tells within 90 s:\n' + tail)
                 keys = []
-                for tell, question in zip(tells, questions):
+                for tell, (actor, question) in zip(tells, asks):
                     self.assertEqual(tell['conversation'], '123')
-                    self.assertEqual(tell['title'], 'pat asks')
+                    self.assertEqual(tell['title'], f'{actor} asks')
                     self.assertEqual(tell['text'], question)
                     self.assertRegex(tell['key'], r'\Aask:[0-9a-f]{32}\Z')
                     keys.append(tell['key'])
-                self.assertEqual(len(set(keys)), 2)
+                self.assertEqual(len(set(keys)), 3)
                 sent = self.telegram_calls()
-                self.assertEqual(len(sent), 2)
-                for (_, body), question in zip(sent, questions):
-                    self.assertEqual(body['text'], f'pat asks\n{question}\nTap /decide to answer.')
+                self.assertEqual(len(sent), 3)
+                for (_, body), (actor, question) in zip(sent, asks):
+                    self.assertEqual(body['text'], f'{actor} asks\n{question}\nTap /decide to answer.')
                     self.assertNotIn('parse_mode', body)
                 print('Real core', Path(binary).name, 'ask tells: one pointer per ask, keys',
                       *[key[:12] + '…' for key in keys])
@@ -1167,7 +1330,7 @@ class RealCoreAskTellTests(BridgeTestCase):
                         status, answer = self.call('/v1/tell', tell)
                         self.assertEqual(status, 200)
                         self.assertTrue(answer['delivered'])
-                self.assertEqual(len(self.telegram_calls()), 2)
+                self.assertEqual(len(self.telegram_calls()), 3)
                 # A restart between the send and the retry: the same ledger, a new bridge.
                 self.store = b.Store(self.path, 10)
                 self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY', request=self.transport,
@@ -1178,7 +1341,7 @@ class RealCoreAskTellTests(BridgeTestCase):
                     status, answer = self.call('/v1/tell', tell)
                     self.assertEqual(status, 200)
                     self.assertTrue(answer['delivered'])
-                self.assertEqual(len(self.telegram_calls()), 2)
+                self.assertEqual(len(self.telegram_calls()), 3)
             finally:
                 if daemon is not None and daemon.poll() is None:
                     daemon.terminate()

@@ -3604,9 +3604,12 @@ class Bridge:
                 if receipt is not pending:
                     receipt['format_fallback_reason'] = 'telegram_html_parse_rejected_400'
                 return receipt
-            if data.get('ok') is False and 400 <= data.get('error_code', 0) < 500:
-                receipt = self.receipt(reason='telegram_rejected_not_sent_' + str(data['error_code']))
-                if data.get('error_code') == 429:
+            # A rejection is proof of no send only when the HTTP status says
+            # the same as the JSON body: an inconsistent reply stays pending.
+            code = data.get('error_code')
+            if type(code) is int and status == code and 400 <= code < 500 and data.get('ok') is False:
+                receipt = self.receipt(reason='telegram_rejected_not_sent_' + str(code))
+                if code == 429:
                     parameters = data.get('parameters')
                     delay = parameters.get('retry_after') if isinstance(parameters, dict) else None
                     if type(delay) is int and 0 < delay < 2**31:
@@ -3959,6 +3962,12 @@ class Bridge:
     # a test pins the wording.
     _ASK_TELL_SINGLE_RE = re.compile(r'\S+ asks')
     _ASK_TELL_BATCH_RE = re.compile(r'[1-9][0-9]* new in yardr')
+    # The same title with a multi-word author, for a tell carrying the
+    # core's native ask key; any other key keeps the ordinary raw path. The
+    # author may hold a line feed, so the dot crosses lines.
+    _ASK_TELL_KEYED_RE = re.compile(r'.+ asks', re.DOTALL)
+    # Core's notify key (internal/dispatch/pushes.go pushKey): ask, 32 hex.
+    _ASK_TELL_NATIVE_KEY_RE = re.compile(r'ask:[0-9a-f]{32}')
     ASK_TELL_DECIDE_LINE = 'Tap /decide to answer.'
 
     def _tell_scope_digest(self, conversation_id):
@@ -4001,14 +4010,35 @@ class Bridge:
         def notice(line=None):
             said = body if line is None else body + '\n' + line
             # The match is on the normalized title: padding changes nothing.
+            # A multi-word author counts only with the core's native ask key.
             name = title.strip()
-            ask_worded = (self._ASK_TELL_SINGLE_RE.fullmatch(name) or self._ASK_TELL_BATCH_RE.fullmatch(name))
+            keyed = isinstance(given, str) and given
+            native = bool(keyed and self._ASK_TELL_NATIVE_KEY_RE.fullmatch(given))
+            ask_worded = (self._ASK_TELL_SINGLE_RE.fullmatch(name) or self._ASK_TELL_BATCH_RE.fullmatch(name)
+                          or (native and self._ASK_TELL_KEYED_RE.fullmatch(name)))
             pointed = (run_asks.owns_cards(self.config) and self.config.get('yardr_operator') and ask_worded)
             if pointed:
                 said += '\n' + self.ASK_TELL_DECIDE_LINE
-            keyed = isinstance(given, str) and given
             ask_keyed = bool(ask_worded and keyed)
             if ask_keyed:
+                if not given.strip() or len(given) > 200:
+                    # The delivery key is validated before it is scoped: a
+                    # blank one is refused, never sent under a scope that
+                    # would hide it, and an ask's key keeps the native
+                    # declaration's cap of 200. An ordinary explicit key
+                    # keeps _publish's own 256 on the raw path below.
+                    return self.receipt(reason='stable_idempotency_key_required')
+                if native and self.store is not None:
+                    # A native ask told before the scoped keys lived under
+                    # the raw key; a final receipt there is reused, so a
+                    # lost acknowledgement does not send again. Resendable
+                    # (nothing went out) sends anew, as does another
+                    # conversation's ask, which scopes its own delivery.
+                    raw = self.store.saved_receipt(given)
+                    if raw is not None and not resendable(raw):
+                        at = raw.get('conversation')
+                        if isinstance(at, dict) and at.get('conversation_id') == conversation['conversation_id']:
+                            return raw
                 # An ask's own tell: the key names the ask, the same on every
                 # retry, and the yard, the operator and the served
                 # conversation scope it to this delivery, so a retry, a

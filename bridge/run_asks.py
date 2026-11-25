@@ -3188,6 +3188,81 @@ class RunAsks:
             or db.execute('SELECT 1 FROM asks WHERE ask_id=?', (self.bridge._ask_id_for_key(key),)).fetchone()
         )
 
+    def _prior_titles(self, bead_id):
+        """Old bead titles from native history, newest first, for upgrade rows.
+
+        A failed read is unknown history, never empty: it raises, and the
+        caller holds its row unchanged for a later retry.
+        """
+        try:
+            limit, seen, known = 64, [], set()
+            while True:
+                events = self._validate_events(
+                    self.client.call('Events', [bead_id, limit]), bead_id, limit, 'title recovery')
+                batch = []
+                for event in reversed(events):
+                    data = event.get('data', {})
+                    if event['kind'] == 'created' and isinstance(data.get('title'), str):
+                        batch.append(data['title'])
+                    elif event['kind'] == 'updated':
+                        if isinstance(data.get('title'), str):
+                            batch.append(data['title'])
+                        was = data.get('was')
+                        if isinstance(was, dict) and isinstance(was.get('title'), str):
+                            batch.append(was['title'])
+                for title in batch:
+                    if title not in known:
+                        known.add(title)
+                        seen.append(title)
+                if len(events) < limit or any(e['kind'] == 'created' for e in events) or limit >= 8192:
+                    return seen
+                limit *= 2
+        except NativeError:
+            raise
+        except (ValueError, TypeError, AttributeError):
+            raise NativeError('invalid native title recovery Events response') from None
+
+    def _title_only_change(self, row, bead, ask):
+        """The title proving a run mismatch is only the title, else None.
+
+        Read-only: callers under the lock persist a recovered title with
+        _backfill_bead_title, and the list path never writes.
+        """
+        if row.get('kind', 'run') != 'run':
+            return None
+        stored = row.get('bead_title')
+        if isinstance(stored, str):
+            if bead.get('title') == stored:
+                return None
+            try:
+                if self.proposal(dict(bead, title=stored), ask, row['conversation']) == row['proposal']:
+                    return stored
+            except NativeError:
+                pass
+            return None
+        current_title = bead.get('title')
+        for candidate in self._prior_titles(row['bead']):
+            if candidate == current_title:
+                continue
+            try:
+                if self.proposal(dict(bead, title=candidate), ask, row['conversation']) == row['proposal']:
+                    return candidate
+            except NativeError:
+                return None
+        return None
+
+    def _backfill_bead_title(self, row, title):
+        """Persist a proven title on the current locked row, still unsent and unchanged."""
+        if isinstance(row.get('bead_title'), str):
+            return
+        fresh = self.get(row['id'])
+        if (fresh is None or fresh.get('message_id') is not None or fresh.get('state') != 'open'
+                or fresh.get('proposal') != row['proposal'] or isinstance(fresh.get('bead_title'), str)):
+            return
+        fresh['bead_title'] = title
+        self.save(fresh)
+        row['bead_title'] = title
+
     def _mark_stale(self, row, bead=None, ask=None, current_proposal=None):
         """Retire a stale row, re-issuing one replacement decision card if the ask is still open."""
         if row.get('kind') == 'decision' and ask is not None and ask['state'] == 'open':
@@ -3248,8 +3323,14 @@ class RunAsks:
             bead, ask = None, None
         current_proposal = None if ask is None else self.proposal(bead, ask, row['conversation'])
         if ask is None or current_proposal != row['proposal']:
+            matched = self._title_only_change(row, bead, ask) if ask is not None else None
+            if matched is not None:
+                self._backfill_bead_title(row, matched)
+                return ask
             self._mark_stale(row, bead, ask, current_proposal)
             raise NativeError('run_ask_stale_proposal')
+        if row.get('kind', 'run') == 'run' and not isinstance(row.get('bead_title'), str):
+            self._backfill_bead_title(row, bead['title'])
         return ask
 
     def keyboard(self, row):
@@ -3340,8 +3421,15 @@ class RunAsks:
                 else:
                     if row['state'] == 'stale':
                         raise NativeError('run_ask_stale_proposal')
-                    if row['proposal'] != proposal:
+                    if row['conversation'] != conversation:
                         raise NativeError('run_ask_stale_proposal')
+                    if row['proposal'] != proposal:
+                        matched = self._title_only_change(row, bead, ask)
+                        if matched is None:
+                            raise NativeError('run_ask_stale_proposal')
+                        self._backfill_bead_title(row, matched)
+                    if not isinstance(row.get('bead_title'), str):
+                        self._backfill_bead_title(row, bead['title'])
                     if row['message_id'] is None and ask['state'] != 'open':
                         raise NativeError('run_ask_not_open')
             else:
@@ -3353,6 +3441,8 @@ class RunAsks:
                 row = dict(id=ident, binding=binding, bead=bead_id, ask=number, conversation=conversation,
                            proposal=proposal, plain=plain, html=card, weighty=bool(ask.get('weight')) or skill,
                            state='open', pending=None, message_id=None, silent=silent, revision=0)
+                if kind == 'run':
+                    row['bead_title'] = bead['title']
                 if isinstance(ask.get('run'), dict) and 'general' in ask['run']:
                     row['general'] = True
                 if kind == 'decision':
@@ -4139,8 +4229,17 @@ class RunAsks:
         with self.lock():
             binding = self.binding()
             for row in self.rows():
-                if (row['binding'] != binding or row['state'] == 'stale'
-                        or (row['message_id'] is None and row.get('kind') != 'decision')):
+                if row['binding'] != binding or row['state'] == 'stale':
+                    continue
+                if row['message_id'] is None and row.get('kind') != 'decision':
+                    if row.get('kind', 'run') == 'run' and not isinstance(row.get('bead_title'), str):
+                        try:
+                            bead, ask = self.fetch(row['bead'], row['ask'], 'run')
+                            if (ask['state'] == 'open'
+                                    and self.proposal(bead, ask, row['conversation']) == row['proposal']):
+                                self._backfill_bead_title(row, bead['title'])
+                        except NativeError:
+                            pass
                     continue
                 try:
                     ask = self.ensure(row)
@@ -4193,7 +4292,7 @@ class RunAsks:
             label = f"{entry['bead']}#{entry['ask']}"
             out += ['', f"{index}. {short(entry['question'], 100)}",
                     f"{entry['kind']} · {label} · {short(entry['title'], 48)} · asked by {short(entry['asker'], 32)}"]
-            # showable can recover and save a row: never inside the decide_ids write below.
+            # showable can recover and save a decision generation: never inside the decide_ids write below.
             if self.showable(entry):
                 ident = self.ident(entry['bead'], entry['ask'])
                 ids.append((ident, entry['bead'], str(entry['ask'])))
@@ -4212,9 +4311,20 @@ class RunAsks:
         """Whether selecting entry opens a card: one already sent, or one that renders whole now."""
         if not entry['shown']:
             return False
-        if self.card_message(self.resolve_row(self.get(self.ident(entry['bead'], entry['ask'])))):
+        row = self.resolve_row(self.get(self.ident(entry['bead'], entry['ask'])))
+        if self.card_message(row):
             return True
         kind = card_kind(entry)
+        if (row and row.get('kind', 'run') == 'run' and row.get('state') == 'open'
+                and row['message_id'] is None):
+            try:
+                bead, ask = self.fetch(entry['bead'], entry['ask'], kind)
+                if (ask['state'] == 'open' and self.proposal(bead, ask, row['conversation']) != row['proposal']
+                        and self._title_only_change(row, bead, ask) is not None):
+                    return True
+            except NativeError as error:
+                if not str(error).endswith(FALLBACK):
+                    raise
         try:
             bead, ask = self.fetch(entry['bead'], entry['ask'], kind)
             self.card(bead, ask, kind, self.proposal(bead, ask, ''))

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -678,10 +679,234 @@ class DecideTests(DecideCase):
 
         # Run card stale in /decide keeps today's refusal.
         self.command('/decide run-1#3', 4)
-        self.native.beads['run-1']['title'] = 'Retitled run'
+        run = self.native.beads['run-1']['asks'][0]['run']
+        run['argv'] = ['depot', 'test', 'other']
+        run['command'] = 'yardr depot test other'
         self.bridge.run_asks.refresh()
         self.command('/decide run-1#3', 5)
         self.assertIn('run_ask_stale_proposal', self.sends()[-1]['text'])
+
+    def test_run_card_survives_a_retitle_but_not_an_argv_change(self):
+        base = self.bridge.request
+        self.bridge.sleep = lambda _: None
+        blocked = [True]
+
+        def transient(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'runask:' in str(body.get('reply_markup')) and blocked[0]:
+                raise b.RequestNotSent('synthetic transient')
+            return base(url, body, *args, **kwargs)
+        self.bridge.request = transient
+        try:
+            # 1. Title edited before the first transport: one usable card, opened by /decide.
+            self.command('/decide run-1#3', 1)
+            self.assertIn('not confirmed sent', self.sends()[-1]['text'])
+            row = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-1', 3))
+            self.assertIsNone(row['message_id'])
+            self.native.beads['run-1']['title'] = 'Retitled before send'
+            blocked[0] = False
+            cards = len([s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))])
+            self.command('/decide run-1#3', 2)
+            sent = [s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))]
+            self.assertEqual(len(sent), cards + 1)
+            row = self.bridge.run_asks.get(row['id'])
+            self.assertEqual(row['state'], 'open')
+            self.assertIsNotNone(row['message_id'])
+            self.command('/decide run-1#3', 3)
+            self.assertEqual(self.sends()[-1]['text'], 'The card for run-1#3 is already open.')
+            # 3. Title edit after delivery: the card stays usable, callbacks bind.
+            self.native.beads['run-1']['title'] = 'Retitled after send'
+            self.bridge.run_asks.refresh()
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'open')
+            sent_before = len(self.sends())
+            self.command('/decide run-1#3', 4)
+            self.assertEqual(self.sends()[-1]['text'], 'The card for run-1#3 is already open.')
+            self.assertEqual(len(self.sends()), sent_before + 1)
+            self.press('approve', uid=40)
+            self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='run-1', ask=3, actor='pat', weighed=False,
+                                                                 values={}))])
+            self.assertEqual(self.native.beads['run-1']['asks'][0]['state'], 'answered')
+            # 2. An argv change stays stale, no card.
+            self.native.beads['run-2'] = dict(id='run-2', title='Synthetic second run',
+                                              asks=[dict(proposal(), ask=3)])
+            self.command('/decide run-2#3', 5)
+            row2 = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-2', 3))
+            self.assertIsNotNone(row2['message_id'])
+            sent_before = len(self.sends())
+            run = self.native.beads['run-2']['asks'][0]['run']
+            run['argv'] = ['depot', 'test', 'other']
+            run['command'] = 'yardr depot test other'
+            self.bridge.run_asks.refresh()
+            self.assertEqual(self.bridge.run_asks.get(row2['id'])['state'], 'stale')
+            self.command('/decide run-2#3', 6)
+            self.assertIn('run_ask_stale_proposal', self.sends()[-1]['text'])
+            self.assertEqual(len(self.sends()), sent_before + 1)
+        finally:
+            self.bridge.request = base
+
+    def test_run_card_upgrade_events_outage_holds_row_for_retry(self):
+        self.command('/decide run-1#3', 1)
+        row = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-1', 3))
+        self.assertIsNotNone(row['message_id'])
+        sent_id = row['message_id']
+        row.pop('bead_title', None)
+        self.bridge.run_asks.save(row)
+        self.native.beads['run-1']['title'] = 'Retitled run'
+        self.native.raw_events = [
+            dict(seq=9, id='9', bead='run-1', kind='created', actor='proposer',
+                 data=dict(originator='proposer', stage='new', title='Synthetic run', type='task'),
+                 at='2026-01-01T00:00:00Z'),
+            dict(seq=11, id='11', bead='run-1', kind='updated', actor='proposer',
+                 data=dict(title='Retitled run', was=dict(title='Synthetic run')),
+                 at='2026-01-02T00:00:00Z'),
+        ]
+        client = self.bridge.run_asks.client
+        original = client.call
+        outages = [True]
+
+        def flaky(method, args):
+            if method == 'Events' and outages:
+                outages.pop()
+                raise n.RPCUnavailable('synthetic events outage')
+            return original(method, args)
+
+        client.call = flaky
+        try:
+            sends, edits = len(self.sends()), len(self.edits())
+            self.bridge.run_asks.refresh()
+            held = self.bridge.run_asks.get(row['id'])
+            self.assertEqual(held['state'], 'open')
+            self.assertEqual(held['message_id'], sent_id)
+            self.assertNotIn('bead_title', held)
+            self.assertEqual(len(self.sends()), sends)
+            self.assertEqual(len(self.edits()), edits)
+        finally:
+            client.call = original
+        try:
+            self.bridge.run_asks.refresh()
+            recovered = self.bridge.run_asks.get(row['id'])
+            self.assertEqual(recovered['state'], 'open')
+            self.assertEqual(recovered['message_id'], sent_id)
+            self.command('/decide run-1#3', 2)
+            self.assertEqual(self.sends()[-1]['text'], 'The card for run-1#3 is already open.')
+            self.assertEqual(self.sends()[-1]['reply_parameters'], {'message_id': sent_id})
+            self.press('approve', uid=40)
+            self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='run-1', ask=3, actor='pat', weighed=False,
+                                                                 values={}))])
+            self.assertEqual(self.native.beads['run-1']['asks'][0]['state'], 'answered')
+        finally:
+            self.native.raw_events = None
+
+    def test_run_card_list_during_retry_keeps_delivered_binding(self):
+        base = self.bridge.request
+        self.bridge.sleep = lambda _: None
+        blocked = [True]
+
+        def transient(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'runask:' in str(body.get('reply_markup')) and blocked[0]:
+                raise b.RequestNotSent('synthetic transient')
+            return base(url, body, *args, **kwargs)
+
+        self.bridge.request = transient
+        try:
+            self.command('/decide run-1#3', 1)
+            self.assertIn('not confirmed sent', self.sends()[-1]['text'])
+            row = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-1', 3))
+            self.assertIsNone(row['message_id'])
+            row.pop('bead_title', None)
+            self.bridge.run_asks.save(row)
+            self.native.beads['run-1']['title'] = 'Retitled before send'
+            self.native.raw_events = [
+                dict(seq=9, id='9', bead='run-1', kind='created', actor='proposer',
+                     data=dict(originator='proposer', stage='new', title='Synthetic run', type='task'),
+                     at='2026-01-01T00:00:00Z'),
+                dict(seq=11, id='11', bead='run-1', kind='updated', actor='proposer',
+                     data=dict(title='Retitled before send', was=dict(title='Synthetic run')),
+                     at='2026-01-02T00:00:00Z'),
+            ]
+            blocked[0] = False
+            client = self.bridge.run_asks.client
+            original = client.call
+            entered, gate = threading.Event(), threading.Event()
+            holder = []
+
+            def gated(method, args):
+                if method == 'Events' and threading.current_thread() is holder[0]:
+                    entered.set()
+                    self.assertTrue(gate.wait(timeout=10))
+                return original(method, args)
+
+            client.call = gated
+            try:
+                outcome = []
+
+                def listing():
+                    try:
+                        outcome.append(self.bridge.run_asks.decide_list())
+                    except Exception as error:  # noqa: BLE001 - reported back to the main thread
+                        outcome.append(error)
+
+                worker = threading.Thread(target=listing, daemon=True)
+                holder.append(worker)
+                worker.start()
+                self.assertTrue(entered.wait(timeout=10))
+                cards = len([s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))])
+                retry = self.bridge.api_run_ask(dict(bead='run-1', ask=3, key='retry-during-list'))
+                self.assertTrue(retry['delivered'], retry)
+                delivered = self.bridge.run_asks.get(row['id'])['message_id']
+                self.assertIsNotNone(delivered)
+                gate.set()
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(outcome), 1)
+                self.assertNotIsInstance(outcome[0], Exception)
+                sent = [s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))]
+                self.assertEqual(len(sent), cards + 1)
+                current = self.bridge.run_asks.get(row['id'])
+                self.assertEqual(current['state'], 'open')
+                self.assertEqual(current['message_id'], delivered)
+                key, _ = self.bridge.run_asks.send_request(current)
+                receipt = self.store.saved_delivery(key)
+                self.assertTrue(receipt[1]['delivered'])
+                self.assertEqual(int(receipt[1]['message_id']), delivered)
+            finally:
+                client.call = original
+            self.press('approve', uid=40)
+            self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='run-1', ask=3, actor='pat', weighed=False,
+                                                                 values={}))])
+            self.assertEqual(self.native.beads['run-1']['asks'][0]['state'], 'answered')
+        finally:
+            self.bridge.request = base
+            self.native.raw_events = None
+
+    def test_run_card_retitle_past_cap_still_opens_stored_card(self):
+        base = self.bridge.request
+        self.bridge.sleep = lambda _: None
+        self.native.beads['run-1']['asks'][0]['question'] = 'x' * 3202
+        blocked = [True]
+
+        def transient(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'runask:' in str(body.get('reply_markup')) and blocked[0]:
+                raise b.RequestNotSent('synthetic transient')
+            return base(url, body, *args, **kwargs)
+        self.bridge.request = transient
+        try:
+            self.command('/decide run-1#3', 1)
+            self.assertIn('not confirmed sent', self.sends()[-1]['text'])
+            row = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-1', 3))
+            self.assertIsNone(row['message_id'])
+            self.assertEqual(n.units(row['plain']), 3495)
+            self.native.beads['run-1']['title'] = 'Synthetic run12345678'
+            blocked[0] = False
+            cards = len([s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))])
+            self.command('/decide run-1#3', 2)
+            sent = [s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))]
+            self.assertEqual(len(sent), cards + 1)
+            row = self.bridge.run_asks.get(row['id'])
+            self.assertEqual(row['state'], 'open')
+            self.assertIsNotNone(row['message_id'])
+            self.assertEqual(n.units(row['plain']), 3495)
+        finally:
+            self.bridge.request = base
 
 
 class DecideNamespaceTests(BridgeTestCase):

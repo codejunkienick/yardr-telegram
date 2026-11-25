@@ -2476,7 +2476,8 @@ class NativeTests(NativeCase):
         self.native.bead = dict(id='sample-1', title='Run title 1')
         self.assertTrue(self.create()['delivered'])
         run_row = self.row()
-        self.native.bead['title'] = 'Run title 2'
+        self.native.ask['run']['argv'] = ['depot', 'test', 'other']
+        self.native.ask['run']['command'] = 'yardr depot test other'
         self.press('approve', uid=120)
         self.assertEqual(len(cards()), 1)
         self.assertEqual(self.row()['state'], 'stale')
@@ -6936,6 +6937,147 @@ class NativeTests(NativeCase):
                     self.assertNotEqual(current['message_id'], old['message_id'])
                     self.assertIn('newer card', old['display']['footer'])
 
+    def test_run_card_ambiguous_send_then_retitle_sends_no_second_card(self):
+        self.reset_native(proposal())
+        self.native.bead = dict(id='sample-1', title='Title before send')
+        original = self.bridge.request
+        lost = [True]
+
+        def uncertain(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and lost[0]:
+                self.calls.append((url, body))
+                raise b.RequestUnconfirmed('synthetic lost reply')
+            return original(url, body, *args, **kwargs)
+        self.bridge.request = uncertain
+        try:
+            first = self.create()
+            self.assertFalse(first['delivered'])
+            self.assertIn('ambiguous', first['reason'])
+            self.assertIsNone(self.row()['message_id'])
+            self.native.bead['title'] = 'Title after send'
+            lost[0] = False
+            # The poll retries nothing: no second card under any key.
+            sends = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+            self.bridge.run_asks = n.RunAsks(self.bridge)
+            self.bridge.run_asks.refresh()
+            self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends)
+            self.assertEqual(self.row()['state'], 'open')
+            # A retry honors the ambiguous receipt instead of stranding or resending.
+            retry = self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='native-2'))
+            self.assertFalse(retry['delivered'])
+            self.assertIn('ambiguous', retry['reason'])
+            self.assertNotIn('stale', retry['reason'])
+            self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends)
+            self.assertEqual(self.writes(), [])
+        finally:
+            self.bridge.request = original
+
+    def test_run_card_title_only_does_not_cross_conversations(self):
+        self.reset_native(proposal())
+        self.native.bead = dict(id='sample-1', title='Title before move')
+        self.bridge.topic_settings = (dict(name='ops', agent='yardmaster'),)
+        self.store.record_topic('ops', 12, 'created')
+        original = self.bridge.request
+        blocked = [True]
+
+        def transient(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and blocked[0]:
+                raise b.RequestNotSent('synthetic transient')
+            return original(url, body, *args, **kwargs)
+        self.bridge.request = transient
+        try:
+            first = self.create()
+            self.assertFalse(first['delivered'])
+            self.assertIsNone(self.row()['message_id'])
+            self.assertEqual(self.row()['conversation'], '123')
+            blocked[0] = False
+            sends = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+            moved = self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='other-topic', topic='ops'))
+            self.assertFalse(moved['delivered'])
+            self.assertIn('stale', moved['reason'])
+            self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends)
+            self.native.bead['title'] = 'Title after move'
+            sends = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+            retitled = self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='other-topic-2', topic='ops'))
+            self.assertFalse(retitled['delivered'])
+            self.assertIn('stale', retitled['reason'])
+            self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends)
+            self.assertEqual(self.row()['state'], 'open')
+            self.assertIsNone(self.row()['message_id'])
+            same = self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='same-topic'))
+            self.assertTrue(same['delivered'])
+            self.assertIsNotNone(self.row()['message_id'])
+        finally:
+            self.bridge.request = original
+
+    def test_run_card_upgrade_recovers_title_from_events(self):
+        self.reset_native(proposal())
+        self.native.bead = dict(id='sample-1', title='Original upgrade title')
+        original = self.bridge.request
+        blocked = [True]
+
+        def transient(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and blocked[0]:
+                raise b.RequestNotSent('synthetic transient')
+            return original(url, body, *args, **kwargs)
+        self.bridge.request = transient
+        try:
+            first = self.create()
+            self.assertFalse(first['delivered'])
+            row = self.row()
+            self.assertIsNone(row['message_id'])
+            row.pop('bead_title', None)
+            self.bridge.run_asks.save(row)
+            self.assertNotIn('bead_title', self.row())
+            blocked[0] = False
+            self.bridge.run_asks.refresh()
+            self.assertEqual(self.row()['bead_title'], 'Original upgrade title')
+            row = self.row()
+            row.pop('bead_title', None)
+            self.bridge.run_asks.save(row)
+            self.native.bead['title'] = 'Retitled upgrade title'
+            self.native.raw_events = [
+                dict(seq=9, id='9', bead='sample-1', kind='created', actor='pat',
+                     data=dict(originator='pat', stage='new', title='Original upgrade title', type='task'),
+                     at='2026-01-01T00:00:00Z'),
+                dict(seq=11, id='11', bead='sample-1', kind='updated', actor='pat',
+                     data=dict(title='Retitled upgrade title', was=dict(title='Original upgrade title')),
+                     at='2026-01-02T00:00:00Z'),
+            ]
+            sends = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+            retry = self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='upgrade-retry'))
+            self.assertTrue(retry['delivered'], retry)
+            self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends + 1)
+            self.assertEqual(self.row()['state'], 'open')
+            self.assertIsNotNone(self.row()['message_id'])
+            self.assertEqual(self.row()['bead_title'], 'Original upgrade title')
+        finally:
+            self.bridge.request = original
+            self.native.raw_events = None
+
+    def test_run_card_upgrade_argv_change_stays_stale(self):
+        self.reset_native(proposal())
+        self.native.bead = dict(id='sample-1', title='Stable upgrade title')
+        self.assertTrue(self.create()['delivered'])
+        row = self.row()
+        row.pop('bead_title', None)
+        self.bridge.run_asks.save(row)
+        self.native.ask['run']['argv'] = ['depot', 'test', 'other']
+        self.native.ask['run']['command'] = 'yardr depot test other'
+        self.native.raw_events = [
+            dict(seq=9, id='9', bead='sample-1', kind='created', actor='pat',
+                 data=dict(originator='pat', stage='new', title='Stable upgrade title', type='task'),
+                 at='2026-01-01T00:00:00Z'),
+        ]
+        try:
+            sends = len([1 for url, _ in self.calls if url.endswith('/sendMessage')])
+            retry = self.bridge.api_run_ask(dict(bead='sample-1', ask=7, key='upgrade-argv'))
+            self.assertFalse(retry['delivered'])
+            self.assertIn('stale', retry['reason'])
+            self.assertEqual(len([1 for url, _ in self.calls if url.endswith('/sendMessage')]), sends)
+        finally:
+            self.native.raw_events = None
+
     def test_fresh_role_proposal_and_state_checks_on_confirmation(self):
         for factory in (proposal,):
             with self.subTest(payload=factory.__name__):
@@ -9680,15 +9822,13 @@ class RealNativeTests(BridgeTestCase):
                 self.assertEqual(saved(row)['pending'], arm)
                 untouched(row, before)
 
-        for kind in ('taken-back', 'proposal', 'socket-answer'):
+        for kind in ('taken-back', 'socket-answer'):
             with self.subTest(real_confirm_stale=kind):
                 row = make('r3-' + kind)
                 tap(row)
                 if kind == 'taken-back':
                     client.call('TakeBackAsk', dict(bead='confirm-1', ask=row['ask'], actor='proposer',
                                                    reason='synthetic withdrawal'))
-                elif kind == 'proposal':
-                    cli('bead', 'update', 'confirm-1', '--title', 'Synthetic edited confirmation')
                 else:
                     client.call('ApproveAsk', dict(bead='confirm-1', ask=row['ask'], actor='pat', weighed=True, values={}))
                 before = current(row)
@@ -9698,11 +9838,22 @@ class RealNativeTests(BridgeTestCase):
                 self.assertEqual(events(row), prior_events)
                 if kind == 'taken-back':
                     no_controls(row, 'Taken back')
-                elif kind == 'socket-answer':
-                    no_controls(row, 'approved, ran')
                 else:
-                    no_controls(row, 'Proposal changed')
-                    cli('bead', 'update', 'confirm-1', '--title', 'Synthetic confirmation boundary')
+                    no_controls(row, 'approved, ran')
+
+        # A retitle no longer refuses the confirm: the approval applies once.
+        with self.subTest(real_confirm_stale='proposal'):
+            row = make('r3-proposal')
+            tap(row)
+            cli('bead', 'update', 'confirm-1', '--title', 'Synthetic edited confirmation')
+            tap(row, 'confirm')
+            settled = current(row)
+            self.assertEqual(settled['state'], 'answered')
+            self.assertEqual(settled['ran']['argv'], ['user', 'add', 'synthetic-member-r3-proposal'])
+            self.assertEqual(client.call('GetUser', dict(name='synthetic-member-r3-proposal'))['name'],
+                             'synthetic-member-r3-proposal')
+            self.assertEqual(len(events(row)), 1)
+            cli('bead', 'update', 'confirm-1', '--title', 'Synthetic confirmation boundary')
 
         row = make('r3-old-nonce')
         tap(row)
@@ -10894,10 +11045,14 @@ class RealNativeTests(BridgeTestCase):
                 reload_run_asks()
             self.assertEqual(len(open_beads()), beads_before)
 
-            # A title/card drift and dirty captured file each refuse the existing card.
+            # A title drift no longer refuses the existing card: poll and /decide still open it.
             cli('bead', 'update', 'sample-2', '--title', 'Changed proposal owner title')
-            press(row, 'confirm')
-            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'stale')
+            self.bridge.run_asks.refresh()
+            self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'open')
+            self.assertEqual(current(main_ask['ask'])['state'], 'open')
+            notice, opened = self.bridge.run_asks.decide_open('sample-2', main_ask['ask'], '123:topic:12')
+            self.assertEqual(notice, f"The card for sample-2#{main_ask['ask']} is already open.")
+            self.assertEqual(opened, (row['message_id'], '123:topic:12'))
             file_ask = propose('op-file-drift', files_edit)
             self.assertTrue(publish(file_ask, 'key-file')['delivered'])
             file_row = self.bridge.run_asks.get(self.bridge.run_asks.ident('sample-2', file_ask['ask']))

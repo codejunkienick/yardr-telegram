@@ -3520,7 +3520,7 @@ class Bridge:
                 and sent.get('chat', {}).get('id') == self.config['chat_id'])
 
     def _deliver_text(self, text, reply, pending, plain=None, method='sendMessage', extra=None, fallback_reason=None,
-                      not_modified=False, before_attempt=None, mirror=False):
+                      not_modified=False, before_attempt=None, mirror=False, mirror_thread=None):
         """Send text; `plain` is set for HTML, and is the one fallback body
         sent (under the same key, same reservation) when Telegram cannot parse
         the markup. The first send was then definitively not delivered, so
@@ -3541,7 +3541,7 @@ class Bridge:
                 return self.telegram(method, body, timeout)
             status, data = self._send(method, attempt, attempts=1) if mirror else self._send(method, attempt)
             if mirror:
-                if self.peer_mail.confirmed(status, data):
+                if self.peer_mail.confirmed(status, data, mirror_thread):
                     return self.receipt(True, message_id=str(data['result']['message_id']))
                 code = data.get('error_code')
                 if type(code) is int and status == code and 400 <= code < 500 and data.get('ok') is False:
@@ -3552,6 +3552,13 @@ class Bridge:
                         if type(delay) is int and 0 < delay < 2**31:
                             receipt['metadata']['retry_at'] = time.time() + delay
                         return receipt
+                    description = str(data.get('description', '')).lower()
+                    if 'message thread not found' in description or 'topic_deleted' in description:
+                        # Stale topic at Telegram, before the send or reported
+                        # after lookup: provably not delivered and retryable
+                        # after restore, so not sent with a marker the mirror
+                        # turns into a pause instead of a wait.
+                        return dict(self.not_sent(), thread_not_found=True)
                     return self.receipt(reason=f'telegram_rejected_not_sent_{code}')
                 return pending
             if self._confirmed(status, data):
@@ -3725,19 +3732,26 @@ class Bridge:
         """Send one request on the paired chat's conversation, on a
         configured, recorded topic's or on a served auto topic's, bound or
         not (OPERATIONS.md, "Topics"); any other conversation is
-        recipient_not_authorized. In a topic every Telegram request of the
-        send carries the topic's message_thread_id, and the receipt names the
-        topic's conversation. In an auto topic a rejected file or album
-        fails with no text fallback: the user may have deleted the topic.
-        Whole mail only, outside the request: with resend_on_429 Telegram's
-        429 is saved as not sent, so the same key sends again; past start_by
-        (monotonic), checked once the send holds publish_lock, nothing is
-        sent and the send is saved as not sent."""
+        recipient_not_authorized. The peer mail mirror sends on the paired
+        chat's conversation or its claimed configured, recorded topic's,
+        never an auto topic's. In a topic
+        every Telegram request of the send carries the topic's
+        message_thread_id, and the receipt names the topic's conversation.
+        In an auto topic a rejected file or album fails with no text
+        fallback: the user may have deleted the topic. Whole mail only,
+        outside the request: with resend_on_429 Telegram's 429 is saved as
+        not sent, so the same key sends again; past start_by (monotonic),
+        checked once the send holds publish_lock, nothing is sent and the
+        send is saved as not sent."""
         conversation = request.get('conversation')
         if mirror:
-            if conversation != self.conversation:
+            if conversation == self.conversation:
+                return self._publish(request, mirror=True)
+            topic = next((topic for topic in self._recorded_topics() if topic['conversation'] == conversation), None)
+            if topic is None:
                 return self.receipt(reason='recipient_not_authorized')
-            return self._publish(request, mirror=True)
+            receipt = self._publish(request, topic['thread_id'], mirror=True)
+            return dict(receipt, conversation=topic['conversation'])
         if conversation == self.conversation:
             receipt = self._publish(request, format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
                                     start_by=start_by)
@@ -4257,7 +4271,8 @@ class Bridge:
                     self.peer_mail.before_send()
                     self.store.finish(key, pending, mirror=True)
 
-                receipt = self._deliver_text(text, reply, pending, before_attempt=begin, mirror=True)
+                receipt = self._deliver_text(text, reply, pending, extra=extra or None, before_attempt=begin,
+                                             mirror=True, mirror_thread=thread_id)
             elif attachments is not None:
                 receipt = self._deliver_album(attachments, text, reply, pending, plain, extra=extra or None,
                                               text_fallback=text_fallback)
@@ -5884,13 +5899,18 @@ def load_settings(path, home=None):
     if 'peer_mail' in yardr:
         if not operator_acts:
             raise SettingsError('settings: [yardr.peer_mail] needs [yardr] home and operator together')
-        peer_settings = _table(yardr, 'peer_mail', {'crew'}, required=True)
+        peer_settings = _table(yardr, 'peer_mail', {'crew', 'topic'}, required=True)
         crew = peer_settings.get('crew')
         if (not isinstance(crew, list) or not crew
                 or any(not isinstance(name, str) or not peer_mail.NAME.fullmatch(name) for name in crew)
                 or len(crew) != len(set(crew))):
             raise SettingsError('settings: [yardr.peer_mail] crew needs a non-empty list of unique crew names')
         config['yardr_peer_mail'] = tuple(crew)
+        topic = peer_settings.get('topic')
+        if topic is not None:
+            if not isinstance(topic, str) or not topic:
+                raise SettingsError('settings: [yardr.peer_mail] topic must be a [[topic]] name')
+            config['yardr_peer_mail_topic'] = topic
     # The crew member: internally the bridge's agent, as the ledger names it.
     agent = _text_setting(data.get('crew', 'yardmaster'), 'crew')
     config['agent'] = agent
@@ -5925,6 +5945,8 @@ def load_settings(path, home=None):
     topics = _topic_settings(data, agent)
     if topics:
         config['topics'] = topics
+    # No [[topic]] match check: a missing entry pauses the mirror with
+    # private status, while ordinary traffic keeps working.
     if 'auto_topics' in data:
         auto_topics = _table(data, 'auto_topics', AUTO_TOPICS_KEYS)
         config['auto_topics'] = dict(enabled=_bool_setting(auto_topics.get('enabled', False), 'auto_topics.enabled'))

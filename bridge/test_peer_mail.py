@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
 import testyardr  # noqa: E402
 from test_bridge import BridgeTestCase, write_settings  # noqa: E402
+from test_topic_inbound import OPS, TOPICS, WEB, in_topic, record_topics  # noqa: E402
 from test_yard_mail import DECLARATION  # noqa: E402
 
 
@@ -37,11 +38,25 @@ class PeerMailTests(BridgeTestCase):
                 path.write_text(native + '\n' + table.replace('["yardmaster"]', value))
                 with self.assertRaisesRegex(b.SettingsError, 'non-empty list of unique crew names'):
                     b.load_settings(path)
+        topics = '\n[[topic]]\nname = "ops"\n'
+        # A missing [[topic]] entry loads: the mirror pauses at send time.
         path.write_text(native + '\n' + table + 'topic = "ops"\n')
-        with self.assertRaisesRegex(b.SettingsError, r'peer_mail\.topic'):
-            b.load_settings(path)
-        path.write_text(native + '\n' + table)
-        self.assertEqual(b.load_settings(path).config['yardr_peer_mail'], ('yardmaster',))
+        self.assertEqual(b.load_settings(path).config['yardr_peer_mail_topic'], 'ops')
+        path.write_text(native + '\n' + table + 'topic = "OPS"\n' + topics)
+        self.assertEqual(b.load_settings(path).config['yardr_peer_mail_topic'], 'OPS')
+        for value in ('""', '["ops"]', '1'):
+            with self.subTest(value=value):
+                path.write_text(native + '\n' + table + f'topic = {value}\n' + topics)
+                with self.assertRaisesRegex(b.SettingsError, r'peer_mail\] topic must be'):
+                    b.load_settings(path)
+        path.write_text(native + '\n' + table + topics)
+        settings = b.load_settings(path)
+        self.assertEqual(settings.config['yardr_peer_mail'], ('yardmaster',))
+        self.assertNotIn('yardr_peer_mail_topic', settings.config)
+        path.write_text(native + '\n' + table + 'topic = "ops"\n' + topics)
+        settings = b.load_settings(path)
+        self.assertEqual((settings.config['yardr_peer_mail'], settings.config['yardr_peer_mail_topic']),
+                         (('yardmaster',), 'ops'))
 
         key = 'peermail:42:0'
         for api, request in ((self.bridge.api_send, dict(text='synthetic')),
@@ -79,6 +94,270 @@ class PeerMailTests(BridgeTestCase):
             self.assertEqual(db.execute('SELECT name FROM peer_mail_links').fetchall(), [('test',)])
             self.assertEqual(db.execute('SELECT ready FROM peer_mail_work').fetchall(), [])
         self.assertEqual(self.store.offset(), 10)
+
+    def topic_transport(self, url, body, *args, **kwargs):
+        self.calls.append((url, body))
+        message = dict(message_id=77, chat=dict(id=123, type='private'),
+                       **{'from': dict(id=999, is_bot=True)})
+        if 'message_thread_id' in body:
+            message.update(is_topic_message=True, message_thread_id=body['message_thread_id'])
+        return 200, dict(ok=True, result=message)
+
+    def topic_bridge(self):
+        record_topics(self.store)
+        return b.Bridge(dict(self.config, topics=TOPICS), self.store, 'SECRET', 'CAPABILITY',
+                        request=self.topic_transport, request_multipart=self.multipart_transport,
+                        request_download=self.download_transport)
+
+    def seed_part(self, key, seq, ref):
+        with self.store.connect() as db:
+            db.execute('INSERT INTO peer_mail_parts (key, letter_seq, ref, text, proof, bot, chat) VALUES (?, ?, ?, ?, ?, 999, 123)',
+                       (key, seq, ref, 'synthetic', b.peer_mail.proof('synthetic')))
+
+    def test_mirror_publish_to_a_recorded_topic_carries_its_thread(self):
+        bridge = self.topic_bridge()
+        conversation = bridge.topic_conversation(OPS)
+        key = 'peermail:9:0'
+        self.seed_part(key, 9, '00' * 16)
+        request = dict(conversation=conversation, idempotency_key=key, text='synthetic', text_options=True)
+        with patch.object(bridge.peer_mail, 'before_send'):
+            receipt = bridge.publish(request, mirror=True)
+        self.assertTrue(receipt['delivered'])
+        self.assertEqual(receipt['conversation'], conversation)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT message_id FROM peer_mail_parts WHERE key=?', (key,)).fetchone(), (77,))
+        calls = len(self.calls)
+        with patch.object(bridge.peer_mail, 'before_send'):
+            again = bridge.publish(request, mirror=True)
+        self.assertTrue(again['delivered'])
+        self.assertEqual(len(self.calls), calls)
+        with patch.object(bridge.peer_mail, 'before_send'):
+            refused = bridge.publish(dict(request, conversation=bridge.topic_conversation(999)), mirror=True)
+        self.assertEqual(refused['metadata']['reason'], 'recipient_not_authorized')
+        self.assertEqual(len(self.calls), calls)
+
+    def test_mirror_confirmation_requires_the_expected_thread(self):
+        mirror = self.bridge.peer_mail
+        result = dict(message_id=77, chat=dict(id=123, type='private'),
+                      **{'from': dict(id=999, is_bot=True)})
+        threaded = dict(result, is_topic_message=True, message_thread_id=OPS)
+        self.assertTrue(mirror.confirmed(200, dict(ok=True, result=result)))
+        self.assertFalse(mirror.confirmed(200, dict(ok=True, result=threaded)))
+        self.assertTrue(mirror.confirmed(200, dict(ok=True, result=threaded), OPS))
+        self.assertFalse(mirror.confirmed(200, dict(ok=True, result=result), OPS))
+        self.assertFalse(mirror.confirmed(200, dict(ok=True, result=dict(threaded, message_thread_id=WEB)), OPS))
+
+        def general_receipt(url, body, *args, **kwargs):
+            self.calls.append((url, body))
+            return 200, dict(ok=True, result=result)
+
+        bridge = b.Bridge(dict(self.config, topics=TOPICS), self.store, 'SECRET', 'CAPABILITY',
+                          request=general_receipt)
+        record_topics(self.store)
+        key = 'peermail:9:1'
+        self.seed_part(key, 9, '11' * 16)
+        with patch.object(bridge.peer_mail, 'before_send'):
+            receipt = bridge.publish(dict(conversation=bridge.topic_conversation(OPS), idempotency_key=key,
+                                          text='synthetic', text_options=True), mirror=True)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+        self.assertIsNot(receipt.get('delivered'), True)
+        self.assertEqual(receipt['metadata']['reason'], b.yard_mail.AMBIGUOUS)
+
+    def test_mirror_replies_in_a_topic_are_consumed(self):
+        mirror = self.bridge.peer_mail
+        ref = 'ab' * 16
+        text = f'synthetic one\nMirror ref {ref}'
+        with self.store.connect() as db:
+            db.execute('INSERT INTO peer_mail_parts (key, letter_seq, ref, text, proof, bot, chat, attempted, message_id)'
+                       " VALUES ('peermail:9:0', 9, '00', 'stale', '00', 999, 123, 1, 501)")
+            db.execute('INSERT INTO peer_mail_parts (key, letter_seq, ref, text, proof, bot, chat, attempted)'
+                       ' VALUES (?, 10, ?, ?, ?, 999, 123, 1)', ('peermail:10:0', ref, text, b.peer_mail.proof(text)))
+
+        def target(mid, body):
+            return dict(message_id=mid, chat=dict(id=123, type='private'), text=body,
+                        is_topic_message=True, message_thread_id=OPS, **{'from': dict(id=999, is_bot=True)})
+
+        self.assertTrue(mirror.is_reply(dict(text='/status', reply_to_message=target(501, 'stale part'))))
+        self.assertTrue(mirror.is_reply(dict(text='/status', reply_to_message=target(502, text))))
+        self.assertFalse(mirror.is_reply(dict(text='normal reply', reply_to_message=target(503, 'ordinary topic post'))))
+        self.assertFalse(mirror.is_reply(dict(text='ordinary copy',
+                                              reply_to_message=target(504, text.replace('one', 'two')))))
+
+    def queue_letter(self, seq, text='Hi.'):
+        letter = dict(seq=seq, crew='yardmaster', remote='dispatch', peer='company', incoming=True,
+                      text=text, files=[])
+        with self.store.connect() as db:
+            db.execute('INSERT INTO peer_mail_work (ready, letter_seq, crew, letter) VALUES (?, ?, ?, ?)',
+                       (seq, seq, 'yardmaster', b.run_asks.canonical(letter)))
+        return letter
+
+    def test_missing_topic_entry_pauses_mirror_but_ordinary_sends_work(self):
+        root = Path(self.tmp.name) / 'missing-entry'
+        root.mkdir()
+        path = write_settings(root)
+        original = path.read_text()
+        native = original.replace('[yardr]\n', f'[yardr]\nhome = "{root}"\noperator = "pat"\ncards = false\n')
+        path.write_text(native + '\n[yardr.peer_mail]\ncrew = ["yardmaster"]\ntopic = "ops"\n'
+                        '\n[[topic]]\nname = "web"\n')
+        settings = b.load_settings(path)
+        self.assertEqual(settings.config['yardr_peer_mail_topic'], 'ops')
+        web_only = (dict(name='web', agent='ops-agent'),)
+        self.store.record_topic('web', WEB, 'recorded')
+        bridge = b.Bridge(dict(self.config, topics=web_only), self.store, 'SECRET', 'CAPABILITY',
+                          request=self.topic_transport, request_multipart=self.multipart_transport,
+                          request_download=self.download_transport)
+        bridge.config['yardr_peer_mail_topic'] = 'ops'
+        bridge.peer_mail.crew = frozenset(('yardmaster',))
+        self.queue_letter(9201)
+        with self.assertRaisesRegex(b.peer_mail.MirrorError, 'not configured and recorded'):
+            bridge.peer_mail.deliver_next()
+        self.assertEqual(self.calls, [])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_work').fetchone(), (1,))
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_threads').fetchone(), (0,))
+        general = bridge.publish(dict(conversation=bridge.conversation, idempotency_key='ordinary:1', text='Ordinary'))
+        self.assertTrue(general['delivered'])
+        self.assertNotIn('message_thread_id', self.calls[-1][1])
+        web = bridge.publish(dict(conversation=bridge.topic_conversation(WEB), idempotency_key='ordinary:2',
+                                  text='Web post'))
+        self.assertTrue(web['delivered'])
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], WEB)
+
+    def test_mirror_claim_ignores_unshadowed_auto_topic(self):
+        record_topics(self.store)
+        self.store.add_auto_topic(OPS, 'yardmaster')
+        bridge = b.Bridge(dict(self.config, topics=TOPICS, auto_topics=dict(enabled=True)), self.store,
+                          'SECRET', 'CAPABILITY', request=self.topic_transport,
+                          request_multipart=self.multipart_transport,
+                          request_download=self.download_transport)
+        with self.store.connect() as db:
+            db.execute("DELETE FROM topics WHERE name='ops'")
+            db.execute("INSERT INTO topics (name, thread_id, source, recorded_at) VALUES ('ops', 77, 'recorded', '')")
+        self.assertIsNone(bridge.topic_by_thread(OPS))
+        key = 'peermail:9:0'
+        self.seed_part(key, 9, '00' * 16)
+        with patch.object(bridge.peer_mail, 'before_send'):
+            refused = bridge.publish(dict(conversation=bridge.topic_conversation(OPS), idempotency_key=key,
+                                          text='synthetic', text_options=True), mirror=True)
+        self.assertEqual(refused['metadata']['reason'], 'recipient_not_authorized')
+        calls = len(self.calls)
+        ordinary = bridge.publish(dict(conversation=bridge.topic_conversation(OPS), idempotency_key='ordinary:auto',
+                                       text='auto post'))
+        self.assertTrue(ordinary['delivered'])
+        self.assertEqual(len(self.calls), calls + 1)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+
+    def test_upgrade_started_letter_keeps_general(self):
+        record_topics(self.store)
+
+        def incrementing_transport(url, body, *args, **kwargs):
+            self.calls.append((url, body))
+            message = dict(message_id=700 + len(self.calls), chat=dict(id=123, type='private'),
+                           **{'from': dict(id=999, is_bot=True)})
+            if 'message_thread_id' in body:
+                message.update(is_topic_message=True, message_thread_id=body['message_thread_id'])
+            return 200, dict(ok=True, result=message)
+
+        bridge = b.Bridge(dict(self.config, topics=TOPICS), self.store, 'SECRET', 'CAPABILITY',
+                          request=incrementing_transport, request_multipart=self.multipart_transport,
+                          request_download=self.download_transport)
+        bridge.config['yardr_peer_mail_topic'] = 'ops'
+        bridge.peer_mail.crew = frozenset(('yardmaster',))
+        letter = dict(seq=9202, crew='yardmaster', remote='dispatch', peer='company', incoming=True,
+                      text='Started before the topic.', files=[])
+        with self.store.connect() as db:
+            db.execute('INSERT INTO peer_mail_work (ready, letter_seq, crew, letter, parts) VALUES (?, ?, ?, ?, ?)',
+                       (9202, 9202, 'yardmaster', b.run_asks.canonical(letter),
+                        b.run_asks.canonical(['one', 'two'])))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            self.assertIs(bridge.peer_mail.deliver_next(), True)
+        self.assertNotIn('message_thread_id', self.calls[-1][1])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT thread FROM peer_mail_threads WHERE letter_seq=9202').fetchone(),
+                             (None,))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            self.assertIs(bridge.peer_mail.deliver_next(), True)
+        self.assertNotIn('message_thread_id', self.calls[-1][1])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_work').fetchone(), (0,))
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_threads').fetchone(), (0,))
+        self.queue_letter(9203, 'Fresh after upgrade.')
+        with patch.object(bridge.peer_mail, 'before_send'):
+            self.assertIs(bridge.peer_mail.deliver_next(), True)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+
+    def test_stale_thread_at_telegram_pauses_and_resumes(self):
+        record_topics(self.store)
+        plans = []
+
+        def stale_transport(url, body, *args, **kwargs):
+            self.calls.append((url, body))
+            if plans:
+                return plans.pop(0)(body)
+            message = dict(message_id=500 + len(self.calls), chat=dict(id=123, type='private'),
+                           **{'from': dict(id=999, is_bot=True)})
+            if 'message_thread_id' in body:
+                message.update(is_topic_message=True, message_thread_id=body['message_thread_id'])
+            return 200, dict(ok=True, result=message)
+
+        bridge = b.Bridge(dict(self.config, topics=TOPICS), self.store, 'SECRET', 'CAPABILITY',
+                          request=stale_transport, request_multipart=self.multipart_transport,
+                          request_download=self.download_transport)
+        bridge.config['yardr_peer_mail_topic'] = 'ops'
+        bridge.peer_mail.crew = frozenset(('yardmaster',))
+        letter = dict(seq=9101, crew='yardmaster', remote='dispatch', peer='company', incoming=True,
+                      text='Two parts.', files=[])
+        queued = dict(seq=9102, crew='yardmaster', remote='dispatch', peer='company', incoming=True,
+                      text='Queued behind.', files=[])
+        with self.store.connect() as db:
+            db.execute('INSERT INTO peer_mail_work (ready, letter_seq, crew, letter, parts) VALUES (?, ?, ?, ?, ?)',
+                       (9101, 9101, 'yardmaster', b.run_asks.canonical(letter),
+                        b.run_asks.canonical(['one', 'two'])))
+            db.execute('INSERT INTO peer_mail_threads VALUES (9101, ?)', (OPS,))
+            db.execute('INSERT INTO peer_mail_work (ready, letter_seq, crew, letter) VALUES (?, ?, ?, ?)',
+                       (9102, 9102, 'yardmaster', b.run_asks.canonical(queued)))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            self.assertIs(bridge.peer_mail.deliver_next(), True)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+        self.assertIn('1/2', self.calls[-1][1]['text'])
+        plans.append(lambda _body: (400, dict(ok=False, error_code=400,
+                                              description='Bad Request: message thread not found')))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            with self.assertRaisesRegex(b.peer_mail.MirrorError, f'thread {OPS} is not served'):
+                bridge.peer_mail.deliver_next()
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+        self.assertIn('2/2', self.calls[-1][1]['text'])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT part FROM peer_mail_work WHERE ready=9101').fetchone(), (1,))
+            self.assertEqual(db.execute('SELECT thread FROM peer_mail_threads WHERE letter_seq=9101').fetchone(),
+                             (OPS,))
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_work').fetchone(), (2,))
+        self.assertTrue(b.resendable(self.store.saved_receipt('peermail:9101:1')))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            self.assertIs(bridge.peer_mail.deliver_next(), True)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+        self.assertIn('2/2', self.calls[-1][1]['text'])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT ready FROM peer_mail_work').fetchall(), [(9102,)])
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_threads WHERE letter_seq=9101').fetchone(),
+                             (0,))
+        plans.append(lambda _body: (400, dict(ok=False, error_code=400,
+                                              description='Bad Request: TOPIC_DELETED')))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            with self.assertRaisesRegex(b.peer_mail.MirrorError, f'thread {OPS} is not served'):
+                bridge.peer_mail.deliver_next()
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT part FROM peer_mail_work WHERE ready=9102').fetchone(), (0,))
+            self.assertEqual(db.execute('SELECT thread FROM peer_mail_threads WHERE letter_seq=9102').fetchone(),
+                             (OPS,))
+        self.assertTrue(b.resendable(self.store.saved_receipt('peermail:9102:0')))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            self.assertIs(bridge.peer_mail.deliver_next(), True)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_work').fetchone(), (0,))
 
     def test_worker_retry_backoff_is_bounded_and_resets_after_progress(self):
         mirror = self.bridge.peer_mail
@@ -446,6 +725,203 @@ class RealPeerMailTests(BridgeTestCase):
         self.assertEqual(len(self.attempts), attempts + 1)
         print(f'Peer mail native order {order}; per-part messages {[item["message_id"] for item in self.sent[:5]]}; '
               f'inbound offset {self.store.offset()} after ordinary traffic and inert mirror replies')
+
+    def accept_topic(self, request):
+        self.assertEqual(request['chat_id'], 123)
+        self.assertNotIn('reply_markup', request)
+        self.assertNotIn('reply_parameters', request)
+        self.assertLessEqual(b.utf16_units(request['text']), 4096)
+        message = dict(message_id=501 + len(self.sent), chat=dict(id=123, type='private'),
+                       text=request['text'], **{'from': dict(id=999, is_bot=True)})
+        if 'message_thread_id' in request:
+            message.update(is_topic_message=True, message_thread_id=request['message_thread_id'])
+        self.sent.append(message)
+        return 200, dict(ok=True, result=message)
+
+    def threads_of(self, attempts):
+        return [body.get('message_thread_id') for body in attempts]
+
+    def test_real_native_topic_routing_claims_replies_and_pause(self):
+        self.binary = testyardr.binary()
+        if self.binary is None:
+            self.skipTest('yardr required for the isolated peer mail stream')
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='pm-topic-', dir='/tmp')))
+        self.fixture = testyardr.store_fixture(root, 'peer_mail')
+        if self.fixture is None:
+            self.skipTest('TGBRIDGE_TEST_YARDR_SOURCE required for real linked-yard fixture seeding')
+        self.root = root
+        self.logs, self.sent, self.attempts, self.send_plan, self.hooks, self.updates = ([] for _ in range(6))
+        self.accept = self.accept_topic
+        self.server, self.home, self.command, self.env = testyardr.start(root, self.binary)
+        self.addCleanup(self.stop_native)
+        self.cli('init', '--harness', 'claude')
+        self.cli('settings', 'set', 'operator', 'pat')
+        source = root / 'tgbridge.yaml'
+        source.write_text(DECLARATION)
+        self.cli('source', 'add', str(source))
+        self.cli('user', 'identity', 'pat', '--source', 'tgbridge', '--id', '123')
+        self.advance_store('before')
+        self.client = b.run_asks.YardSocketClient(self.home, 'tgbridge')
+        self.config.update(yardr_home=str(self.home), yardr_operator='pat', yardr_source='tgbridge',
+                           yardr_cards=False, yardr_peer_mail=('yardmaster',), yardr_peer_mail_topic='ops',
+                           topics=TOPICS)
+        record_topics(self.store)
+
+        daemon = self.new_bridge()
+        thread = threading.Thread(target=daemon.run, daemon=True)
+        thread.start()
+        try:
+            self.eventually('mirror activated', lambda: self.rows('SELECT activation FROM peer_mail_cursor'))
+            self.advance_store('after')
+            self.through_head()
+            headings = [m['text'].splitlines()[0] for m in self.sent]
+            self.assertEqual(headings, ['Incoming · dispatch@north → yardmaster · 1/1',
+                                        'Incoming · dispatch@south → yardmaster · 1/1',
+                                        'Outgoing · yardmaster → dispatch@company · 1/2',
+                                        'Outgoing · yardmaster → dispatch@company · 2/2',
+                                        'Incoming · dispatch@south → yardmaster · 1/1'])
+            self.assertEqual(self.threads_of(self.attempts), [OPS] * 5)
+            self.assertTrue(all(m.get('message_thread_id') == OPS and m.get('is_topic_message') is True
+                                for m in self.sent))
+            self.assertEqual(self.rows('SELECT count(*) FROM peer_mail_threads'), [(0,)])
+            events = self.client.call('EventsSince', [0, 200])
+            order = [e['seq'] for e in events if e['kind'] == 'mail' and e['data'].get('text') in
+                     ('North: please review the synthetic handoff.', 'South: synthetic review complete.',
+                      'Replacement: same wire ID, new linked yard.')]
+            if capture := os.environ.get('TGBRIDGE_TEST_PEER_MAIL_TOPIC_CAPTURE'):
+                Path(capture).write_text(json.dumps(dict(messages=self.sent, threads=self.threads_of(self.attempts),
+                                                         native_order=order, inbound_offset=self.store.offset()),
+                                                    ensure_ascii=False))
+        finally:
+            daemon.stop.set()
+            thread.join(15)
+        self.assertFalse(thread.is_alive())
+
+        # A settings change between part receipts never moves the unfinished
+        # letter; a fresh bridge on the same ledger is the restart.
+        self.advance_store('failure')
+        mirror = self.new_bridge().peer_mail
+        after = mirror.prepare()
+        for event in self.client.call('EventsSince', [after, 200]):
+            after = mirror.project(event, after)
+        mirror.active.set()
+        self.assertIs(mirror.deliver_next(), True)
+        self.assertEqual(self.rows('SELECT thread FROM peer_mail_threads'), [(OPS,)])
+        self.assertEqual(self.threads_of(self.attempts[-1:]), [OPS])
+        moved = self.new_bridge(yardr_peer_mail_topic='web').peer_mail
+        moved.active.set()
+        drained = 1
+        while moved.deliver_next() is True:
+            drained += 1
+        self.assertGreater(drained, 1)
+        self.assertEqual(self.threads_of(self.attempts[-drained:]), [OPS] * drained)
+        self.assertEqual(self.rows('SELECT count(*) FROM peer_mail_work'), [(0,)])
+        self.assertEqual(self.rows('SELECT count(*) FROM peer_mail_threads'), [(0,)])
+
+        self.advance_store('late')
+        after = moved.prepare()
+        for event in self.client.call('EventsSince', [after, 200]):
+            after = moved.project(event, after)
+        self.assertIs(moved.deliver_next(), True)
+        self.assertIsNone(moved.deliver_next())
+        self.assertEqual(self.threads_of(self.attempts[-1:]), [WEB])
+        self.assertIn('After restoring the operator binding.', self.sent[-1]['text'])
+
+        # An unrecorded topic pauses delivery with a private status and sends
+        # nothing, not even to General; recording it resumes the same work.
+        expanded = self.new_bridge(yardr_peer_mail=('yardmaster', 'spare'),
+                                   yardr_peer_mail_topic='lab').peer_mail
+        after = expanded.prepare()
+        self.advance_store('conflict')
+        for event in self.client.call('EventsSince', [after, 200]):
+            after = expanded.project(event, after)
+        self.assertEqual(self.rows('SELECT crew FROM peer_mail_work'), [('spare',)])
+        expanded.active.set()
+        attempts = len(self.attempts)
+        with self.assertRaisesRegex(b.peer_mail.MirrorError, 'not configured and recorded'):
+            expanded.deliver_next()
+        self.assertEqual(len(self.attempts), attempts)
+        self.assertEqual(self.rows('SELECT crew FROM peer_mail_work'), [('spare',)])
+        self.store.record_topic('lab', 21, 'recorded')
+        self.assertIs(expanded.deliver_next(), True)
+        self.assertEqual(self.threads_of(self.attempts[-1:]), [21])
+
+        # A replaced thread pauses the claimed letter instead of switching it;
+        # restoring the thread resumes the same conversation.
+        letter = dict(seq=9001, crew='yardmaster', remote='dispatch', peer='company', incoming=True,
+                      text='Replacement drill.\n' + 'x' * 6000, files=[])
+        with self.store.connect() as db:
+            db.execute('INSERT INTO peer_mail_work (ready, letter_seq, crew, letter) VALUES (9001, 9001, ?, ?)',
+                       ('yardmaster', b.run_asks.canonical(letter)))
+            db.execute('INSERT INTO peer_mail_threads VALUES (9001, ?)', (OPS,))
+            db.execute("DELETE FROM topics WHERE name='ops'")
+            db.execute("INSERT INTO topics (name, thread_id, source, recorded_at) VALUES ('ops', 77, 'recorded', '')")
+        replaced = self.new_bridge().peer_mail
+        replaced.active.set()
+        attempts = len(self.attempts)
+        with self.assertRaisesRegex(b.peer_mail.MirrorError, f'thread {OPS} is not served'):
+            replaced.deliver_next()
+        self.assertEqual(len(self.attempts), attempts)
+        with self.store.connect() as db:
+            db.execute("DELETE FROM topics WHERE name='ops'")
+            db.execute("INSERT INTO topics (name, thread_id, source, recorded_at) VALUES ('ops', ?, 'recorded', '')",
+                       (OPS,))
+        drained = 0
+        while replaced.deliver_next() is True:
+            drained += 1
+        self.assertEqual(drained, 3)
+        self.assertEqual(self.threads_of(self.attempts[-3:]), [OPS, OPS, OPS])
+        confirmed = len(self.attempts)
+        self.assertIsNone(replaced.deliver_next())
+        self.assertEqual(len(self.attempts), confirmed)
+
+        # Ordinary posts still send on General and on an ordinary topic.
+        bridge = self.new_bridge()
+        general = bridge.publish(dict(conversation=bridge.conversation, idempotency_key='ordinary:1', text='Ordinary post'))
+        self.assertTrue(general['delivered'])
+        self.assertNotIn('message_thread_id', self.attempts[-1])
+        ordinary_post = self.sent[-1]
+        web = bridge.publish(dict(conversation=bridge.topic_conversation(WEB), idempotency_key='ordinary:2',
+                                  text='Ordinary topic post'))
+        self.assertTrue(web['delivered'])
+        self.assertEqual(self.attempts[-1]['message_thread_id'], WEB)
+        web_post = self.sent[-1]
+
+        # After disable, replies to every mirror part in every thread are
+        # consumed before every inbound handler; ordinary traffic still relays.
+        parts = [m for m in self.sent if 'Mirror ref' in m['text']]
+        self.assertEqual({m.get('message_thread_id') for m in parts}, {OPS, WEB, 21})
+        disabled = self.new_bridge(yardr_peer_mail=())
+        uid = 10
+        batch = []
+        for part in parts:
+            batch.append(self.direct_reply(uid, part))
+            uid += 1
+        photo = self.photo_message(uid)
+        photo['message']['reply_to_message'] = parts[0]
+        batch.append(photo)
+        uid += 1
+        batch.append(self.direct_reply(uid, ordinary_post, 'normal reply'))
+        uid += 1
+        batch.append(self.direct_reply(uid, web_post, 'topic reply'))
+        uid += 1
+        batch.append(self.update(uid))
+        uid += 1
+        batch.append(in_topic(self.update(uid), WEB))
+        self.updates.append(batch)
+        with patch.object(disabled, '_match_command', wraps=disabled._match_command) as commands, \
+                patch.object(disabled.siding_cards, 'reply', wraps=disabled.siding_cards.reply) as cards:
+            disabled.poll_once()
+        self.assertEqual([c.args[0] for c in commands.call_args_list],
+                         ['normal reply', 'topic reply', 'hello', 'hello'])
+        self.assertEqual(cards.call_count, 4)
+        self.assertEqual(self.download_calls, [])
+        self.assertEqual(len(self.hooks), 4)
+        self.assertEqual([hook['conversation'] for hook in self.hooks],
+                         ['123', '123', '123', '123:topic:9'])
+        self.assertEqual(self.store.offset(), 10 + len(batch))
+        print(f'Peer mail topic threads {sorted({m.get("message_thread_id") for m in parts})}; '
+              f'{len(parts)} parts ignored in replies; inbound offset {self.store.offset()}')
 
 
 if __name__ == '__main__':

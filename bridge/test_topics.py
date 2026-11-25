@@ -199,7 +199,7 @@ class TopicLedgerTests(unittest.TestCase):
         added = ('topics', 'topic_attempts', 'accepted_conversations', 'auto_topics', 'messages', 'sqlite_sequence',
                  'run_ask_keys', 'switch_model_taps', 'model_selectors', 'model_operations', 'model_actions',
                  'peer_mail_cursor', 'peer_mail_crew', 'peer_mail_links', 'peer_mail_outbox', 'peer_mail_work',
-                 'peer_mail_parts')
+                 'peer_mail_parts', 'peer_mail_threads')
         self.assertEqual({k: v for k, v in after_tables.items() if k not in added}, tables)
         self.assertEqual({k: v for k, v in after_rows.items() if k not in added}, rows)
         self.assertEqual([after_rows[k] for k in added], [[] for _ in added])

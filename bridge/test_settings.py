@@ -598,7 +598,7 @@ class ExampleSettingsTests(unittest.TestCase):
         'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model',
                   'peer_mail'},
         'quota': {'timeout', 'groups', 'machine_login', 'machine'},
-        'peer_mail': {'crew'},
+        'peer_mail': {'crew', 'topic'},
         'switch_model': {'crew', 'timeout', 'picks'},
         'picks': {'id', 'label', 'kind', 'model', 'args', 'env_file'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},

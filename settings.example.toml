@@ -55,10 +55,14 @@ hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints
 # [yardr] home and operator above.
 # [yardr.mail]
 
-# Linked-yard mail in the paired private chat. Opt in with the local crew
-# names to mirror. Needs the native home and current operator above.
+# Linked-yard mail in the paired private chat (bridge/OPERATIONS.md,
+# "Linked-yard crew mail"). Opt in with the local crew names to mirror.
+# Needs the native home and current operator above.
 # [yardr.peer_mail]
 # crew = ["yardmaster"]
+# topic = "ops"   # optional: a [[topic]] of this chat the mirror posts in;
+                  # record it with `topics` before enabling; a missing entry
+                  # pauses the mirror. Without it the mirror posts on General.
 
 # The native /switch_model (bridge/OPERATIONS.md, "/switch_model"): its
 # presence turns /switch_model on. Requires core crew_handoff_switch v1: a tap

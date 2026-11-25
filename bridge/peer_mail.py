@@ -36,6 +36,10 @@ def initialize(db):
     db.execute('CREATE TABLE IF NOT EXISTS peer_mail_parts (key TEXT PRIMARY KEY, letter_seq INTEGER NOT NULL, '
                'ref TEXT NOT NULL UNIQUE, text TEXT, proof TEXT NOT NULL, bot INTEGER NOT NULL, chat INTEGER NOT NULL, '
                'attempted INTEGER NOT NULL DEFAULT 0, message_id INTEGER)')
+    # A claimed letter's destination thread, NULL for the paired chat: every
+    # part of the letter reuses it, so retries, restarts and settings changes
+    # never move an unfinished letter to another conversation.
+    db.execute('CREATE TABLE IF NOT EXISTS peer_mail_threads (letter_seq INTEGER PRIMARY KEY, thread INTEGER)')
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS peer_mail_message '
                'ON peer_mail_parts (bot, chat, message_id) WHERE message_id IS NOT NULL')
 
@@ -228,6 +232,8 @@ class PeerMail:
                 db.execute('UPDATE peer_mail_outbox SET crew=NULL, letter=NULL WHERE crew=?', (crew,))
                 db.execute('UPDATE peer_mail_parts SET text=NULL WHERE letter_seq IN '
                            '(SELECT letter_seq FROM peer_mail_work WHERE crew=?)', (crew,))
+                db.execute('DELETE FROM peer_mail_threads WHERE letter_seq IN '
+                           '(SELECT letter_seq FROM peer_mail_work WHERE crew=?)', (crew,))
                 db.execute('DELETE FROM peer_mail_work WHERE crew=?', (crew,))
             db.executemany('INSERT INTO peer_mail_crew VALUES (?, ?, 1)', ((crew, head) for crew in sorted(added)))
         return head if saved is None else saved[0]
@@ -396,7 +402,7 @@ class PeerMail:
         if self.checkpoint(seq) != anchor:
             raise MirrorError('native peer mail checkpoint changed before send')
 
-    def confirmed(self, status, data):
+    def confirmed(self, status, data, thread=None):
         message = data.get('result')
         if status != 200 or data.get('ok') is not True or not isinstance(message, dict):
             return False
@@ -405,7 +411,17 @@ class PeerMail:
                 and type(chat.get('id')) is int and chat['id'] == self.config['chat_id'] and isinstance(sender, dict)
                 and sender.get('is_bot') is True and type(sender.get('id')) is int
                 and sender['id'] == self.config['bot_id']
-                and self.bridge._topic_thread(message) is None)
+                and self.bridge._topic_thread(message) == thread)
+
+    def destination(self):
+        """The thread newly claimed letters mirror to, None for the paired chat."""
+        name = self.config.get('yardr_peer_mail_topic')
+        if name is None:
+            return None
+        topic = self.bridge.topic_by_name(name)
+        if topic is None:
+            raise MirrorError(f'peer mail topic "{name}" is not configured and recorded')
+        return topic['thread_id']
 
     def deliver_next(self):
         with self.store.connect() as db:
@@ -416,6 +432,19 @@ class PeerMail:
         letter = json.loads(letter)
         if letter['crew'] not in self.crew:
             raise MirrorError('peer mail queued crew scope changed')
+        with self.store.connect() as db:
+            claimed = db.execute('SELECT thread FROM peer_mail_threads WHERE letter_seq=?', (letter['seq'],)).fetchone()
+            started = claimed is None and (parts is not None or index != 0 or incomplete != 0
+                                           or db.execute('SELECT 1 FROM peer_mail_parts WHERE letter_seq=?',
+                                                         (letter['seq'],)).fetchone() is not None)
+        if claimed is None:
+            # Claimed before rendering, so a rendered but unclaimed letter is
+            # one the General-only release started: it keeps General.
+            thread = None if started else self.destination()
+            with self.store.connect() as db:
+                db.execute('INSERT INTO peer_mail_threads VALUES (?, ?)', (letter['seq'], thread))
+        else:
+            thread = claimed[0]
         if parts is None:
             parts = bodies(letter)
             with self.store.connect() as db:
@@ -423,7 +452,8 @@ class PeerMail:
         else:
             parts = json.loads(parts)
         key, text = self.part(letter, index, incomplete, parts)
-        request = dict(conversation=self.bridge.conversation, idempotency_key=key, text=text, text_options=True)
+        conversation = self.bridge.conversation if thread is None else self.bridge.topic_conversation(thread)
+        request = dict(conversation=conversation, idempotency_key=key, text=text, text_options=True)
         saved = self.store.saved_delivery(key)
         if saved is not None:
             fingerprint, receipt = saved
@@ -435,8 +465,10 @@ class PeerMail:
                     return wait
         receipt = self.bridge.publish(request, mirror=True)
         reason = receipt.get('metadata', {}).get('reason')
-        if reason in ('idempotency_key_conflict', 'recipient_not_authorized'):
+        if reason == 'idempotency_key_conflict':
             raise MirrorError('peer mail delivery key or destination conflict')
+        if reason == 'recipient_not_authorized' or receipt.get('thread_not_found') is True:
+            raise MirrorError(f'peer mail topic thread {thread} is not served')
         if self.resendable(receipt):
             return max(0, receipt['metadata'].get('retry_at', 0) - time.time())
         failed = receipt.get('delivered') is not True
@@ -446,6 +478,7 @@ class PeerMail:
             db.execute('UPDATE peer_mail_parts SET text=NULL WHERE key=?', (key,))
             if index + 1 == len(parts):
                 db.execute('DELETE FROM peer_mail_work WHERE ready=?', (ready,))
+                db.execute('DELETE FROM peer_mail_threads WHERE letter_seq=?', (letter['seq'],))
             else:
                 db.execute('UPDATE peer_mail_work SET part=?, incomplete=? WHERE ready=?',
                            (index + 1, incomplete or failed, ready))
@@ -474,7 +507,9 @@ class PeerMail:
 
     def is_reply(self, message):
         target = message.get('reply_to_message')
-        if self.store is None or not isinstance(target, dict) or self.bridge._topic_thread(target) is not None:
+        # No thread check: the mirror may post in a topic, message ids are
+        # unique per chat, and only the mirror's own sends carry its ref line.
+        if self.store is None or not isinstance(target, dict):
             return False
         bot, chat = self.config['bot_id'], self.config['chat_id']
         mid = target.get('message_id')

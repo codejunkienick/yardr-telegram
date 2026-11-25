@@ -908,6 +908,132 @@ class DecideTests(DecideCase):
         finally:
             self.bridge.request = base
 
+    def test_run_card_upgrade_wider_read_failure_opens_from_narrow_read(self):
+        base = self.bridge.request
+        self.bridge.sleep = lambda _: None
+        blocked = [True]
+
+        def transient(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'runask:' in str(body.get('reply_markup')) and blocked[0]:
+                raise b.RequestNotSent('synthetic transient')
+            return base(url, body, *args, **kwargs)
+        self.bridge.request = transient
+        try:
+            self.command('/decide run-1#3', 1)
+            self.assertIn('not confirmed sent', self.sends()[-1]['text'])
+            row = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-1', 3))
+            self.assertIsNone(row['message_id'])
+            row.pop('bead_title', None)
+            self.bridge.run_asks.save(row)
+            self.native.beads['run-1']['title'] = 'Retitled before send'
+            # 70 events: the narrow 64 hold the retitle, the creation is older.
+            events = [dict(seq=1, id='1', bead='run-1', kind='created', actor='proposer',
+                           data=dict(originator='proposer', stage='new', title='Synthetic run', type='task'),
+                           at='2026-01-01T00:00:00Z')]
+            events += [dict(seq=i, id=str(i), bead='run-1', kind='noted', actor='proposer', data={},
+                            at='2026-01-01T00:00:00Z') for i in range(2, 70)]
+            events.append(dict(seq=70, id='70', bead='run-1', kind='updated', actor='proposer',
+                              data=dict(title='Retitled before send', was=dict(title='Synthetic run')),
+                              at='2026-01-02T00:00:00Z'))
+            self.native.raw_events = events
+            client = self.bridge.run_asks.client
+            original = client.call
+            limits = []
+
+            def narrow_only(method, args):
+                if method == 'Events':
+                    limits.append(args[1])
+                    if args[1] >= 128:
+                        raise n.RPCAmbiguous('synthetic wider read uncertain')
+                return original(method, args)
+
+            client.call = narrow_only
+            try:
+                blocked[0] = False
+                cards = len([s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))])
+                self.command('/decide run-1#3', 2)
+                sent = [s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))]
+                self.assertEqual(len(sent), cards + 1)
+                self.assertTrue(all(limit < 128 for limit in limits), limits)
+                current = self.bridge.run_asks.get(row['id'])
+                self.assertEqual(current['state'], 'open')
+                self.assertIsNotNone(current['message_id'])
+                self.assertEqual(current['bead_title'], 'Synthetic run')
+                self.command('/decide run-1#3', 3)
+                self.assertEqual(self.sends()[-1]['text'], 'The card for run-1#3 is already open.')
+            finally:
+                client.call = original
+        finally:
+            self.bridge.request = base
+            self.native.raw_events = None
+
+    def test_decide_list_isolates_one_unavailable_row(self):
+        base = self.bridge.request
+        self.bridge.sleep = lambda _: None
+        blocked = [True]
+
+        def transient(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'runask:' in str(body.get('reply_markup')) and blocked[0]:
+                raise b.RequestNotSent('synthetic transient')
+            return base(url, body, *args, **kwargs)
+        self.bridge.request = transient
+        try:
+            self.command('/decide run-1#3', 1)
+            self.assertIn('not confirmed sent', self.sends()[-1]['text'])
+            row = self.bridge.run_asks.get(self.bridge.run_asks.ident('run-1', 3))
+            self.assertIsNone(row['message_id'])
+            row.pop('bead_title', None)
+            self.bridge.run_asks.save(row)
+            self.native.beads['run-1']['title'] = 'Retitled run'
+            client = self.bridge.run_asks.client
+            original = client.call
+
+            def one_outage(method, args):
+                if method == 'Events' and args[0] == 'run-1':
+                    raise n.RPCUnavailable('synthetic events outage')
+                return original(method, args)
+
+            client.call = one_outage
+            try:
+                blocked[0] = False
+                self.command('/decide', 2)
+                body = self.sends()[-1]
+                self.assertNotIn('nothing was listed or opened', body['text'])
+                self.assertIn('run-1#3 · Retitled run', body['text'])
+                self.assertIn('Temporarily unavailable; send /decide again.', body['text'])
+                labels = [button['text'] for button in self.buttons(body)]
+                self.assertEqual(labels, ['5. sample-1#7', '6. sample-1#8', '↻ Refresh'])
+                self.command('/decide sample-1#7', 3)
+                self.assertIn('askcard:', str(self.sends()[-1].get('reply_markup')))
+                # The failed row holds open for a retry, never stale.
+                self.command('/decide run-1#3', 4)
+                self.assertIn('unavailable', self.sends()[-1]['text'])
+                held = self.bridge.run_asks.get(row['id'])
+                self.assertEqual(held['state'], 'open')
+                self.assertIsNone(held['message_id'])
+            finally:
+                client.call = original
+            self.native.raw_events = [
+                dict(seq=9, id='9', bead='run-1', kind='created', actor='proposer',
+                     data=dict(originator='proposer', stage='new', title='Synthetic run', type='task'),
+                     at='2026-01-01T00:00:00Z'),
+                dict(seq=11, id='11', bead='run-1', kind='updated', actor='proposer',
+                     data=dict(title='Retitled run', was=dict(title='Synthetic run')),
+                     at='2026-01-02T00:00:00Z'),
+            ]
+            try:
+                cards = len([s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))])
+                self.command('/decide run-1#3', 5)
+                sent = [s for s in self.sends() if 'runask:' in str(s.get('reply_markup'))]
+                self.assertEqual(len(sent), cards + 1)
+                current = self.bridge.run_asks.get(row['id'])
+                self.assertEqual(current['state'], 'open')
+                self.assertIsNotNone(current['message_id'])
+            finally:
+                self.native.raw_events = None
+        finally:
+            self.bridge.request = base
+
 
 class DecideNamespaceTests(BridgeTestCase):
     def native_settings(self, extra='', native=True, cards=None):

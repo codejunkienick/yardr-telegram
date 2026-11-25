@@ -3191,11 +3191,13 @@ class RunAsks:
     def _prior_titles(self, bead_id):
         """Old bead titles from native history, newest first, for upgrade rows.
 
-        A failed read is unknown history, never empty: it raises, and the
-        caller holds its row unchanged for a later retry.
+        Yields each validated window's titles before reading a wider one, so
+        a narrow-window match never waits on a wider read. A failed read is
+        unknown history, never empty: it raises, and the caller holds its
+        row unchanged for a later retry.
         """
         try:
-            limit, seen, known = 64, [], set()
+            limit, known = 64, set()
             while True:
                 events = self._validate_events(
                     self.client.call('Events', [bead_id, limit]), bead_id, limit, 'title recovery')
@@ -3213,9 +3215,9 @@ class RunAsks:
                 for title in batch:
                     if title not in known:
                         known.add(title)
-                        seen.append(title)
+                        yield title
                 if len(events) < limit or any(e['kind'] == 'created' for e in events) or limit >= 8192:
-                    return seen
+                    return
                 limit *= 2
         except NativeError:
             raise
@@ -4293,7 +4295,13 @@ class RunAsks:
             out += ['', f"{index}. {short(entry['question'], 100)}",
                     f"{entry['kind']} · {label} · {short(entry['title'], 48)} · asked by {short(entry['asker'], 32)}"]
             # showable can recover and save a decision generation: never inside the decide_ids write below.
-            if self.showable(entry):
+            try:
+                usable = self.showable(entry)
+            except NativeError:
+                # One row's failed read never blanks the page: it waits for a retry.
+                out.append('Temporarily unavailable; send /decide again.')
+                continue
+            if usable:
                 ident = self.ident(entry['bead'], entry['ask'])
                 ids.append((ident, entry['bead'], str(entry['ask'])))
                 keyboard.append([dict(text=f'{index}. {label}', callback_data=f'decide:o:{ident}')])

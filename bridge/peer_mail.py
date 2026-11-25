@@ -421,7 +421,10 @@ class PeerMail:
         topic = self.bridge.topic_by_name(name)
         if topic is None:
             raise MirrorError(f'peer mail topic "{name}" is not configured and recorded')
-        return topic['thread_id']
+        thread = topic['thread_id']
+        if type(thread) is not int or not 1 <= thread <= 2 ** 31 - 1:
+            raise MirrorError(f'peer mail topic "{name}" has invalid thread {thread} (1 to 2147483647)')
+        return thread
 
     def deliver_next(self):
         with self.store.connect() as db:
@@ -445,6 +448,8 @@ class PeerMail:
                 db.execute('INSERT INTO peer_mail_threads VALUES (?, ?)', (letter['seq'], thread))
         else:
             thread = claimed[0]
+            if thread is not None and (type(thread) is not int or not 1 <= thread <= 2 ** 31 - 1):
+                raise MirrorError(f'peer mail topic thread {thread} is not a positive int32 (1 to 2147483647)')
         if parts is None:
             parts = bodies(letter)
             with self.store.connect() as db:

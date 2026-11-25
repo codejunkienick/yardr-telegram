@@ -194,6 +194,50 @@ class PeerMailTests(BridgeTestCase):
                        (seq, seq, 'yardmaster', b.run_asks.canonical(letter)))
         return letter
 
+    def test_invalid_recorded_thread_pauses_with_work_and_claim_intact(self):
+        bridge = b.Bridge(dict(self.config, topics=TOPICS), self.store, 'SECRET', 'CAPABILITY',
+                          request=self.topic_transport, request_multipart=self.multipart_transport,
+                          request_download=self.download_transport)
+        bridge.config['yardr_peer_mail_topic'] = 'ops'
+        bridge.peer_mail.crew = frozenset(('yardmaster',))
+        # A bad id already in the ledger, as before the int32 check.
+        self.store.record_topic('ops', 4294967296, 'recorded')
+        self.queue_letter(9301)
+        with patch.object(bridge.peer_mail, 'before_send'):
+            with self.assertRaisesRegex(b.peer_mail.MirrorError, 'invalid thread'):
+                bridge.peer_mail.deliver_next()
+        self.assertEqual(self.calls, [])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_work').fetchone(), (1,))
+            self.assertEqual(db.execute('SELECT count(*) FROM peer_mail_threads').fetchone(), (0,))
+        with patch.object(bridge.peer_mail, 'before_send'):
+            refused = bridge.publish(dict(conversation=bridge.topic_conversation(4294967296),
+                                          idempotency_key='peermail:9301:0', text='synthetic', text_options=True),
+                                     mirror=True)
+        self.assertEqual(refused['metadata']['reason'], 'recipient_not_authorized')
+        self.assertEqual(self.calls, [])
+        # A claim made before the check keeps its work and claim, with no send.
+        with self.store.connect() as db:
+            db.execute('INSERT INTO peer_mail_threads VALUES (9301, 4294967296)')
+        with patch.object(bridge.peer_mail, 'before_send'):
+            with self.assertRaisesRegex(b.peer_mail.MirrorError, 'not a positive int32'):
+                bridge.peer_mail.deliver_next()
+        self.assertEqual(self.calls, [])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT part FROM peer_mail_work WHERE ready=9301').fetchone(), (0,))
+            self.assertEqual(db.execute('SELECT thread FROM peer_mail_threads WHERE letter_seq=9301').fetchone(),
+                             (4294967296,))
+            self.assertIsNone(db.execute('SELECT parts FROM peer_mail_work WHERE ready=9301').fetchone()[0])
+        # Repairing the route resumes the same letter in the valid thread.
+        with self.store.connect() as db:
+            db.execute("DELETE FROM topics WHERE name='ops'")
+            db.execute("INSERT INTO topics (name, thread_id, source, recorded_at) VALUES ('ops', ?, 'recorded', '')",
+                       (OPS,))
+            db.execute('DELETE FROM peer_mail_threads WHERE letter_seq=9301')
+        with patch.object(bridge.peer_mail, 'before_send'):
+            self.assertIs(bridge.peer_mail.deliver_next(), True)
+        self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
+
     def test_missing_topic_entry_pauses_mirror_but_ordinary_sends_work(self):
         root = Path(self.tmp.name) / 'missing-entry'
         root.mkdir()

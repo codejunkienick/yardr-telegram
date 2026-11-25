@@ -440,6 +440,19 @@ class TopicsTests(BridgeTestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(self.rows(), [('web', 777, 'recorded')])
 
+    def test_record_refuses_a_thread_id_outside_int32(self):
+        for thread_id in (0, -5, 2147483648, 4294967296):
+            with self.subTest(thread_id=thread_id):
+                with self.assertRaisesRegex(b.TransportError, '^topics --record: thread .* is not a positive int32'):
+                    self.run_topics(record='ops', thread_id=thread_id)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.rows(), [])
+        lines, complete = self.run_topics(record='ops', thread_id=2147483647)
+        self.assertEqual(self.rows(), [('ops', 2147483647, 'recorded')])
+        self.assertEqual(lines[0], 'topic ops: thread 2147483647 (recorded by hand)')
+        self.assertFalse(complete)
+        self.assertEqual(self.calls, [])
+
     def test_a_confirmed_create_without_its_row_is_healed_without_a_send(self):
         self.run_topics()
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -600,6 +613,8 @@ class TopicsCliTests(unittest.TestCase):
                  ['topics', '--record', 'ops', '--thread-id', '0'],
                  ['topics', '--record', 'ops', '--thread-id', 'x'],
                  ['topics', '--record', 'ops', '--thread-id', '-5'],
+                 ['topics', '--record', 'ops', '--thread-id', '2147483648'],
+                 ['topics', '--record', 'ops', '--thread-id', '4294967296'],
                  ['send', '--body-file', 'b', '--idempotency-key', 'k', '--retry', 'ops'],
                  ['pin', '--slot', 'waiting', '--unpin', '--thread-id', '5'],
                  ['run', '--record', 'ops', '--thread-id', '5']]

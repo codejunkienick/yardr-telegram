@@ -3754,7 +3754,7 @@ class Bridge:
             if conversation == self.conversation:
                 return self._publish(request, mirror=True)
             topic = next((topic for topic in self._recorded_topics() if topic['conversation'] == conversation), None)
-            if topic is None:
+            if topic is None or not 1 <= topic['thread_id'] <= 2 ** 31 - 1:
                 return self.receipt(reason='recipient_not_authorized')
             receipt = self._publish(request, topic['thread_id'], mirror=True, conversation=topic['conversation'])
             return dict(receipt, conversation=topic['conversation'])
@@ -3763,7 +3763,7 @@ class Bridge:
                                     start_by=start_by)
         else:
             topic = next((topic for topic in self._sendable_topics() if topic['conversation'] == conversation), None)
-            if topic is None:
+            if topic is None or not 1 <= topic['thread_id'] <= 2 ** 31 - 1:
                 return self.receipt(reason='recipient_not_authorized')
             # Only served auto topics carry a display_name.
             receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic,
@@ -4599,7 +4599,7 @@ class Bridge:
         """The thread id a delivered create receipt carries, else None."""
         if isinstance(receipt, dict) and receipt.get('delivered') is True:
             thread_id = receipt.get('message_thread_id')
-            if type(thread_id) is int and thread_id > 0:
+            if type(thread_id) is int and 1 <= thread_id <= 2 ** 31 - 1:
                 return thread_id
         return None
 
@@ -4674,6 +4674,9 @@ class Bridge:
                 if name in rows:
                     raise TransportError(f'topics {flag}: topic {name} already has thread {rows[name]["thread_id"]}')
             if record is not None:
+                if type(thread_id) is not int or not 1 <= thread_id <= 2 ** 31 - 1:
+                    raise TransportError(f'topics --record: thread {thread_id} is not a positive int32 thread id '
+                                         '(1 to 2147483647)')
                 if self.store.record_topic(record, thread_id, 'recorded') is not None:
                     holder = next((row['name'] for row in rows.values() if row['thread_id'] == thread_id), '?')
                     raise TransportError(f'topics --record: thread {thread_id} is already recorded for topic {holder}')
@@ -5033,8 +5036,9 @@ def _message_id_arg(value):
 
 
 def _thread_id_arg(value):
-    if not re.fullmatch(r'[1-9][0-9]{0,18}', value or '') or int(value) > 2 ** 63 - 1:
-        raise argparse.ArgumentTypeError('--thread-id must be a positive integer')
+    # Telegram parses message_thread_id as int32; zero means no thread.
+    if not re.fullmatch(r'[1-9][0-9]{0,18}', value or '') or int(value) > 2 ** 31 - 1:
+        raise argparse.ArgumentTypeError('--thread-id must be a positive int32 thread id (1 to 2147483647)')
     return int(value)
 
 

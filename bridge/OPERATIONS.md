@@ -1728,8 +1728,10 @@ write in it, take the thread id from the `[topic: thread <id> | not
 configured ...]` line that message reaches the yard with (on General's
 conversation), and run
 `<root>/bin/telegram-bridge topics --record <name> --thread-id <id>`: it
-records the thread id with no Telegram call, and is refused when the name
-is not a `[[topic]]`, already has a thread id, or the id is another topic's. If the
+records the thread id (1 to 2147483647, Telegram's int32) with no
+Telegram call, and is refused when the name is not a `[[topic]]`,
+already has a thread id, the id is another topic's, or the id is
+outside that range. If the
 topic is not there, run `<root>/bin/telegram-bridge topics --retry <name>`:
 it raises the attempt and creates the topic under the new key. `--retry`
 is refused unless the create was ambiguous or rejected; for one not sent it says
@@ -2681,8 +2683,9 @@ mirror resolves the name through that same recorded route on every send.
 Every part of one letter goes to the same conversation and thread the
 letter claimed, on General or in the topic, and a retry reuses the same
 delivery key and body, so a retry never moves a part. When the topic is
-missing, removed, unrecorded or stale at Telegram, delivery pauses and the
-journal names the topic; nothing falls back to General, and the affected
+missing, removed, unrecorded, recorded with a thread id outside 1 to
+2147483647, or stale at Telegram, delivery pauses and the journal
+names the topic; nothing falls back to General, and the affected
 work and its claim stay queued. Changing the setting moves only
 letters claimed afterwards: an unfinished letter keeps its claimed
 conversation and thread, and a claimed thread that no longer resolves
@@ -2739,18 +2742,19 @@ unfinished letter to General and relays replies to topic posts to the
 yard hook, even with the mirror disabled, because its reply guard
 rejects topic targets. Telegram retains queued updates past the drain
 counts, so stopping the protected poller before deleting the posts
-still leaves a queued reply for the old release to relay. Drain first
-on the candidate: restart it, wait until
+still leaves a queued reply for the old release to relay. Disable first
+on the candidate: remove the `[yardr.peer_mail]` table and restart it
+with the mirror off, keeping it polling, so it claims no further mail.
+With it still polling, wait until
 `SELECT count(*) FROM peer_mail_work` and
 `SELECT count(*) FROM peer_mail_threads WHERE thread IS NOT NULL` are
-both 0. Then disable the mirror (remove the `[yardr.peer_mail]` table)
-and restart the candidate, keeping it polling. With it still polling,
-delete every topic mirror post from the chat, then keep it polling
-until the inbound backlog drains (queued updates consumed, no further
-inbound). Only then stop the unit, or keep the candidate until no
-reply is expected. Restore the pre-edit settings file without the
-`topic` line (the older release refuses the key), then roll back and
-restart.
+both 0; if work remains, keep the candidate and do not roll back.
+With it still polling, delete every topic mirror post from the chat,
+then keep it polling until the inbound backlog drains (queued updates
+consumed, no further inbound). Only then stop the unit, or keep the
+candidate until no reply is expected. Restore the pre-edit settings
+file without the `topic` line (the older release refuses the key),
+then roll back and restart.
 
 ## Delivery recovery
 

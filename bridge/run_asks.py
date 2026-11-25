@@ -3277,9 +3277,10 @@ class RunAsks:
         self.display(row, STALE_PROPOSAL, [])
         return None
 
-    def ensure(self, row):
+    def ensure(self, row, readonly=False):
         if row['state'] == 'stale':
-            if row.get('kind') == 'decision' and row.get('replaced_by') and self.get(row['replaced_by']) is None:
+            if (not readonly and row.get('kind') == 'decision' and row.get('replaced_by')
+                    and self.get(row['replaced_by']) is None):
                 self._reissue_decision(row)
             raise NativeError('run_ask_stale_proposal')
         if row['binding'] != self.binding():
@@ -3327,12 +3328,15 @@ class RunAsks:
         if ask is None or current_proposal != row['proposal']:
             matched = self._title_only_change(row, bead, ask) if ask is not None else None
             if matched is not None:
-                self._backfill_bead_title(row, matched)
+                if not readonly:
+                    self._backfill_bead_title(row, matched)
                 return ask
-            self._mark_stale(row, bead, ask, current_proposal)
+            if not readonly:
+                self._mark_stale(row, bead, ask, current_proposal)
             raise NativeError('run_ask_stale_proposal')
         if row.get('kind', 'run') == 'run' and not isinstance(row.get('bead_title'), str):
-            self._backfill_bead_title(row, bead['title'])
+            if not readonly:
+                self._backfill_bead_title(row, bead['title'])
         return ask
 
     def keyboard(self, row):
@@ -3418,6 +3422,8 @@ class RunAsks:
                             row = None
                         if row is None:
                             raise NativeError('run_ask_stale_proposal')
+                        # The reissue re-read canonical state; refresh the snapshot it raced.
+                        bead, ask = self.fetch(bead_id, number, kind)
                     elif row['message_id'] is None and ask['state'] != 'open' and not self.unconfirmed_receipt(row):
                         raise NativeError('run_ask_not_open')
                 else:
@@ -3626,10 +3632,28 @@ class RunAsks:
         def check_open():
             if self.ensure(row)['state'] != 'open' and row['message_id'] is None:
                 raise NativeError('run_ask_not_open')
+        def check_open_readonly():
+            # Read-only: inside publish_lock this must not reissue, mark, display, save or send.
+            ask = self.ensure(row, readonly=True)
+            if ask['state'] != 'open' and row['message_id'] is None:
+                raise NativeError('run_ask_not_open')
+            # A send binds its turn: a decision reopened since the poll's read
+            # leaves this attempt not sent for the next poll to present.
+            if row.get('kind') == 'decision' and ask['turn'] != row['turn']:
+                raise NativeError('run_ask_stale_proposal')
+        def raise_blocked():
+            error = blocked[0]
+            if str(error) == 'run_ask_stale_proposal':
+                try:
+                    self.ensure(row)
+                except NativeError:
+                    pass
+            raise error
         def deliver(markup, plain, reply, pending, extra):
+            # Siding cards share this send; the ask recheck is for run and decision rows only.
+            check = check_open_readonly if row.get('kind', 'run') in ('run', 'decision') else None
             try:
-                return b._deliver_text(markup, reply, pending, plain, extra=extra,
-                                       before_attempt=check_open if row.get('bundle') else None)
+                return b._deliver_text(markup, reply, pending, plain, extra=extra, before_attempt=check)
             except NativeError as error:
                 # Rechecks precede a send or follow a definitively unsent attempt.
                 blocked.append(error)
@@ -3651,7 +3675,7 @@ class RunAsks:
                     receipt = b._reserve_and_deliver(part['key'], identity,
                         lambda pending: deliver(part['html'], part['plain'], reply, pending, extra))
                     if blocked:
-                        raise blocked[0]
+                        raise_blocked()
                     if not receipt.get('delivered'):
                         return dict(receipt, conversation=dict(b.conversation, conversation_id=row['conversation']))
                     part['message_id'] = int(receipt['message_id'])
@@ -3666,7 +3690,7 @@ class RunAsks:
                     identity = dict(document_sha256=document['sha256'], size=document['size'], reply=previous, **extra)
                     def send_document(pending):
                         def check_document():
-                            check_open()
+                            check_open_readonly()
                             self.document_file(document)
                         try:
                             return b._deliver_attachment(dict(kind='document', path=self.document_file(document)),
@@ -3677,7 +3701,7 @@ class RunAsks:
                             return b.not_sent()
                     receipt = b._reserve_and_deliver(document['key'], identity, send_document)
                     if blocked:
-                        raise blocked[0]
+                        raise_blocked()
                     if not receipt.get('delivered'):
                         return dict(receipt, conversation=dict(b.conversation, conversation_id=row['conversation']))
                     if type(receipt.get('document_size')) is not int or receipt['document_size'] != document['size']:
@@ -3691,7 +3715,7 @@ class RunAsks:
         receipt = b._reserve_and_deliver(key, identity,
                     lambda pending: deliver(row['html'], row['plain'], previous, pending, extra))
         if blocked:
-            raise blocked[0]
+            raise_blocked()
         if receipt.get('delivered'):
             row['message_id'] = int(receipt['message_id'])
             if row.get('kind') == 'decision' and not self.generation(row, row['turn']):
@@ -3774,6 +3798,30 @@ class RunAsks:
         return [(row, turn) for row in self.rows() for mid, turn in self.message_bindings(row)
                 if mid == message_id]
 
+    def _ambiguous_predecessor(self, row):
+        """The ambiguous send receipt of an earlier card of this ask, if any."""
+        for other in self.rows():
+            if not (other.get('binding') == row.get('binding')
+                    and other.get('bead') == row.get('bead') and other.get('ask') == row.get('ask')):
+                continue
+            if (other.get('kind') == 'decision' and type(other.get('initial_turn')) is int
+                    and type(other.get('turn')) is int):
+                # Every turn up to the current one: a reopen reuses this row
+                # under a new key, and a predecessor row keeps its older turns.
+                # A bound turn is reconciled, so only unbound turns block.
+                last = other['turn'] if other['id'] != row['id'] else row['turn'] - 1
+                for turn in range(other['initial_turn'], last + 1):
+                    if self.generation(other, turn) is not None:
+                        continue
+                    receipt = self.unconfirmed_receipt(dict(other, turn=turn))
+                    if receipt is not None:
+                        return receipt
+            elif other['id'] != row['id']:
+                receipt = self.unconfirmed_receipt(other)
+                if receipt is not None:
+                    return receipt
+        return None
+
     def present_decision(self, row, ask):
         self.require_generations(row)
         if row['turn'] != ask['turn']:
@@ -3781,6 +3829,11 @@ class RunAsks:
             row.pop('display', None)
         row['state'] = 'open'
         self.save(row)
+        if self.generation(row, row['turn']) is None:
+            blocked = self._ambiguous_predecessor(row)
+            if blocked is not None:
+                return dict(blocked, conversation=dict(
+                    self.bridge.conversation, conversation_id=row['conversation']))
         # Sends bind one open turn forever; retiring older controls is only presentation.
         receipt = self.send_card(row)
         footer = ('Re-presented; answer the newer card' if self.generation(row, row['turn']) else

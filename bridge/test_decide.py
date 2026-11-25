@@ -611,6 +611,60 @@ class DecideTests(DecideCase):
         attempts = [body for url, body in self.calls if url.endswith('/sendMessage') and 'askcard:' in str(body.get('reply_markup'))]
         self.assertEqual(len(attempts), 1)
         self.assertEqual(self.writes(), [])
+        # A retitle after the ambiguous send issues a replacement row but never
+        # sends it, on reopen or on poll: the card stays unconfirmed.
+        self.native.beads['sample-1']['title'] = 'Retitled after ambiguity'
+        self.restart()
+        self.bridge.request = base
+        self.command('/decide sample-1#7', 3)
+        attempts = [body for url, body in self.calls if url.endswith('/sendMessage') and 'askcard:' in str(body.get('reply_markup'))]
+        self.assertEqual(len(attempts), 1)
+        self.assertIn('is not confirmed sent (ambiguous_delivery_requires_manual_reconciliation); nothing was answered.',
+                      self.sends()[-1]['text'])
+        self.bridge.run_asks.refresh()
+        attempts = [body for url, body in self.calls if url.endswith('/sendMessage') and 'askcard:' in str(body.get('reply_markup'))]
+        self.assertEqual(len(attempts), 1)
+        fresh = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertIsNone(fresh['message_id'])
+        self.assertEqual(self.writes(), [])
+
+    def test_decide_open_retry_rechecks_the_ask_before_transport(self):
+        self.bridge.sleep = lambda _: None
+        base = self.bridge.request
+        def unavailable(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage') and 'askcard:' in str(body.get('reply_markup')):
+                raise b.RequestNotSent('synthetic connection failure')
+            return base(url, body, *args, **kwargs)
+        self.bridge.request = unavailable
+        self.command('/decide sample-1#7', 1)
+        self.assertIn('is not confirmed sent (transport_unavailable_not_sent); nothing was answered.',
+                      self.sends()[-1]['text'])
+        self.bridge.request = base
+        # Untouched retry sends the card once.
+        self.bridge.run_asks.refresh()
+        def cards():
+            return [body for url, body in self.calls if url.endswith('/sendMessage')
+                    and 'askcard:' in str(body.get('reply_markup'))]
+        self.assertEqual(len(cards()), 1)
+        # A second ask whose first send is not sent, then taken back between
+        # the poll's read and transport: zero further sends.
+        self.bridge.request = unavailable
+        self.command('/decide sample-1#8', 2)
+        self.bridge.request = base
+        reserve = self.bridge._reserve_and_deliver
+        fired = []
+        def raced(key, identity, deliver_fn, *args, **kwargs):
+            def guarded(pending):
+                if key.startswith('runask:') and key.endswith(':send') and not fired:
+                    fired.append(key)
+                    self.native.beads['sample-1']['asks'][1].update(state='taken back', by='proposer', words='moot')
+                return deliver_fn(pending)
+            return reserve(key, identity, guarded, *args, **kwargs)
+        with patch.object(self.bridge, '_reserve_and_deliver', side_effect=raced):
+            self.bridge.run_asks.refresh()
+        self.assertEqual(len(fired), 1)
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.writes(), [])
 
     def test_unicode_and_boundary_lengths_stay_whole_on_the_card(self):
         family = '👩‍👩‍👧'

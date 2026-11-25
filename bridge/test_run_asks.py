@@ -2549,6 +2549,227 @@ class NativeTests(NativeCase):
         self.assertIsNone(self.bridge.run_asks.get(race0['id']).get('replaced_by'))
         self.assertIn('use Footplate or the yard cards', self.edits()[-1]['text'])
 
+        # 9. Ambiguous first send, then a retitle, restart and one poll: no second card.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Before ambiguity')
+        transport = self.bridge.request
+        def lost_response(url, body, *args, **kwargs):
+            response = transport(url, body, *args, **kwargs)
+            if url.endswith('/sendMessage'):
+                raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
+            return response
+        with patch.object(self.bridge, 'request', side_effect=lost_response):
+            receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-ambiguous'))
+        self.assertFalse(receipt['delivered'])
+        self.assertEqual(receipt['reason'], 'ambiguous_delivery_requires_manual_reconciliation')
+        self.assertEqual(len(cards()), 1)
+        row0 = self.bridge.run_asks.rows()[0]
+        self.assertIsNone(row0['message_id'])
+        self.native.bead['title'] = 'After ambiguity'
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        fresh = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertNotEqual(fresh['id'], row0['id'])
+        self.assertIsNone(fresh['message_id'])
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.writes(), [])
+
+        # 10. Ambiguous turn-0 send, then a native reopen: the same row sends
+        # nothing more while the first receipt stays ambiguous.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Before ambiguity')
+        with patch.object(self.bridge, 'request', side_effect=lost_response):
+            receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-ambiguous-reopen'))
+        self.assertFalse(receipt['delivered'])
+        self.assertEqual(receipt['reason'], 'ambiguous_delivery_requires_manual_reconciliation')
+        self.assertEqual(len(cards()), 1)
+        row0 = self.bridge.run_asks.rows()[0]
+        self.native.ask.update(turn=1, state='open', by='proposer', words='reopened')
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        current = self.bridge.run_asks.get(row0['id'])
+        self.assertEqual(current['turn'], 1)
+        self.assertIsNone(current['message_id'])
+        self.assertIsNone(self.store.saved_receipt(f"runask:{row0['id']}:send:1"))
+        saved = self.store.saved_delivery(f"runask:{row0['id']}:send")
+        self.assertFalse(saved[1]['delivered'])
+        self.assertEqual(saved[1]['metadata']['reason'], 'ambiguous_delivery_requires_manual_reconciliation')
+        self.assertEqual(self.writes(), [])
+
+        # 11. Ambiguous turn-0 send, an unsent turn-1 poll, then a retitle and
+        # restart: the replacement row sends nothing while the first receipt
+        # stays ambiguous.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Before ambiguity')
+        with patch.object(self.bridge, 'request', side_effect=lost_response):
+            self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-ambiguous-retitle'))
+        self.native.ask.update(turn=1, state='open', by='proposer', words='reopened')
+        transport = self.bridge.request
+        def unavailable(url, body, *args, **kwargs):
+            if url.endswith('/sendMessage'):
+                raise b.RequestNotSent('synthetic connection failure')
+            return transport(url, body, *args, **kwargs)
+        with patch.object(self.bridge, 'request', side_effect=unavailable):
+            self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.native.bead['title'] = 'After ambiguity'
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        fresh = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertIsNone(fresh['message_id'])
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.writes(), [])
+
+        # 12. Manual reissue racing a reopen keeps the replacement's turn: the
+        # stale create snapshot must not downgrade it and hide its ambiguous
+        # receipt from the next retitle and restart.
+        self.reset_native(decision())
+        self.native.bead = dict(id='sample-1', title='Revision A')
+        self.assertTrue(self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-manual-reopen'))['delivered'])
+        self.assertEqual(len(cards()), 1)
+        self.native.bead['title'] = 'Revision B'
+        original = self.bridge.run_asks._reissue_decision
+        def reopen_then_reissue(row, bead=None, ask=None):
+            self.assertEqual((ask['state'], ask['turn']), ('open', 0))
+            self.native.ask.update(turn=1, state='open', by='proposer', words='reopened')
+            return original(row, bead, ask)
+        transport = self.bridge.request
+        def lost_replacement(url, body, *args, **kwargs):
+            response = transport(url, body, *args, **kwargs)
+            if url.endswith('/sendMessage'):
+                raise b.RequestUnconfirmed('response lost after delivery', exit_code=28, phase='after-send')
+            return response
+        with patch.object(self.bridge, 'request', side_effect=lost_replacement):
+            with patch.object(self.bridge.run_asks, '_reissue_decision', side_effect=reopen_then_reissue):
+                receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='k-manual-reopen'))
+        self.assertFalse(receipt['delivered'])
+        self.assertEqual(receipt['reason'], 'ambiguous_delivery_requires_manual_reconciliation')
+        self.assertEqual(len(cards()), 2)
+        prior = next(r for r in self.bridge.run_asks.rows() if r.get('replaces'))
+        self.assertEqual((prior['initial_turn'], prior['turn']), (1, 1))
+        saved = self.store.saved_receipt(self.bridge.run_asks.send_key(dict(prior, turn=1)))
+        self.assertFalse(saved['delivered'])
+        self.assertEqual(saved['metadata']['reason'], 'ambiguous_delivery_requires_manual_reconciliation')
+        self.native.bead['title'] = 'Revision C'
+        self.bridge.run_asks = n.RunAsks(self.bridge)
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 2)
+        fresh = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertIsNone(fresh['message_id'])
+        self.assertEqual(self.writes(), [])
+
+    def test_decision_card_send_rechecks_native_state_before_transport(self):
+        # A take-back racing the poll's read sends zero cards, with and without
+        # a retitle; a retitle racing the send posts the replacement once, with
+        # no deadlock; an untouched retry still sends once.
+        self.bridge.sleep = lambda _: None
+        def cards():
+            return [body for url, body in self.calls if url.endswith('/sendMessage')
+                    and body.get('reply_markup', {}).get('inline_keyboard')]
+
+        def not_sent_first():
+            self.reset_native(decision())
+            self.native.bead = dict(id='sample-1', title='Initial title')
+            transport = self.bridge.request
+            def unavailable(url, body, *args, **kwargs):
+                if url.endswith('/sendMessage'):
+                    raise b.RequestNotSent('synthetic connection failure')
+                return transport(url, body, *args, **kwargs)
+            with patch.object(self.bridge, 'request', side_effect=unavailable):
+                receipt = self.bridge.api_ask_card(dict(bead='sample-1', ask=7, key='race-1'))
+            self.assertFalse(receipt['delivered'])
+            self.assertEqual(receipt['reason'], 'transport_unavailable_not_sent')
+            self.assertEqual(receipt['failure_kind'], 'transient')
+            row = self.row()
+            self.assertIsNone(row['message_id'])
+            self.assertTrue(b.resendable(self.store.saved_receipt(f"runask:{row['id']}:send")))
+            return row
+
+        def race_refresh(change):
+            reserve = self.bridge._reserve_and_deliver
+            fired = []
+            def raced(key, identity, deliver_fn, *args, **kwargs):
+                def guarded(pending):
+                    if re.fullmatch(r'runask:[0-9a-f]{24}:send', key) and not fired:
+                        fired.append(key)
+                        change()
+                    return deliver_fn(pending)
+                return reserve(key, identity, guarded, *args, **kwargs)
+            with patch.object(self.bridge, '_reserve_and_deliver', side_effect=raced):
+                self.bridge.run_asks.refresh()
+            return fired
+
+        def take_back():
+            self.native.ask.update(state='taken back', by='proposer', words='moot')
+
+        # 1. Take-back between the poll's read and transport: zero sends.
+        row = not_sent_first()
+        self.assertEqual(race_refresh(take_back), [f"runask:{row['id']}:send"])
+        self.assertEqual(cards(), [])
+        self.bridge.run_asks.refresh()
+        self.assertEqual(cards(), [])
+        self.assertEqual(self.bridge.run_asks.get(row['id'])['state'], 'taken back')
+        self.assertEqual(self.writes(), [])
+
+        # 2. The same after a title edit: the replacement send rechecks too.
+        row = not_sent_first()
+        self.native.bead['title'] = 'Retitled'
+        fired = race_refresh(take_back)
+        self.assertEqual(len(fired), 1)
+        self.assertNotEqual(fired[0], f"runask:{row['id']}:send")
+        self.assertEqual(cards(), [])
+        fresh = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertIsNone(fresh['message_id'])
+        self.assertEqual(self.writes(), [])
+
+        # 4. Title edit while the send is reserved: no deadlock; the replacement goes once, after the lock.
+        row = not_sent_first()
+        fired = race_refresh(lambda: self.native.bead.update(title='Retitled mid-send'))
+        self.assertEqual(fired, [f"runask:{row['id']}:send"])
+        self.assertEqual(len(cards()), 1)
+        self.assertIn('Retitled mid-send', cards()[-1]['text'])
+        fresh = next(r for r in self.bridge.run_asks.rows() if r['state'] == 'open')
+        self.assertNotEqual(fresh['id'], row['id'])
+        self.assertIsNotNone(fresh['message_id'])
+        self.assertEqual(self.writes(), [])
+
+        # 5. Untouched open ask retried after a not-sent: one card.
+        row = not_sent_first()
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.bridge.run_asks.get(row['id'])['message_id'], 77)
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.writes(), [])
+
+        # 6. Reopen between the poll's read and transport: the old turn stays
+        # not sent and the next poll presents the current turn alone.
+        row = not_sent_first()
+        def reopen():
+            self.native.ask.update(turn=1, state='open', by='proposer', words='reopened')
+        self.assertEqual(race_refresh(reopen), [f"runask:{row['id']}:send"])
+        self.assertEqual(cards(), [])
+        self.assertTrue(b.resendable(self.store.saved_receipt(f"runask:{row['id']}:send")))
+        current = self.bridge.run_asks.get(row['id'])
+        self.assertEqual(current['turn'], 0)
+        self.assertIsNone(current['message_id'])
+        self.assertEqual(self.writes(), [])
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        current = self.bridge.run_asks.get(row['id'])
+        self.assertEqual(current['turn'], 1)
+        self.assertEqual(current['message_id'], 77)
+        self.assertEqual([(g['turn'], g['message_id']) for g in current['generations']], [(1, 77)])
+        self.assertTrue(self.store.saved_delivery(f"runask:{row['id']}:send:1")[1]['delivered'])
+        self.assertIn(':1', str(cards()[-1]['reply_markup']))
+        self.bridge.run_asks.refresh()
+        self.assertEqual(len(cards()), 1)
+        self.assertEqual(self.writes(), [])
+
     def test_routine_render_approve_once_restart_and_canonical_close(self):
         self.native.ask.pop('turn')  # run cards still accept the older core shape
         self.assertTrue(self.create()['delivered'])
@@ -6878,13 +7099,15 @@ class NativeTests(NativeCase):
                 old_key = self.bridge.run_asks.send_key(row)
                 old_receipt = self.store.saved_delivery(old_key)
                 self.native.ask['turn'] += 1
+                # The reopened turn sends nothing while the first receipt stays
+                # ambiguous; the yard decides natively until it is reconciled.
                 self.bridge.run_asks.refresh()
                 current = self.row()
                 self.assertEqual(current['turn'], 1)
-                self.assertEqual(current['generations'], [dict(turn=1, message_id=78, revision=0)])
+                self.assertIsNone(current['message_id'])
+                self.assertEqual(current['generations'], [])
                 new_key = self.bridge.run_asks.send_key(current)
-                new_receipt = self.store.saved_delivery(new_key)
-                self.assertTrue(new_receipt[1]['delivered'])
+                self.assertIsNone(self.store.saved_delivery(new_key))
                 query['message'] = dict(message_id=query['message']['message_id'],
                                         chat=dict(id=123, type='private'), date=0)
                 if restart:
@@ -6902,8 +7125,8 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.native.ask['state'], 'open')
                 self.assertEqual(self.row(), current)
                 self.assertEqual(self.store.saved_delivery(old_key), old_receipt)
-                self.assertEqual(self.store.saved_delivery(new_key), new_receipt)
-                self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 2)
+                self.assertIsNone(self.store.saved_delivery(new_key))
+                self.assertEqual(len([url for url, _ in self.calls if url.endswith('/sendMessage')]), 1)
                 self.assertIn('decide in Footplate or the yard', self.calls[-1][1]['text'])
                 self.assertIn('delete this Telegram card manually', self.calls[-1][1]['text'])
 

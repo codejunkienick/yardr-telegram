@@ -2995,22 +2995,28 @@ class Bridge:
     def delivery_fingerprint(identity):
         return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
-    def _reserve_and_deliver(self, key, identity, deliver_fn, retry_undelivered=False, mirror=False):
+    def _reserve_and_deliver(self, key, identity, deliver_fn, retry_undelivered=False, mirror=False, conversation=None):
         """The one ledger reservation path for every send: reserve the key
         durably before Telegram is contacted, return a
         saved receipt instead of sending again, and finish with the result
-        of deliver_fn(pending). retry_undelivered: see Store.reserve."""
+        of deliver_fn(pending). retry_undelivered: see Store.reserve.
+        conversation: a topic send's topic conversation, named on every
+        receipt saved for it (receipt() names the paired chat)."""
         fingerprint = self.delivery_fingerprint(identity)
+
+        def in_conversation(receipt):
+            return receipt if conversation is None else dict(receipt, conversation=conversation)
         # The bot lock and reserved namespace give the mirror worker exclusive ownership of its keys.
         with contextlib.nullcontext() if mirror else self.publish_lock:
-            pending = self.receipt(reason=yard_mail.AMBIGUOUS)
+            pending = in_conversation(self.receipt(reason=yard_mail.AMBIGUOUS))
             try:
-                cached = self.store.reserve(key, fingerprint, self.not_sent() if mirror else pending, retry_undelivered)
+                cached = self.store.reserve(key, fingerprint,
+                                            in_conversation(self.not_sent()) if mirror else pending, retry_undelivered)
             except TransportError:
                 return self.receipt(reason='idempotency_key_conflict')
             if cached:
                 return cached
-            result = deliver_fn(pending)
+            result = in_conversation(deliver_fn(pending))
             if mirror:
                 self.store.finish(key, result, mirror=True)
             else:
@@ -3750,7 +3756,7 @@ class Bridge:
             topic = next((topic for topic in self._recorded_topics() if topic['conversation'] == conversation), None)
             if topic is None:
                 return self.receipt(reason='recipient_not_authorized')
-            receipt = self._publish(request, topic['thread_id'], mirror=True)
+            receipt = self._publish(request, topic['thread_id'], mirror=True, conversation=topic['conversation'])
             return dict(receipt, conversation=topic['conversation'])
         if conversation == self.conversation:
             receipt = self._publish(request, format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
@@ -3762,7 +3768,7 @@ class Bridge:
             # Only served auto topics carry a display_name.
             receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic,
                                     format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
-                                    start_by=start_by)
+                                    start_by=start_by, conversation=topic['conversation'])
             receipt = dict(receipt, conversation=topic['conversation'])
         self._log_sent(conversation, request, receipt)
         return receipt
@@ -4114,7 +4120,7 @@ class Bridge:
         return dict(ok=True, bot=self.account, last_poll_ok=last)
 
     def _publish(self, request, thread_id=None, text_fallback=True, format_fallback_reason=None, resend_on_429=False,
-                 start_by=None, mirror=False):
+                 start_by=None, mirror=False, conversation=None):
         key, text = request.get('idempotency_key'), request.get('text')
         if not isinstance(key, str) or not key.strip() or len(key) > 256:
             return self.receipt(reason='stable_idempotency_key_required')
@@ -4292,7 +4298,7 @@ class Bridge:
             if receipt.get('delivered') is True and format_fallback_reason is not None:
                 receipt = dict(receipt, format_fallback_reason=format_fallback_reason)
             return receipt
-        return self._reserve_and_deliver(key, request, deliver, mirror=mirror)
+        return self._reserve_and_deliver(key, request, deliver, mirror=mirror, conversation=conversation)
 
     # ---- pinned messages: one bot message per slot, edited in place ----
     PIN_SLOT_RE = re.compile(r'[a-z0-9_-]{1,32}')

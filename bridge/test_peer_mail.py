@@ -163,6 +163,8 @@ class PeerMailTests(BridgeTestCase):
         self.assertEqual(self.calls[-1][1]['message_thread_id'], OPS)
         self.assertIsNot(receipt.get('delivered'), True)
         self.assertEqual(receipt['metadata']['reason'], b.yard_mail.AMBIGUOUS)
+        # The saved receipt is the one reconciliation reads: it names the topic, not the paired chat.
+        self.assertEqual(self.store.saved_receipt(key)['conversation'], bridge.topic_conversation(OPS))
 
     def test_mirror_replies_in_a_topic_are_consumed(self):
         mirror = self.bridge.peer_mail

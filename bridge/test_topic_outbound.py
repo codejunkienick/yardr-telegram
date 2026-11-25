@@ -130,6 +130,7 @@ class TopicPublishTests(TopicOutboundCase):
         receipt = self.bridge.publish(self.request(reply_to_message_id='41'))
         self.assertTrue(receipt['delivered'])
         self.assertEqual((receipt['message_id'], receipt['conversation']), ('77', topic_ref(OPS)))
+        self.assertEqual(self.store.saved_receipt('topic-1')['conversation'], topic_ref(OPS))
         self.assertEqual(self.calls, [('https://api.telegram.org/botSECRET/sendMessage', dict(
             chat_id=123, text='hello', link_preview_options={'is_disabled': True}, message_thread_id=OPS,
             reply_parameters={'message_id': 41}))])

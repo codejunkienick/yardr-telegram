@@ -2714,8 +2714,8 @@ bridge recognize replies when Telegram accepted a send and its receipt was lost.
 
 Install a reviewed release through the existing instance's install and
 preflight procedure ("Install and launch"): from a clean checkout of the
-release, `<repo>/install.sh --settings <settings>` into the instance's own
-root, keeping its unit and state directory. With a `topic`, run
+release, `<repo>/install.sh --settings <settings> --root <root>` into the
+instance's own root, keeping its unit and state directory. With a `topic`, run
 `<root>/bin/telegram-bridge topics` first and require exit 0. The
 authorized operator then enables the setting, restarts the same unit and
 smokes the already linked route with two harmless mails, one per direction,
@@ -2728,7 +2728,7 @@ pause if the native stream retains it; claimed threads resume with it. A
 newly added name gets its own current watermark. Removing a name during an
 enabled run's next start discards its outstanding work. To roll back, run
 the previous release's `<root>/previous/install.sh --settings <settings>
---rollback` against the same database and restart the unit; when the
+--root <root> --rollback` against the same database and restart the unit; when the
 upgrade changed settings compatibility, restore the pre-edit settings
 file first. Before rolling back to a release without reply protection,
 account for the mirror posts still visible in the chat before resuming

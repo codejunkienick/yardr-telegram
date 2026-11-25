@@ -11078,6 +11078,7 @@ class RealNativeTests(BridgeTestCase):
             bin_dir.mkdir()
             landed_log = root / 'landed.log'
             merge_local = bin_dir / 'merge-local'
+            # The advance is the hook's last line: teardown stops the script once the bead is reported.
             merge_local.write_text(
                 '#!/bin/sh\nset -eu\n'
                 f'BIN="{binary}"\n'
@@ -11087,8 +11088,8 @@ class RealNativeTests(BridgeTestCase):
                 'YARDR_LANDING=1 sh -c "$YARDR_TEST"\n'
                 '"$BIN" --home "$YARDR_HOME" --actor pat depot edit verify "$YARDR_BEAD" --base "$BASE" --head "$HEAD" --test "$YARDR_TEST"\n'
                 'git -C "$YARDR_DEPOT_PATH" merge --ff-only "$YARDR_BRANCH"\n'
-                '"$BIN" --home "$YARDR_HOME" --actor pat bead advance "$YARDR_BEAD" --to merged --note "landed $HEAD"\n'
                 f'printf "landed=%s\\n" "$HEAD" >> "{landed_log}"\n'
+                '"$BIN" --home "$YARDR_HOME" --actor pat bead advance "$YARDR_BEAD" --to merged --note "landed $HEAD"\n'
             )
             merge_local.chmod(0o755)
 
@@ -11439,7 +11440,7 @@ class RealNativeTests(BridgeTestCase):
                     st = self.bridge.run_asks.get(final_row['id']).get('native_edit_status', {})
                     if st.get('state') == 'landed':
                         landed_status = st
-                        # The landing hook writes its log after the bead is merged: wait for the whole line.
+                        # The landing hook writes its log before the bead is merged: wait for the whole line.
                         if landed_log.exists() and landed_log.read_text().endswith('\n'):
                             break
                     time.sleep(0.1)

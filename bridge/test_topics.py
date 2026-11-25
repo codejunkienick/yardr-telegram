@@ -220,6 +220,16 @@ class TopicLedgerTests(unittest.TestCase):
                          [('ops', 501, 'created'), ('web', 502, 'recorded')])
         self.assertTrue(all(r['recorded_at'].endswith('+00:00') for r in rows))
 
+    def test_record_replaces_a_row_outside_int32_and_keeps_a_valid_one(self):
+        store = b.Store(self.path, 10)
+        self.assertIsNone(store.record_topic('ops', 4294967296, 'recorded'))  # written before the range check
+        self.assertEqual(store.record_topic('web', 4294967296, 'recorded'), 'thread_id_already_recorded')
+        self.assertIsNone(store.record_topic('ops', 501, 'recorded'))
+        self.assertEqual(store.record_topic('ops', 502, 'recorded'), 'topic_already_recorded')
+        self.assertEqual(store.record_topic('web', 501, 'recorded'), 'thread_id_already_recorded')
+        self.assertEqual([(r['name'], r['thread_id'], r['source']) for r in store.topic_rows()],
+                         [('ops', 501, 'recorded')])
+
     def test_an_attempt_starts_at_one_and_rises_by_one(self):
         store = b.Store(self.path, 10)
         self.assertEqual(store.topic_attempt('ops'), 1)
@@ -471,6 +481,52 @@ class TopicsTests(BridgeTestCase):
         self.assertFalse(complete)
         self.assertEqual(self.calls, [])
 
+    def test_a_row_outside_int32_is_reported_invalid_and_record_replaces_it(self):
+        self.store.record_topic('ops', 4294967296, 'recorded')
+        lines, complete = self.run_topics()
+        self.assertEqual(lines, ['topic ops: thread 4294967296 is not a valid thread id (1 to 2147483647); '
+                                 'run bridge.py topics --record ops --thread-id <id> to replace it',
+                                 'topic web: thread 501 (created)', subscribe('web', 'helper')])
+        self.assertFalse(complete)
+        self.assertEqual(self.calls, [('getMe', {}), ('createForumTopic', {'chat_id': 123, 'name': 'web'})])
+        self.assertEqual(self.rows(), [('ops', 4294967296, 'recorded'), ('web', 501, 'created')])
+        with self.assertRaisesRegex(b.TransportError, '^topics --record: thread 501 is already recorded for topic web$'):
+            self.run_topics(record='ops', thread_id=501)
+        with self.assertRaisesRegex(b.TransportError, '^topics --retry: topic ops already has thread 4294967296$'):
+            self.run_topics(retry='ops')
+        self.assertEqual(self.rows(), [('ops', 4294967296, 'recorded'), ('web', 501, 'created')])
+        lines, complete = self.run_topics(record='ops', thread_id=640)
+        self.assertEqual(lines, ['topic ops: thread 640 (recorded by hand)', subscribe('ops'),
+                                 'topic web: thread 501 (recorded earlier)', subscribe('web', 'helper')])
+        self.assertEqual((complete, self.calls), (True, []))
+        self.assertEqual(self.rows(), [('ops', 640, 'recorded'), ('web', 501, 'created')])
+
+    def test_the_peer_mail_topic_row_outside_int32_is_named_invalid_and_fails_the_run(self):
+        self.store.record_topic('ops', 4294967296, 'recorded')
+        self.bridge.config['yardr_peer_mail_topic'] = 'ops'
+        lines, complete = self.run_topics()
+        self.assertEqual(lines[-2:], ['peer mail topic: recorded in the ledger as thread 4294967296, not a valid thread '
+                                      'id (1 to 2147483647)',
+                                      'peer mail topic: Telegram reach not checked here (no call); the first mirror '
+                                      'post confirms it'])
+        self.assertFalse(complete)
+
+    def test_a_create_answering_a_thread_id_outside_int32_is_refused_and_records_nothing(self):
+        self.fresh('create-out-of-range', self.TOPICS[:1])
+        self.answers['createForumTopic'] = [(200, {'ok': True, 'result': {'message_thread_id': 4294967296,
+                                                                          'name': 'ops'}})]
+        with self.assertRaisesRegex(b.TransportError, '^createForumTopic for topic ops returned thread 4294967296, '
+                                                      'outside 1 to 2147483647; nothing recorded$'):
+            self.run_topics()
+        self.assertEqual(self.methods(), ['getMe', 'createForumTopic'])
+        self.assertEqual(self.rows(), [])
+        self.assertIs(self.ledger()['topic:1:ops']['delivered'], False)
+        lines, complete = self.run_topics()
+        self.assertEqual((lines[0].split(';')[0], complete, self.calls),
+                         ('topic ops: not created (ambiguous_delivery_requires_manual_reconciliation)', False, []))
+        self.assertEqual(self.run_topics(record='ops', thread_id=640)[1], True)
+        self.assertEqual(self.rows(), [('ops', 640, 'recorded')])
+
     def test_a_confirmed_create_without_its_row_is_healed_without_a_send(self):
         self.run_topics()
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -479,6 +535,13 @@ class TopicsTests(BridgeTestCase):
                                               'topic web: thread 502 (recorded earlier)', subscribe('web', 'helper')], True))
         self.assertEqual(self.calls, [])
         self.assertEqual(self.rows(), [('web', 502, 'created'), ('ops', 501, 'created')])
+        # A saved confirmed create whose thread id is outside int32 is not healed into a row, and nothing is sent.
+        self.fresh('healed-out-of-range', self.TOPICS[:1])
+        self.store.reserve('topic:1:ops', 'fingerprint', {'delivered': False})
+        self.store.finish('topic:1:ops', self.bridge.receipt(True, message_thread_id=4294967296))
+        lines, complete = self.run_topics()
+        self.assertEqual((lines[0].split(';')[0], complete, self.calls, self.rows()),
+                         ('topic ops: not created (delivery not confirmed)', False, [], []))
 
     def test_a_row_whose_name_left_the_settings_prints_its_line(self):
         self.run_topics()
@@ -611,7 +674,8 @@ class TopicsCliTests(unittest.TestCase):
 
     def test_a_topic_without_a_thread_id_prints_every_line_and_exits_1(self):
         self.answer = lambda url, body: GET_ME if url.endswith('/getMe') else (502, {'ok': False, 'error_code': 502})
-        with self.assertRaisesRegex(b.TransportError, r'^not every \[\[topic\]\] has a thread id, or the peer mail topic is not recorded$'):
+        with self.assertRaisesRegex(b.TransportError, r'^not every \[\[topic\]\] has a valid thread id, or the peer '
+                                                      r'mail topic is not recorded with one$'):
             self.cli()
         self.assertEqual([line.split(' (')[0] for line in self.out.splitlines()],
                          ['topic ops: not created', 'topic web: not created'])
@@ -622,6 +686,17 @@ class TopicsCliTests(unittest.TestCase):
         self.assertEqual(self.requests, [])
         self.assertIn('topic web: thread 501 (created)', self.cli('--retry', 'web'))
         self.assertEqual([method for method, _ in self.requests], ['getMe', 'createForumTopic'])
+
+    def test_a_row_outside_int32_prints_its_invalid_line_and_exits_1(self):
+        (self.root / 'state').mkdir(exist_ok=True)
+        b.Store(self.root / 'state' / 'telegram-bridge.sqlite3', 10).record_topic('ops', 4294967296, 'recorded')
+        with self.assertRaisesRegex(b.TransportError, r'^not every \[\[topic\]\] has a valid thread id, or the peer '
+                                                      r'mail topic is not recorded with one$'):
+            self.cli()
+        self.assertEqual(self.out.splitlines(),
+                         ['topic ops: thread 4294967296 is not a valid thread id (1 to 2147483647); run bridge.py '
+                          'topics --record ops --thread-id <id> to replace it',
+                          'topic web: thread 501 (created)', subscribe('web')])
 
     def test_flag_errors_exit_through_the_parser(self):
         cases = [['topics', '--record', 'ops'],

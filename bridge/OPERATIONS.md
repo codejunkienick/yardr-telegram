@@ -1683,6 +1683,8 @@ subscribe: yardr subscribe <crew> <source> --scope all --where type=message --wh
 
 (`<source>` is `[yardr] source`, the name shell-quoted when it needs it),
 and for one without, `topic <name>: not created (<reason>); <next step>`;
+and for one whose thread id is outside 1 to 2147483647, with no subscribe
+line, `topic <name>: thread <id> is not a valid thread id (1 to 2147483647); run bridge.py topics --record <name> --thread-id <id> to replace it`;
 then, for each ledger row whose name left the settings,
 `topic <name>: thread <id> (not in settings; its messages reach the agent as not configured)`;
 then, with `[auto_topics]` `enabled = true`, two lines per topic the paired
@@ -1695,8 +1697,9 @@ subscribe: yardr subscribe <crew> <source> --scope all --where type=message --wh
 
 and with it off or absent, when the ledger holds such topics, one line
 `auto topics: <n> recorded, not served (auto_topics off)`.
-It exits 0 only when every `[[topic]]` has a thread id, and, with
-`[yardr.peer_mail] topic` set, that name is one of them (the lines
+It exits 0 only when every `[[topic]]` has a valid thread id (1 to
+2147483647), and, with `[yardr.peer_mail] topic` set, that name is one of
+them with one (the lines
 `peer mail topic: …` print either way); else 1 after printing every line.
 It edits and deletes nothing, and changes nothing in the yard.
 
@@ -1724,6 +1727,10 @@ a name equal, ignoring case, to a `[[topic]]` name or to another auto
 topic's gets ` #<thread_id>` on every auto topic involved, so each name is
 unique ignoring case and does not depend on the order the topics appeared.
 
+A `createForumTopic` answer with a thread id outside 1 to 2147483647 fails
+the run with `createForumTopic for topic <name> returned thread <id>, outside
+1 to 2147483647; nothing recorded`: the create stays unconfirmed, as below.
+
 Recovering an unconfirmed create: check the chat. If the topic is there,
 write in it, take the thread id from the `[topic: thread <id> | not
 configured ...]` line that message reaches the yard with (on General's
@@ -1731,8 +1738,8 @@ conversation), and run
 `<root>/bin/telegram-bridge topics --record <name> --thread-id <id>`: it
 records the thread id (1 to 2147483647, Telegram's int32) with no
 Telegram call, and is refused when the name is not a `[[topic]]`,
-already has a thread id, the id is another topic's, or the id is
-outside that range. If the
+already has a thread id inside that range (a row outside it is replaced),
+the id is another topic's, or the id is outside that range. If the
 topic is not there, run `<root>/bin/telegram-bridge topics --retry <name>`:
 it raises the attempt and creates the topic under the new key. `--retry`
 is refused unless the create was ambiguous or rejected; for one not sent it says
@@ -2679,11 +2686,13 @@ one. A direct reply to any part is consumed before commands, attachments or
 yard relay, including after restart or disable. Ordinary replies still relay.
 
 Before enabling a `topic`, run `<root>/bin/telegram-bridge topics` and
-require exit 0. With a `topic` set, exit 0 means every `[[topic]]` has its
+require exit 0. With a `topic` set, exit 0 means every `[[topic]]` has a valid
 thread id recorded and the `topic` is exactly one of those names (case
 counts): the run prints `peer mail topic: recorded in the ledger as thread
 <id>`, else it fails with `peer mail topic: not recorded in the ledger`, and
-with no `[[topic]]` tables it fails too. That run never calls Telegram for the
+with no `[[topic]]` tables it fails too. A recorded thread id outside 1 to
+2147483647 prints `peer mail topic: recorded in the ledger as thread <id>, not
+a valid thread id (1 to 2147483647)` and fails too. That run never calls Telegram for the
 topic: `peer mail topic: Telegram reach not checked here` says so, and the
 first mirror post confirms it (a thread Telegram does not know pauses the
 letter). The mirror resolves the name through that same recorded route on

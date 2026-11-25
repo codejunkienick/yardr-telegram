@@ -868,18 +868,24 @@ class Store:
 
     def record_topic(self, name, thread_id, source):
         """Record a topic's thread id in one transaction. Returns None, or the
-        refusal: topic_already_recorded when the name has a row,
+        refusal: topic_already_recorded when the name has a row with a thread
+        id inside 1..2147483647 (a row outside it is replaced),
         thread_id_already_recorded when another row holds the thread id."""
         if source not in self.TOPIC_SOURCES:
             raise ValueError('topic source must be created or recorded')
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            if db.execute('SELECT 1 FROM topics WHERE name=?', (name,)).fetchone():
+            held = db.execute('SELECT thread_id FROM topics WHERE name=?', (name,)).fetchone()
+            if held and 1 <= held[0] <= 2 ** 31 - 1:
                 return 'topic_already_recorded'
             if db.execute('SELECT 1 FROM topics WHERE thread_id=?', (thread_id,)).fetchone():
                 return 'thread_id_already_recorded'
-            db.execute('INSERT INTO topics VALUES (?, ?, ?, ?)', (name, thread_id, source,
-                       datetime.datetime.now(datetime.timezone.utc).isoformat()))
+            if held:
+                db.execute('UPDATE topics SET thread_id=?, source=?, recorded_at=? WHERE name=?',
+                           (thread_id, source, now, name))
+            else:
+                db.execute('INSERT INTO topics VALUES (?, ?, ?, ?)', (name, thread_id, source, now))
         return None
 
     def topic_rows(self):
@@ -4640,6 +4646,9 @@ class Bridge:
         thread_id = topic.get('message_thread_id') if isinstance(topic, dict) else None
         if (status == 200 and data.get('ok') is True and type(thread_id) is int and thread_id > 0
                 and topic.get('name') == name):
+            if thread_id > 2 ** 31 - 1:
+                raise TransportError(f'createForumTopic for topic {name} returned thread {thread_id}, outside '
+                                     '1 to 2147483647; nothing recorded')
             self.store.record_topic(name, thread_id, 'created')
             return self.receipt(True, message_thread_id=thread_id)
         if data.get('ok') is False and 400 <= data.get('error_code', 0) < 500:
@@ -4654,7 +4663,8 @@ class Bridge:
         topic's attempt after an ambiguous or rejected create and creates it
         again. A refusal raises TransportError before any Telegram call.
         Returns (lines, complete): the report, and whether every settings
-        topic has a thread id."""
+        topic has a valid thread id (1 to 2147483647) and the peer mail
+        topic, when set, is recorded with one."""
         names = [topic['name'] for topic in self.topic_settings]
         with self._topics_lock():
             done = {}  # name -> how this run gave it its row
@@ -4671,7 +4681,8 @@ class Bridge:
                     continue
                 if name not in names:
                     raise TransportError(f'topics {flag}: no [[topic]] named {name!r} in the settings')
-                if name in rows:
+                # --record replaces a row whose thread id is outside int32.
+                if name in rows and (flag == '--retry' or 1 <= rows[name]['thread_id'] <= 2 ** 31 - 1):
                     raise TransportError(f'topics {flag}: topic {name} already has thread {rows[name]["thread_id"]}')
             if record is not None:
                 if type(thread_id) is not int or not 1 <= thread_id <= 2 ** 31 - 1:
@@ -4714,12 +4725,17 @@ class Bridge:
                     done[name] = 'created'
                 unreachable = resendable(receipt)
             rows = {row['name']: row for row in self.store.topic_rows()}
+            valid = {name for name, row in rows.items() if 1 <= row['thread_id'] <= 2 ** 31 - 1}
             for topic in self.topic_settings:
                 name = topic['name']
-                if name in rows:
+                if name in valid:
                     thread = rows[name]['thread_id']
                     lines.append(f"topic {name}: thread {thread} ({done.get(name, 'recorded earlier')})")
                     lines.append(self.subscribe_line(topic['agent'], name))
+                elif name in rows:
+                    lines.append(f"topic {name}: thread {rows[name]['thread_id']} is not a valid thread id "
+                                 '(1 to 2147483647); run bridge.py topics --record '
+                                 f'{shlex.quote(name)} --thread-id <id> to replace it')
                 else:
                     reason, step = self._topic_not_created(name, unreachable)
                     lines.append(f'topic {name}: not created ({reason})' + (f'; {step}' if step else ''))
@@ -4745,11 +4761,15 @@ class Bridge:
                 found = self.topic_by_name(selected)
                 if found is None:
                     recorded = 'not recorded in the ledger (no [[topic]] of that exact name has a thread id)'
+                elif found['name'] not in valid:
+                    recorded = (f"recorded in the ledger as thread {found['thread_id']}, not a valid thread id "
+                                '(1 to 2147483647)')
                 else:
                     recorded = f"recorded in the ledger as thread {found['thread_id']}"
                 lines.append('peer mail topic: ' + recorded)
                 lines.append('peer mail topic: Telegram reach not checked here (no call); the first mirror post confirms it')
-            return lines, all(name in rows for name in names) and (selected is None or found is not None)
+            return lines, all(name in valid for name in names) and (selected is None or (
+                found is not None and found['name'] in valid))
 
     def subscribe_line(self, crew, topic=None, thread=None):
         """The command that routes one topic's messages to a crew member in
@@ -7051,7 +7071,7 @@ def main():
         for line in lines:
             print(line)
         if not complete:
-            raise TransportError('not every [[topic]] has a thread id, or the peer mail topic is not recorded')
+            raise TransportError('not every [[topic]] has a valid thread id, or the peer mail topic is not recorded with one')
     else:
         # Token-wide lock survives alternate state directories; never unlink while locked.
         with contextlib.ExitStack() as locks:

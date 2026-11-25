@@ -175,6 +175,8 @@ class TopicPublishTests(TopicOutboundCase):
             self.assertIsNone(self.store.get_ask(ask_id)['conversation_id'])
 
     def test_a_conversation_no_topic_serves_is_refused_and_sends_nothing(self):
+        # A configured topic whose recorded thread id is outside int32, written before the range check.
+        self.store.record_topic('lab', 2147483648, 'recorded')
         cases = {
             'a thread with no ledger row': topic_ref(UNRECORDED),
             'a recorded thread whose name left the settings': topic_ref(GONE),
@@ -185,6 +187,7 @@ class TopicPublishTests(TopicOutboundCase):
             'another parent': dict(topic_ref(OPS), parent_conversation_id='124'),
             'another account': dict(topic_ref(OPS), account_id='other_bot'),
             'thread id 0': topic_ref(0),
+            'a recorded thread id outside int32': topic_ref(2147483648),
             'a padded thread id': topic_ref('07'),
             'the paired chat as a thread': dict(self.bridge.conversation, kind='thread'),
             'not an object': '123:topic:7',

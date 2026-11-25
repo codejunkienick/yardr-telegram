@@ -11439,7 +11439,9 @@ class RealNativeTests(BridgeTestCase):
                     st = self.bridge.run_asks.get(final_row['id']).get('native_edit_status', {})
                     if st.get('state') == 'landed':
                         landed_status = st
-                        break
+                        # The landing hook writes its log after the bead is merged: wait for the whole line.
+                        if landed_log.exists() and landed_log.read_text().endswith('\n'):
+                            break
                     time.sleep(0.1)
             finally:
                 testyardr.stop(daemon_proc)
@@ -11450,7 +11452,7 @@ class RealNativeTests(BridgeTestCase):
             self.assertEqual((depot / 'docs/new.md').read_text(), files_edit[1]['text'])
             self.assertFalse((depot / 'remove.txt').exists())
             self.assertIn('landing=1', test_log.read_text())
-            self.assertTrue(landed_log.exists())
+            self.assertTrue(landed_log.exists() and landed_log.read_text().endswith('\n'), 'landing hook did not write its log in time')
             self.assertEqual((depot / 'keep.md').read_bytes(), b'moved base\n')
             self.assertEqual(subprocess.check_output(['git', '-C', str(depot), 'rev-parse', 'HEAD'], text=True).strip(), prepared_status['head'])
             replay_before = len(open_beads())

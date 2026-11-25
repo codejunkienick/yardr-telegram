@@ -268,26 +268,99 @@ def _suite_file(arg):
     return None
 
 
+def _run_file_child(suite_dir, name, result_path, raw_args):
+    """Run one suite file's discovery and write its unittest result to `result_path`.
+
+    The record is the only thing the parent reads; unittest's own output stays
+    on the child's stderr/stdout untouched.
+    """
+    known, _, _ = _parse_unittest_flags(raw_args)
+    suite_path = str(ROOT / suite_dir)
+    verbosity = max(0, 1 + known.verbose - known.quiet)
+    loader = unittest.TestLoader()
+    if known.patterns:
+        loader.testNamePatterns = [
+            p if ('*' in p or '?' in p or '[' in p) else f'*{p}*' for p in known.patterns
+        ]
+    suite = loader.discover(suite_path, pattern=name, top_level_dir=suite_path)
+    selected = suite.countTestCases()
+    if known.catch:
+        unittest.installHandler()
+    runner = unittest.TextTestRunner(
+        verbosity=verbosity, failfast=known.failfast, buffer=known.buffer, tb_locals=known.locals,
+    )
+    result = runner.run(suite)
+    record = {
+        'selected': selected,
+        'ran': result.testsRun,
+        'failures': len(result.failures),
+        'errors': len(result.errors),
+        'skipped': len(result.skipped),
+        'unexpected_successes': len(result.unexpectedSuccesses),
+    }
+    Path(result_path).write_text(json.dumps(record), encoding='utf-8')
+    return 0
+
+
+def _read_file_record(result_path):
+    """The child's record, or None when it is missing or not a well-formed record."""
+    keys = ('selected', 'ran', 'failures', 'errors', 'skipped', 'unexpected_successes')
+    try:
+        record = json.loads(Path(result_path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not all(
+            type(record.get(key)) is int and record[key] >= 0 for key in keys):
+        return None
+    return record
+
+
 def _run_target(args, unittest_args, serial=False):
-    """Run suite files as per-file discovers, other targets directly with unittest."""
+    """Run suite files as per-file discovers, other targets directly with unittest.
+
+    A file whose -k selects nothing counts as nothing run; the run fails when a
+    selected test failed or errored, or when no file selected anything. With -f
+    no further file starts once one failed.
+    """
     env = None
     if serial:
         env = os.environ.copy()
         env['TGBRIDGE_TEST_JOBS'] = '1'
     mapped = [_suite_file(arg) for arg in args]
-    if args and all(item is not None for item in mapped):
-        rc = 0
-        for suite_dir, name in mapped:
+    if not (args and all(item is not None for item in mapped)):
+        return subprocess.run([sys.executable, '-B', '-m', 'unittest', *args, *unittest_args],
+                              cwd=ROOT, env=env).returncode
+    known, _, _ = _parse_unittest_flags(unittest_args)
+    script_path = str(Path(__file__).resolve())
+    rc = 0
+    any_selected = False
+    for suite_dir, name in mapped:
+        tmp = Path(tempfile.mkdtemp(prefix='yt-file-'))
+        try:
+            result_path = tmp / 'result.json'
             proc_rc = subprocess.run(
-                [sys.executable, '-B', '-m', 'unittest', 'discover', '-s', suite_dir,
-                 '-p', name, *unittest_args],
+                [sys.executable, '-B', script_path, '--file-child', suite_dir, name,
+                 str(result_path), *unittest_args],
                 cwd=ROOT, env=env,
             ).returncode
-            if proc_rc != 0 and rc == 0:
-                rc = proc_rc
-        return rc
-    return subprocess.run([sys.executable, '-B', '-m', 'unittest', *args, *unittest_args],
-                          cwd=ROOT, env=env).returncode
+            record = _read_file_record(result_path)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if record is None:
+            # The child died before reporting: not a miss, not a pass.
+            failed = True
+            proc_rc = proc_rc or 1
+        else:
+            any_selected = any_selected or record['selected'] > 0
+            failed = bool(record['failures'] or record['errors'] or record['unexpected_successes'])
+            proc_rc = 1 if failed else 0
+        if failed and rc == 0:
+            rc = proc_rc
+        if failed and known.failfast:
+            break
+    if rc == 0 and not any_selected:
+        return 5
+    return rc
 
 
 def _run_serial(unittest_args, has_pattern=False, discover_pattern=None):
@@ -349,6 +422,9 @@ def _default_jobs():
 
 def main(argv=None):
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if len(raw_argv) >= 4 and raw_argv[0] == '--file-child':
+        _, suite_dir, name, result_path, *rest = raw_argv
+        return _run_file_child(suite_dir, name, result_path, rest)
     if len(raw_argv) >= 3 and raw_argv[0] == '--worker':
         _, suite_dir, result_path, *rest = raw_argv
         sep = rest.index('--')

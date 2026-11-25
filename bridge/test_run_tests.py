@@ -4,7 +4,10 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import json
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -13,6 +16,25 @@ ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location('tgrun_tests', ROOT / 'scripts' / 'run_tests.py')
 run_tests = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(run_tests)
+
+
+def _fake_child(*records):
+    """subprocess.run stand-in: each call writes the next record to the result path."""
+    pending = list(records)
+
+    def fake(cmd, **kwargs):
+        record = pending.pop(0)
+        if record is not None:
+            Path(cmd[cmd.index('--file-child') + 3]).write_text(json.dumps(record), encoding='utf-8')
+        return mock.Mock(returncode=0)
+    return fake
+
+
+def _record(**over):
+    base = {'selected': 1, 'ran': 1, 'failures': 0, 'errors': 0, 'skipped': 0,
+            'unexpected_successes': 0}
+    base.update(over)
+    return base
 
 
 class PatternTests(unittest.TestCase):
@@ -93,8 +115,7 @@ class SerialEnvTests(unittest.TestCase):
 
     def test_target_serial_sets_jobs_one(self):
         target = str(ROOT / 'bridge' / 'test_testports.py')
-        with mock.patch.object(run_tests.subprocess, 'run') as fake:
-            fake.return_value = mock.Mock(returncode=0)
+        with mock.patch.object(run_tests.subprocess, 'run', side_effect=_fake_child(_record())) as fake:
             rc = run_tests._run_target([target], [], serial=True)
         self.assertEqual(rc, 0)
         env = fake.call_args.kwargs.get('env')
@@ -103,40 +124,30 @@ class SerialEnvTests(unittest.TestCase):
 
     def test_target_without_serial_inherits_env(self):
         target = str(ROOT / 'bridge' / 'test_testports.py')
-        with mock.patch.object(run_tests.subprocess, 'run') as fake:
-            fake.return_value = mock.Mock(returncode=0)
+        with mock.patch.object(run_tests.subprocess, 'run', side_effect=_fake_child(_record())) as fake:
             run_tests._run_target([target], [], serial=False)
         self.assertIsNone(fake.call_args.kwargs.get('env'))
 
 
 class MultiFileTargetTests(unittest.TestCase):
-    def _run_mocked(self, names, returncodes=(0,)):
-        targets = [str(ROOT / 'bridge' / name) for name in names]
-        with mock.patch.object(run_tests.subprocess, 'run') as fake:
-            if len(returncodes) == 1:
-                fake.return_value = mock.Mock(returncode=returncodes[0])
-            else:
-                fake.side_effect = [mock.Mock(returncode=c) for c in returncodes]
-            rc = run_tests._run_target(targets, [], serial=False)
-        return rc, [call.args[0] for call in fake.call_args_list]
-
-    def _discover_cmd(self, name):
-        return [run_tests.sys.executable, '-B', '-m', 'unittest',
-                'discover', '-s', 'bridge', '-p', name]
-
-    def test_two_files_run_two_discovers(self):
-        rc, commands = self._run_mocked(['test_testports.py', 'test_topics.py'])
+    def test_two_files_run_two_children(self):
+        targets = [str(ROOT / 'bridge' / n) for n in ('test_testports.py', 'test_topics.py')]
+        with mock.patch.object(run_tests.subprocess, 'run',
+                               side_effect=_fake_child(_record(), _record())) as fake:
+            rc = run_tests._run_target(targets, ['-k', 'x'], serial=False)
         self.assertEqual(rc, 0)
-        self.assertEqual(commands, [
-            self._discover_cmd('test_testports.py'),
-            self._discover_cmd('test_topics.py'),
-        ])
+        commands = [call.args[0] for call in fake.call_args_list]
+        self.assertEqual([c[c.index('--file-child') + 1:c.index('--file-child') + 3] for c in commands],
+                         [['bridge', 'test_testports.py'], ['bridge', 'test_topics.py']])
+        for command in commands:
+            self.assertEqual(command[-2:], ['-k', 'x'])
 
-    def test_multi_file_returns_first_failure(self):
-        rc, _ = self._run_mocked(['test_testports.py', 'test_topics.py'], (0, 3))
-        self.assertEqual(rc, 3)
-        rc, _ = self._run_mocked(['test_testports.py', 'test_topics.py'], (2, 3))
-        self.assertEqual(rc, 2)
+    def test_missing_or_malformed_record_fails(self):
+        target = [str(ROOT / 'bridge' / 'test_testports.py')]
+        for bad in (None, {'selected': 1}, _record(ran='1'), _record(errors=-1)):
+            with self.subTest(record=bad):
+                with mock.patch.object(run_tests.subprocess, 'run', side_effect=_fake_child(bad)):
+                    self.assertNotEqual(run_tests._run_target(target, [], serial=False), 0)
 
     def test_non_file_targets_keep_unittest_fallback(self):
         with mock.patch.object(run_tests.subprocess, 'run') as fake:
@@ -207,3 +218,106 @@ class WorkerEnvTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def _suite_src(body):
+    return 'import unittest\n' + body
+
+
+class FileTargetRunTests(unittest.TestCase):
+    """Real subprocesses against a scratch tree with its own copy of the runner."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='yt-targets-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / 'scripts').mkdir()
+        (self.tmp / 'bridge').mkdir()
+        shutil.copy(ROOT / 'scripts' / 'run_tests.py', self.tmp / 'scripts' / 'run_tests.py')
+
+    def _write(self, name, body):
+        (self.tmp / 'bridge' / name).write_text(_suite_src(body), encoding='utf-8')
+        return f'bridge/{name}'
+
+    def _run(self, *args, env=None):
+        full = {k: v for k, v in os.environ.items() if k != 'FORCE_COLOR'}
+        full.update(env or {})
+        proc = subprocess.run([sys.executable, '-B', 'scripts/run_tests.py', *args], cwd=self.tmp,
+                              env=full, capture_output=True, text=True, timeout=120)
+        return proc
+
+    PASS = 'class T(unittest.TestCase):\n    def test_alpha(self):\n        pass\n'
+
+    def test_k_miss_in_one_of_two_files_passes(self):
+        a = self._write('test_a.py', self.PASS)
+        b = self._write('test_b.py', 'class U(unittest.TestCase):\n    def test_beta(self):\n        pass\n')
+        proc = self._run(a, b, '-k', 'alpha')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_k_miss_in_all_files_fails(self):
+        a = self._write('test_a.py', self.PASS)
+        b = self._write('test_b.py', self.PASS)
+        self.assertNotEqual(self._run(a, b, '-k', 'nothing_matches').returncode, 0)
+
+    def test_k_miss_does_not_hide_a_failure(self):
+        a = self._write('test_a.py', 'class T(unittest.TestCase):\n    def test_alpha(self):\n        self.fail("x")\n')
+        b = self._write('test_b.py', 'class U(unittest.TestCase):\n    def test_beta(self):\n        pass\n')
+        self.assertEqual(self._run(a, b, '-k', 'alpha').returncode, 1)
+
+    def test_setupclass_error_with_failfast_skips_later_file(self):
+        a = self._write('test_a.py', 'class T(unittest.TestCase):\n    @classmethod\n'
+                        '    def setUpClass(cls):\n        raise RuntimeError("boom")\n'
+                        '    def test_alpha(self):\n        pass\n')
+        marker = self.tmp / 'ran-b'
+        b = self._write('test_b.py', 'from pathlib import Path\nclass U(unittest.TestCase):\n'
+                        f'    def test_beta(self):\n        Path({str(marker)!r}).write_text("x")\n')
+        proc = self._run(a, b, '-f')
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertFalse(marker.exists())
+        proc = self._run(a, b)
+        self.assertEqual(proc.returncode, 1)
+        self.assertTrue(marker.exists())
+
+    def test_setupclass_skip_counts_as_selected(self):
+        a = self._write('test_a.py', 'class T(unittest.TestCase):\n    @classmethod\n'
+                        '    def setUpClass(cls):\n        raise unittest.SkipTest("no")\n'
+                        '    def test_alpha(self):\n        pass\n')
+        self.assertEqual(self._run(a).returncode, 0)
+
+    def test_nested_unittest_run_inside_a_test(self):
+        a = self._write('test_a.py', 'import io\nclass T(unittest.TestCase):\n'
+                        '    def test_outer(self):\n'
+                        '        class Inner(unittest.TestCase):\n'
+                        '            def test_in(self):\n                self.fail("inner")\n'
+                        '        suite = unittest.defaultTestLoader.loadTestsFromTestCase(Inner)\n'
+                        '        res = unittest.TextTestRunner(stream=io.StringIO()).run(suite)\n'
+                        '        self.assertEqual(len(res.failures), 1)\n')
+        proc = self._run(a)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_passing_test_printing_failed_is_not_a_failure(self):
+        a = self._write('test_a.py', 'class T(unittest.TestCase):\n    def test_alpha(self):\n'
+                        '        print("FAILED (failures=3)")\n'
+                        '        import sys\n        print("FAILED", file=sys.stderr)\n')
+        proc = self._run(a)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('FAILED (failures=3)', proc.stdout)
+
+    def test_ansi_colour_forced_on(self):
+        a = self._write('test_a.py', 'class T(unittest.TestCase):\n    @classmethod\n'
+                        '    def setUpClass(cls):\n        raise RuntimeError("boom")\n'
+                        '    def test_alpha(self):\n        pass\n')
+        self.assertEqual(self._run(a, env={'FORCE_COLOR': '1'}).returncode, 1)
+        b = self._write('test_b.py', self.PASS)
+        self.assertEqual(self._run(b, env={'FORCE_COLOR': '1'}).returncode, 0)
+
+    def test_child_output_passes_through_on_its_own_stream(self):
+        a = self._write('test_a.py', 'class T(unittest.TestCase):\n    def test_alpha(self):\n'
+                        '        print("to-stdout")\n')
+        proc = self._run(a)
+        self.assertIn('to-stdout', proc.stdout)
+        self.assertNotIn('to-stdout', proc.stderr)
+
+    def test_child_that_dies_without_a_record_fails(self):
+        a = self._write('test_a.py', 'class T(unittest.TestCase):\n    def test_alpha(self):\n'
+                        '        import os\n        os._exit(0)\n')
+        self.assertNotEqual(self._run(a).returncode, 0)

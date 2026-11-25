@@ -683,20 +683,27 @@ class Store:
         with self.connect() as db:
             db.execute('UPDATE cursor SET offset=max(offset, ?) WHERE id=1', (offset,))
 
-    def reserve(self, key, fingerprint, pending, retry_undelivered=False):
+    def reserve(self, key, fingerprint, pending, retry_undelivered=False, retake_not_sent=False):
         """None when the caller now holds the key and may send (a new key, or
         one whose saved receipt is the not-final not-sent one); else the saved
         receipt. One transaction, so two callers never both get None.
         retry_undelivered also retakes a saved receipt that is not delivered
         (rejected or ambiguous): only for a request that is idempotent in
-        effect (a pin or an unpin), made under its slot lock."""
+        effect (a pin or an unpin), made under its slot lock.
+        retake_not_sent retakes a saved not-sent receipt even for another
+        request under the same key: only for a key whose sender retries
+        with changed words (an ask's tell past the hour's line)."""
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             existing = db.execute('SELECT fingerprint, receipt FROM deliveries WHERE key=?', (key,)).fetchone()
             if existing:
-                if existing[0] != fingerprint:
-                    raise TransportError('idempotency key reused for a different request')
                 saved = json.loads(existing[1])
+                if existing[0] != fingerprint:
+                    if not (retake_not_sent and resendable(saved)):
+                        raise TransportError('idempotency key reused for a different request')
+                    db.execute('UPDATE deliveries SET fingerprint=?, receipt=? WHERE key=?',
+                               (fingerprint, json.dumps(pending), key))
+                    return None
                 if not resendable(saved) and not (retry_undelivered and saved.get('delivered') is not True):
                     return saved
                 db.execute('UPDATE deliveries SET receipt=? WHERE key=?', (json.dumps(pending), key))
@@ -1024,7 +1031,11 @@ class ApiError(Exception):
 
 class ApiUnavailable(Exception):
     """A tell not finished, its rest safe to retry: HTTP 503, which the yard
-    tries again, and the ledger resumes it."""
+    tries again, and the ledger resumes it. `retry_after`, when Telegram gave
+    one with its 429, becomes the 503's Retry-After header."""
+    def __init__(self, retry_after=None):
+        super().__init__('tell unfinished; retry')
+        self.retry_after = retry_after
 
 
 def _callback_handler(bridge):
@@ -1045,11 +1056,13 @@ def _callback_handler(bridge):
             given = self.headers.get('Authorization') or ''
             return bridge.secret is not None and hmac.compare_digest(given.encode(), b'Bearer ' + bridge.secret.encode())
 
-        def _answer(self, status, value):
+        def _answer(self, status, value, headers=None):
             payload = json.dumps(value).encode()
             try:
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
+                for name, val in (headers or {}).items():
+                    self.send_header(name, val)
                 self.send_header('Content-Length', str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
@@ -1086,8 +1099,9 @@ def _callback_handler(bridge):
                 self._answer(200, result)
             except ApiError as error:
                 self._answer(400, dict(error=str(error)))
-            except ApiUnavailable:
-                self._answer(503, dict(error='tell unfinished; retry'))
+            except ApiUnavailable as error:
+                headers = {'Retry-After': str(error.retry_after)} if error.retry_after is not None else None
+                self._answer(503, dict(error='tell unfinished; retry'), headers)
             except (ValueError, UnicodeError):
                 self._answer(400, dict(error='a JSON object is required'))
             except TransportError as error:
@@ -3001,11 +3015,13 @@ class Bridge:
     def delivery_fingerprint(identity):
         return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
-    def _reserve_and_deliver(self, key, identity, deliver_fn, retry_undelivered=False, mirror=False, conversation=None):
+    def _reserve_and_deliver(self, key, identity, deliver_fn, retry_undelivered=False, mirror=False,
+                                 conversation=None, retake_not_sent=False):
         """The one ledger reservation path for every send: reserve the key
         durably before Telegram is contacted, return a
         saved receipt instead of sending again, and finish with the result
-        of deliver_fn(pending). retry_undelivered: see Store.reserve.
+        of deliver_fn(pending). retry_undelivered, retake_not_sent: see
+        Store.reserve.
         conversation: a topic send's topic conversation, named on every
         receipt saved for it (receipt() names the paired chat)."""
         fingerprint = self.delivery_fingerprint(identity)
@@ -3017,7 +3033,8 @@ class Bridge:
             pending = in_conversation(self.receipt(reason=yard_mail.AMBIGUOUS))
             try:
                 cached = self.store.reserve(key, fingerprint,
-                                            in_conversation(self.not_sent()) if mirror else pending, retry_undelivered)
+                                            in_conversation(self.not_sent()) if mirror else pending, retry_undelivered,
+                                            retake_not_sent)
             except TransportError:
                 return self.receipt(reason='idempotency_key_conflict')
             if cached:
@@ -3588,7 +3605,13 @@ class Bridge:
                     receipt['format_fallback_reason'] = 'telegram_html_parse_rejected_400'
                 return receipt
             if data.get('ok') is False and 400 <= data.get('error_code', 0) < 500:
-                return self.receipt(reason='telegram_rejected_not_sent_' + str(data['error_code']))
+                receipt = self.receipt(reason='telegram_rejected_not_sent_' + str(data['error_code']))
+                if data.get('error_code') == 429:
+                    parameters = data.get('parameters')
+                    delay = parameters.get('retry_after') if isinstance(parameters, dict) else None
+                    if type(delay) is int and 0 < delay < 2**31:
+                        receipt['metadata']['retry_after'] = delay
+                return receipt
             return pending
         except RequestNotSent:
             return self.not_sent()
@@ -3740,7 +3763,8 @@ class Bridge:
         except TransportError:
             return pending
 
-    def publish(self, request, format_fallback_reason=None, resend_on_429=False, start_by=None, mirror=False):
+    def publish(self, request, format_fallback_reason=None, resend_on_429=False, start_by=None, mirror=False,
+                  retake_not_sent=False):
         """Send one request on the paired chat's conversation, on a
         configured, recorded topic's or on a served auto topic's, bound or
         not (OPERATIONS.md, "Topics"); any other conversation is
@@ -3750,11 +3774,12 @@ class Bridge:
         every Telegram request of the send carries the topic's
         message_thread_id, and the receipt names the topic's conversation.
         In an auto topic a rejected file or album fails with no text
-        fallback: the user may have deleted the topic. Whole mail only,
-        outside the request: with resend_on_429 Telegram's 429 is saved as
-        not sent, so the same key sends again; past start_by (monotonic),
-        checked once the send holds publish_lock, nothing is sent and the
-        send is saved as not sent."""
+        fallback: the user may have deleted the topic. Outside the request:
+        with resend_on_429 Telegram's 429 is saved as not sent, keeping its
+        retry_after when it gave one, so the same key sends again; past
+        start_by (monotonic), checked once the send holds publish_lock,
+        nothing is sent and the send is saved as not sent.
+        retake_not_sent: see Store.reserve."""
         conversation = request.get('conversation')
         if mirror:
             if conversation == self.conversation:
@@ -3766,7 +3791,7 @@ class Bridge:
             return dict(receipt, conversation=topic['conversation'])
         if conversation == self.conversation:
             receipt = self._publish(request, format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
-                                    start_by=start_by)
+                                    start_by=start_by, retake_not_sent=retake_not_sent)
         else:
             topic = next((topic for topic in self._sendable_topics() if topic['conversation'] == conversation), None)
             if topic is None or not 1 <= topic['thread_id'] <= 2 ** 31 - 1:
@@ -3774,7 +3799,8 @@ class Bridge:
             # Only served auto topics carry a display_name.
             receipt = self._publish(request, topic['thread_id'], text_fallback='display_name' not in topic,
                                     format_fallback_reason=format_fallback_reason, resend_on_429=resend_on_429,
-                                    start_by=start_by, conversation=topic['conversation'])
+                                    start_by=start_by, conversation=topic['conversation'],
+                                    retake_not_sent=retake_not_sent)
             receipt = dict(receipt, conversation=topic['conversation'])
         self._log_sent(conversation, request, receipt)
         return receipt
@@ -3925,16 +3951,40 @@ class Bridge:
 
     TELL_TITLE_MAX = 250
     TELL_TEXT_MAX = 3500
+    # Core's ask-tell titles (internal/dispatch/pushes.go pushMessage,
+    # pushLine): one ask reads "<asker> asks", told on its own under the
+    # notify key, and a pass with an ask among its items reads "<n> new in
+    # yardr" ("your yardr inbox" when it carries no ask). If the core
+    # rewords them, the /decide line silently stops; that is harmless, and
+    # a test pins the wording.
+    _ASK_TELL_SINGLE_RE = re.compile(r'\S+ asks')
+    _ASK_TELL_BATCH_RE = re.compile(r'[1-9][0-9]* new in yardr')
+    ASK_TELL_DECIDE_LINE = 'Tap /decide to answer.'
+
+    def _tell_scope_digest(self, conversation_id):
+        """First 16 hex of a keyed tell's delivery scope: the yard, the
+        operator it serves and the served conversation. Never the source
+        name, so a rebinding replays the saved delivery."""
+        return run_asks.digest({'conversation': str(conversation_id), 'yard': str(self.config.get('yard') or ''),
+                                  'yardr_operator': str(self.config.get('yardr_operator') or '')})[:16]
 
     def api_tell(self, request, key_header=None):
         """POST /v1/tell: the yard's notify (YARDR.md, "Outbound"): plain text,
-        the title on its own first line, the link last. The yard tells with
-        no key, so the key is the content's hash and the minute: a tell
-        retried within the minute is sent once, and the same words a minute
-        later are a new message. With [yardr.mail] the operator's unread
-        mail goes whole first, and this notice only when the mail sent does
-        not cover it (OPERATIONS.md, "Whole mail"); ApiUnavailable (503)
-        when that is unfinished."""
+        the title on its own first line, the link last. A tell carrying the
+        core's key (an ask's own tell) goes once under that key scoped by
+        the yard, the operator and the served conversation, a retry, a
+        restart or a source rebinding sending nothing more; a keyed tell
+        not titled as ask wording keeps its raw key, as before; any other
+        tell is keyed by the content's hash and the minute: retried within
+        the minute it is sent once, and the same words a minute later are
+        a new message. On the instance that owns native cards, a tell
+        titled as the core's ask wording gains a last line pointing at
+        /decide (OPERATIONS.md, "New asks in Telegram"). With [yardr.mail]
+        the operator's unread mail goes whole first, and this notice only
+        when the mail sent does not cover it (OPERATIONS.md, "Whole mail");
+        ApiUnavailable (503, with Retry-After when Telegram gave one) when
+        that is unfinished, or when a keyed ask tell proves not sent
+        (Telegram's 429 included) and the yard must try it again."""
         title, text, link = request.get('title') or '', request.get('text') or '', request.get('link') or ''
         if not all(isinstance(v, str) for v in (title, text, link)):
             raise ApiError('title, text and link must be strings')
@@ -3950,9 +4000,42 @@ class Bridge:
 
         def notice(line=None):
             said = body if line is None else body + '\n' + line
-            minute = int(time.time() // 60)
-            digest = hashlib.sha256(json.dumps([conversation['conversation_id'], said, minute]).encode()).hexdigest()
-            return self.publish(dict(conversation=conversation, idempotency_key=given or f'tell:{digest[:32]}', text=said))
+            # The match is on the normalized title: padding changes nothing.
+            name = title.strip()
+            ask_worded = (self._ASK_TELL_SINGLE_RE.fullmatch(name) or self._ASK_TELL_BATCH_RE.fullmatch(name))
+            pointed = (run_asks.owns_cards(self.config) and self.config.get('yardr_operator') and ask_worded)
+            if pointed:
+                said += '\n' + self.ASK_TELL_DECIDE_LINE
+            keyed = isinstance(given, str) and given
+            ask_keyed = bool(ask_worded and keyed)
+            if ask_keyed:
+                # An ask's own tell: the key names the ask, the same on every
+                # retry, and the yard, the operator and the served
+                # conversation scope it to this delivery, so a retry, a
+                # restart or a source rebinding neither repeats nor skips
+                # one. Never content or time.
+                key = 'tell:%s:%s' % (self._tell_scope_digest(conversation['conversation_id']), given)
+            elif keyed:
+                # An ordinary explicit key: the pre-upgrade raw namespace,
+                # so an old receipt still dedups.
+                key = given
+            else:
+                minute = int(time.time() // 60)
+                digest = hashlib.sha256(json.dumps([conversation['conversation_id'], said, minute]).encode()).hexdigest()
+                key = given or f'tell:{digest[:32]}'
+            sending = dict(conversation=conversation, idempotency_key=key, text=said)
+            if pointed:
+                # The pointer quotes the question preview as plain text, even
+                # when it reads as lettered options; the keyboard guard stays
+                # for every other tell.
+                sending['text_options'] = True
+            receipt = self.publish(sending, retake_not_sent=ask_keyed, resend_on_429=ask_keyed)
+            if ask_keyed and resendable(receipt):
+                # Provably nothing went out, under a key the yard retries:
+                # answer 503, not a 200 the yard would file as told.
+                delay = (receipt.get('metadata') or {}).get('retry_after')
+                raise ApiUnavailable(retry_after=delay if type(delay) is int else None)
+            return receipt
         if not self.yard_mail.enabled:
             return self._api_answer(notice(), conversation)
         try:
@@ -4126,7 +4209,7 @@ class Bridge:
         return dict(ok=True, bot=self.account, last_poll_ok=last)
 
     def _publish(self, request, thread_id=None, text_fallback=True, format_fallback_reason=None, resend_on_429=False,
-                 start_by=None, mirror=False, conversation=None):
+                 start_by=None, mirror=False, conversation=None, retake_not_sent=False):
         key, text = request.get('idempotency_key'), request.get('text')
         if not isinstance(key, str) or not key.strip() or len(key) > 256:
             return self.receipt(reason='stable_idempotency_key_required')
@@ -4295,8 +4378,11 @@ class Bridge:
                 receipt = self._deliver_text(text, reply, pending, plain, extra=extra or None)
             if (resend_on_429 and receipt.get('delivered') is False
                     and (receipt.get('metadata') or {}).get('reason') == 'telegram_rejected_not_sent_429'):
-                self._log('yardmail part rate-limited')
+                self._log('send rate-limited, saved as not sent')
+                delay = (receipt.get('metadata') or {}).get('retry_after')
                 receipt = self.not_sent()
+                if type(delay) is int:
+                    receipt['metadata']['retry_after'] = delay
             if rows is not None and receipt.get('delivered') and receipt.get('message_id'):
                 self.store.set_ask_message(ask_ids, int(receipt['message_id']))
             if text_options and receipt.get('delivered'):
@@ -4304,7 +4390,8 @@ class Bridge:
             if receipt.get('delivered') is True and format_fallback_reason is not None:
                 receipt = dict(receipt, format_fallback_reason=format_fallback_reason)
             return receipt
-        return self._reserve_and_deliver(key, request, deliver, mirror=mirror, conversation=conversation)
+        return self._reserve_and_deliver(key, request, deliver, mirror=mirror, conversation=conversation,
+                                         retake_not_sent=retake_not_sent)
 
     # ---- pinned messages: one bot message per slot, edited in place ----
     PIN_SLOT_RE = re.compile(r'[a-z0-9_-]{1,32}')

@@ -1075,7 +1075,14 @@ class SidingTests(BridgeTestCase):
         declaration = declaration.replace('base: http://127.0.0.1:8941', 'base: http://127.0.0.1:' + str(port), 1)
         declared = self.root / 'declared.yaml'
         declared.write_text(declaration)
-        self.client.call('PutSource', [str(declared), declaration, 'pat'])
+        try:
+            self.client.call('PutSource', [str(declared), declaration, 'pat'])
+        except n.RPCRefused:
+            probed = subprocess.run(self.command + ['source', 'add', str(declared)], env=self.env, cwd=self.root,
+                                    capture_output=True, text=True, timeout=20)
+            if 'notify.key' in probed.stderr and 'unknown key' in probed.stderr:
+                self.skipTest('yardr without per-ask tell keys cannot take this source')
+            raise
         credential = self.root / 'synthetic.env'
         credential.write_text('TGBRIDGE_SECRET=CAPABILITY\n')
         credential.chmod(0o600)

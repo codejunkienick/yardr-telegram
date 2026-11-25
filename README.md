@@ -115,15 +115,16 @@ switch fixture after isolated home initialization; it does not skip or use
 an older switch path.
 
 The depot gate and model-switch evidence runs require a compatible core,
-currently the landed source commit `bd7f54b4484321ce618c5224a9e419f3c9b94b55`:
+currently yardr local `6febd1a650fc1930c385ceda3198edfb6273fc91` or later:
 
 ```sh
 TGBRIDGE_TEST_YARDR=/absolute/path/to/yardr nice -n10 sh scripts/test.sh -v
 ```
 
-The path must name an executable build with `crew_handoff_switch v1`.
-Check the verbose results show every `NativeSwitchTests` case ran rather
-than skipped. These cases use an isolated core server/store, SQLite and
+The path must name an executable build with `crew_handoff_switch v1` and
+per-ask tell keys (`notify.key`). Check the verbose results show every
+`NativeSwitchTests` and native ask-tell case ran rather than skipped.
+These cases use an isolated core server/store, SQLite and
 fake Telegram through production polling; they do not use a live yard or
 account. Public CI without that core does not supply the required native
 feature evidence.
@@ -176,7 +177,8 @@ not-supported. See [nudging with your own words](bridge/OPERATIONS.md#nudging-wi
 This is public source for review. The setup steps below require a
 compatible public core release; v0.17.0 rejects the shipped declaration,
 including for hook/chat-only setup. Basic adoption on public `52e22d57` is
-proved in isolation. See the
+proved in isolation against an earlier pack, before the shipped `notify.key`
+mapping. See the
 [public-core gate and capability table](docs/public-readiness.md#public-core-release-gate)
 for the outstanding contracts and required passing check.
 
@@ -185,11 +187,12 @@ for the outstanding contracts and required passing check.
   "Install and launch"), untested with yardr.
 - Python 3.11 or later (`python3 --version`), and curl.
 - yardr with source packs, hook verification, thread commands, explicit
-  `thread.formats` declarations and the yard
-  running (`yardr --version`); configure a loopback hook listener
+  `thread.formats` declarations, per-ask tell keys (`notify.key`) and the
+  yard running (`yardr --version`); configure a loopback hook listener
   (`yardr settings get hook_addr`). Native cards and Markdown need the
   additional capabilities listed in [the compatibility table](docs/public-readiness.md#capabilities-and-grants).
-  Hook-only settings still require a core that accepts the whole pack.
+  Hook-only settings still require a core that accepts the whole pack,
+  `notify.key` included.
   A version number alone does not establish those capabilities.
 - The [yard-local skill setup](yardr/SETUP.md#the-crews-skills-shell),
   `yardr skill add` and crew/group `skills=` are fork-only; skip that section
@@ -351,7 +354,9 @@ With `[yardr] cards = true` (requiring `home` and `operator`), `/decide`
 and the `decide:` prefix are the bridge's own (native cards, YARDR.md).
 Exactly one instance per yard owns these cards; the shared `lock_dir`
 fences a second owner at startup. `cards` is required wherever home and
-operator are both set.
+operator are both set. With `tell` including `asks`, each new ask to the
+operator also arrives as a plain pointer ending `Tap /decide to answer.`
+(no buttons; `/decide` answers).
 Message states, `/nudge`, quota, model switching and mail do not require card ownership.
 Three ready add-ons are
 [telegram-quota](https://github.com/codejunkienick/telegram-quota), which adds

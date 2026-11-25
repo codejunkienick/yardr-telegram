@@ -243,7 +243,10 @@ class InProcessBot:
         pack.mkdir()
         b.stage_pack(b.render_pack(PACK / 'yardr', self.port, source), pack)
         self.env_file = private(yard.root / (source + '.env'), f'TGBRIDGE_SECRET={capability}\n')
-        yard.cli('pack', 'apply', str(pack), '--yes', '--source-env', f'{source}={self.env_file}')
+        applied = yard.run('pack', 'apply', str(pack), '--yes', '--source-env', f'{source}={self.env_file}')
+        if applied.returncode != 0 and 'notify.key' in applied.stderr and 'unknown key' in applied.stderr:
+            case.skipTest('yardr without per-ask tell keys cannot apply this pack')
+        case.assertEqual(applied.returncode, 0, applied.stderr)
         yard.cli('source', 'set', source, 'updates_per_hour=300')
         yard.cli('user', 'identity', 'pat', '--source', source, '--id', str(CHAT))
         hook = private(yard.root / (source + '-hook.secret'), self.hook_secret)

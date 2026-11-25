@@ -85,7 +85,7 @@ key from a failure; a malformed request answers 400 and a bad secret 403.
 | route | body | answer |
 |---|---|---|
 | `POST /v1/send` | `conversation` (default the paired chat) or `topic` (a name), `text`, `key` (else the `Idempotency-Key` header), optional `format` (`plain`, `html`, `markdown`, `auto`; default `auto`), `silent`, `keyboard` (rows, or rows as a JSON string), `text_options`, `reply_to`, `attachments` (host paths), `attachment_kind` | `{delivered, message_id, conversation, reason?, failure_kind?}` |
-| `POST /v1/tell` | `conversation`, `title`, `text`, optional `link` | as `/v1/send`; plain text, the title on its own first line. The yard tells with no key, so the key is the content's hash and the minute: the same tell retried within the minute is sent once. With `[yardr.mail]` the operator's unread mail goes whole first, and the tell answers 503 when that is unfinished, which the yard retries ([Whole mail](bridge/OPERATIONS.md#whole-mail)) |
+| `POST /v1/tell` | `conversation`, `title`, `text`, optional `link` and `key` | as `/v1/send`; plain text, the title on its own first line. An ask's own tell carries the core's key and goes once under it scoped by the yard, the operator and the served conversation, answering 503 when it proves not sent (Telegram's 429 included, with Retry-After when Telegram gave one), which the yard retries; a keyed tell not titled as ask wording reuses its receipt under its raw key across minutes; any other tell is keyed by the content's hash and the minute: the same tell retried within the minute is sent once. With `[yardr.mail]` the operator's unread mail goes whole first, and the tell answers 503 when that is unfinished, which the yard retries ([Whole mail](bridge/OPERATIONS.md#whole-mail)) |
 | `POST /v1/posted` | `key` | `{message_id}` when the ledger holds a confirmed send under the key, else `{}` |
 | `POST /v1/read` | `conversation`, optional `limit` (1-200, default 50) | `{messages: [{id, direction, from, text, at}]}`, oldest first |
 | `POST /v1/react` | `reaction` (`seen`, `done`, `none` or an emoji), optional `message_id`, `conversation` | `{delivered, message_id, reason?}` |
@@ -152,7 +152,9 @@ subscribe: yardr subscribe yardmaster tgbridge --scope all --where type=message 
   lands in the operator's inbox can reach the phone. The yard tells the
   start of one mail, or only who wrote for several; with `[yardr.mail]` the
   bridge reads the mail itself and sends it whole
-  ([Whole mail](bridge/OPERATIONS.md#whole-mail)).
+  ([Whole mail](bridge/OPERATIONS.md#whole-mail)). Each new ask to the user
+  arrives the same way, with a `Tap /decide to answer.` line on the
+  card-owning instance ([New asks in Telegram](bridge/OPERATIONS.md#new-asks-in-telegram)).
 - `hear`: by identity, on the `sender` field: the operator's Telegram id
   is their identity in the source (`yardr user identity`), and a
   delivery carries `speaker=<user>`.

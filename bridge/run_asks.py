@@ -1508,7 +1508,7 @@ def source_declaration(value):
                              'request': {'method': str, 'path': str, 'query': {None: str}, 'body': None},
                              'answer': {'select': [str], 'max': str}}},
             'notify': {'call': str, 'address': {'param': str, 'env': str}, 'title': str, 'text': str,
-                       'link': str, 'image': [str]},
+                       'link': str, 'key': str, 'image': [str]},
             'hear': {'field': str, 'by': str, 'address': {'env': str}, 'from': str, 'subscribe': {None: str}},
             'limits': {'command': [str], 'kinds': {None: str}},
             'thread': {'reply': [str], 'posted': [str], 'read': [str], 'file': [str], 'open': [str],

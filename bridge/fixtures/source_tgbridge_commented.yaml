@@ -150,10 +150,11 @@ calls:
       title:        { type: string, max: 250 }
       text:         { type: string, max: 3500 }
       link:         { type: string, max: 512, optional: true }
+      key:          { type: string, pattern: "^[A-Za-z0-9._:@-]{1,200}$", optional: true }
     request:
       method: POST
       path: /v1/tell
-      body: { conversation: "{conversation}", title: "{title}", text: "{text}", link: "{link}" }
+      body: { conversation: "{conversation}", title: "{title}", text: "{text}", link: "{link}", key: "{key}" }
 check: health
 
 # Telling: what lands in the operator's inbox reaches the chat, in the
@@ -165,6 +166,7 @@ notify:
   title: title
   text: text
   link: link
+  key: key
 
 # ---- what it sends us ----------------------------------------------------
 

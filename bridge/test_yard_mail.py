@@ -292,8 +292,29 @@ class MailTests(MailCase):
         # With an ask among them (core's "N new in yardr"): mails first, then the notice.
         self.yard.mail('third from a', 'a')
         self.tell('2 new in yardr', 'mail from a, sam asks')
-        self.assertEqual(self.texts()[3:], [self.texts()[3], '2 new in yardr\nmail from a, sam asks'])
+        self.assertEqual(self.texts()[3:], [self.texts()[3],
+                                            '2 new in yardr\nmail from a, sam asks\nTap /decide to answer.'])
         self.assertTrue(self.texts()[3].endswith('third from a'))
+
+    def test_an_ask_tell_keeps_its_notice_with_the_decide_line_after_the_mails(self):
+        self.yard.mail('only from a', 'a')
+        answer = self.tell('2 new in yardr', 'mail from a, sam asks')
+        self.assertTrue(answer['delivered'])
+        texts = self.texts()
+        self.assertEqual(len(texts), 2)
+        self.assertRegex(texts[0], r'^mail from a · \d\d:\d\d\nonly from a$')
+        self.assertEqual(texts[1], '2 new in yardr\nmail from a, sam asks\nTap /decide to answer.')
+
+    def test_a_mixed_batch_notice_on_a_non_owner_carries_no_decide_line(self):
+        self.yard.mail('only from a', 'a')
+        self.config.update(yardr_cards=False)
+        self.make_bridge()
+        answer = self.tell('2 new in yardr', 'mail from a, sam asks')
+        self.assertTrue(answer['delivered'])
+        texts = self.texts()
+        self.assertEqual(len(texts), 2)
+        self.assertRegex(texts[0], r'^mail from a · \d\d:\d\d\nonly from a$')
+        self.assertEqual(texts[1], '2 new in yardr\nmail from a, sam asks')
 
     def test_a_failed_mail_keeps_the_notice_though_an_older_one_went(self):
         self.yard.mail('m1', 'a')
@@ -489,17 +510,17 @@ class MailTests(MailCase):
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self.sent[1]['text'], ym.part_text(mail, TZ, 1, 2, ym.render(mail, TZ, b.html_visible_text)[1]))
 
-    def test_telegram_429_on_a_part_is_resent_on_the_retry_only_for_mail(self):
+    def test_telegram_429_on_a_part_is_resent_on_the_retry_for_mail(self):
         mail = self.two_part_mail()
         self.plan = [None, rejected(429, 'Too Many Requests: retry after 3')]
         with self.assertRaises(b.ApiUnavailable):
             self.tell('mail from sam', 'x')
         self.assertTrue(b.resendable(self.store.saved_receipt(f"yardmail:{mail['seq']}:1")))
-        self.assertIn('yardmail part rate-limited', self.logs)
+        self.assertIn('send rate-limited, saved as not sent', self.logs)
         self.tell('mail from sam', 'x')
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(sum(1 for line in self.logs if 'rate-limited' in line), 1)
-        # Every other send keeps the 429 as its final answer.
+        # Every other send keeps the 429 as its final answer, except an ask's own tell.
         self.plan = [rejected(429, 'Too Many Requests: retry after 3')]
         answer = self.bridge.api_send(dict(text='plain', key='other'))
         self.assertEqual((answer['delivered'], answer['reason']), (False, 'telegram_rejected_not_sent_429'))
@@ -596,9 +617,9 @@ class MailTests(MailCase):
         answers, errors = [], []
 
         class Gone(b._callback_handler(self.bridge)):
-            def _answer(handler, status, value):
+            def _answer(handler, status, value, headers=None):
                 answers.append(status)
-                super()._answer(status, value)
+                super()._answer(status, value, headers)
 
             def do_POST(handler):
                 class Closed(io.BufferedIOBase):

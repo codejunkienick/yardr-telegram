@@ -1,18 +1,25 @@
 """The yardr side of the bridge (YARDR.md): the inbound body posted to the
 yard's hook, the message log behind /v1/read, the yard API on the loopback
-port, auto_format and valid_hook_url. Fake transports only; the API runs on
-a real loopback server picked by testports."""
+port, auto_format and valid_hook_url. Fake transports only, except one test
+driving a real isolated core; the API runs on a real loopback server picked
+by testports."""
 import datetime
+import http.client
 import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge as b  # noqa: E402
+import testyardr  # noqa: E402
 from test_bridge import BridgeTestCase  # noqa: E402
 
 HOOK_URL = 'http://127.0.0.1:8797/hooks/tgbridge'
@@ -714,7 +721,7 @@ if __name__ == '__main__':
 
 
 class TellTests(BridgeTestCase):
-    """POST /v1/tell, the yard's notify: no key from the yard, plain text."""
+    """POST /v1/tell, the yard's notify: an ask's own tell carries its key; plain text."""
 
     def setUp(self):
         super().setUp()
@@ -761,6 +768,426 @@ class TellTests(BridgeTestCase):
                 self.assertEqual(status, 400)
                 self.assertIn('error', answer)
         self.assertEqual(self.telegram_calls(), [])
+
+    def with_owner(self, cards=True, operator='pat'):
+        """Rebuild the bridge as the yard's card owner (or not), and serve it."""
+        home = Path(self.tmp.name) / 'yard'
+        home.mkdir(exist_ok=True)
+        self.config.update(yardr_home=str(home), yardr_operator=operator, yardr_cards=cards)
+        self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY', request=self.transport,
+                               request_multipart=self.multipart_transport,
+                               request_download=self.download_transport)
+        self.port = self.start_callback_server()
+
+    def test_an_ask_tell_on_the_card_owner_points_at_decide(self):
+        self.with_owner()
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks',
+                                                    text='Lower the test limit?'))
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(method, 'sendMessage')
+        self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?\nTap /decide to answer.')
+        self.assertNotIn('parse_mode', body)
+
+    def test_a_batch_tell_with_an_ask_points_at_decide_and_mail_only_does_not(self):
+        self.with_owner()
+        for title, text, pointed in (('3 new in yardr', 'sam asks (2), mail from kim', True),
+                                     ('3 new in your yardr inbox', 'mail from sam (2), mail from kim', False),
+                                     ('mail from kim', 'hello', False)):
+            with self.subTest(title=title):
+                before = len(self.telegram_calls())
+                status, answer = self.call('/v1/tell', dict(conversation='123', title=title, text=text))
+                self.assertEqual(status, 200)
+                self.assertTrue(answer['delivered'])
+                [(method, body)] = self.telegram_calls()[before:]
+                expected = f'{title}\n{text}' + ('\nTap /decide to answer.' if pointed else '')
+                self.assertEqual(body['text'], expected)
+
+    def test_an_ask_tell_off_the_card_owner_is_sent_unchanged(self):
+        cases = (dict(cards=False, operator='pat', text='first question?'),
+                 dict(cards=True, operator=None, text='second question?'))
+        for case in cases:
+            with self.subTest(cards=case['cards'], operator=case['operator']):
+                self.with_owner(cards=case['cards'], operator=case['operator'])
+                status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks',
+                                                            text=case['text']))
+                self.assertEqual(status, 200)
+                self.assertTrue(answer['delivered'])
+                self.assertEqual(self.telegram_calls()[-1][1]['text'], 'yardmaster asks\n' + case['text'])
+
+    def test_a_lost_reply_replays_a_keyed_ask_tell_once_across_minutes(self):
+        self.with_owner()
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?',
+                    key='ask:' + 'cd34' * 8)
+        with patch.object(b.time, 'time', return_value=6000.0):
+            first = self.call('/v1/tell', tell)
+            again = self.call('/v1/tell', tell)
+        with patch.object(b.time, 'time', return_value=6060.0):
+            later = self.call('/v1/tell', tell)
+        self.assertEqual([r[0] for r in (first, again, later)], [200, 200, 200])
+        self.assertTrue(all(r[1]['delivered'] for r in (first, again, later)))
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?\nTap /decide to answer.')
+
+    def test_a_keyed_ask_tell_is_keyed_by_the_scope_and_the_key(self):
+        self.with_owner()
+        key = 'ask:' + '78ab' * 8
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?', key=key)
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        self.assertTrue(self.store.saved_receipt(ledger)['delivered'])
+        self.assertIsNone(self.store.saved_receipt(key))
+        # Another recipient (the same ledger, a new scope) neither conflicts nor skips.
+        self.with_owner(operator='kim')
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(len(self.telegram_calls()), 2)
+        # Back on the old scope the retry replays.
+        self.with_owner(operator='pat')
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(len(self.telegram_calls()), 2)
+
+    def test_a_source_rebinding_replays_a_keyed_ask_tell(self):
+        self.with_owner()
+        key = 'ask:' + '90cd' * 8
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?', key=key)
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        # A restart with only the source name changed replays the saved delivery.
+        self.config.update(yardr_source='tgbridge2')
+        self.with_owner()
+        self.assertEqual(self.bridge._tell_scope_digest('123'), ledger.split(':')[1])
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(len(self.telegram_calls()), 1)
+
+    def test_the_same_ask_key_in_another_served_conversation_sends_again(self):
+        self.with_owner()
+        self.with_topic()
+        key = 'ask:' + '12ef' * 8
+        tell = dict(title='yardmaster asks', text='Lower the test limit?', key=key)
+        status, answer = self.call('/v1/tell', dict(tell, conversation='123'))
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        status, answer = self.call('/v1/tell', dict(tell, conversation=f'123:topic:{OPS}'))
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        sent = self.telegram_calls()
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[0][1]['text'], sent[1][1]['text'])
+        self.assertEqual(sent[1][1]['message_thread_id'], OPS)
+
+    def test_a_multiline_ask_question_still_gets_its_pointer(self):
+        self.with_owner()
+        question = 'Which window?\nA: Morning\nB: Afternoon'
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks', text=question,
+                                                    key='ask:' + 'ef56' * 8))
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'yardmaster asks\n' + question + '\nTap /decide to answer.')
+        # The keyboard guard stays for every other tell.
+        self.with_owner(cards=False)
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks', text=question))
+        self.assertEqual(status, 200)
+        self.assertEqual(answer['reason'], 'options_need_keyboard')
+        self.assertEqual(len(self.telegram_calls()), 1)
+
+    def test_a_padded_ask_title_points_at_decide_like_the_bare_one(self):
+        self.with_owner()
+        status, answer = self.call('/v1/tell', dict(conversation='123', title=' yardmaster asks ',
+                                                    text='Lower the test limit?'))
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?\nTap /decide to answer.')
+
+    def test_a_crash_between_reserve_and_finish_leaves_an_ask_tell_ambiguous(self):
+        self.with_owner()
+        key = 'ask:' + 'ab12' * 8
+        said = 'yardmaster asks\nLower the test limit?\nTap /decide to answer.'
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        request = dict(conversation=self.bridge.conversation, idempotency_key=ledger, text=said, text_options=True)
+        self.assertIsNone(self.store.reserve(ledger, b.Bridge.delivery_fingerprint(request),
+                                             self.bridge.receipt(reason=b.yard_mail.AMBIGUOUS)))
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks',
+                                                    text='Lower the test limit?', key=key))
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, dict(delivered=False, conversation='123',
+                                      reason='ambiguous_delivery_requires_manual_reconciliation',
+                                      failure_kind='permanent'))
+        self.assertEqual(self.telegram_calls(), [])
+
+    def cut_telegram(self):
+        """Fail every Telegram attempt before a byte leaves, without waiting."""
+        def cut(*args, **kwargs):
+            raise b.RequestNotSent('network request not sent', 7, 'connect')
+        self.bridge.request, self.bridge.sleep = cut, lambda seconds: None
+
+    def test_a_keyed_pointer_proving_not_sent_answers_503_and_its_retry_sends(self):
+        self.with_owner()
+        self.cut_telegram()
+        key = 'ask:' + '34cd' * 8
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?', key=key)
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual((status, answer), (503, dict(error='tell unfinished; retry')))
+        self.assertEqual(self.telegram_calls(), [])
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        saved = self.store.saved_receipt(ledger)
+        self.assertTrue(b.resendable(saved))
+        # The yard's retry under the same ask key sends the pointer once.
+        self.bridge.request = self.transport
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?\nTap /decide to answer.')
+
+    def post_tell(self, tell):
+        """One /v1/tell POST, returning (status, answer, retry_after header or None)."""
+        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        try:
+            connection.request('POST', '/v1/tell', json.dumps(tell),
+                               {'Authorization': 'Bearer CAPABILITY', 'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read()), response.getheader('Retry-After')
+        finally:
+            connection.close()
+
+    def test_a_keyed_pointer_rate_limited_answers_503_and_its_retry_sends_once(self):
+        self.with_owner()
+        key = 'ask:' + 'ab34' * 8
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?', key=key)
+        def limited(url, body, *args, **kwargs):
+            return 429, dict(ok=False, error_code=429, description='Too Many Requests: retry after 3',
+                             parameters=dict(retry_after=3))
+        self.bridge.request = limited
+        status, answer, retry_after = self.post_tell(tell)
+        self.assertEqual((status, answer), (503, dict(error='tell unfinished; retry')))
+        self.assertEqual(retry_after, '3')
+        self.assertEqual(self.telegram_calls(), [])
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        saved = self.store.saved_receipt(ledger)
+        self.assertTrue(b.resendable(saved))
+        # The yard's retry under the same ask key sends the pointer once.
+        self.bridge.request = self.transport
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?\nTap /decide to answer.')
+        # Without Telegram's delay the 503 carries no Retry-After.
+        key2 = 'ask:' + 'cd56' * 8
+        tell2 = dict(conversation='123', title='yardmaster asks', text='Raise the test limit?', key=key2)
+        self.bridge.request = lambda *args, **kwargs: (429, dict(ok=False, error_code=429))
+        status, answer, retry_after = self.post_tell(tell2)
+        self.assertEqual(status, 503)
+        self.assertIsNone(retry_after)
+        self.bridge.request = self.transport
+        status, answer = self.call('/v1/tell', tell2)
+        self.assertTrue(answer['delivered'])
+        self.assertEqual(len(self.telegram_calls()), 2)
+        # Any other tell keeps the 429 as its final answer.
+        self.bridge.request = limited
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='mail from kim', text='hello'))
+        self.assertEqual(status, 200)
+        self.assertEqual(answer['reason'], 'telegram_rejected_not_sent_429')
+        self.assertEqual(len(self.telegram_calls()), 2)
+
+    def test_a_retry_with_changed_words_after_a_proven_not_sent_delivers(self):
+        self.with_owner()
+        self.cut_telegram()
+        key = 'ask:' + '56ef' * 8
+        prefixed = ('The 20th message this hour, and the last: what comes next waits in yardr inbox.\n'
+                    'Lower the test limit?')
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks', text=prefixed,
+                                                    key=key))
+        self.assertEqual(status, 503)
+        # The hour rolled off and the retry lost the prefix: the same ask still delivers.
+        self.bridge.request = self.transport
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks',
+                                                    text='Lower the test limit?', key=key))
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?\nTap /decide to answer.')
+
+    def test_a_retry_with_changed_words_after_an_ambiguous_ask_tell_conflicts(self):
+        self.with_owner()
+        key = 'ask:' + '7890' * 8
+        ledger = 'tell:%s:%s' % (self.bridge._tell_scope_digest('123'), key)
+        said = 'yardmaster asks\nLower the test limit?\nTap /decide to answer.'
+        request = dict(conversation=self.bridge.conversation, idempotency_key=ledger, text=said, text_options=True)
+        self.assertIsNone(self.store.reserve(ledger, b.Bridge.delivery_fingerprint(request),
+                                             self.bridge.receipt(reason=b.yard_mail.AMBIGUOUS)))
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='yardmaster asks',
+                                                    text='Raise the test limit?', key=key))
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, dict(delivered=False, conversation='123', reason='idempotency_key_conflict',
+                                      failure_kind='permanent'))
+        self.assertEqual(self.telegram_calls(), [])
+
+    def test_an_ordinary_keyed_tell_replays_its_pre_upgrade_receipt(self):
+        key = 'm-1'
+        said = 'mail from kim\nhello'
+        request = dict(conversation=self.bridge.conversation, idempotency_key=key, text=said)
+        self.assertIsNone(self.store.reserve(key, b.Bridge.delivery_fingerprint(request),
+                                             self.bridge.receipt(reason=b.yard_mail.AMBIGUOUS)))
+        self.store.finish(key, self.bridge.receipt(True, message_id='71'))
+        status, answer = self.call('/v1/tell', dict(conversation='123', title='mail from kim', text='hello',
+                                                    key=key))
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, dict(delivered=True, message_id='71', conversation='123'))
+        self.assertEqual(self.telegram_calls(), [])
+
+    def test_a_keyed_ask_tell_off_the_card_owner_proving_not_sent_answers_503(self):
+        self.with_owner(cards=False)
+        self.cut_telegram()
+        key = 'ask:' + '90ab' * 8
+        tell = dict(conversation='123', title='yardmaster asks', text='Lower the test limit?', key=key)
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual((status, answer), (503, dict(error='tell unfinished; retry')))
+        self.bridge.request = self.transport
+        status, answer = self.call('/v1/tell', tell)
+        self.assertEqual(status, 200)
+        self.assertTrue(answer['delivered'])
+        [(method, body)] = self.telegram_calls()
+        self.assertEqual(body['text'], 'yardmaster asks\nLower the test limit?')
+
+    def test_an_ask_tell_to_an_unserved_topic_is_refused_and_sends_nothing(self):
+        self.with_owner()
+        status, answer = self.call('/v1/tell', dict(conversation='123:topic:99', title='yardmaster asks',
+                                                    text='Lower the test limit?'))
+        self.assertEqual(status, 400)
+        self.assertIn('error', answer)
+        self.assertEqual(self.telegram_calls(), [])
+
+
+class RealCoreAskTellTests(BridgeTestCase):
+    """Two asks of a real isolated core: each its own keyed tell through the
+    real declaration, one pointer each, and a retry after a lost response, a
+    minute later or past a bridge restart, sends nothing more."""
+
+    call = YardApiTests.call
+    telegram_calls = YardApiTests.telegram_calls
+
+    def test_real_core_asks_tell_once_each_and_replay_after_restart_sends_nothing(self):
+        binary = testyardr.binary()
+        if binary is None:
+            self.skipTest('yardr required for the isolated ask tells')
+        with tempfile.TemporaryDirectory(prefix='yat-', dir='/tmp') as tmp:
+            root = Path(tmp)
+            server, home, command, env = testyardr.start(root, binary)
+
+            def cli(*args, stdin=None):
+                result = subprocess.run(command + list(args), env=env, cwd=root, input=stdin,
+                                        text=True, capture_output=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                return result.stdout
+
+            daemon = None
+            try:
+                cli('init', '--harness', 'claude')
+                cli('settings', 'set', 'operator', 'pat')
+                self.config.update(yardr_home=str(home), yardr_operator='pat', yardr_cards=True)
+                self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY', request=self.transport,
+                                       request_multipart=self.multipart_transport,
+                                       request_download=self.download_transport)
+                self.port = self.start_callback_server()
+                tells = []
+                inner = self.bridge.api_tell
+
+                def record(request, key_header=None):
+                    tells.append(dict(request))
+                    return inner(request, key_header)
+
+                self.bridge.api_tell = record
+                pack = Path(__file__).resolve().parent.parent / 'yardr'
+                declaration = (pack / 'tgbridge.yaml').read_text().replace(
+                    'http://127.0.0.1:8941', f'http://127.0.0.1:{self.port}')
+                (root / 'tgbridge.yaml').write_text(declaration)
+                shutil.copytree(pack / 'tgbridge', root / 'tgbridge')
+                added = subprocess.run(command + ['source', 'add', str(root / 'tgbridge.yaml')], env=env, cwd=root,
+                                       text=True, capture_output=True, timeout=60)
+                if added.returncode != 0 and 'notify.key' in added.stderr and 'unknown key' in added.stderr:
+                    self.skipTest('yardr without per-ask tell keys cannot drive this test')
+                self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+                cli('source', 'key', 'tgbridge', stdin='TGBRIDGE_SECRET=CAPABILITY\n')
+                cli('user', 'key', 'pat', 'tgbridge', stdin='TGBRIDGE_CONVERSATION=123\n')
+                cli('user', 'set', 'pat', 'notify=tgbridge', 'tell=asks')
+                bead = cli('bead', 'create', 'two decisions').strip().split()[-1]
+                questions = ('Lower the test limit?', 'Raise the test limit?')
+                for question in questions:
+                    cli('bead', 'ask', bead, question, '--to', 'pat',
+                        '--context', 'first line', '--context', 'second line')
+                log = (root / 'daemon.log').open('w')
+                daemon = subprocess.Popen(command + ['daemon'], env=env, cwd=root,
+                                          stdout=log, stderr=subprocess.STDOUT)
+                deadline = time.monotonic() + 90
+                while len(tells) < 2 and time.monotonic() < deadline and daemon.poll() is None:
+                    time.sleep(0.2)
+                log.close()
+                tail = '\n'.join((root / 'daemon.log').read_text().splitlines()[-15:])
+                self.assertIsNone(daemon.poll(), 'daemon exited before telling:\n' + tail)
+                self.assertEqual(len(tells), 2, 'two keyed tells within 90 s:\n' + tail)
+                keys = []
+                for tell, question in zip(tells, questions):
+                    self.assertEqual(tell['conversation'], '123')
+                    self.assertEqual(tell['title'], 'pat asks')
+                    self.assertEqual(tell['text'], question)
+                    self.assertRegex(tell['key'], r'\Aask:[0-9a-f]{32}\Z')
+                    keys.append(tell['key'])
+                self.assertEqual(len(set(keys)), 2)
+                sent = self.telegram_calls()
+                self.assertEqual(len(sent), 2)
+                for (_, body), question in zip(sent, questions):
+                    self.assertEqual(body['text'], f'pat asks\n{question}\nTap /decide to answer.')
+                    self.assertNotIn('parse_mode', body)
+                print('Real core', Path(binary).name, 'ask tells: one pointer per ask, keys',
+                      *[key[:12] + '…' for key in keys])
+                # A snapshot: the recorder keeps appending on every replay below.
+                told = list(tells)
+                # A retry after a lost response, in the next minute, sends nothing more.
+                with patch.object(b.time, 'time', return_value=6000.0):
+                    for tell in told:
+                        status, answer = self.call('/v1/tell', tell)
+                        self.assertEqual(status, 200)
+                        self.assertTrue(answer['delivered'])
+                with patch.object(b.time, 'time', return_value=6060.0):
+                    for tell in told:
+                        status, answer = self.call('/v1/tell', tell)
+                        self.assertEqual(status, 200)
+                        self.assertTrue(answer['delivered'])
+                self.assertEqual(len(self.telegram_calls()), 2)
+                # A restart between the send and the retry: the same ledger, a new bridge.
+                self.store = b.Store(self.path, 10)
+                self.bridge = b.Bridge(self.config, self.store, 'SECRET', 'CAPABILITY', request=self.transport,
+                                       request_multipart=self.multipart_transport,
+                                       request_download=self.download_transport)
+                self.port = self.start_callback_server()
+                for tell in told:
+                    status, answer = self.call('/v1/tell', tell)
+                    self.assertEqual(status, 200)
+                    self.assertTrue(answer['delivered'])
+                self.assertEqual(len(self.telegram_calls()), 2)
+            finally:
+                if daemon is not None and daemon.poll() is None:
+                    daemon.terminate()
+                    try:
+                        daemon.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        daemon.kill()
+                        daemon.wait(timeout=10)
+                testyardr.stop(server)
 
 
 class RemovedCliCompatTests(unittest.TestCase):

@@ -394,7 +394,7 @@ object.
 | route | body | answer |
 | --- | --- | --- |
 | `POST /v1/send` | `text`; `key`, else the `Idempotency-Key` header (required); `conversation` (an id) or `topic` (a name), default the paired chat; `format` (`auto`, `plain`, `html` or `markdown`; default `auto`); `silent`; `keyboard` (rows, or rows as a JSON string); `text_options`; `reply_to`; `attachments` (a host path, or a list of them); `attachment_kind` | `{delivered, message_id, conversation}`, with `reason` and `failure_kind` when not delivered |
-| `POST /v1/tell` | `title`, `text`, optional `link`, `conversation` or `topic` | as `/v1/send`; 503 when whole mail is unfinished ("Whole mail") |
+| `POST /v1/tell` | `title`, `text`, optional `link` and `key` (else the `Idempotency-Key` header), `conversation` or `topic` | as `/v1/send`; 503 when whole mail is unfinished ("Whole mail") or a keyed pointer proves not sent, Telegram's 429 included ("New asks in Telegram") |
 | `POST /v1/posted` | `key`, else the `Idempotency-Key` header | `{"message_id": "<id>"}` when the ledger holds a confirmed send under the key, else `{}` |
 | `POST /v1/read` | `conversation` or `topic`; optional `limit`, 1-200, default 50 | `{"messages": [{id, direction, from, text, at}, ...]}`, oldest first ("The message log") |
 | `POST /v1/react` | `reaction`; optional `message_id`, or `topic` or `conversation`; optional `key` | `{delivered, message_id}`, with `reason` and `failure_kind` when not delivered ("Reactions") |
@@ -416,11 +416,13 @@ object.
   path; **404** `{"error": "not found"}` for any other path.
 - **500** `{"error": "delivery unconfirmed"}` for anything unexpected: treat
   the send as ambiguous and never resend it blind ("Delivery recovery").
-- **503** `{"error": "tell unfinished; retry"}`, from `/v1/tell` only, with
-  `[yardr.mail]`: a part of a mail was not sent, the time to start one
+- **503** `{"error": "tell unfinished; retry"}`, from `/v1/tell` only: with
+  `[yardr.mail]` a part of a mail was not sent, the time to start one
   had passed, a mail could not be rendered, the yard did not answer the
-  mail read, or a sender's mail is not yet read back to the window's start.
-  The yard tries the tell again and the ledger resumes it ("Whole mail"). An answer the caller is no longer there to read logs
+  mail read, or a sender's mail is not yet read back to the window's start;
+  or an ask's own tell proved not sent, Telegram's 429 included, with
+  Retry-After when Telegram gave one ("New asks in Telegram").
+  The yard tries the tell again and the ledger resumes it. An answer the caller is no longer there to read logs
   `yard api answer not written`; what was sent stands in the ledger.
 
 `silent`, `text_options` and `unpin` read `true`, `"true"`, `"1"` or `1` as
@@ -434,12 +436,15 @@ as no topic, so `conversation`, else the paired chat, applies.
 `/v1/tell` is the yard's `notify`: plain text, the title on its own first
 line, then the text, then the link, each stripped, at most 250, 3500 and
 512 characters. Its key is the request's `key`, else its `Idempotency-Key`
-header, else `tell:` and 32 hex characters of the SHA-256 of the
-conversation, the text and the minute, so the same tell retried within the
-minute is sent once and the same words a minute later are a new message
-(YARDR.md: the yard tells with no key). A key starting `yardmail:` is the
-bridge's own ("Whole mail"): `/v1/send`, `/v1/tell` and `send
---idempotency-key` refuse it with a 400 or a usage error.
+header, scoped by the yard, the operator and the served conversation: an
+ask's own tell goes once under it, and a retry, a restart or a source
+rebinding sends nothing more ("New asks in Telegram"). A keyed tell not
+titled as ask wording keeps its raw key, as before. Without one the key
+is `tell:` and 32 hex characters of the SHA-256 of the conversation, the
+text and the minute, so the same tell retried within the minute is sent
+once and the same words a minute later are a new message. A key starting
+`yardmail:` is the bridge's own ("Whole mail"): `/v1/send`, `/v1/tell`
+and `send --idempotency-key` refuse it with a 400 or a usage error.
 
 ### Whole mail
 
@@ -487,8 +492,9 @@ unread mail whole:
    Telegram would refuse) is a 503.
 4. Each part goes once under the ledger key `yardmail:<seq>:<i>`; a part
    already sent is never sent again (nor logged again). A part not sent
-   (offline, or Telegram's 429, which only mail treats as not sent) stops
-   the tell with a 503; the yard's retry resumes at that part. A part whose
+   (offline, or Telegram's 429, which mail and an ask's own tell treat as
+   not sent) stops the tell with a 503; the yard's retry resumes at that
+   part. A part whose
    send is unconfirmed is never resent; the next part says `· an earlier
    part is unconfirmed`. A part Telegram refuses ends that mail. No part
    starts after 7 s from the tell's start (the yard waits 10 s), checked
@@ -3872,6 +3878,55 @@ counts toward Telegram's 100). The core needs `UserAsks` (public Calls
 contract) beside the ordinary-card baseline; no new grant, setting, table
 migration or service. The bridge adds one SQLite table, `decide_ids`, mapping
 a button id to its bead and ask.
+
+## New asks in Telegram
+
+Each new ask to the user also arrives on its own, as a plain pointer with
+no buttons: `/decide` stays the place to answer. The core queues the push
+in the same store write as the ask's `noted` event, for local, stage,
+claim and linked-yard asks, and the daemon tells each ask as its own
+message through the user's `notify` source, ahead of the mail and
+notifications due beside it, after a 20 s grace. An ask answered,
+declined, put aside or taken back meanwhile is dropped and never told.
+Nothing is queued while the user's `tell` leaves asks out, so there is
+no backfill: an ask filed before asks were turned on gets no pointer.
+The core tells nothing older than 6 hours, and holds each user to 20
+messages an hour, shared with mail: the twentieth says it is the last
+of the hour, and what is over waits.
+
+The pointer goes to the user's `TGBRIDGE_CONVERSATION`: General, a
+bridge-configured recorded topic, or a served topic the user created. A
+conversation the bridge does not serve is refused with a 400, and the
+core ends that push as refused, with no retry. On the instance that owns
+native cards (`[yardr] cards = true`), a tell titled as the core's ask
+wording — one ask (`<asker> asks`), or a pass with an ask among its
+items (`<n> new in yardr`) — gains one last line, `Tap /decide to
+answer.`, after the body and after any whole-mail reason line. Every
+other tell, and every tell on a non-owner instance, is sent byte for
+byte as before.
+
+To turn the pointers on, the user (or the operator, for their own user)
+runs `yardr user set <operator> tell=<parts>,asks`; an agent proposes it
+as a run ask, never as its own change. To turn them off, the same
+command with a `tell` naming the parts to keep, e.g. `yardr user set
+<operator> tell=mail,notifications`. `tell=` with nothing after it is
+all three parts again, so it turns nothing off. No new setting, table,
+grant or service.
+
+Each ask's tell carries the core's key (`ask:` with 32 hex characters,
+the same on every retry), and the bridge sends it once under that key
+scoped by the yard, the operator and the served conversation — never the
+source name, the words or the minute: a daemon that dies between the
+bridge's answer and recording it tells again, and the retry — in a later
+minute, past a restart, or after a source rebinding — sends nothing
+more. The same ask told to another served conversation is a new pointer
+there. When every Telegram attempt fails before a byte leaves, or
+Telegram answers 429, the tell answers 503 and the yard retries it under
+the same ask key, with Retry-After when Telegram gave one; a retry whose
+words changed meanwhile (the hour's last-message line rolling off) still
+delivers. A send left unconfirmed keeps its ambiguous receipt instead,
+and a changed retry of that conflicts. Mail and notification tells carry
+no key and keep the minute rule above.
 
 ## Decision report on tap (`📄 Report`)
 

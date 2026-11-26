@@ -44,12 +44,14 @@ automatic replay. See [operation and rollback](../bridge/OPERATIONS.md#native-ge
 
 Native test setup switches the operator setting off and on as the actual
 operator in an isolated home. It proves neither remote bootstrap nor any
-live setting write. Source is not
-installed, activated, published or live. The existing **public-source / not
-installable-release** gate remains: v0.17.0 lacks merged prerequisites and
-cannot inherit a capability claim from either main-branch pin. Installation,
-activation/authority, rollback and harmless live `version` usability checks
-belong to the instance operator after separate review.
+live setting write. Source is installed and live only in the author's yard
+(bridge release `73e3d85`, deployed 2026-11-26 on installed yardr
+`1f3e8ecd5357`). It is not an installable public release, and activation in
+any other instance stays that operator's separate action. The existing
+**public-source / not installable-release** gate remains: v0.17.0 lacks merged
+prerequisites and cannot inherit a capability claim from either main-branch
+pin. Installation, activation/authority, rollback and harmless live `version`
+usability checks belong to the instance operator after separate review.
 
 For boundary fixtures, set `TGBRIDGE_TEST_YARDR_SOURCE` to the absolute,
 unchanged source of the named candidate. Tests build a separate offline

@@ -1,5 +1,7 @@
 # yardr-telegram
 
+**Working in the author's yard (2026-11-26).** The bridge is deployed to both of the author's yard bridges (release `73e3d85`) and in daily use there, against the installed yardr `1f3e8ecd5357`.
+
 **Public source, not an installable release (2026-11-14).** Basic pack
 adoption is proved offline on public core
 [`52e22d57`](https://github.com/yardr-dev/yardr/commit/52e22d570cfff58bae725e6df53c047bd63ff4a6).

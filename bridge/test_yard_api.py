@@ -1269,8 +1269,9 @@ class RealCoreAskTellTests(BridgeTestCase):
                 inner = self.bridge.api_tell
 
                 def record(request, key_header=None):
+                    result = inner(request, key_header)
                     tells.append(dict(request))
-                    return inner(request, key_header)
+                    return result
 
                 self.bridge.api_tell = record
                 pack = Path(__file__).resolve().parent.parent / 'yardr'

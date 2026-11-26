@@ -537,6 +537,7 @@ def general_bundle(config, bead, ask, proposal):
 GROUP_ROWS = (['group', 'add'], ['group', 'set'])
 # Upstream's stored forms: group add's --set keys and group set's words, each in the order the yard writes them.
 GROUP_KEYS = {'add': ('cmd', 'dir', 'kind', 'args', 'prompt', 'worktrees'), 'set': ('prompt', 'cmd', 'preset', 'model', 'effort')}
+UPSTREAM_GROUP_SET_KEYS = ('prompt', 'cmd', 'preset', 'effort', 'model')
 # The settings group add's card shows for each runner; any other one would be written unseen.
 GROUP_SHOWN = {'herdr': {'kind', 'args', 'prompt', 'worktrees'}, 'exec': {'cmd', 'dir', 'prompt', 'worktrees'}}
 # What group set's weight names of each setting it carries (strongChanged); an effort alone weighs nothing.
@@ -644,7 +645,11 @@ class GroupCard:
             found = self.match(r'Each session runs sh -c with ("(?:[^"\\\n]|\\.)*") now\.|It runs no command now\.')
             self.was['cmd'] = self.unquote(found[1]) if found[1] else None
             self.exact(f'Each session will run sh -c with "{sets["cmd"]}", as its program stands when the session starts.')
-        if 'model' in sets:
+        legacy_model = 'model' in sets and bool(re.fullmatch(
+            r"Each session starts with (?:the model [^\n]+|the agent's own default model) now\.", self.peek() or ''))
+        if legacy_model:
+            if set(sets) == {'model'} or list(sets) != [key for key in GROUP_KEYS['set'] if key in sets]:
+                self.fail()
             found = self.match(r"Each session starts with (?:the model ([^\n]+)|the agent's own default model) now\.")
             self.was['model'] = found[1]
             self.exact(f"Each session will start with the model {sets['model']}.")
@@ -655,6 +660,12 @@ class GroupCard:
             found = self.match(r"Each session starts at the effort ([^\n]+) now\.|It sets no effort now, so each session starts at its harness's own\.")
             self.was['effort'] = found[1]
             self.match(rf"Each session will start at the effort {re.escape(sets['effort'])}: {GROUP_FLAGS} are added after its other flags\.")
+        if 'model' in sets and not legacy_model:
+            if list(sets) != [key for key in UPSTREAM_GROUP_SET_KEYS if key in sets]:
+                self.fail()
+            found = self.match(r"Each session starts with model ([^\n]+) now\.|It sets no model now, so each session starts with its harness's own default\.")
+            self.was['model'] = found[1]
+            self.exact(f"Each session will start with model {sets['model']}.")
         if 'preset' in sets:
             found = self.match(rf'It starts {GROUP_KIND} \([^()\n]+\) agents with ({GROUP_FLAGS})(?: \(the [^()\n]+ preset\))? now\.')
             # The preset is written as its flags, so the back restores those (args).
@@ -688,12 +699,14 @@ def group_words(argv):
     order = GROUP_KEYS[op]
     for word in rest:
         key, sep, value = word.partition('=')
-        if (not sep or key not in order or not GROUP_WORD.fullmatch(value)
-                or any(order.index(key) <= order.index(k) for k in sets)):
+        if not sep or key not in order or key in sets or not GROUP_WORD.fullmatch(value):
             raise refuse
         sets[key] = value
+    orders = (order, UPSTREAM_GROUP_SET_KEYS) if op == 'set' else (order,)
+    if all(list(sets) != [key for key in candidate if key in sets] for candidate in orders):
+        raise refuse
     if (op == 'add' and (runner not in GROUP_SHOWN or set(sets) - GROUP_SHOWN[runner] or (runner == 'exec') != ('cmd' in sets))
-            or op == 'set' and set(sets) in (set(), {'model'})
+            or op == 'set' and not sets
             or any(key in sets and (not sets[key].startswith('/') or os.path.normpath(sets[key]) != sets[key])
                    for key in ('dir', 'worktrees', 'prompt'))):
         raise refuse
@@ -2099,11 +2112,13 @@ def validate_depot_pack(ask):
     objects, payload = set(), 0
     for obj in plan.get('objects', []):
         if (not isinstance(obj, dict) or set(obj) - {'kind', 'name', 'action', 'changes', 'edited', 'runs', 'keeps', 'shadows', 'env',
-                                                  'file_old_sha256', 'file_new_sha256', 'text', 'diff'}
+                                                  'file_old_sha256', 'file_new_sha256', 'text', 'diff', 'stage_file'}
                 or not isinstance(obj.get('kind'), str) or obj['kind'] not in DEPOT_KINDS
                 or not isinstance(obj.get('action'), str) or obj['action'] not in DEPOT_ACTIONS):
             raise NativeError(fail)
         name = pack_line(obj.get('name'), 'pack object name')
+        if 'stage_file' in obj and (obj['stage_file'] is not True or obj['kind'] != 'file' or obj.get('runs')):
+            raise NativeError(fail)
         if obj['action'] == 'takes' and obj['kind'] != 'group':
             raise NativeError(fail)
         ident = obj['kind'], name

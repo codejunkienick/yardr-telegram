@@ -1050,7 +1050,8 @@ class NativeTests(NativeCase):
         self.assertEqual(self.store.saved_delivery(old_key), (old_fingerprint, old_receipt))
         for kind in ('first', 'first_public_main', 'source_replace', 'source_replace_public_main',
                      'matrix_first', 'matrix_first_public_main', 'matrix_change', 'matrix_change_public_main',
-                     'matrix_replace', 'matrix_replace_public_main'):
+                     'matrix_replace', 'matrix_replace_public_main',
+                     'matrix_first_schema38', 'matrix_change_schema38', 'matrix_replace_schema38'):
             with self.subTest(genuine_depot=kind):
                 ask = depot_proposal(kind)
                 self.reset_depot(ask)
@@ -1069,6 +1070,9 @@ class NativeTests(NativeCase):
                     if obj['kind'] == 'file' and obj['action'] in ('create', 'change'):
                         for field in ('text', 'diff'):
                             self.assertIn(n.review_code(obj.get(field, '')), document)
+                    if obj.get('stage_file') is True:
+                        self.assertIn(n.review_escape('"stage_file":true'), document)
+                        self.assertEqual((obj.get('kind'), obj.get('runs', False)), ('file', False))
                 self.assertEqual(self.writes(), [])
         # The native core owns mapping-word syntax; this path only binds the words it supplied.
         for key, flag, value in (
@@ -6011,6 +6015,69 @@ class NativeTests(NativeCase):
                 self.assertEqual(self.row()['state'], 'approved')
                 self.assertNotIn('GetGroup', [method for method, _, _ in self.native.calls])
 
+        # Upstream's canonical model shapes (f95e8ede): effort-before-model
+        # order with 'model X' prose. Both deliver; anything else fails closed.
+        fork_model = group_proposal('group_set_model_effort')
+        upstream_combined = copy.deepcopy(fork_model)
+        upstream_combined['run']['argv'] = ['group', 'set', 'planners', 'effort=low', 'model=claude-opus-5-5']
+        upstream_combined['run']['command'] = 'yardr group set planners effort=low model=claude-opus-5-5'
+        upstream_combined['run']['does'] = [
+            fork_model['run']['does'][0],
+            fork_model['run']['does'][3],
+            fork_model['run']['does'][4],
+            'Each session starts with model claude-opus-4 now.',
+            'Each session will start with model claude-opus-5-5.',
+        ]
+        upstream_model_only = copy.deepcopy(fork_model)
+        upstream_model_only['run']['argv'] = ['group', 'set', 'planners', 'model=claude-opus-5-5']
+        upstream_model_only['run']['command'] = 'yardr group set planners model=claude-opus-5-5'
+        upstream_model_only['run']['does'] = [
+            fork_model['run']['does'][0],
+            'Each session starts with model claude-opus-4 now.',
+            'Each session will start with model claude-opus-5-5.',
+        ]
+        upstream_model_only['run']['back'] = 'yardr group set planners model=claude-opus-4'
+        for label, candidate in (('upstream-model-effort', upstream_combined),
+                                 ('upstream-model-only', upstream_model_only)):
+            with self.subTest(fixture=label):
+                ask = copy.deepcopy(candidate)
+                self.reset_native(ask)
+                self.assertTrue(self.create()['delivered'])
+                row = self.row()
+                yard = self.assert_group_review(ask, self.bundle_review(row))
+                card = b.html_visible_text([body for url, body in self.calls if url.endswith('/sendMessage')][0]['text'])[0]
+                self.assertIn(ask['run']['command'], card)
+                for line in yard:
+                    self.assertIn(line, card)
+                self.assertEqual(self.writes(), [])
+                self.press()
+                self.assertEqual(self.writes(), [])
+                self.press('confirm', uid=41)
+                self.assertEqual(self.writes(), [('ApproveAsk', dict(bead='sample-1', ask=7, actor='pat', weighed=True, values={}))])
+                self.assertEqual(self.row()['state'], 'approved')
+        refusals = []
+        unfamiliar = copy.deepcopy(upstream_combined)
+        unfamiliar['run']['does'][4] = 'Each session will start with models claude-opus-5-5.'
+        refusals.append(('unfamiliar-model-prose', unfamiliar))
+        swapped = copy.deepcopy(upstream_combined)
+        swapped['run']['argv'] = fork_model['run']['argv'][:]
+        swapped['run']['command'] = fork_model['run']['command']
+        refusals.append(('candidate-prose-fork-order', swapped))
+        swapped_back = copy.deepcopy(fork_model)
+        swapped_back['run']['argv'] = upstream_combined['run']['argv'][:]
+        swapped_back['run']['command'] = upstream_combined['run']['command']
+        refusals.append(('fork-prose-candidate-order', swapped_back))
+        unfamiliar_only = copy.deepcopy(upstream_model_only)
+        unfamiliar_only['run']['does'][2] = 'Each session will start with the model claude-opus-5-5.'
+        refusals.append(('model-only-fork-prose', unfamiliar_only))
+        for label, ask in refusals:
+            with self.subTest(refusal=label):
+                self.reset_native(copy.deepcopy(ask))
+                result = self.create()
+                self.assertFalse(result['delivered'], result)
+                self.assertTrue(result['reason'].endswith(n.FALLBACK), result)
+                self.assertEqual((self.sent_count, self.writes()), (0, []))
+
         # A card the yard wrote before the alignment refuses with the fallback before anything is sent.
         for name in GROUP_PREALIGNMENT:
             with self.subTest(prealignment=name):
@@ -7907,12 +7974,18 @@ class RealNativeTests(BridgeTestCase):
             def press(row, action='approve'):
                 poll([event(row, action)])
 
-            def propose(extra=''):
+            def propose(extra='', allow_refusal=False):
                 check = cli('pack', 'check', str(pack), '--depot', 'synthetic', '--crew', 'reviewer=reviewer')
                 pin = re.search(r'sha256:([0-9a-f]{64})', check)[1]
-                cli('--actor', 'proposer', 'bead', 'ask', 'sample-1', 'Import the harmless synthetic depot pack?',
-                    '--to', 'pat', '--context', 'Synthetic native depot refusal; no live state',
-                    '--run', f'pack apply {pack} --sha256 {pin} --depot synthetic --crew reviewer=reviewer' + extra)
+                args = ('--actor', 'proposer', 'bead', 'ask', 'sample-1', 'Import the harmless synthetic depot pack?',
+                        '--to', 'pat', '--context', 'Synthetic native depot refusal; no live state',
+                        '--run', f'pack apply {pack} --sha256 {pin} --depot synthetic --crew reviewer=reviewer' + extra)
+                if allow_refusal:
+                    result = subprocess.run(command + list(args), env=env, cwd=root, capture_output=True, text=True, timeout=20)
+                    if result.returncode:
+                        return result
+                else:
+                    cli(*args)
                 return client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
 
             bindings = checkout / 'bindings'
@@ -8228,15 +8301,21 @@ class RealNativeTests(BridgeTestCase):
                 untouched(ask)
         try:
             role.write_text('Synthetic hand edit, not approved.\n')
-            ask = propose(' --yes')
-            self.assertTrue(ask['run']['pack'].get('yes'))
-            before = len(self.calls), len(self.documents)
-            result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='native-edited-overwrite'))
-            self.assertFalse(result['delivered'], result)
-            self.assertEqual((len(self.calls), len(self.documents)), before)
-            self.assertEqual(role.read_text(), 'Synthetic hand edit, not approved.\n')
-            self.assertEqual(events(ask), [])
-            self.assertEqual(current(ask['ask']), ask)
+            listed_before = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks']
+            ask = propose(' --yes', allow_refusal=True)
+            if isinstance(ask, subprocess.CompletedProcess):
+                self.assertIn('--yes overwrites a copy edited by hand, and its plan names none', ask.stderr)
+                self.assertEqual(client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'], listed_before)
+                self.assertEqual(role.read_text(), 'Synthetic hand edit, not approved.\n')
+            else:
+                self.assertTrue(ask['run']['pack'].get('yes'))
+                before = len(self.calls), len(self.documents)
+                result = self.bridge.api_run_ask(dict(bead='sample-1', ask=ask['ask'], key='native-edited-overwrite'))
+                self.assertFalse(result['delivered'], result)
+                self.assertEqual((len(self.calls), len(self.documents)), before)
+                self.assertEqual(role.read_text(), 'Synthetic hand edit, not approved.\n')
+                self.assertEqual(events(ask), [])
+                self.assertEqual(current(ask['ask']), ask)
         finally:
             role.write_bytes(original_role)
         ask = propose()
@@ -10394,7 +10473,7 @@ class RealNativeTests(BridgeTestCase):
     def assert_source_pack_fixture(self, ask, root, name):
         actual = json.loads(json.dumps(dict(ask, ask=7, since='2026-01-01T00:00:00Z')).replace(str(root), '/synthetic'))
         # A build label is provenance; compare all remaining wire keys against the aligned, upstream, or public main capture.
-        for suffix in ('', '_upstream', '_public_main'):
+        for suffix in ('', '_upstream', '_public_main', '_schema38'):
             path = Path(__file__).with_name('fixtures') / (name + suffix + '.json')
             if not path.exists():
                 continue
@@ -11000,13 +11079,15 @@ class RealNativeTests(BridgeTestCase):
             changed = approve(default, card(default, 'group_set_effort_default'), planners)
             self.assertEqual(changed['config'], {k: v for k, v in planners['config'].items() if k != 'effort'})
 
-            # model= rides the aligned build's group set row alone; upstream refuses it before any card.
+            # The aligned bridge fixture and upstream use distinct canonical model shapes.
             planners = changed
             result = cli('bead', 'ask', 'sample-1', 'Move the planners?', '--to', 'pat', '--context', 'Synthetic model', '--run',
                          'group set planners model=claude-opus-5-5 effort=low', actor='proposer', ok=None)
             if result.returncode == 0:
                 model = client.call('Bead', dict(bead='sample-1', viewer='pat'))['asks'][-1]
-                changed = approve(model, card(model, 'group_set_model_effort'), planners)
+                fields = model['run']['argv'][-2:]
+                fixture = 'group_set_model_effort' if fields[0].startswith('model=') else None
+                changed = approve(model, card(model, fixture), planners)
                 self.assertEqual(changed['config'], dict(planners['config'], model='claude-opus-5-5', effort='low'))
             else:
                 self.assertIn('model is no part of this card', result.stderr)

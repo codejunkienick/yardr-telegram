@@ -1,0 +1,181 @@
+{
+  "ask": 7,
+  "to": "pat",
+  "asker": "proposer",
+  "since": "2026-01-01T00:00:00Z",
+  "question": "Review the synthetic depot matrix?",
+  "context": [
+    "Complete native synthetic plan; no live state"
+  ],
+  "options": [],
+  "state": "open",
+  "turn": 0,
+  "run": {
+    "argv": [
+      "pack",
+      "apply",
+      "/synthetic/checkout/matrix",
+      "--sha256",
+      "67048b0ed76cc9a6838f72a239bd1728bb8959e528706f18839f1f733373dd5d",
+      "--depot",
+      "synthetic",
+      "--flow",
+      "default",
+      "--crew",
+      "reviewer=reviewer",
+      "--members",
+      "reviewers=pat",
+      "--calls",
+      "crew:reviewer=matrixsvc:health"
+    ],
+    "command": "yardr pack apply /synthetic/checkout/matrix --sha256 67048b0ed76cc9a6838f72a239bd1728bb8959e528706f18839f1f733373dd5d --depot synthetic --flow default --crew reviewer=reviewer --members reviewers=pat --calls crew:reviewer=matrixsvc:health",
+    "description": "Import a pack into depot synthetic: set the yard to what the pack says",
+    "does": [
+      "pack matrix (directory /synthetic/checkout/matrix in yardr 1f3e8ecd5357), of no kind, into depot synthetic: 10 to create, 1 to change, 0 unchanged, and 0 dropped and left where they stand, digest sha256:67048b0ed76cc9a6838f72a239bd1728bb8959e528706f18839f1f733373dd5d. It asks nothing.",
+      "this is a first install: depot synthetic holds no import of pack matrix.",
+      "the plan uses mapping --flow default.",
+      "the plan uses mapping --crew reviewer=reviewer.",
+      "the plan uses mapping --members reviewers=pat.",
+      "the plan uses mapping --calls crew:reviewer=matrixsvc:health.",
+      "file roles/sample.md: create, sha256 (none) -> sha256 52fd6fd974d86d8b0e80cf39f0399d46af34ec557bc615dd2738769ae74c12de (1 insertions, 0 deletions).",
+      "file scripts/archive: create, sha256 (none) -> sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 (0 insertions, 0 deletions).",
+      "file flows/default/new.md: create, sha256 (none) -> sha256 997fb26d196e703a561683ba620f83e067d67ed8bfdcbae1b26c5094e0c50c61 (1 insertions, 0 deletions).",
+      "group reviewers: create.",
+      "group synthetic-archive: create.",
+      "group synthetic-archive: cmd sets MODE=synthetic before the script.",
+      "flow matrix.default: create.",
+      "pointer depot synthetic -> matrix.default: create.",
+      "route depot synthetic stage new -> reviewers: create.",
+      "crew reviewer: change (prompt: /synthetic/yard/packs/harmless/roles/sample.md -> /synthetic/yard/packs/matrix/roles/sample.md).",
+      "subscription reviewer yardr all depot=synthetic stage=new: create.",
+      "source matrixsvc: create.",
+      "depot synthetic would follow flow matrix.default; it follows none now.",
+      "source matrixsvc: its calls go to https://example.invalid. It names no credential.",
+      "call health (read): GET /health. It takes no parameter, and sends no query.",
+      "call health sends no body. Its answer is returned as it comes, at most 65536 bytes.",
+      "it has no check call, no idempotency header, no way to tell a user, no way to hear deliveries, no limits command, no way to speak in threads, no bead link, no identity fold (its identity keys keep their case), no hook deliveries into the yard and no pull-request or CI events.",
+      "it names no command."
+    ],
+    "back": "no one command takes it back: read the standing state with yardr pack check /synthetic/checkout/matrix --depot synthetic in a terminal",
+    "back_by": "the operator",
+    "carried": [
+      {
+        "name": "matrixsvc",
+        "text": "name: matrixsvc\nbase: https://example.invalid\ncalls:\n  health:\n    kind: read\n    request: {method: GET, path: /health}\n"
+      }
+    ],
+    "pack": {
+      "name": "matrix",
+      "depot": "synthetic",
+      "mappings": {
+        "flow": "default",
+        "crew": {
+          "reviewer": "reviewer"
+        },
+        "members": [
+          "reviewers=pat"
+        ],
+        "calls": [
+          "crew:reviewer=matrixsvc:health"
+        ]
+      },
+      "label": "directory /synthetic/checkout/matrix in yardr 1f3e8ecd5357",
+      "plan": {
+        "objects": [
+          {
+            "kind": "file",
+            "name": "roles/sample.md",
+            "action": "create",
+            "runs": true,
+            "file_new_sha256": "52fd6fd974d86d8b0e80cf39f0399d46af34ec557bc615dd2738769ae74c12de",
+            "text": "Review café 🙂.\r\n",
+            "diff": "--- was\n+++ is\n@@ -0,0 +1,1 @@\n+Review café 🙂.\r\n"
+          },
+          {
+            "kind": "file",
+            "name": "scripts/archive",
+            "action": "create",
+            "runs": true,
+            "file_new_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "kind": "file",
+            "name": "flows/default/new.md",
+            "action": "create",
+            "stage_file": true,
+            "file_new_sha256": "997fb26d196e703a561683ba620f83e067d67ed8bfdcbae1b26c5094e0c50c61",
+            "text": "Start synthetic review.\n",
+            "diff": "--- was\n+++ is\n@@ -0,0 +1,1 @@\n+Start synthetic review.\n"
+          },
+          {
+            "kind": "group",
+            "name": "reviewers",
+            "action": "create"
+          },
+          {
+            "kind": "group",
+            "name": "synthetic-archive",
+            "action": "create",
+            "env": [
+              "MODE=synthetic"
+            ]
+          },
+          {
+            "kind": "flow",
+            "name": "matrix.default",
+            "action": "create"
+          },
+          {
+            "kind": "pointer",
+            "name": "depot synthetic -> matrix.default",
+            "action": "create"
+          },
+          {
+            "kind": "route",
+            "name": "depot synthetic stage new -> reviewers",
+            "action": "create"
+          },
+          {
+            "kind": "crew",
+            "name": "reviewer",
+            "action": "change",
+            "changes": [
+              {
+                "field": "prompt",
+                "old": "/synthetic/yard/packs/harmless/roles/sample.md",
+                "new": "/synthetic/yard/packs/matrix/roles/sample.md"
+              }
+            ]
+          },
+          {
+            "kind": "subscription",
+            "name": "reviewer yardr all depot=synthetic stage=new",
+            "action": "create"
+          },
+          {
+            "kind": "source",
+            "name": "matrixsvc",
+            "action": "create"
+          }
+        ],
+        "governs": [
+          {
+            "flow": "matrix.default",
+            "now": "none"
+          }
+        ]
+      },
+      "digest": "67048b0ed76cc9a6838f72a239bd1728bb8959e528706f18839f1f733373dd5d"
+    }
+  },
+  "weight": [
+    {
+      "class": "code",
+      "line": "brings a program the yard will run: the first install of pack matrix into depot synthetic makes file roles/sample.md, file scripts/archive, file flows/default/new.md, group reviewers, group synthetic-archive and crew reviewer"
+    },
+    {
+      "class": "trust",
+      "line": "widens who the yard listens to: the group reviewers takes the word of pat"
+    }
+  ]
+}

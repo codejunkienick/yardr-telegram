@@ -582,10 +582,179 @@ class SwitchModelSettingsTests(unittest.TestCase):
         self.assertIsNone(effort_of(['-c', 'model="x"', '--effort']))
 
 
+class SwitchCrewsSettingsTests(unittest.TestCase):
+    """[[yardr.switch_crews]]: without it /crew stays unregistered and a
+    [[command]] crew keeps its handler; with it /crew is native over the
+    switch_model crew and each entry, reusing the pick rules."""
+
+    PICKS = ('\n[[yardr.switch_crews.picks]]\nid = "opus"\nlabel = "Opus high"\nkind = "claude"\n'
+             'model = "opus"\nargs = ["--effort", "high"]\n')
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.home = self.root / 'yard'
+        self.home.mkdir(mode=0o700)
+        self.stub = self.root / 'yardr-stub'
+        self.stub.write_text('#!/bin/sh\nexit 0\n')
+        self.stub.chmod(0o700)
+
+    def settings(self, table=None, extra='', native=True, menu=True, switch=None, yardr_extra=''):
+        """A settings file with native [yardr] keys and bin; `table` is the
+        [[yardr.switch_crews]] text (None: no list), `switch` the
+        [yardr.switch_model] text, `extra` more tables, `yardr_extra` more
+        [yardr] keys."""
+        path = write_settings(self.root)
+        text = path.read_text()
+        if not menu:
+            text = re.sub(r'\n\[\[menu\]\]\ncommand = "[a-z_]+"\ndescription = [^\n]*\n', '\n', text)
+        lines = 'bin = "%s"\n' % self.stub + yardr_extra
+        if native:
+            lines += 'home = "%s"\noperator = "pat"\ncards = false\n' % self.home
+        marker = '\n[yardr]\n'
+        start = text.index(marker)
+        text = text[:start] + marker + lines + text[start + len(marker):]
+        if switch is not None:
+            text += '\n[yardr.switch_model]\n' + switch
+        if table is not None:
+            text += '\n[[yardr.switch_crews]]\n' + table
+        path.write_text(text + extra)
+        return path
+
+    def entry(self, crew='designer', label='Designer', timeout=45, picks=PICKS):
+        return 'crew = "%s"\nlabel = "%s"\ntimeout = %d\n%s' % (crew, label, timeout, picks)
+
+    def command(self, name='crew', **fields):
+        fields.setdefault('description', 'Crew via handler')
+        fields.setdefault('handler', str(self.stub))
+        return '\n[[command]]\nname = "%s"\n' % name + ''.join(
+            '%s = %s\n' % (key, json.dumps(value)) for key, value in fields.items())
+
+    def test_no_list_keeps_a_command_crew(self):
+        settings = b.load_settings(self.settings(extra=self.command(callback_prefix='crew:')))
+        entry, nudge = settings.config['commands']
+        self.assertEqual((entry['name'], entry['handler'], entry['callback_prefix']),
+                         ('crew', str(self.stub), 'crew:'))
+        self.assertNotIn('native', entry)
+        self.assertNotIn('yardr_switch_crews', settings.config)
+        self.assertNotIn('yardr_bin', settings.config)
+        bridge = b.Bridge(settings.config, None, 'T', None, state_dir=self.root)
+        self.assertIs(bridge._callback_command('crew:c:token:mayor'), bridge.commands['crew'])
+        self.assertEqual(bridge._publish_keyboard([[dict(text='x', callback_data='crew:c:token:mayor')]])[1], None)
+
+    def test_switch_model_alone_registers_no_crew(self):
+        settings = b.load_settings(self.settings(
+            switch=SwitchModelSettingsTests.PICKS, extra=self.command(callback_prefix='crew:')))
+        self.assertNotIn('yardr_switch_crews', settings.config)
+        self.assertEqual([entry['name'] for entry in settings.config['commands']],
+                         ['crew', 'nudge', 'switch_model'])
+        self.assertNotIn('native', settings.config['commands'][0])
+
+    def test_list_registers_the_native_command(self):
+        settings = b.load_settings(self.settings(
+            self.entry() + '\n[[yardr.switch_crews]]\n' + self.entry('secretary', 'Secretary', 30),
+            switch='crew = "mayor"\n' + SwitchModelSettingsTests.PICKS))
+        crews = settings.config['yardr_switch_crews']
+        self.assertEqual([(entry['crew'], entry['label'], entry['timeout']) for entry in crews],
+                         [('designer', 'Designer', 45), ('secretary', 'Secretary', 30)])
+        self.assertEqual(crews[0]['picks'], (
+            dict(id='opus', label='Opus high', kind='claude', model='opus', args=('--effort', 'high'),
+                 env_file=None, effort='high'),))
+        self.assertEqual(settings.config['yardr_bin'], str(self.stub))
+        entry = settings.config['commands'][-1]
+        self.assertEqual(entry, dict(name='crew', description='Show the switchable crews, tap to switch one',
+                                     menu=True, callback_prefix='crew:', native='crew', timeout=60))
+        self.assertEqual([command['name'] for command in settings.config['commands']],
+                         ['nudge', 'switch_model', 'crew'])
+
+    def test_list_without_switch_model_registers_crew_alone(self):
+        settings = b.load_settings(self.settings(self.entry()))
+        self.assertNotIn('yardr_switch_model', settings.config)
+        self.assertEqual(settings.config['yardr_switch_crews'][0]['crew'], 'designer')
+        entry = settings.config['commands'][-1]
+        self.assertEqual((entry['name'], entry['native'], entry['timeout']), ('crew', 'crew', 45))
+        self.assertEqual([command['name'] for command in settings.config['commands']], ['nudge', 'crew'])
+
+    def test_defaults(self):
+        crews = b.load_settings(self.settings('crew = "designer"\nlabel = "Designer"\n' + self.PICKS))
+        self.assertEqual(crews.config['yardr_switch_crews'][0]['timeout'], 60)
+
+    def test_clashes_are_refused(self):
+        fix = r'delete the \[\[(command|menu)\]\] .+ table'
+        cases = [
+            (self.command(), r'\[\[command\]\] crew clashes with the native /crew'),
+            ('\n[[menu]]\ncommand = "crew"\ndescription = "x"\n', r'\[\[menu\]\] crew clashes'),
+            (self.command('other', callback_prefix='crew:'), 'callback_prefix overlaps the native crew: prefix'),
+            (self.command('other', callback_prefix='crew:x'), 'callback_prefix overlaps the native crew: prefix'),
+            (self.command('other', callback_prefix='cr'), 'callback_prefix overlaps the native crew: prefix'),
+        ]
+        for extra, pattern in cases:
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(b.SettingsError, pattern + '.*' + fix):
+                    b.load_settings(self.settings(self.entry(), extra=extra))
+        # A prefix that no crew: press starts with is no clash.
+        settings = b.load_settings(self.settings(self.entry(), extra=self.command('c', callback_prefix='c:')))
+        self.assertEqual([entry['name'] for entry in settings.config['commands']], ['c', 'nudge', 'crew'])
+
+    def test_command_settings_reserve_the_prefix(self):
+        data = dict(command=[dict(name='other', description='x', handler=str(self.stub), callback_prefix='crew:')])
+        with self.assertRaisesRegex(b.SettingsError, 'bridge-owned crew: prefix'):
+            b._command_settings(data, (), True, crew=True)
+        data = dict(command=[dict(name='crew', description='x', handler=str(self.stub), callback_prefix='c:')])
+        with self.assertRaisesRegex(b.SettingsError, 'clashes with /crew'):
+            b._command_settings(data, (), True, crew=True)
+        self.assertEqual(len(b._command_settings(data, (), True)), 1)
+
+    def test_bad_lists_are_refused(self):
+        pick = ('\n[[yardr.switch_crews.picks]]\nid = "x"\nlabel = "X"\nkind = "codex"\nmodel = "m"\n'
+                'args = []\n')
+        with self.subTest(table='non-list'):
+            with self.assertRaisesRegex(b.SettingsError, r'\[\[yardr\.switch_crews\]\] must be a list of tables'):
+                b.load_settings(self.settings(yardr_extra='switch_crews = "designer"\n'))
+        cases = [
+            ('crew = "designer"\nlabel = "Designer"\n', 'needs picks'),
+            ('label = "Designer"\n' + pick, 'needs crew'),
+            ('crew = "designer"\n' + pick, 'needs label'),
+            ('crew = "bad name"\nlabel = "Designer"\n' + pick, 'crew is missing or malformed'),
+            ('crew = "designer"\nlabel = "  padded  "\n' + pick, 'label must be 1-32 printable'),
+            ('crew = "designer"\nlabel = "' + 'L' * 33 + '"\n' + pick, 'label must be 1-32 printable'),
+            ('crew = "designer"\nlabel = "Designer"\ntimeout = 9\n' + pick, 'timeout'),
+            ('crew = "designer"\nlabel = "Designer"\ntarget = "x"\n' + pick, 'unknown key target'),
+            ('crew = "designer"\nlabel = "Designer"\n' + pick * 2, 'id must be a distinct'),
+            ('crew = "designer"\nlabel = "Designer"\n' + pick.replace('kind = "codex"', 'kind = "Codex"'),
+             'kind must be a harness kind'),
+            ('crew = "designer"\nlabel = "Designer"\n' + pick.replace('args = []', 'args = [""]'),
+             'args must be a list'),
+            ('crew = "designer"\nlabel = "Designer"\n' + pick + 'env_file = "relative.env"\n',
+             'env_file must be an absolute path'),
+            ('crew = "designer"\nlabel = "Designer"\n' + pick + pick.replace('"x"', '"y"'),
+             'must differ in kind, model or effort'),
+        ]
+        for table, pattern in cases:
+            with self.subTest(table=table[:60]):
+                with self.assertRaisesRegex(b.SettingsError, pattern):
+                    b.load_settings(self.settings(table))
+        with self.assertRaisesRegex(b.SettingsError, r'\[\[yardr\.switch_crews\]\] needs \[yardr\] home and operator'):
+            b.load_settings(self.settings(self.entry(), native=False))
+
+    def test_repeated_crews_are_refused(self):
+        table = self.entry() + '\n[[yardr.switch_crews]]\n' + self.entry('designer', 'Second')
+        with self.assertRaisesRegex(b.SettingsError, 'repeats an earlier crew'):
+            b.load_settings(self.settings(table))
+        with self.assertRaisesRegex(b.SettingsError, r'repeats the \[yardr\.switch_model\] crew'):
+            b.load_settings(self.settings(self.entry('mayor', 'Mayor'),
+                                           switch='crew = "mayor"\n' + SwitchModelSettingsTests.PICKS))
+        with self.assertRaisesRegex(b.SettingsError, r'1-8 tables'):
+            b.load_settings(self.settings('crew = "designer"\nlabel = "Designer"\n' + self.PICKS +
+                                           ''.join('\n[[yardr.switch_crews]]\ncrew = "c%d"\nlabel = "C%d"\n%s'
+                                                   % (i, i, self.PICKS) for i in range(8))))
+
+
 # The example's tables under another: its header, then (parent, section).
 NESTED_TABLES = {'[yardr.quota]': ('yardr', 'quota'), '[yardr.switch_model]': ('yardr', 'switch_model'),
                  '[yardr.peer_mail]': ('yardr', 'peer_mail'),
-                 '[[yardr.switch_model.picks]]': ('switch_model', 'picks')}
+                 '[[yardr.switch_model.picks]]': ('switch_model', 'picks'),
+                 '[[yardr.switch_crews]]': ('yardr', 'switch_crews'),
+                 '[[yardr.switch_crews.picks]]': ('switch_crews', 'picks')}
 
 
 class ExampleSettingsTests(unittest.TestCase):
@@ -596,10 +765,11 @@ class ExampleSettingsTests(unittest.TestCase):
         '': {'yard', 'state_dir', 'port', 'token_file', 'callback_secret_file', 'lock_dir', 'unit', 'python',
              'user_display_name', 'timezone', 'health_file', 'pairing_update_id', 'crew', 'handler_write_paths'},
         'yardr': {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model',
-                  'peer_mail'},
+                  'switch_crews', 'peer_mail'},
         'quota': {'timeout', 'groups', 'machine_login', 'machine'},
         'peer_mail': {'crew', 'topic'},
         'switch_model': {'crew', 'timeout', 'picks'},
+        'switch_crews': {'crew', 'label', 'timeout', 'picks'},
         'picks': {'id', 'label', 'kind', 'model', 'args', 'env_file'},
         'bot': {'bot_id', 'user_id', 'chat_id', 'account_id'},
         'menu': {'command', 'description'},
@@ -711,8 +881,10 @@ class ExampleSettingsTests(unittest.TestCase):
                 self.assertEqual(settings.config['yardr_peer_mail'], ('yardmaster',))
                 loaded['switch_model'] |= set(data['yardr']['switch_model'])
                 loaded['picks'] |= set(data['yardr']['switch_model']['picks'][0])
+                loaded['switch_crews'] |= set(data['yardr']['switch_crews'][0])
+                loaded['picks'] |= set(data['yardr']['switch_crews'][0]['picks'][0])
                 self.assertEqual([command['name'] for command in settings.config['commands'] if 'native' in command],
-                                 ['quota', 'nudge', 'switch_model'])
+                                 ['quota', 'nudge', 'switch_model', 'crew'])
                 loaded['bot'] |= set(data['bot'])
                 loaded['menu'] |= set(data['menu'][0])
                 loaded['command'] |= set(data['command'][0])

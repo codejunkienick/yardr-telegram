@@ -1058,6 +1058,63 @@ run `<INSTANCE_ROOT>/previous/install.sh --settings <INSTANCE_SETTINGS>
 set-commands`. The upgraded `current` script refuses the restored pre-rename
 settings before swapping.
 
+<a id="crew"></a>
+
+### /crew
+
+`/crew` switches any configured standing crew member from one master chat,
+while `/switch_model` stays the 1-tap shortcut for its single crew. It uses
+one `[[yardr.switch_crews]]` table per extra crew and the `crew:` callback
+prefix. `/crew` is registered only while the list is present; a
+`[yardr.switch_model]`-only file loads exactly as before.
+
+```toml
+[[yardr.switch_crews]]
+crew = "secretary"    # the crew member its picks switch, [A-Za-z0-9][A-Za-z0-9_-]{0,31}
+label = "Secretary"   # the /crew line and button, 1-32 printable characters
+timeout = 60          # bounded CLI I/O deadline in seconds (10-120), NOT the 600s handoff wait
+
+[[yardr.switch_crews.picks]]
+id = "opus"
+label = "Opus high"
+kind = "claude"
+model = "opus"
+args = ["--effort", "high"]
+env_file = "/home/alex/.yardr/crew-secretary.env"   # optional, absolute, passed as written
+```
+
+Each entry needs `crew`, `label` and `picks` (1–8 tables with the same
+rules, per-role `args` preservation and effort parsing as
+`[[yardr.switch_model.picks]]`); at most 8 entries, with distinct crews that
+must not repeat the `[yardr.switch_model]` crew. `/crew` lists the
+`[yardr.switch_model]` crew first when it is set, then each entry: one line
+per crew with its current `kind · model` read via
+`yardr crew show <crew> --json` (`model unavailable` when that read fails, a
+`switch pending` marker while its native switch is unresolved), and one
+button per crew (`crew:c:<token>:<crew>`).
+
+Tapping a crew (`/crew <name>` jumps straight there) edits the listing into
+that crew's model picks (`crew:s:<token>:<pick>`), which admit, observe and
+Force exactly like `/switch_model` taps, with the Force button under `crew:f:`.
+An unknown name is refused naming the switchable crews; nothing is reserved
+and no native write runs. A pending switch on one crew never blocks another:
+pending checks, snapshots, `args`/`env_file` targets and `switch_model_taps`
+rows are all per crew, while reopening the ledger on another home still
+cannot hide a pending operation of the same crew.
+
+With `[[yardr.switch_crews]]`, `crew:` and `/crew` are owned by the bridge.
+A `[[command]]` or `[[menu]]` named `crew`, or any `[[command]]`
+`callback_prefix` overlapping `crew:`, refuses to load before any write, with
+the same repair message as the `/switch_model` clashes above.
+
+Removing `[[yardr.switch_crews]]` while a `/crew` handoff is pending keeps
+polling and reconciles the operation, but its card loses `Force apply`, and
+taps on the retired buttons are answered empty and logged as
+`native_route_disabled`, even when a custom `crew:` handler is configured.
+A `[yardr.switch_model]`-only file admits one handoff at a time: reassigning
+the primary while a switch is pending keeps the original card, and a fresh
+`/switch_model` reports the pending switch until it settles.
+
 ### /nudge
 
 An existing `[[command]]` named `nudge`, a `[[menu]]` entry with

@@ -2033,5 +2033,445 @@ class PreviewSmokeTests(unittest.TestCase):
             self.assertNotIn(forbidden, text)
 
 
+class CrewSwitchTests(unittest.TestCase):
+    """Native multi-crew switching: /crew lists each crew, a crew tap opens
+    its picks, and picks admit through the same guarded pipeline, per crew."""
+
+    def setUp(self):
+        self.case = NativeSwitchTests(methodName='test_complete_real_native_poll_slice')
+        self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        case = self.case
+        case.cli('crew', 'add', 'designer', '--set', 'kind=claude', '--set', 'model=opus')
+        self.designer = secrets.token_hex(12)
+        case.rpc('CrewLaunchedFor', name='designer', user='', previous='',
+                 launch=dict(kind='claude', model='opus', fingerprint='f' * 64),
+                 handle={'crew_generation': self.designer})
+        case.rpc('CrewStatusFor', name='designer', user='', status='idle')
+        crews = (dict(crew='designer', label='Designer', timeout=10, picks=case.picks),)
+        case.config['yardr_switch_crews'] = crews
+        case.config['commands'] = case.config['commands'] + (
+            y.crew_command(case.config['yardr_switch_model'], crews),)
+        case.bridge = case.reopen()
+
+    def listing(self):
+        case = self.case
+        case.poll(case.text('/crew'))
+        return case.telegram.of('sendMessage')[-1], case.telegram.next_id
+
+    def crew_tap(self, listing, crew='designer'):
+        sent, mid = listing
+        data = next(button['callback_data'] for row in sent['reply_markup']['inline_keyboard']
+                    for button in row if button['callback_data'].endswith(':' + crew))
+        return self.case.tap(data, mid)
+
+    def crew_pick_tap(self, pick='opus', crew='designer'):
+        self.case.poll(self.crew_tap(self.listing(), crew))
+        edit = self.case.edit()
+        data = next(button['callback_data'] for row in edit['reply_markup']['inline_keyboard']
+                    for button in row if button['callback_data'].endswith(':' + pick))
+        return self.case.tap(data, edit['message_id'])
+
+    def buttons(self, message):
+        return [button for row in message['reply_markup']['inline_keyboard'] for button in row]
+
+    def test_crew_lists_each_crew_with_current_model(self):
+        sent, _ = self.listing()
+        self.assertIn('mayor: codex · old', sent['text'])
+        self.assertIn('Designer: claude · opus', sent['text'])
+        buttons = self.buttons(sent)
+        self.assertEqual([(button['text'], button['callback_data'].rsplit(':', 1)[1]) for button in buttons],
+                         [('mayor', 'mayor'), ('Designer', 'designer')])
+        for button in buttons:
+            self.assertRegex(button['callback_data'], r'^crew:c:[A-Za-z0-9_-]{16}:[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
+            self.assertLessEqual(len(button['callback_data'].encode()), 64)
+        self.assertEqual(self.case.operations(), [])
+
+    def test_crew_select_opens_picks_and_pick_switches_that_crew(self):
+        sent, mid = self.listing()
+        self.case.poll(self.crew_tap((sent, mid)))
+        edit = self.case.edit()
+        self.assertEqual(edit['message_id'], mid)
+        self.assertIn('Current: claude · opus', edit['text'])
+        buttons = self.buttons(edit)
+        self.assertEqual([button['text'] for button in buttons],
+                         [pick['label'] for pick in self.case.picks])
+        for button in buttons:
+            self.assertRegex(button['callback_data'], r'^crew:s:[A-Za-z0-9_-]{16}:[a-z0-9][a-z0-9_-]{0,31}$')
+            self.assertLessEqual(len(button['callback_data'].encode()), 64)
+        data = next(button['callback_data'] for button in buttons if button['callback_data'].endswith(':opus'))
+        self.case.poll(self.case.tap(data, mid))
+        row = self.case.last()
+        self.assertEqual((row['crew'], row['via']), ('designer', 'crew'))
+        self.assertEqual(row['observed']['state'], 'waiting')
+        self.assertEqual(row['request']['target']['model'], 'opus')
+        designer = self.case.rpc('GetCrew', name='designer')
+        self.assertEqual(designer['config']['model'], 'opus')
+        self.assertEqual(designer['config']['args'], list(self.case.picks[1]['args']))
+        self.assertEqual(designer['launch']['model'], 'opus')
+        self.assertIn('Please wait for the handoff', self.case.edit()['text'])
+        force = self.buttons(self.case.edit())[0]['callback_data']
+        self.assertTrue(force.startswith('crew:f:'), force)
+        self.assertLessEqual(len(force.encode()), 64)
+        self.case.poll(self.case.tap(force, mid))
+        self.assertEqual(self.case.last()['observed']['mode'], 'force')
+
+    def test_crew_name_jumps_to_picks(self):
+        self.case.poll(self.case.text('/crew designer'))
+        sent = self.case.telegram.of('sendMessage')[-1]
+        self.assertIn('Current: claude · opus', sent['text'])
+        data = next(button['callback_data'] for button in self.buttons(sent)
+                    if button['callback_data'].endswith(':opus'))
+        self.assertTrue(data.startswith('crew:s:'), data)
+        self.case.poll(self.case.tap(data, self.case.telegram.next_id))
+        self.assertEqual(self.case.last()['crew'], 'designer')
+        self.assertEqual(self.case.last()['observed']['state'], 'waiting')
+
+    def test_unknown_crew_is_refused(self):
+        before_mayor = self.case.crew()
+        before_designer = self.case.rpc('GetCrew', name='designer')
+        self.case.poll(self.case.text('/crew nosuch'))
+        sent = self.case.telegram.of('sendMessage')[-1]
+        self.assertIn("Unknown crew 'nosuch'", sent['text'])
+        self.assertIn('mayor, designer', sent['text'])
+        self.assertEqual(self.case.operations(), [])
+        self.assertEqual(self.case.crew(), before_mayor)
+        self.assertEqual(self.case.rpc('GetCrew', name='designer'), before_designer)
+
+    def test_pending_switch_on_one_crew_leaves_another_switchable(self):
+        mayor_selector = self.case.selector()
+        self.case.poll(self.case.pick(mayor_selector))
+        self.assertEqual(self.case.last()['observed']['state'], 'waiting')
+        self.case.poll(self.case.pick(mayor_selector, 'sol'))
+        self.assertIn('different pick is refused', self.case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.case.poll(self.crew_pick_tap())
+        rows = self.case.operations()
+        self.assertEqual({row['crew'] for row in rows}, {'mayor', 'designer'})
+        designer = next(row for row in rows if row['crew'] == 'designer')
+        self.assertEqual(designer['observed']['state'], 'waiting')
+        self.assertEqual(self.case.rpc('GetCrew', name='designer')['config']['args'],
+                         list(self.case.picks[1]['args']))
+        self.assertEqual(self.case.rpc('GetCrew', name='mayor')['config']['model'], 'opus')
+        with self.case.store.connect() as db:
+            taps = {(row[0], row[1], row[2]) for row in
+                    db.execute('SELECT pick, crew, state FROM switch_model_taps').fetchall()}
+        self.assertTrue({('opus', 'mayor', 'done'), ('sol', 'mayor', 'refused'),
+                         ('opus', 'designer', 'done')} <= taps, taps)
+
+    def test_unreadable_crew_lists_without_a_model(self):
+        case = self.case
+        crews = case.config['yardr_switch_crews'] + (
+            dict(crew='ghost', label='Ghost', timeout=10, picks=case.picks),)
+        case.config['yardr_switch_crews'] = crews
+        case.config['commands'] = tuple(command for command in case.config['commands']
+                                        if command['name'] != 'crew') + (
+            y.crew_command(case.config['yardr_switch_model'], crews),)
+        case.bridge = case.reopen()
+        sent, mid = self.listing()
+        self.assertIn('Ghost: model unavailable', sent['text'])
+        case.poll(self.crew_tap((sent, mid), 'ghost'))
+        self.assertIn('Switch unavailable', str(case.telegram.of('answerCallbackQuery')))
+        self.assertEqual(case.operations(), [])
+
+    def test_set_commands_registers_crew_only_with_crews_config(self):
+        case = self.case
+        menu = case.bridge.set_commands()
+        self.assertIn(dict(command='crew', description='Show the switchable crews, tap to switch one'), menu)
+        config = dict(case.config)
+        del config['yardr_switch_crews']
+        config['commands'] = tuple(command for command in config['commands'] if command['name'] != 'crew')
+        naked = b.Bridge(config, case.store, 'SECRET', 'CAPABILITY', request=case.telegram, state_dir=case.root)
+        self.assertNotIn('crew', [entry['command'] for entry in naked.set_commands()])
+
+    def test_removed_switch_model_keeps_polling_without_force(self):
+        case = self.case
+        case.poll(case.pick(case.selector()))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertTrue(case.edit()['reply_markup']['inline_keyboard'])
+        del case.config['yardr_switch_model']
+        case.config['commands'] = tuple(command for command in case.config['commands']
+                                        if command['name'] != 'switch_model')
+        case.bridge = case.reopen()
+        case.poll()
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertTrue(case.last()['active'])
+        self.assertEqual(case.edit()['reply_markup']['inline_keyboard'], [])
+        self.assertIsNone(case.last()['display_failure'])
+
+    def test_removed_crews_keeps_polling_without_force(self):
+        case = self.case
+        case.poll(self.crew_pick_tap())
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertTrue(case.edit()['reply_markup']['inline_keyboard'])
+        del case.config['yardr_switch_crews']
+        case.config['commands'] = tuple(command for command in case.config['commands']
+                                        if command['name'] != 'crew')
+        case.bridge = case.reopen()
+        case.poll()
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertTrue(case.last()['active'])
+        self.assertEqual(case.edit()['reply_markup']['inline_keyboard'], [])
+        self.assertIsNone(case.last()['display_failure'])
+
+    def test_lost_crew_edit_reuses_same_claim(self):
+        case = self.case
+        sent, mid = self.listing()
+        failures = []
+        actual = case.bridge.telegram
+        def lost_edit(method, body, *args, **kwargs):
+            if method == 'editMessageText':
+                failures.append(copy.deepcopy(body))
+                raise b.TransportError('synthetic lost reply')
+            return actual(method, body, *args, **kwargs)
+        with patch.object(case.bridge, 'telegram', lost_edit):
+            case.poll(self.crew_tap((sent, mid), 'designer'))
+        self.assertEqual(len(failures), 1)
+        with case.store.connect() as db:
+            (raw,) = db.execute('SELECT value FROM crew_selectors').fetchone()
+            claimed = json.loads(raw)
+            before = db.execute('SELECT count(*) FROM model_selectors').fetchone()[0]
+        self.assertEqual(claimed['selected_crew'], 'designer')
+        self.assertIsNotNone(claimed['selected_token'])
+        self.assertFalse(claimed['retired'])
+        case.poll(self.crew_tap((sent, mid), 'designer'))
+        with case.store.connect() as db:
+            selectors = [json.loads(row[0]) for row in db.execute('SELECT value FROM model_selectors')]
+        self.assertEqual(len(selectors), before)
+        self.assertEqual(selectors[0]['token'], claimed['selected_token'])
+        self.assertEqual(case.edit()['message_id'], mid)
+        self.assertIn('Current: claude · opus', case.edit()['text'])
+
+    def test_lost_crew_edit_refuses_other_crew_on_same_message(self):
+        case = self.case
+        sent, mid = self.listing()
+        failures = []
+        actual = case.bridge.telegram
+        def lost_edit(method, body, *args, **kwargs):
+            if method == 'editMessageText':
+                failures.append(copy.deepcopy(body))
+                raise b.TransportError('synthetic lost reply')
+            return actual(method, body, *args, **kwargs)
+        with patch.object(case.bridge, 'telegram', lost_edit):
+            case.poll(self.crew_tap((sent, mid), 'designer'))
+        pick_data = next(button['callback_data'] for row in failures[0]['reply_markup']['inline_keyboard']
+                         for button in row if button['callback_data'].endswith(':opus'))
+        case.poll(case.tap(pick_data, mid))
+        self.assertEqual([(row['crew'], row['message']) for row in case.operations()], [('designer', mid)])
+        case.poll(self.crew_tap((sent, mid), 'mayor'))
+        self.assertIn('out of date', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual([(row['crew'], row['message']) for row in case.operations()], [('designer', mid)])
+        sent2, mid2 = self.listing()
+        self.assertNotEqual(mid2, mid)
+        case.poll(self.crew_tap((sent2, mid2), 'mayor'))
+        self.assertEqual(case.edit()['message_id'], mid2)
+        pick2 = next(button['callback_data'] for row in case.edit()['reply_markup']['inline_keyboard']
+                     for button in row if button['callback_data'].endswith(':opus'))
+        case.poll(case.tap(pick2, mid2))
+        self.assertEqual({(row['crew'], row['message']) for row in case.operations()},
+                         {('designer', mid), ('mayor', mid2)})
+
+    def test_stale_shortcut_refuses_after_primary_reassignment(self):
+        case = self.case
+        selector = case.selector()
+        shortcut = case.pick(selector)
+        before = case.crew()
+        case.config['yardr_switch_model'] = dict(crew='designer', timeout=10, picks=case.picks)
+        case.config['yardr_switch_crews'] = (
+            dict(crew='mayor', label='Mayor', timeout=10, picks=case.picks),)
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] not in ('switch_model', 'crew')) + (
+            y.switch_model_command(case.config['yardr_switch_model']),
+            y.crew_command(case.config['yardr_switch_model'], case.config['yardr_switch_crews']))
+        case.bridge = case.reopen()
+        case.poll(shortcut)
+        self.assertIn('out of date', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.operations(), [])
+        self.assertEqual(case.crew(), before)
+        case.poll(case.text())
+        sent = case.telegram.of('sendMessage')[-1]
+        self.assertIn('Current: claude · opus', sent['text'])
+        case.poll(case.pick((sent, case.telegram.next_id)))
+        self.assertEqual(case.last()['crew'], 'designer')
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        sent, mid = self.listing()
+        case.poll(self.crew_tap((sent, mid), 'mayor'))
+        edit = case.edit()
+        self.assertIn('Current: codex · old', edit['text'])
+        data = next(button['callback_data'] for button in self.buttons(edit)
+                    if button['callback_data'].endswith(':opus'))
+        case.poll(case.tap(data, edit['message_id']))
+        self.assertEqual({row['crew'] for row in case.operations()}, {'designer', 'mayor'})
+        self.assertEqual(case.rpc('GetCrew', name='mayor')['config']['model'], 'opus')
+
+    def test_force_survives_primary_change_without_crews(self):
+        case = self.case
+        del case.config['yardr_switch_crews']
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'crew')
+        case.bridge = case.reopen()
+        case.poll(case.pick(case.selector()))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        force = case.force_tap()
+        case.config['yardr_switch_model'] = dict(crew='designer', timeout=10, picks=case.picks)
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'switch_model') + (
+            y.switch_model_command(case.config['yardr_switch_model']),)
+        case.bridge = case.reopen()
+        case.poll(force)
+        self.assertEqual(case.last()['observed']['mode'], 'force')
+
+    def test_removed_crews_with_custom_prefix_retires_force_and_refuses_stale_taps(self):
+        case = self.case
+        case.poll(self.crew_pick_tap())
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        card = case.edit()
+        force = next(button['callback_data'] for button in self.buttons(card)
+                     if button['callback_data'].startswith('crew:f:'))
+        mid = card['message_id']
+        handlers = case.root / 'handlers'
+        handlers.mkdir()
+        custom = handlers / 'crew.py'
+        custom.write_text('#!/bin/sh\ntee record.jsonl >/dev/null\n'
+                          'echo \'{"actions":[{"type":"answer_callback","text":"custom callback received"}]}\'\n')
+        custom.chmod(0o700)
+        del case.config['yardr_switch_crews']
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'crew') + (
+            dict(name='crew', description='Custom crew', menu=True, callback_prefix='crew:',
+                 timeout=5, handler=str(custom)),)
+        case.bridge = case.reopen()
+        case.poll()
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertTrue(case.last()['active'])
+        self.assertEqual(case.last()['observed']['mode'], 'handoff')
+        self.assertEqual(case.edit()['reply_markup']['inline_keyboard'], [])
+        self.assertIsNone(case.last()['display_failure'])
+        case.poll(case.tap(force, mid))
+        self.assertFalse((handlers / 'record.jsonl').exists())
+        self.assertNotIn('text', case.telegram.of('answerCallbackQuery')[-1])
+        self.assertIn('native_route_disabled', case.log.getvalue())
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertEqual(case.last()['observed']['mode'], 'handoff')
+        case.poll(case.tap('crew:ping', mid))
+        record = (handlers / 'record.jsonl').read_text().strip().splitlines()
+        self.assertEqual(len(record), 1)
+        self.assertEqual(json.loads(record[0])['callback_data'], 'crew:ping')
+        self.assertEqual(case.telegram.of('answerCallbackQuery')[-1]['text'], 'custom callback received')
+
+    def test_custom_native_shaped_buttons_dispatch_to_custom_handler(self):
+        case = self.case
+        case.poll(self.crew_pick_tap())
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        force = next(button['callback_data'] for button in self.buttons(case.edit())
+                     if button['callback_data'].startswith('crew:f:'))
+        mid = case.edit()['message_id']
+        handlers = case.root / 'handlers'
+        handlers.mkdir()
+        custom = handlers / 'crew.py'
+        custom.write_text('#!/bin/sh\ntee record.jsonl >/dev/null\n'
+                          'echo \'{"actions":[{"type":"answer_callback","text":"custom callback received"}]}\'\n')
+        custom.chmod(0o700)
+        del case.config['yardr_switch_crews']
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'crew') + (
+            dict(name='crew', description='Custom crew', menu=True, callback_prefix='crew:',
+                 timeout=5, handler=str(custom)),)
+        case.bridge = case.reopen()
+        fresh = ('crew:c:AAAAAAAAAAAAAAAA:designer', 'crew:s:BBBBBBBBBBBBBBBB:opus',
+                 'crew:f:CCCCCCCCCCCCCCCC:1')
+        self.assertNotIn(force.split(':')[2], [data.split(':')[2] for data in fresh])
+        for data in fresh:
+            case.poll(case.tap(data, mid))
+            record = (handlers / 'record.jsonl').read_text().strip().splitlines()
+            self.assertEqual(json.loads(record[-1])['callback_data'], data)
+            self.assertEqual(case.telegram.of('answerCallbackQuery')[-1]['text'], 'custom callback received')
+        case.poll(case.tap(force, mid + 1000))
+        record = (handlers / 'record.jsonl').read_text().strip().splitlines()
+        self.assertEqual(json.loads(record[-1])['callback_data'], force)
+        self.assertEqual(case.telegram.of('answerCallbackQuery')[-1]['text'], 'custom callback received')
+        self.assertNotIn('native_route_disabled', case.log.getvalue())
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertEqual(case.last()['observed']['mode'], 'handoff')
+
+    def test_ambiguous_crew_picker_stays_native_after_route_removed(self):
+        case = self.case
+        sent, mid = self.listing()
+        data = next(button['callback_data'] for button in self.buttons(sent)
+                    if button['callback_data'].endswith(':designer'))
+        with case.store.connect() as db:
+            (token, raw) = db.execute('SELECT token, value FROM crew_selectors').fetchone()
+            row = json.loads(raw)
+            row['message'] = None
+            db.execute('UPDATE crew_selectors SET value=? WHERE token=?', (m.canonical(row), token))
+        handlers = case.root / 'handlers'
+        handlers.mkdir()
+        custom = handlers / 'crew.py'
+        custom.write_text('#!/bin/sh\ntee record.jsonl >/dev/null\n'
+                          'echo \'{"actions":[{"type":"answer_callback","text":"custom callback received"}]}\'\n')
+        custom.chmod(0o700)
+        del case.config['yardr_switch_crews']
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'crew') + (
+            dict(name='crew', description='Custom crew', menu=True, callback_prefix='crew:',
+                 timeout=5, handler=str(custom)),)
+        case.bridge = case.reopen()
+        case.poll(case.tap(data, mid))
+        self.assertFalse((handlers / 'record.jsonl').exists())
+        self.assertNotIn('text', case.telegram.of('answerCallbackQuery')[-1])
+        self.assertIn('native_route_disabled', case.log.getvalue())
+        self.assertEqual(case.operations(), [])
+
+    def test_legacy_primary_change_blocks_new_selector(self):
+        case = self.case
+        del case.config['yardr_switch_crews']
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'crew')
+        case.bridge = case.reopen()
+        case.poll(case.pick(case.selector()))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        original = case.last()['message']
+        case.config['yardr_switch_model'] = dict(crew='designer', timeout=10, picks=case.picks)
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'switch_model') + (
+            y.switch_model_command(case.config['yardr_switch_model']),)
+        case.bridge = case.reopen()
+        case.poll(case.text())
+        sent = case.telegram.of('sendMessage')[-1]
+        self.assertIn('already pending', sent['text'])
+        self.assertIn(str(original), sent['text'])
+        self.assertNotIn('reply_markup', sent)
+        self.assertEqual([row['crew'] for row in case.operations()], ['mayor'])
+
+    def test_legacy_primary_change_refuses_other_crew_admission(self):
+        case = self.case
+        del case.config['yardr_switch_crews']
+        case.config['commands'] = tuple(
+            command for command in case.config['commands'] if command['name'] != 'crew')
+        case.bridge = case.reopen()
+        def reassign(crew):
+            case.config['yardr_switch_model'] = dict(crew=crew, timeout=10, picks=case.picks)
+            case.config['commands'] = tuple(
+                command for command in case.config['commands'] if command['name'] != 'switch_model') + (
+                y.switch_model_command(case.config['yardr_switch_model']),)
+            case.bridge = case.reopen()
+        reassign('designer')
+        sent, mid = case.selector()
+        designer_pick = next(button['callback_data'] for row in sent['reply_markup']['inline_keyboard']
+                             for button in row if button['callback_data'].endswith(':opus'))
+        before = case.rpc('GetCrew', name='designer')
+        reassign('mayor')
+        case.poll(case.pick(case.selector()))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        reassign('designer')
+        case.poll(case.tap(designer_pick, mid))
+        self.assertIn('already pending', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual([row['crew'] for row in case.operations()], ['mayor'])
+        self.assertEqual(case.rpc('GetCrew', name='designer'), before)
+        with case.store.connect() as db:
+            taps = {(row[0], row[1], row[2]) for row in
+                    db.execute('SELECT pick, crew, state FROM switch_model_taps').fetchall()}
+        self.assertIn(('opus', 'mayor', 'refused'), taps)
+
+
 if __name__ == '__main__':
     unittest.main()

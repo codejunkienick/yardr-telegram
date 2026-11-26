@@ -27,6 +27,10 @@ REFRESH_SECONDS = 3
 TOKEN = r'[A-Za-z0-9_-]{16}'
 PICK = re.compile(r'switch-model:s:(' + TOKEN + r'):([a-z0-9][a-z0-9_-]{0,31})')
 FORCE = re.compile(r'switch-model:f:(' + TOKEN + r'):([1-9][0-9]{0,8})')
+CREW = r'[A-Za-z0-9][A-Za-z0-9_-]{0,31}'
+CREW_SELECT = re.compile(r'crew:c:(' + TOKEN + r'):(' + CREW + r')')
+CREW_PICK = re.compile(r'crew:s:(' + TOKEN + r'):([a-z0-9][a-z0-9_-]{0,31})')
+CREW_FORCE = re.compile(r'crew:f:(' + TOKEN + r'):([1-9][0-9]{0,8})')
 STATES = {'waiting', 'timed_out', 'handoff_written', 'restart_requested', 'restarting',
           'running', 'superseded', 'stopped'}
 TERMINAL = {'running', 'superseded', 'stopped'}
@@ -43,6 +47,7 @@ def canonical(value):
 
 def initialize(db):
     db.execute('CREATE TABLE IF NOT EXISTS model_selectors (token TEXT PRIMARY KEY, update_id INTEGER UNIQUE, value TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS crew_selectors (token TEXT PRIMARY KEY, update_id INTEGER UNIQUE, value TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS model_operations (token TEXT PRIMARY KEY, owner TEXT NOT NULL, active INTEGER NOT NULL, value TEXT NOT NULL)')
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS model_operation_owner ON model_operations(owner) WHERE active=1')
     db.execute('CREATE TABLE IF NOT EXISTS model_actions (update_id INTEGER PRIMARY KEY, token TEXT NOT NULL, value TEXT NOT NULL)')
@@ -72,7 +77,12 @@ def binding(config, conversation):
 
 
 def snapshot(config):
-    return json.loads(canonical(config['yardr_switch_model']))
+    return crew_snapshot(config['yardr_switch_model'])
+
+
+def crew_snapshot(entry):
+    """One crew's canonical switch triple: labels never reach the guarded pipeline."""
+    return json.loads(canonical({key: entry[key] for key in ('crew', 'timeout', 'picks')}))
 
 
 def definition_of(crew, target):
@@ -329,7 +339,12 @@ def receipt(value, row, request_id=None, *, admission=False):
 
 def admission_argv(config, row):
     req = row['request']
-    return y.set_argv(config, row['pick'], req['revision']) + [
+    # The operation's own crew: set_argv reads only the switch crew of its config.
+    crew = row.get('crew')
+    if crew is None:
+        crew = (config.get('yardr_switch_model') or {}).get('crew')
+    switch = dict(config.get('yardr_switch_model') or {}, crew=crew)
+    return y.set_argv(dict(config, yardr_switch_model=switch), row['pick'], req['revision']) + [
         '--handoff', '--request-id', req['request_id'], '--session-generation', req['session_generation'],
         '--wait-seconds', str(WAIT_SECONDS), '--json']
 
@@ -344,6 +359,49 @@ def current_lines(crew, parsed):
             raise y.SwitchUnavailable('invalid native actual launch')
         assignment = 'Current: ' + y.clean(launch['kind'], 32) + ' · ' + y.clean(launch['model'], 128)
     return [assignment, 'Session: ' + (parsed['status'] or 'unknown')]
+
+
+def stale_native_callback(bridge, data, message_id):
+    """Retired native switch buttons whose route is off: their cards are
+    retired, and no custom handler under the same prefix may receive them.
+    Only a saved native token counts: on its own message, or on an ambiguous
+    send whose message was never recorded. A custom handler's own
+    native-shaped buttons have no such row and still dispatch."""
+    config = bridge.config
+    token, table = None, None
+    if config.get('yardr_switch_model') is None:
+        match = PICK.fullmatch(data)
+        if match is not None:
+            token, table = match[1], 'model_selectors'
+        else:
+            match = FORCE.fullmatch(data)
+            if match is not None:
+                token, table = match[1], 'model_operations'
+    if token is None and config.get('yardr_switch_crews') is None:
+        for pattern, name in ((CREW_SELECT, 'crew_selectors'), (CREW_PICK, 'model_selectors'),
+                              (CREW_FORCE, 'model_operations')):
+            match = pattern.fullmatch(data)
+            if match is not None:
+                token, table = match[1], name
+                break
+    if token is None:
+        return False
+    message_id = message_id if type(message_id) is int and message_id > 0 else None
+    try:
+        with bridge.store.connect() as db:
+            row = db.execute(f'SELECT value FROM {table} WHERE token=?', (token,)).fetchone()
+    except Exception:
+        return False
+    if row is None:
+        return False
+    try:
+        saved = json.loads(row[0])
+    except ValueError:
+        return False
+    # An ambiguous native send (Telegram accepted the card but its reply was
+    # lost) leaves message None while the buttons are live; the saved token
+    # still proves native provenance on any tapped message.
+    return saved.get('message') is None or saved.get('message') == message_id
 
 
 def dry_run(config, pick_id, log):
@@ -397,11 +455,56 @@ class ModelSwitch:
             db.execute('UPDATE model_operations SET active=?, value=? WHERE token=?',
                        (int(row['active']), canonical(row), row['token']))
 
-    def active(self):
-        with self.bridge.store.connect() as db:
-            return [json.loads(row[0]) for row in db.execute('SELECT value FROM model_operations WHERE active=1')]
+    def crews(self):
+        """Every switchable crew: the [yardr.switch_model] crew first, then each [[yardr.switch_crews]] entry."""
+        switch = self.config.get('yardr_switch_model')
+        entries = list(self.config.get('yardr_switch_crews') or ())
+        if switch is not None:
+            entries = [dict(crew=switch['crew'], label=switch['crew'], timeout=switch['timeout'],
+                            picks=switch['picks'])] + entries
+        return entries
 
-    def running_pick(self, crew, parsed, pick):
+    def crew_entry(self, name):
+        for entry in self.crews():
+            if entry['crew'] == name:
+                return entry
+        return None
+
+    def effective(self, crew):
+        """This config switching `crew`: reads and guarded writes take it as the switch table."""
+        entry = self.crew_entry(crew)
+        return dict(self.config, yardr_switch_model={key: entry[key] for key in ('crew', 'timeout', 'picks')})
+
+    def expected_snapshot(self, crew):
+        entry = self.crew_entry(crew)
+        return None if entry is None else crew_snapshot(entry)
+
+    def active(self, crew=None):
+        # Scoped by crew, never by home: reopening the ledger on another home
+        # cannot hide a pending operation of the same crew.
+        with self.bridge.store.connect() as db:
+            rows = [json.loads(row[0]) for row in db.execute('SELECT value FROM model_operations WHERE active=1')]
+        return rows if crew is None else [row for row in rows if row['crew'] == crew]
+
+    def guard_scope(self, crew):
+        """Pending-operation guard scope for `crew`: None (every active
+        operation) when only [yardr.switch_model] is configured, else that
+        crew alone. Legacy setups admit one handoff at a time."""
+        if self.config.get('yardr_switch_crews') is None:
+            return None
+        return crew
+
+    @staticmethod
+    def _pending_row(db, crew):
+        """The active operation row blocking `crew`, if any: any active row
+        when `crew` is None (the legacy single-operation guard), else that
+        crew's. Same-crew races meet here."""
+        for item in db.execute('SELECT value FROM model_operations WHERE active=1').fetchall():
+            if crew is None or json.loads(item[0])['crew'] == crew:
+                return item
+        return None
+
+    def running_pick(self, name, crew, parsed, pick):
         op = crew.get('switch')
         if crew['state'] != 'running' or not y.has_pick(pick, parsed):
             return False
@@ -413,7 +516,7 @@ class ModelSwitch:
             for item in db.execute('SELECT value FROM model_operations WHERE active=0'):
                 row = json.loads(item[0])
                 original = (row.get('receipt') or {}).get('operation')
-                if (original and row.get('admission_confirmed') is True and row['owner'] == self.owner() and self.bound(row)
+                if (original and row.get('admission_confirmed') is True and row['owner'] == self.owner_for(name) and self.bound(row)
                         and all(original[key] == op[key] for key in ('id', 'generation', 'target'))
                         and y.has_pick(row['pick'], parsed)
                         and row.get('definition') == definition_of(crew, row['request']['target'])):
@@ -424,9 +527,9 @@ class ModelSwitch:
         return row['binding'] == binding(self.config, row['binding']['conversation']) and bool(
             self.bridge.conversation_for_id(row['binding']['conversation']))
 
-    def owner(self):
+    def owner_for(self, crew):
         # Native ownership identifies saved launch proof; pending ownership spans the ledger.
-        return canonical([os.path.realpath(self.config['yardr_home']), self.config['yardr_switch_model']['crew']])
+        return canonical([os.path.realpath(self.config['yardr_home']), crew])
 
     def verify(self):
         n.verify_operator(self.bridge.yard_client(), self.config)
@@ -466,30 +569,142 @@ class ModelSwitch:
                 self.answer(uid, query, 'Switch outcome unknown; nothing retried.', True)
 
     def selector(self, uid, thread):
+        return self.open_selector(uid, thread, self.config['yardr_switch_model']['crew'], via='switch_model')
+
+    def open_selector(self, uid, thread, crew, via, edit=None, query=None, crew_token=None):
+        """One crew's model picks: a new card for a text command, or the crew
+        picker message edited in place after a crew tap (`edit`, `query`, `crew_token`)."""
         conversation = self.bridge.decide_conversation(thread)
         if conversation is None:
             raise y.SwitchUnavailable('conversation not served')
         current_binding = binding(self.config, conversation['conversation_id'])
-        for op in self.active():
-            return self.bridge._command_message(f'command:{uid}:0', dict(type='send', plain=None,
-                text=f'A switch is already pending. See its original card (message {op["message"]}).'), thread)
-        deadline = time.monotonic() + self.config['yardr_switch_model']['timeout']
+        entry = self.crew_entry(crew)
+        if entry is None:
+            raise y.SwitchUnavailable('crew not configured')
+        if edit is None:
+            for op in self.active(self.guard_scope(crew)):
+                return self.bridge._command_message(f'command:{uid}:0', dict(type='send', plain=None,
+                    text=f'A switch is already pending. See its original card (message {op["message"]}).'), thread)
+        effective = self.effective(crew)
+        deadline = time.monotonic() + entry['timeout']
         capability(self.config, deadline, self.bridge._log)
-        crew, parsed = read_current(self.config, deadline, self.bridge._log)
+        native, parsed = read_current(effective, deadline, self.bridge._log)
         row = self.load('model_selectors', 'update_id', uid)
         if row is None:
-            row = dict(token=secrets.token_urlsafe(12), binding=current_binding, snapshot=snapshot(self.config),
-                       generation=1, message=None, retired=False, update_id=uid,
-                       current=current_lines(crew, parsed), definition=selector_definition(crew))
+            row = dict(token=secrets.token_urlsafe(12), binding=current_binding, snapshot=crew_snapshot(entry),
+                       generation=1, message=edit, retired=False, update_id=uid,
+                       current=current_lines(native, parsed), definition=selector_definition(native))
             with self.bridge.store.connect() as db:
                 db.execute('INSERT OR IGNORE INTO model_selectors VALUES (?, ?, ?)', (row['token'], uid, canonical(row)))
             row = self.load('model_selectors', 'update_id', uid)
-        if row['binding'] != current_binding or row['snapshot'] != snapshot(self.config):
+        if (row['binding'] != current_binding or row['snapshot'] != crew_snapshot(entry)
+                or (edit is not None and row['message'] != edit)):
+            if query is not None:
+                return self.answer(uid, query, 'That crew button is out of date.', True)
             raise y.SwitchUnavailable('selector out of date')
         if row.get('notice'):
             return self.display_selector(row)
-        keyboard = [[dict(text=pick['label'], callback_data=f'switch-model:s:{row["token"]}:{pick["id"]}')]
+        prefix = y.CREW_PREFIX if via == 'crew' else y.SWITCH_MODEL_PREFIX
+        keyboard = [[dict(text=pick['label'], callback_data=f'{prefix}s:{row["token"]}:{pick["id"]}')]
                     for pick in row['snapshot']['picks']]
+        keyboard = self.bridge._command_keyboard(keyboard)
+        action = dict(type='send', format='html', text='<pre>' + escape('\n'.join(row['current'])) + '</pre>',
+                      plain='\n'.join(row['current']), keyboard=keyboard)
+        if edit is not None:
+            if crew_token is not None:
+                claimed = self.load('crew_selectors', 'token', crew_token)
+                if claimed is None:
+                    return self.answer(uid, query, 'That crew button is out of date.', True)
+                if claimed.get('selected_crew') is not None and (
+                        claimed['selected_crew'] != crew or claimed.get('selected_token') not in (None, row['token'])):
+                    return self.answer(uid, query, 'That crew button is out of date.', True)
+                # Claim the listing message for this selector before editing it,
+                # so a delayed tap for another crew cannot take the same card.
+                claimed.update(selected_crew=crew, selected_token=row['token'])
+                with self.bridge.store.connect() as db:
+                    db.execute('UPDATE crew_selectors SET value=? WHERE token=?', (canonical(claimed), crew_token))
+            self.answer(uid, query, '')
+            return self.edit_selector(row, action)
+        delivered = self.bridge._command_message(f'command:{uid}:0', action, thread)
+        if delivered.get('delivered'):
+            row['message'] = int(delivered['message_id'])
+            with self.bridge.store.connect() as db:
+                db.execute('UPDATE model_selectors SET value=? WHERE token=?', (canonical(row), row['token']))
+
+    def edit_selector(self, row, action):
+        b = self.bridge
+        extra = dict(message_id=row['message'], reply_markup={'inline_keyboard': action['keyboard']})
+        identity = dict(text=action['text'], binding=row['binding'], **extra)
+        return b._reserve_and_deliver('model-selector:' + row['token'] + ':picks', identity,
+            lambda pending: b._deliver_text(action['text'], None, pending, action['plain'],
+                method='editMessageText', extra=extra, not_modified=True), retry_undelivered=True)
+
+    def crew(self, uid, payload, query=None, thread=None):
+        with self.locked():
+            return self._crew(uid, payload, query, thread)
+
+    def _crew(self, uid, payload, query=None, thread=None):
+        try:
+            if query is not None:
+                return self.crew_callback(uid, payload, query, thread)
+            return self.crew_text(uid, payload, thread)
+        except (y.SwitchUnavailable, n.NativeError):
+            if query is not None:
+                self.answer(uid, query, 'Switch unavailable; nothing retried.', True)
+            else:
+                self.bridge._command_message(f'command:{uid}:notice', dict(
+                    type='send', text='Crew switch unavailable; check the native capability and operator mapping.', plain=None), thread)
+        except Exception:
+            self.bridge._log(f'command crew failed (update {uid}): internal error')
+            if query is not None:
+                self.answer(uid, query, 'Switch outcome unknown; nothing retried.', True)
+
+    def crew_text(self, uid, payload, thread):
+        args = (payload.get('args') or '').strip()
+        if not args:
+            return self.crew_picker(uid, thread)
+        if self.crew_entry(args) is None:
+            names = ', '.join(entry['crew'] for entry in self.crews())
+            return self.bridge._command_message(f'command:{uid}:0', dict(type='send', plain=None,
+                text=f'Unknown crew {y.clean(args, 64)!r}; switchable: {names}.'), thread)
+        return self.open_selector(uid, thread, args, via='crew')
+
+    def crew_picker(self, uid, thread):
+        conversation = self.bridge.decide_conversation(thread)
+        if conversation is None:
+            raise y.SwitchUnavailable('conversation not served')
+        current_binding = binding(self.config, conversation['conversation_id'])
+        entries = self.crews()
+        deadline = time.monotonic() + max(entry['timeout'] for entry in entries)
+        capability(self.config, deadline, self.bridge._log)
+        lines = []
+        for entry in entries:
+            try:
+                native, _ = read_current(self.effective(entry['crew']), deadline, self.bridge._log)
+            except (y.SwitchUnavailable, n.NativeError):
+                lines.append(entry['label'] + ': model unavailable')
+                continue
+            launch = native.get('launch')
+            current = 'launch unavailable' if launch is None else (
+                y.clean(launch['kind'], 32) + ' · ' + y.clean(launch['model'], 128))
+            if (native.get('switch') or {}).get('unresolved'):
+                current += ' · switch pending'
+            lines.append(entry['label'] + ': ' + current)
+        row = self.load('crew_selectors', 'update_id', uid)
+        if row is None:
+            row = dict(token=secrets.token_urlsafe(12), binding=current_binding,
+                       snapshot=[crew_snapshot(entry) for entry in entries],
+                       labels={entry['crew']: entry['label'] for entry in entries},
+                       message=None, retired=False, update_id=uid, current=lines,
+                       selected_crew=None, selected_token=None)
+            with self.bridge.store.connect() as db:
+                db.execute('INSERT OR IGNORE INTO crew_selectors VALUES (?, ?, ?)', (row['token'], uid, canonical(row)))
+            row = self.load('crew_selectors', 'update_id', uid)
+        if (row['binding'] != current_binding or row['snapshot'] != [crew_snapshot(entry) for entry in entries]
+                or row['labels'] != {entry['crew']: entry['label'] for entry in entries}):
+            raise y.SwitchUnavailable('crew picker out of date')
+        keyboard = [[dict(text=entry['label'], callback_data=f'crew:c:{row["token"]}:{entry["crew"]}')]
+                    for entry in entries]
         keyboard = self.bridge._command_keyboard(keyboard)
         action = dict(type='send', format='html', text='<pre>' + escape('\n'.join(row['current'])) + '</pre>',
                       plain='\n'.join(row['current']), keyboard=keyboard)
@@ -497,11 +712,72 @@ class ModelSwitch:
         if delivered.get('delivered'):
             row['message'] = int(delivered['message_id'])
             with self.bridge.store.connect() as db:
-                db.execute('UPDATE model_selectors SET value=? WHERE token=?', (canonical(row), row['token']))
+                db.execute('UPDATE crew_selectors SET value=? WHERE token=?', (canonical(row), row['token']))
+
+    def crew_callback(self, uid, payload, query, thread):
+        data = payload.get('callback_data', '')
+        select = CREW_SELECT.fullmatch(data)
+        if not select:
+            # Crew picks and Force share the guarded pipeline with /switch_model.
+            return self.callback(uid, payload, query, thread)
+        conversation = self.bridge.decide_conversation(thread)
+        if conversation is None:
+            return self.answer(uid, query, 'That crew button is out of date.', True)
+        return self.crew_select(uid, payload, query, thread, conversation, select)
+
+    def crew_select(self, uid, payload, query, thread, conversation, select):
+        token, crew = select[1], select[2]
+        row = self.load('crew_selectors', 'token', token)
+        if (row is None or not self.bound(row) or row['binding']['conversation'] != conversation['conversation_id']
+                or row['message'] != payload.get('callback_message_id')):
+            return self.answer(uid, query, 'That crew button is out of date.', True)
+        # Every new mutation verifies today's native mapping, including crew selection.
+        self.verify()
+        entry = self.crew_entry(crew)
+        if (entry is None or row['snapshot'] != [crew_snapshot(item) for item in self.crews()]
+                or row['labels'] != {item['crew']: item['label'] for item in self.crews()}):
+            return self.answer(uid, query, 'That crew button is out of date.', True)
+        if row.get('selected_crew') is not None:
+            if crew != row['selected_crew']:
+                return self.answer(uid, query, 'That crew button is out of date.', True)
+            # Repeat the claimed selection with its own ledger key; a pending
+            # operation keeps its status card instead of being re-edited.
+            if self.active(crew):
+                return self.answer(uid, query, 'That crew button is out of date.', True)
+            selector = self.load('model_selectors', 'token', row.get('selected_token')) if row.get('selected_token') else None
+            if (selector is None or selector.get('notice') or selector.get('retired')
+                    or selector['binding'] != binding(self.config, conversation['conversation_id'])
+                    or selector['snapshot'] != crew_snapshot(entry) or selector['message'] != row['message']):
+                return self.answer(uid, query, 'That crew button is out of date.', True)
+            keyboard = [[dict(text=pick['label'], callback_data=f'crew:s:{selector["token"]}:{pick["id"]}')]
+                        for pick in selector['snapshot']['picks']]
+            keyboard = self.bridge._command_keyboard(keyboard)
+            action = dict(type='send', format='html', text='<pre>' + escape('\n'.join(selector['current'])) + '</pre>',
+                          plain='\n'.join(selector['current']), keyboard=keyboard)
+            self.answer(uid, query, '')
+            result = self.edit_selector(selector, action)
+            if isinstance(result, dict) and result.get('delivered'):
+                row['retired'] = True
+                with self.bridge.store.connect() as db:
+                    db.execute('UPDATE crew_selectors SET value=? WHERE token=?', (canonical(row), row['token']))
+            return result
+        if row['retired'] and self.load('model_selectors', 'update_id', uid) is None:
+            return self.answer(uid, query, 'That crew button is out of date.', True)
+        result = self.open_selector(uid, thread, crew, via='crew', edit=row['message'], query=query, crew_token=token)
+        if isinstance(result, dict) and result.get('delivered'):
+            row = self.load('crew_selectors', 'token', token) or row
+            row['retired'] = True
+            with self.bridge.store.connect() as db:
+                db.execute('UPDATE crew_selectors SET value=? WHERE token=?', (canonical(row), row['token']))
+        return result
 
     def callback(self, uid, payload, query, thread):
         data = payload.get('callback_data', '')
         select, force = PICK.fullmatch(data), FORCE.fullmatch(data)
+        via = 'switch_model'
+        if not select and not force:
+            select, force = CREW_PICK.fullmatch(data), CREW_FORCE.fullmatch(data)
+            via = 'crew'
         if not select and not force:
             return self.answer(uid, query, 'That model button is out of date.', True)
         conversation = self.bridge.decide_conversation(thread)
@@ -516,7 +792,13 @@ class ModelSwitch:
         self.verify()
         if force:
             return self.force(uid, query, row, int(force[2]))
-        if row['snapshot'] != snapshot(self.config):
+        if via == 'switch_model':
+            # The shortcut follows the primary: a reassigned primary retires
+            # its old cards even when that crew stays configured elsewhere.
+            primary = self.config.get('yardr_switch_model')
+            if primary is None or row['snapshot'] != crew_snapshot(primary):
+                return self.answer(uid, query, 'That model button is out of date.', True)
+        elif row['snapshot'] != self.expected_snapshot(row['snapshot']['crew']):
             return self.answer(uid, query, 'That model button is out of date.', True)
         pick = next((p for p in row['snapshot']['picks'] if p['id'] == select[2]), None)
         if pick is None:
@@ -532,27 +814,29 @@ class ModelSwitch:
                 return self.answer(uid, query, action['notice'], True)
             target = self.load('model_operations', 'token', action['token']) if action else None
             if target:
-                return self.ack_existing(uid, query, target, pick)
+                return self.ack_existing(uid, query, target, pick, row['snapshot']['crew'])
             return self.answer(uid, query, 'That tap is already recorded; nothing retried.', True)
         if row['retired']:
             return self.answer(uid, query, 'That model button is out of date.', True)
-        for active in self.active():
-            return self.reserve_existing(uid, query, active, pick)
-        deadline = time.monotonic() + self.config['yardr_switch_model']['timeout']
+        crew_name = row['snapshot']['crew']
+        for active in self.active(self.guard_scope(crew_name)):
+            return self.reserve_existing(uid, query, active, pick, crew_name)
+        entry = self.crew_entry(crew_name)
+        deadline = time.monotonic() + entry['timeout']
         capability(self.config, deadline, self.bridge._log)
-        crew, parsed = read_current(self.config, deadline, self.bridge._log)
+        crew, parsed = read_current(self.effective(crew_name), deadline, self.bridge._log)
         # An external unresolved native switch also takes precedence over desired equality.
         if (crew.get('switch') or {}).get('unresolved'):
             return self.reserve_refusal(uid, query, row, pick)
         if row.get('definition') != selector_definition(crew):
             return self.reserve_refusal(uid, query, row, pick,
                 'That model button is out of date; crew configuration or session changed.')
-        if self.running_pick(crew, parsed, pick):
+        if self.running_pick(crew_name, crew, parsed, pick):
             notice = 'Already running ' + y.clean(pick['label'], 64) + '; nothing to switch.'
             with self.bridge.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 tap = db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone()
-                existing = db.execute('SELECT value FROM model_operations WHERE active=1 LIMIT 1').fetchone()
+                existing = self._pending_row(db, self.guard_scope(crew_name))
                 if not tap and not existing:
                     db.execute("INSERT INTO switch_model_taps VALUES (?, ?, ?, 'done', ?)",
                                (uid, pick['id'], row['snapshot']['crew'], now().isoformat()))
@@ -561,7 +845,7 @@ class ModelSwitch:
                     row.update(retired=True, notice=notice)
                     db.execute('UPDATE model_selectors SET value=? WHERE token=?', (canonical(row), row['token']))
             if existing and not tap:
-                return self.reserve_existing(uid, query, json.loads(existing[0]), pick)
+                return self.reserve_existing(uid, query, json.loads(existing[0]), pick, crew_name)
             result = self.answer(uid, query, notice)
             self.display_selector(row)
             return result
@@ -573,8 +857,8 @@ class ModelSwitch:
                        target=dict(kind=pick['kind'], model=pick['model'], args=pick['args']), wait_seconds=WAIT_SECONDS)
         if pick['env_file'] is not None:
             request['target']['env_file'] = pick['env_file']
-        operation = dict(token=op_token, owner=self.owner(), active=True, crew=row['snapshot']['crew'],
-                         binding=row['binding'], pick=pick, request=request, fingerprint=n.digest(dict(request=request, binding=row['binding'])), target=None,
+        operation = dict(token=op_token, owner=self.owner_for(crew_name), active=True, crew=row['snapshot']['crew'],
+                         via=via, binding=row['binding'], pick=pick, request=request, fingerprint=n.digest(dict(request=request, binding=row['binding'])), target=None,
                          definition=definition_of(crew, request['target']),
                          message=row['message'], generation=1, update_id=uid, accepted=now().isoformat(),
                          deadline=(now() + datetime.timedelta(seconds=WAIT_SECONDS)).isoformat(),
@@ -589,17 +873,17 @@ class ModelSwitch:
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             tap = db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone()
-            existing = db.execute('SELECT value FROM model_operations WHERE active=1 LIMIT 1').fetchone()
+            existing = self._pending_row(db, self.guard_scope(crew_name))
             if not tap and not existing:
                 db.execute("INSERT INTO switch_model_taps VALUES (?, ?, ?, 'reserved', ?)", (uid, pick['id'], operation['crew'], now().isoformat()))
-                db.execute('INSERT INTO model_operations VALUES (?, ?, 1, ?)', (op_token, self.owner(), canonical(operation)))
+                db.execute('INSERT INTO model_operations VALUES (?, ?, 1, ?)', (op_token, self.owner_for(crew_name), canonical(operation)))
                 db.execute('INSERT INTO model_actions VALUES (?, ?, ?)', (uid, op_token, canonical(dict(token=op_token, kind='admit'))))
             elif tap:
                 duplicate = True
         if duplicate:
             return self.answer(uid, query, 'That tap is already recorded; nothing retried.')
         if existing:
-            return self.reserve_existing(uid, query, json.loads(existing[0]), pick)
+            return self.reserve_existing(uid, query, json.loads(existing[0]), pick, crew_name)
         # Reservation and complete request are durable before the only mutating native call.
         self.answer(uid, query, 'Switch requested; please wait for the handoff.')
         status, out, problem = y._run_logged(self.config, admission_argv(self.config, operation), deadline, 'handoff admission', self.bridge._log)
@@ -671,19 +955,19 @@ class ModelSwitch:
                            canonical(dict(token=selector['token'], kind='refused', notice=notice))))
         return self.answer(uid, query, notice, True)
 
-    def reserve_existing(self, uid, query, row, pick):
+    def reserve_existing(self, uid, query, row, pick, crew):
         with self.bridge.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM switch_model_taps WHERE update_id=?', (uid,)).fetchone():
-                same = (self.bound(row) and row['crew'] == self.config['yardr_switch_model']['crew']
+                same = (self.bound(row) and row['crew'] == crew
                         and canonical(row['pick']) == canonical(pick))
                 db.execute('INSERT INTO switch_model_taps VALUES (?, ?, ?, ?, ?)',
                            (uid, pick['id'], row['crew'], 'done' if same else 'refused', now().isoformat()))
                 db.execute('INSERT INTO model_actions VALUES (?, ?, ?)', (uid, row['token'], canonical(dict(token=row['token'], kind='existing'))))
-        return self.ack_existing(uid, query, row, pick)
+        return self.ack_existing(uid, query, row, pick, crew)
 
-    def ack_existing(self, uid, query, row, pick):
-        if not self.bound(row) or row['crew'] != self.config['yardr_switch_model']['crew']:
+    def ack_existing(self, uid, query, row, pick, crew):
+        if not self.bound(row) or row['crew'] != crew:
             return self.answer(uid, query, 'A switch is already pending; reconcile its original binding/card.', True)
         if canonical(row['pick']) != canonical(pick):
             return self.answer(uid, query, 'A switch is already pending; a different pick is refused.', True)
@@ -740,7 +1024,18 @@ class ModelSwitch:
         previous = self.bridge.store.switch_tap(uid)
         if previous or row['force_action']:
             return self.answer(uid, query, 'Force already recorded; nothing retried.')
-        deadline = time.monotonic() + self.config['yardr_switch_model']['timeout']
+        entry = self.crew_entry(row['crew'])
+        if entry is None:
+            # A pending operation keeps its Force path after its crew leaves
+            # the picker: the primary's timeout bounds the native calls, as on
+            # a single-crew setup, else the first remaining crew's.
+            entry = self.config.get('yardr_switch_model')
+            if entry is None:
+                entries = self.config.get('yardr_switch_crews') or ()
+                entry = entries[0] if entries else None
+            if entry is None:
+                raise y.SwitchUnavailable('crew not configured')
+        deadline = time.monotonic() + entry['timeout']
         capability(self.config, deadline, self.bridge._log)
         self.lookup(row, deadline)
         op = row['observed']
@@ -848,7 +1143,15 @@ class ModelSwitch:
             lines.append('Context unavailable.')
         keyboard = []
         if op and row['active'] and not row.get('problem') and not row['force_action'] and op['mode'] != 'force' and self.bound(row):
-            keyboard = [[dict(text='Force apply', callback_data=f'switch-model:f:{row["token"]}:{row["generation"]}')]]
+            prefix = y.CREW_PREFIX if row.get('via') == 'crew' else y.SWITCH_MODEL_PREFIX
+            data = f'{prefix}f:{row["token"]}:{row["generation"]}'
+            routed = self.bridge._callback_command(data)
+            native = y.NATIVE_CREW if row.get('via') == 'crew' else y.NATIVE_SWITCH_MODEL
+            # A reconfigured bridge may no longer route the originating native
+            # command, or may route its prefix to a custom handler instead;
+            # reconcile the operation without its Force control then.
+            if routed is not None and routed.get('native') == native:
+                keyboard = [[dict(text='Force apply', callback_data=data)]]
         text = '<pre>' + escape('\n'.join(lines)) + '</pre>'
         if n.units(text) > 4096:
             raise y.SwitchUnavailable('model card exceeds message limit')
@@ -886,13 +1189,13 @@ class ModelSwitch:
             b._log('command switch_model: local display failure; native progress remains observable')
 
     def refresh(self):
-        if not self.config.get('yardr_switch_model'):
+        if not self.config.get('yardr_switch_model') and not self.config.get('yardr_switch_crews'):
             return
         with self.locked():
             self._refresh()
 
     def _refresh(self):
-        if not self.config.get('yardr_switch_model'):
+        if not self.config.get('yardr_switch_model') and not self.config.get('yardr_switch_crews'):
             return
         deadline = time.monotonic() + REFRESH_SECONDS
         with self.bridge.store.connect() as db:
@@ -912,8 +1215,10 @@ class ModelSwitch:
                     self.recovered.add(row['token'])
                     row['lookup_next'] = False
                 else:
-                    observed_config = dict(self.config, yardr_switch_model=dict(self.config['yardr_switch_model'], crew=row['crew']))
-                    crew, parsed = read_current(observed_config, deadline, self.bridge._log)
+                    entry = self.crew_entry(row['crew'])
+                    triple = ({key: entry[key] for key in ('crew', 'timeout', 'picks')} if entry is not None
+                              else dict(self.config.get('yardr_switch_model') or {}, crew=row['crew']))
+                    crew, parsed = read_current(dict(self.config, yardr_switch_model=triple), deadline, self.bridge._log)
                     op = crew.get('switch')
                     if not isinstance(op, dict) or op.get('id') != row['receipt']['operation']['id']:
                         row['lookup_next'] = True

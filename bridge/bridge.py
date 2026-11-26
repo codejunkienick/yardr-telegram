@@ -2940,7 +2940,8 @@ class Bridge:
                 seen.add(data)
                 if data.startswith(('runask:', 'askcard:', 'siding:')) or (
                         self.native_decide() and data.startswith(self.DECIDE_CALLBACK_PREFIX)) or (
-                        self.config.get('yardr_switch_model') and data.startswith(yard_commands.SWITCH_MODEL_PREFIX)):
+                        self.config.get('yardr_switch_model') and data.startswith(yard_commands.SWITCH_MODEL_PREFIX)) or (
+                        self.config.get('yardr_switch_crews') and data.startswith(yard_commands.CREW_PREFIX)):
                     return None, 'foreign_callback_data'
                 if data.startswith(self.ASK_CALLBACK_PREFIX):
                     if self._ask_choice(data) is None:
@@ -3114,6 +3115,8 @@ class Bridge:
         came from, when there is one."""
         if command.get('native') == yard_commands.NATIVE_SWITCH_MODEL:
             return self.model_switch.command(update_id, payload, query_id, thread_id)
+        if command.get('native') == yard_commands.NATIVE_CREW:
+            return self.model_switch.crew(update_id, payload, query_id, thread_id)
         if command.get('native') == yard_commands.NATIVE_NUDGE:
             return self.typed_nudge.command(update_id, payload, query_id, thread_id)
         name = command['name']
@@ -3126,11 +3129,15 @@ class Bridge:
             else:
                 raw = self._run_executable_handler(command, data)
             actions = self.parse_handler_output(raw, payload['kind'])
-            if (self.config.get('yardr_switch_model') and command.get('native') != yard_commands.NATIVE_SWITCH_MODEL
-                    and any(button['callback_data'].startswith(yard_commands.SWITCH_MODEL_PREFIX)
-                            for action in actions for row in action.get('keyboard', ()) for button in row)):
-                # The bridge's own switch-model: buttons come from /switch_model alone.
-                raise self._HandlerFailure('foreign_callback_data')
+            owned = ((self.config.get('yardr_switch_model'), yard_commands.NATIVE_SWITCH_MODEL,
+                      yard_commands.SWITCH_MODEL_PREFIX),
+                     (self.config.get('yardr_switch_crews'), yard_commands.NATIVE_CREW, yard_commands.CREW_PREFIX))
+            for configured, native, prefix in owned:
+                if (configured and command.get('native') != native
+                        and any(button['callback_data'].startswith(prefix)
+                                for action in actions for row in action.get('keyboard', ()) for button in row)):
+                    # The bridge's own buttons come from their native command alone.
+                    raise self._HandlerFailure('foreign_callback_data')
         except self._HandlerFailure as failure:
             self._log(f'command {name} failed (update {update_id}): {failure.args[0]}')
             receipt = self._command_message(f'command:{update_id}:notice', dict(
@@ -3180,6 +3187,12 @@ class Bridge:
                    or message['from'].get('is_bot') is not True
                    or message.get('is_topic_message') is True and self._topic_thread(message) is None)):
             reason = 'not_authorized'
+        elif (self.config.get('yardr_switch_crews') and data.startswith(yard_commands.CREW_PREFIX)
+              and (chat.get('type') != 'private' or not isinstance(message.get('from'), dict)
+                   or type(message['from'].get('id')) is not int or message['from']['id'] != self.config['bot_id']
+                   or message['from'].get('is_bot') is not True
+                   or message.get('is_topic_message') is True and self._topic_thread(message) is None)):
+            reason = 'not_authorized'
         elif data.startswith('siding:'):
             self.siding_cards.callback(update_id, query)
             return
@@ -3195,6 +3208,9 @@ class Bridge:
         elif data.startswith(self.ASK_CALLBACK_PREFIX):
             self.inbound_ask(update_id, query, data)
             return
+        elif model_switch.stale_native_callback(
+                self, data, message.get('message_id') if isinstance(message, dict) else None):
+            reason = 'native_route_disabled'
         elif (command := self._callback_command(data)) is None:
             reason = 'no_registered_prefix'
         else:
@@ -5501,11 +5517,15 @@ SETTINGS_KEYS = {'yard', 'state_dir', 'port', 'python', 'token_file', 'callback_
                  'handler_write_paths', 'reactions', 'typing', 'topic', 'auto_topics', 'yardr'}
 # The yard this bridge relays to (YARDR.md, "Settings").
 YARDR_KEYS = {'hook_url', 'hook_secret_file', 'source', 'home', 'operator', 'cards', 'bin', 'quota', 'switch_model',
-              'mail', 'peer_mail'}
+              'switch_crews', 'mail', 'peer_mail'}
 # The native /quota table ([yardr.quota]): its presence turns /quota on.
 YARDR_QUOTA_KEYS = {'timeout', 'groups', 'machine_login', 'machine'}
 # The native /switch_model table ([yardr.switch_model]) and each of its picks.
 YARDR_SWITCH_MODEL_KEYS = {'crew', 'timeout', 'picks'}
+# The native /crew list ([[yardr.switch_crews]]): each entry names one more
+# switchable crew beside the [yardr.switch_model] crew.
+YARDR_SWITCH_CREWS_KEYS = {'crew', 'label', 'timeout', 'picks'}
+SWITCH_CREWS_MAX = 8
 SWITCH_PICK_KEYS = {'id', 'label', 'kind', 'model', 'args', 'env_file'}
 SWITCH_PICK_REQUIRED = ('id', 'label', 'kind', 'model', 'args')
 SWITCH_PICKS_MAX = 8
@@ -5710,10 +5730,9 @@ def _printable(value, limit):
     return isinstance(value, str) and 1 <= len(value) <= limit and value.isprintable() and value == value.strip()
 
 
-def _switch_picks(raw):
-    """The [[yardr.switch_model.picks]]: 1-8 picks with distinct ids that
+def _switch_picks(raw, what='[[yardr.switch_model.picks]]'):
+    """The switch picks of `what`: 1-8 picks with distinct ids that
     differ in (kind, model, effort), each with its effort read from its args."""
-    what = '[[yardr.switch_model.picks]]'
     if not isinstance(raw, list) or not 1 <= len(raw) <= SWITCH_PICKS_MAX:
         raise SettingsError(f'settings: {what} must be 1-{SWITCH_PICKS_MAX} tables')
     picks, ids, assignments = [], set(), set()
@@ -5791,19 +5810,21 @@ def _native_bin(value):
     return _handler_setting(found, '[yardr] bin')
 
 
-def _command_settings(data, menu, native=False, switch_model=False):
+def _command_settings(data, menu, native=False, switch_model=False, crew=False):
     """The validated [[command]] entries, in file order, each with its
     defaults filled in. `start` and every [[menu]] command always clash;
-    with native [yardr] keys, `decide` and its decide: prefix do too, and
-    with [yardr.switch_model], `switch_model` and its switch-model: prefix."""
+    with native [yardr] keys, `decide` and its decide: prefix do too, with
+    [yardr.switch_model], `switch_model` and its switch-model: prefix, and
+    with [[yardr.switch_crews]], `crew` and its crew: prefix."""
     entries = data.get('command', [])
     if not isinstance(entries, list) or len(entries) > MENU_MAX or any(not isinstance(e, dict) for e in entries):
         raise SettingsError(f'settings: command must be a list of at most {MENU_MAX} [[command]] tables')
     menu_names = {name for name, _ in menu}
     reserved = (RESERVED_COMMANDS + (('decide',) if native else ())
-                + (('switch_model',) if switch_model else ()))
+                + (('switch_model',) if switch_model else ()) + (('crew',) if crew else ()))
     prefixes = (Bridge.RESERVED_CALLBACK_PREFIXES + ((Bridge.DECIDE_CALLBACK_PREFIX,) if native else ())
-                + ((yard_commands.SWITCH_MODEL_PREFIX,) if switch_model else ()))
+                + ((yard_commands.SWITCH_MODEL_PREFIX,) if switch_model else ())
+                + ((yard_commands.CREW_PREFIX,) if crew else ()))
     commands = []
     for index, item in enumerate(entries, 1):
         name = _text_setting(item.get('name'), f'command entry {index} name', _COMMAND_RE)
@@ -6015,6 +6036,44 @@ def load_settings(path, home=None):
                       timeout=_int_setting(switch_table.get('timeout', 60), '[yardr.switch_model] timeout', 10, 120),
                       picks=_switch_picks(switch_table['picks']))
         _native_clash(data, menu_entries, 'switch_model', yard_commands.SWITCH_MODEL_PREFIX, '[yardr.switch_model]')
+
+    # The native /crew ([[yardr.switch_crews]] turns it on): one more
+    # switchable crew per entry, each with its own label, timeout and picks.
+    # /crew lists the [yardr.switch_model] crew first when it is set, so an
+    # entry repeating that crew is refused rather than listed twice.
+    crews_table = yardr.get('switch_crews')
+    if crews_table is not None and not isinstance(crews_table, list):
+        raise SettingsError('settings: [[yardr.switch_crews]] must be a list of tables')
+    crews = None
+    if crews_table is not None:
+        if not operator_acts:
+            raise SettingsError('settings: [[yardr.switch_crews]] needs [yardr] home and operator together')
+        if not 1 <= len(crews_table) <= SWITCH_CREWS_MAX:
+            raise SettingsError(f'settings: [[yardr.switch_crews]] must be 1-{SWITCH_CREWS_MAX} tables')
+        crews = []
+        for index, table in enumerate(crews_table, 1):
+            entry = f'[[yardr.switch_crews]] entry {index}'
+            if not isinstance(table, dict):
+                raise SettingsError(f'settings: {entry} must be a table')
+            unknown = sorted(set(table) - YARDR_SWITCH_CREWS_KEYS)
+            if unknown:
+                raise SettingsError(f'settings: unknown key {unknown[0]} in {entry}')
+            for key in ('crew', 'label', 'picks'):
+                if key not in table:
+                    raise SettingsError(f'settings: {entry} needs {key}')
+            name = _text_setting(table['crew'], f'{entry} crew', SWITCH_CREW_RE)
+            if any(other['crew'] == name for other in crews):
+                raise SettingsError(f'settings: {entry} crew "{name}" repeats an earlier crew')
+            if switch is not None and switch['crew'] == name:
+                raise SettingsError(f'settings: {entry} crew "{name}" repeats the [yardr.switch_model] crew; '
+                                    '/crew already lists it')
+            if not _printable(table['label'], 32):
+                raise SettingsError(f'settings: {entry} label must be 1-32 printable characters')
+            crews.append(dict(crew=name, label=table['label'],
+                              timeout=_int_setting(table.get('timeout', 60), f'{entry} timeout', 10, 120),
+                              picks=_switch_picks(table['picks'], f'{entry} picks')))
+        crews = tuple(crews)
+        _native_clash(data, menu_entries, 'crew', yard_commands.CREW_PREFIX, '[[yardr.switch_crews]]')
     # Whole mail ([yardr.mail] turns it on, with no keys): it reads the
     # operator's mail over the native socket.
     mail_table = yardr.get('mail')
@@ -6025,14 +6084,16 @@ def load_settings(path, home=None):
             raise SettingsError('settings: [yardr.mail] needs [yardr] home and operator together')
         if mail_table:
             raise SettingsError(f'settings: unknown key yardr.mail.{sorted(mail_table)[0]}')
-    if quota is not None or switch is not None:
+    if quota is not None or switch is not None or crews is not None:
         yardr_bin = _native_bin(yardr.get('bin'))
-    city_commands = _command_settings(data, menu_entries, owner, switch_model=switch is not None)
+    city_commands = _command_settings(data, menu_entries, owner, switch_model=switch is not None,
+                                      crew=crews is not None)
     nudge_reason = _nudge_disabled_reason(city_commands, menu_entries) if operator_acts else None
 
     natives = (((dict(yard_commands.QUOTA_COMMAND, timeout=quota['timeout']),) if quota is not None else ())
                + ((yard_commands.NUDGE_COMMAND,) if operator_acts and nudge_reason is None else ())
-               + ((yard_commands.switch_model_command(switch),) if switch is not None else ()))
+               + ((yard_commands.switch_model_command(switch),) if switch is not None else ())
+               + ((yard_commands.crew_command(switch, crews),) if crews is not None else ()))
     if natives:
         shown = (len(menu_entries) + sum(1 for command in city_commands if command['menu']) + owner
                  + sum(command['menu'] for command in natives))
@@ -6053,6 +6114,8 @@ def load_settings(path, home=None):
         config['yardr_quota'] = quota
     if switch is not None:
         config['yardr_switch_model'] = switch
+    if crews is not None:
+        config['yardr_switch_crews'] = crews
     if mail_table is not None:
         config['yardr_mail'] = True
     if 'peer_mail' in yardr:

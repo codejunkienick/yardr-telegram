@@ -42,6 +42,19 @@ def switch_model_command(switch):
                 menu=True, callback_prefix=SWITCH_MODEL_PREFIX, native=NATIVE_SWITCH_MODEL,
                 timeout=switch['timeout'])
 
+# The crew: prefix remains the bridge's own while [[yardr.switch_crews]] is
+# set, as switch-model: is with [yardr.switch_model].
+NATIVE_CREW = 'crew'
+CREW_PREFIX = 'crew:'
+
+
+def crew_command(switch, crews):
+    """The native crew picker: one listing over the switch_model crew and each extra crew."""
+    timeout = max(([switch['timeout']] if switch is not None else [])
+                  + [entry['timeout'] for entry in crews])
+    return dict(name='crew', description='Show the switchable crews, tap to switch one',
+                menu=True, callback_prefix=CREW_PREFIX, native=NATIVE_CREW, timeout=timeout)
+
 # The native /nudge command: typed-only, never in the Telegram menu, so a
 # core without the session nudge never advertises it. Callbacks carry
 # nudge:<token>:nudge and nudge:<token>:cancel under NUDGE_PREFIX.

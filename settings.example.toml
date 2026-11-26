@@ -84,6 +84,23 @@ hook_secret_file = "~/.config/example-telegram/hook-secret"   # install.sh mints
 # args = ["--dangerously-bypass-approvals-and-sandbox", "-c", "model_reasoning_effort=\"high\""]
 # env_file = "/home/alex/.yardr/crew-yardmaster.env"   # optional, absolute; passed to yardr as written, never opened
 
+# The native /crew (bridge/OPERATIONS.md, "/crew"): its presence turns /crew
+# on. /crew lists the [yardr.switch_model] crew first and then one entry per
+# table below, each with its own label, timeout and picks; tapping a crew
+# opens its model picks, which switch exactly like /switch_model taps. It
+# needs [yardr] home and operator above, and no [[command]] or [[menu]] named
+# crew, nor a callback_prefix overlapping crew:, beside it.
+# [[yardr.switch_crews]]
+# crew = "secretary"      # the crew member its picks switch; must differ from the [yardr.switch_model] crew
+# label = "Secretary"     # the /crew line and button, 1-32 printable characters
+# timeout = 60            # bounded CLI I/O deadline in seconds (10-120), NOT the 600s handoff wait
+# [[yardr.switch_crews.picks]]
+# id = "opus"              # compact crew payloads stay under crew: (<=64 UTF-8 bytes)
+# label = "Opus high"
+# kind = "claude"
+# model = "opus"
+# args = ["--effort", "high"]
+
 [bot]
 bot_id = 1000000001                         # numeric: getMe's id
 user_id = 1000000002                        # the paired user's id: the /start message's from.id

@@ -849,6 +849,9 @@ bridge probes:
 - `yardr --home <home> crew show <crew> --json` (RPC `GetCrew`) for `revision`,
   `session_generation`, `launch`, `config`, `state`, `status`, context telemetry
   and `switch`;
+- `yardr --home <home> harness show <kind> --json` for the harness's effort
+  levels and flag template (read-only; a harness naming none offers no
+  effort change);
 - `yardr --home <home> crew set <crew> ... --revision <rev> --handoff --request-id <id>
   --session-generation <gen> --wait-seconds 600 --json` (RPC `RequestCrewSwitch`,
   socket-only operator mutation);
@@ -890,10 +893,52 @@ On a pick tap (`switch-model:s:<token>:<pick>`):
    actual `launch` until it stops.
 6. The selector message is edited in place (never replaced with a second card)
    to show `Please wait for the handoff.`, `Current: ...`, `Target: ...`,
-   elapsed/deadline, session status, context with reading time (or
-   `Context unavailable.`; active reads older than `45`s show `(stale
+   elapsed/deadline, session status, effort (`Effort: ...`, or
+   `Effort: unavailable.` when the saved args pin none), context with reading
+   time (or `Context unavailable.`; active reads older than `45`s show `(stale
    observation)`), `Target effort: unknown · env: unknown.`, and an immediate
    `Force apply` button.
+
+**Effort and context on the cards.** The selector card shows the crew's
+current launch, session status, effort and context usage from the native
+read, omitting nothing silently: a crew reporting no context reads
+`Context unavailable.` The Effort level is the harness's exact setting
+from `harness show` — its flag (plus aliases) or, for Codex, its exact
+`-c` key, never another key ending the same way — or, for an AGY model
+ending in `-<level>`, the model suffix. The Effort line names the running
+session's level when the launch matches the saved config; otherwise it
+names the running level when the launch model ID pins one
+(`Effort: <running>. Saved: <saved> for the next session.`), else
+`Effort: unavailable.` with the saved level labelled for the next session
+(`Saved: <level> for the next session.`), and the `/crew` listing shows
+`saved <level>` instead of `effort <level>`.
+
+**Change effort.** The selector carries a `Change effort` button beside the
+picks (`switch-model:e:<token>`). It opens the effort levels for the crew's
+current model on the same message (`switch-model:el:<token>:<seq>:<level>`,
+with `Back` as `switch-model:eb:<token>:<seq>`), each level bound to the
+displayed view: delayed taps from a closed view answer out of date, while a
+replayed update still answers its recorded outcome. Levels come from
+`harness show` for the crew's current kind, filtered to what the model
+takes (a Codex snapshot where luna stops at max and gpt-5.5 at xhigh) or,
+for an AGY model ending in `-<level>`, only the configured sibling model
+IDs of its family. Tapping a level saves via a revision-guarded config-only
+`crew set` (no `--handoff`): the sibling's model and complete args where a
+sibling carries the effort, else the crew's args with that effort,
+verified by re-reading the saved config. The session continues undisturbed
+and the next session starts at the new effort. A level already set answers
+without a write; taps during a pending switch (including one admitted
+outside Telegram), after an external config change, or for a harness or
+model with no usable levels are refused without a write. The card returns
+to the picks with the new effort, so its picks stay live.
+
+**Handoff now.** The selector also carries a `Handoff now` button
+(`switch-model:h:<token>`). It admits the crew's currently saved launch
+through the same guarded pipeline as a pick tap (same ledger, timeout,
+Force and refresh handling, with `Handoff of the current launch (no model
+change).` on the card), skipping only the already-running check: a handoff
+rotates the session even when it already runs the saved launch. A pending
+switch refuses it, and a pending handoff refuses a different pick.
 
 While unresolved, `model_switch.refresh()` polls after `drain()` within a shared
 3-second read budget (about every 20s when Telegram is quiet):
@@ -1089,13 +1134,16 @@ rules, per-role `args` preservation and effort parsing as
 must not repeat the `[yardr.switch_model]` crew. `/crew` lists the
 `[yardr.switch_model]` crew first when it is set, then each entry: one line
 per crew with its current `kind · model` read via
-`yardr crew show <crew> --json` (`model unavailable` when that read fails, a
-`switch pending` marker while its native switch is unresolved), and one
-button per crew (`crew:c:<token>:<crew>`).
+`yardr crew show <crew> --json`, plus `effort <level>` when its saved args
+pin one and `ctx <pct>%` when it reports context (`model unavailable` when
+that read fails, a `switch pending` marker while its native switch is
+unresolved), and one button per crew (`crew:c:<token>:<crew>`).
 
 Tapping a crew (`/crew <name>` jumps straight there) edits the listing into
 that crew's model picks (`crew:s:<token>:<pick>`), which admit, observe and
 Force exactly like `/switch_model` taps, with the Force button under `crew:f:`.
+The crew picks carry the same `Change effort` (`crew:e:`) and `Handoff now`
+(`crew:h:`) controls as the `/switch_model` selector, scoped to that crew.
 An unknown name is refused naming the switchable crews; nothing is reserved
 and no native write runs. A pending switch on one crew never blocks another:
 pending checks, snapshots, `args`/`env_file` targets and `switch_model_taps`

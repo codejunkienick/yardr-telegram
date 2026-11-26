@@ -838,7 +838,10 @@ class NativeSwitchTests(unittest.TestCase):
                             self.assertIn('1% of 1000000', case.edit()['text'])
                         settled = copy.deepcopy(case.edit())
                         reads = len(run.call_args_list)
-                        self.assertEqual(reads, 0 if recovery == 'saved-terminal' else 1)
+                        # The saved-terminal card needs no read; receipt
+                        # recovery looks the operation up once, and the
+                        # current-state refresh reads crew plus harness.
+                        self.assertEqual(reads, {'saved-terminal': 0, 'receipt': 1, 'current': 2}[recovery])
                         case.poll()
                         self.assertEqual(case.edit(), settled)
                         self.assertEqual(len(run.call_args_list), reads)
@@ -1936,6 +1939,11 @@ class SwitchUpgradeBoundaryTests(unittest.TestCase):
                 'launch': {'kind': 'codex', 'model': 'old', 'fingerprint': 'f' * 64},
             }}
             return 0, json.dumps(payload).encode('utf-8'), b'', None
+        if argv[-4:] == ['harness', 'show', 'codex', '--json']:
+            payload = {'flags': {'effort': {
+                'levels': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+                'args': ['-c', 'model_reasoning_effort={level}']}}}
+            return 0, json.dumps(payload).encode('utf-8'), b'', None
         raise AssertionError(f'unexpected mutating/unknown native call: {argv}')
 
     def test_selector_longest_callback_fits_64_bytes_and_replay_in_model_actions_fails_closed(self):
@@ -2095,10 +2103,12 @@ class CrewSwitchTests(unittest.TestCase):
         self.assertIn('Current: claude · opus', edit['text'])
         buttons = self.buttons(edit)
         self.assertEqual([button['text'] for button in buttons],
-                         [pick['label'] for pick in self.case.picks])
-        for button in buttons:
+                         [pick['label'] for pick in self.case.picks] + ['Change effort', 'Handoff now'])
+        for button in buttons[:len(self.case.picks)]:
             self.assertRegex(button['callback_data'], r'^crew:s:[A-Za-z0-9_-]{16}:[a-z0-9][a-z0-9_-]{0,31}$')
             self.assertLessEqual(len(button['callback_data'].encode()), 64)
+        self.assertRegex(buttons[-2]['callback_data'], r'^crew:e:[A-Za-z0-9_-]{16}$')
+        self.assertRegex(buttons[-1]['callback_data'], r'^crew:h:[A-Za-z0-9_-]{16}$')
         data = next(button['callback_data'] for button in buttons if button['callback_data'].endswith(':opus'))
         self.case.poll(self.case.tap(data, mid))
         row = self.case.last()
@@ -2471,6 +2481,697 @@ class CrewSwitchTests(unittest.TestCase):
             taps = {(row[0], row[1], row[2]) for row in
                     db.execute('SELECT pick, crew, state FROM switch_model_taps').fetchall()}
         self.assertIn(('opus', 'mayor', 'refused'), taps)
+
+
+class EffortUnitTests(unittest.TestCase):
+    """Effort flag rewriting, harness level parsing and button routing, without native I/O."""
+
+    def test_set_effort_replaces_each_flag_spelling(self):
+        codex = ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="high"']
+        self.assertEqual(y.set_effort(codex, ['-c', 'model_reasoning_effort={level}'], 'low'),
+                         ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort=low'])
+        self.assertEqual(y.set_effort(['--effort', 'high'], ['--effort', '{level}'], 'low'),
+                         ['--effort', 'low'])
+        self.assertEqual(y.set_effort(['--effort=high'], ['--effort', '{level}'], 'low'), ['--effort=low'])
+        self.assertEqual(y.set_effort(['--reasoning-effort', 'high'], ['--reasoning-effort', '{level}'], 'xhigh'),
+                         ['--reasoning-effort', 'xhigh'])
+        self.assertEqual(y.set_effort(['--config', 'model_reasoning_effort=high'],
+                                      ['-c', 'model_reasoning_effort={level}'], 'low'),
+                         ['--config', 'model_reasoning_effort=low'])
+        # The last effort flag wins, as the harnesses read them.
+        self.assertEqual(y.set_effort(['--effort', 'low', '--effort', 'high'], ['--effort', '{level}'], 'max'),
+                         ['--effort', 'low', '--effort', 'max'])
+
+    def test_set_effort_appends_template_without_an_effort_flag(self):
+        self.assertEqual(y.set_effort(['--yolo'], ['--reasoning-effort', '{level}'], 'high'),
+                         ['--yolo', '--reasoning-effort', 'high'])
+        self.assertEqual(y.set_effort([], ['-c', 'model_reasoning_effort={level}'], 'low'),
+                         ['-c', 'model_reasoning_effort=low'])
+        # A -c override for another key is not an effort flag.
+        self.assertEqual(y.set_effort(['-c', 'other_key=1'], ['-c', 'model_reasoning_effort={level}'], 'low'),
+                         ['-c', 'other_key=1', '-c', 'model_reasoning_effort=low'])
+        # Another reasoning_effort key is not the effort either.
+        self.assertEqual(y.set_effort(['-c', 'review_model_reasoning_effort=medium'],
+                                      ['-c', 'model_reasoning_effort={level}'], 'low'),
+                         ['-c', 'review_model_reasoning_effort=medium', '-c', 'model_reasoning_effort=low'])
+        with self.assertRaises(y.SwitchUnavailable):
+            y.set_effort(['--yolo'], ['--effort'], 'low')
+
+    def test_set_effort_rewrites_only_the_exact_setting(self):
+        codex = ['-c', 'model_reasoning_effort=high', '-c', 'review_model_reasoning_effort=medium']
+        self.assertEqual(y.set_effort(codex, ['-c', 'model_reasoning_effort={level}'], 'low'),
+                         ['-c', 'model_reasoning_effort=low', '-c', 'review_model_reasoning_effort=medium'])
+        # An alias counts as the flag; another harness's flag does not.
+        self.assertEqual(y.set_effort(['--effort', 'high'], ['--reasoning-effort', '{level}'], 'low', ['--effort']),
+                         ['--effort', 'low'])
+        self.assertEqual(y.set_effort(['--reasoning-effort', 'high'], ['--effort', '{level}'], 'low'),
+                         ['--reasoning-effort', 'high', '--effort', 'low'])
+
+    def test_effort_of_matches_only_the_exact_setting(self):
+        template = ['-c', 'model_reasoning_effort={level}']
+        self.assertEqual(y.effort_of(['-c', 'model_reasoning_effort=high',
+                                      '-c', 'review_model_reasoning_effort=medium'], template), 'high')
+        self.assertIsNone(y.effort_of(['-c', 'review_model_reasoning_effort=medium'], template))
+        self.assertEqual(y.effort_of(['--effort', 'high'], ['--reasoning-effort', '{level}'], ['--effort']), 'high')
+        self.assertIsNone(y.effort_of(['--reasoning-effort', 'high'], ['--effort', '{level}']))
+        self.assertIsNone(y.effort_of(['-c', 'model_reasoning_effort=high'], ['--effort', '{level}']))
+        # The legacy reading without a template still takes any reasoning_effort key.
+        self.assertEqual(y.effort_of(['-c', 'review_model_reasoning_effort=medium']), 'medium')
+
+    def test_set_effort_round_trips_through_effort_of(self):
+        for args, template in ((['--effort', 'high'], ['--effort', '{level}']),
+                               (['-c', 'model_reasoning_effort="high"'], ['-c', 'model_reasoning_effort={level}']),
+                               (['--reasoning-effort=xhigh'], ['--reasoning-effort', '{level}']),
+                               (['--yolo'], ['--reasoning-effort', '{level}'])):
+            self.assertEqual(y.effort_of(y.set_effort(args, template, 'medium')), 'medium')
+
+    def test_harness_effort_parses_levels_and_template(self):
+        value = {'flags': {'effort': {'levels': ['low', 'medium', 'high'], 'args': ['--effort', '{level}']}}}
+        with patch.object(m, 'read_json', lambda *args: value):
+            self.assertEqual(m.harness_effort({}, 'codex', 0, lambda message: None),
+                             (['low', 'medium', 'high'], ['--effort', '{level}'], []))
+        value = {'flags': {'effort': {'levels': ['low'], 'args': ['--reasoning-effort', '{level}'],
+                                      'aliases': ['--effort']}}}
+        with patch.object(m, 'read_json', lambda *args: value):
+            self.assertEqual(m.harness_effort({}, 'muse', 0, lambda message: None),
+                             (['low'], ['--reasoning-effort', '{level}'], ['--effort']))
+
+    def test_harness_effort_none_when_unusable(self):
+        cases = ({'flags': {}}, {'flags': {'effort': {}}},
+                 {'flags': {'effort': {'levels': [], 'args': ['--effort', '{level}']}}},
+                 {'flags': {'effort': {'levels': ['low', 'low'], 'args': ['--effort', '{level}']}}},
+                 {'flags': {'effort': {'levels': ['low!'], 'args': ['--effort', '{level}']}}},
+                 {'flags': {'effort': {'levels': ['low'], 'args': ['--effort']}}},
+                 {'flags': {'effort': {'levels': ['low'], 'args': []}}},
+                 {'flags': {'effort': {'levels': ['low'], 'args': ['--effort', '{level}'], 'aliases': 'x'}}},
+                 {'flags': {'effort': {'levels': ['low'], 'args': ['--effort', '{level}'], 'aliases': ['']}}},
+                 {'flags': {'effort': {'levels': ['low'], 'args': ['--effort', '{level}'], 'aliases': ['effort']}}},
+                 {'flags': {'effort': {'levels': ['low'], 'args': ['--effort', '{level}'],
+                                       'aliases': ['--effort', '--effort']}}},
+                 [], 'x')
+        for value in cases:
+            with self.subTest(value=value):
+                with patch.object(m, 'read_json', lambda *args, value=value: value):
+                    self.assertIsNone(m.harness_effort({}, 'codex', 0, lambda message: None))
+        # A level a button cannot carry is not offered, but keeps the rest.
+        value = {'flags': {'effort': {'levels': ['low', 'High'], 'args': ['--effort', '{level}']}}}
+        with patch.object(m, 'read_json', lambda *args: value):
+            self.assertEqual(m.harness_effort({}, 'codex', 0, lambda message: None),
+                             (['low'], ['--effort', '{level}'], []))
+
+    def test_route_action_matches_effort_and_handoff_shapes(self):
+        token = 'A' * 16
+        kind, via, _ = m.route_action(f'switch-model:e:{token}')
+        self.assertEqual((kind, via), ('open', 'switch_model'))
+        kind, via, match = m.route_action(f'crew:el:{token}:1:xhigh')
+        self.assertEqual((kind, via, match[3], match[4]), ('apply', 'crew', '1', 'xhigh'))
+        self.assertEqual(m.route_action(f'crew:eb:{token}:2')[0], 'back')
+        self.assertEqual(m.route_action(f'switch-model:h:{token}')[0], 'handoff')
+        self.assertIsNone(m.route_action(f'switch-model:s:{token}:opus'))
+        self.assertIsNone(m.route_action(f'crew:el:{token}:1:HIGH'))
+        self.assertIsNone(m.route_action(f'crew:el:{token}:xhigh'))
+        self.assertIsNone(m.route_action(f'crew:eb:{token}'))
+
+    def test_effort_and_context_lines(self):
+        self.assertEqual(m.effort_line({'effort': 'high'}), 'Effort: high')
+        self.assertEqual(m.effort_line({'effort': None}), 'Effort: unavailable.')
+        crew = {'context_pct': 42, 'context_window': 200000, 'context_at': '2026-11-26T07:45:08Z'}
+        self.assertEqual(m.context_line(crew), 'Context: 42% of 200000 · read 2026-11-26T07:45:08Z')
+        self.assertEqual(m.context_line({}), 'Context unavailable.')
+        self.assertEqual(m.context_line({'context_at': 't'}), 'Context: 0% · read t')
+
+    def test_codex_supported_levels_filters_by_model(self):
+        offered = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+        self.assertEqual(m.codex_supported_levels('gpt-6-luna', offered),
+                         ['low', 'medium', 'high', 'xhigh', 'max'])
+        self.assertEqual(m.codex_supported_levels('gpt-5.6-luna', offered),
+                         ['low', 'medium', 'high', 'xhigh', 'max'])
+        self.assertEqual(m.codex_supported_levels('gpt-5.5', offered),
+                         ['low', 'medium', 'high', 'xhigh'])
+        self.assertEqual(m.codex_supported_levels('codex-auto-review', offered),
+                         ['low', 'medium', 'high', 'xhigh', 'max'])
+        self.assertEqual(m.codex_supported_levels('gpt-6-astra', offered), offered)
+        self.assertEqual(m.codex_supported_levels('unknown-model', offered), offered)
+
+    def test_agy_siblings_maps_configured_levels(self):
+        offered = ['low', 'medium', 'high', 'xhigh', 'max']
+        picks = (dict(kind='agy', model='gemini-4-hydrogen-low', args=(), env_file=None, effort=None),
+                 dict(kind='agy', model='gemini-4-hydrogen-medium', args=(), env_file=None, effort=None),
+                 dict(kind='agy', model='gemini-4-hydrogen-high', args=(), env_file=None, effort=None),
+                 dict(kind='agy', model='gemini-4-neon-low', args=(), env_file=None, effort=None),
+                 dict(kind='codex', model='gemini-4-hydrogen-low', args=(), env_file=None, effort=None))
+        siblings = m.agy_siblings(picks, 'gemini-4-hydrogen-high', offered)
+        self.assertEqual(set(siblings), {'low', 'medium', 'high'})
+        self.assertEqual(siblings['low']['model'], 'gemini-4-hydrogen-low')
+        self.assertIsNone(m.agy_siblings(picks, 'gemini-pro-orchestrator', offered))
+        self.assertIsNone(m.agy_siblings(picks, 'high', offered))
+        self.assertEqual(m.agy_siblings((), 'gemini-4-hydrogen-high', offered), {})
+
+    def test_effort_display_labels_saved_when_launch_differs(self):
+        config, crew, parsed = {}, {'state': 'running'}, {'effort': 'low', 'status': 'idle'}
+        with patch.object(m, 'launch_matches_saved', return_value=True):
+            self.assertEqual(m.effort_display(config, crew, parsed), 'Effort: low')
+        with patch.object(m, 'launch_matches_saved', return_value=False):
+            self.assertEqual(m.effort_display(config, crew, parsed),
+                             'Effort: unavailable. Saved: low for the next session.')
+            self.assertEqual(m.effort_display(config, crew, {'effort': None}), 'Effort: unavailable.')
+
+    def test_sibling_level_reads_the_model_suffix(self):
+        offered = ['low', 'medium', 'high']
+        self.assertEqual(m.sibling_level('gemini-4-hydrogen-high', offered), 'high')
+        self.assertIsNone(m.sibling_level('gemini-pro-orchestrator', offered))
+        self.assertIsNone(m.sibling_level('high', offered))
+        self.assertIsNone(m.sibling_level('model-ultra', offered))
+
+    def test_effort_display_shows_running_sibling_level(self):
+        config, crew = {}, {'state': 'running'}
+        with patch.object(m, 'launch_matches_saved', return_value=False):
+            parsed = {'effort': 'low', 'running_effort': 'high', 'status': 'idle'}
+            self.assertEqual(m.effort_display(config, crew, parsed),
+                             'Effort: high. Saved: low for the next session.')
+            parsed = {'effort': None, 'running_effort': 'high', 'status': 'idle'}
+            self.assertEqual(m.effort_display(config, crew, parsed), 'Effort: high.')
+        with patch.object(m, 'launch_matches_saved', return_value=True):
+            parsed = {'effort': 'high', 'running_effort': 'high', 'status': 'idle'}
+            self.assertEqual(m.effort_display(config, crew, parsed), 'Effort: high')
+
+
+class EffortHandoffTests(unittest.TestCase):
+    """Effort display/change and Handoff now through the native fixture."""
+
+    def setUp(self):
+        self.case = NativeSwitchTests(methodName='test_complete_real_native_poll_slice')
+        self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+
+    def buttons(self, message):
+        return [button for row in message['reply_markup']['inline_keyboard'] for button in row]
+
+    def named(self, message, text):
+        return next(button['callback_data'] for button in self.buttons(message)
+                    if button['text'] == text)
+
+    def effort_view(self):
+        case = self.case
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        return case.edit(), mid
+
+    def test_selector_shows_effort_and_context(self):
+        case = self.case
+        sent, _ = case.selector()
+        self.assertIn('Effort: unavailable.', sent['text'])
+        self.assertIn('Context unavailable.', sent['text'])
+        case.cli('crew', 'set', 'mayor', 'args=["-c","model_reasoning_effort=low"]')
+        case.rpc('SetContextFor', name='mayor', user='', pct=42, window=200000)
+        sent, _ = case.selector()
+        # The fixture launch never matches the saved config, so the saved
+        # level is labelled for the next session.
+        self.assertIn('Effort: unavailable. Saved: low for the next session.', sent['text'])
+        self.assertIn('Context: 42% of 200000', sent['text'])
+        # Another harness's flag pins no Codex effort.
+        case.cli('crew', 'set', 'mayor', 'args=["--effort","low"]')
+        sent, _ = case.selector()
+        self.assertIn('Effort: unavailable.', sent['text'])
+        self.assertNotIn('Saved:', sent['text'])
+
+    def test_crew_listing_shows_effort_and_context(self):
+        case = self.case
+        case.cli('crew', 'add', 'designer', '--set', 'kind=claude', '--set', 'model=opus')
+        case.rpc('CrewLaunchedFor', name='designer', user='', previous='',
+                 launch=dict(kind='claude', model='opus', fingerprint='f' * 64),
+                 handle={'crew_generation': secrets.token_hex(12)})
+        case.rpc('CrewStatusFor', name='designer', user='', status='idle')
+        crews = (dict(crew='designer', label='Designer', timeout=10, picks=case.picks),)
+        case.config['yardr_switch_crews'] = crews
+        case.config['commands'] = case.config['commands'] + (
+            y.crew_command(case.config['yardr_switch_model'], crews),)
+        case.bridge = case.reopen()
+        case.cli('crew', 'set', 'mayor', 'args=["-c","model_reasoning_effort=\\"high\\""]')
+        case.rpc('SetContextFor', name='mayor', user='', pct=11, window=100000)
+        case.poll(case.text('/crew'))
+        sent = case.telegram.of('sendMessage')[-1]
+        self.assertIn('mayor: codex · old · saved high · ctx 11%', sent['text'])
+        self.assertIn('Designer: claude · opus', sent['text'])
+        self.assertNotIn('Designer: claude · opus · effort', sent['text'])
+        self.assertNotIn('Designer: claude · opus · saved', sent['text'])
+
+    def test_change_effort_saves_config_without_handoff(self):
+        case = self.case
+        before = case.crew()
+        gen = json.loads(case.cli('crew', 'show', 'mayor', '--json'))['crew']['session_generation']
+        sent, mid = case.selector()
+        change = self.named(sent, 'Change effort')
+        self.assertRegex(change, r'^switch-model:e:[A-Za-z0-9_-]{16}$')
+        self.assertLessEqual(len(change.encode()), 64)
+        case.poll(case.tap(change, mid))
+        view = case.edit()
+        self.assertEqual(view['message_id'], mid)
+        buttons = self.buttons(view)
+        self.assertEqual([button['text'] for button in buttons],
+                         ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'Back'])
+        low = self.named(view, 'low')
+        self.assertRegex(low, r'^switch-model:el:[A-Za-z0-9_-]{16}:[1-9][0-9]*:low$')
+        self.assertLessEqual(len(low.encode()), 64)
+        case.poll(case.tap(low, mid))
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        after = case.crew()
+        self.assertEqual(after['config']['args'], ['-c', 'model_reasoning_effort=low'])
+        self.assertEqual(after['launch'], before['launch'])
+        self.assertIsNone(after.get('switch'))
+        self.assertEqual(json.loads(case.cli('crew', 'show', 'mayor', '--json'))['crew']['session_generation'], gen)
+        self.assertEqual(case.operations(), [])
+        card = case.edit()
+        self.assertEqual(card['message_id'], mid)
+        self.assertIn('Saved: low for the next session.', card['text'])
+        # The refreshed card keeps its picks live.
+        data = next(button['callback_data'] for button in self.buttons(card)
+                    if button['callback_data'].endswith(':opus'))
+        case.poll(case.tap(data, mid))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+
+    def test_effort_back_returns_to_picks(self):
+        view, mid = self.effort_view()
+        self.case.poll(self.case.tap(self.named(view, 'Back'), mid))
+        card = self.case.edit()
+        self.assertEqual(card['message_id'], mid)
+        self.assertIn('Current: codex · old', card['text'])
+        self.assertEqual({button['text'] for button in self.buttons(card)},
+                         {pick['label'] for pick in self.case.picks} | {'Change effort', 'Handoff now'})
+
+    def test_effort_apply_replays_and_rejects_stale(self):
+        case = self.case
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        low = self.named(case.edit(), 'low')
+        tap = case.tap(low, mid)
+        before = case.crew()['revision']
+        case.poll(tap)
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertNotEqual(case.crew()['revision'], before)
+        # The same update replayed answers the recorded outcome and writes nothing.
+        case.bridge.inbound(tap)
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        settled = case.crew()['revision']
+        # A second tap for the same level is a noop without a native write.
+        view, _ = self.effort_view()
+        self.assertIn('low ✓', {button['text'] for button in self.buttons(view)})
+        same = next(button['callback_data'] for button in self.buttons(view)
+                    if button['callback_data'].endswith(':low'))
+        case.poll(case.tap(same, view['message_id']))
+        self.assertIn('Already at effort low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew()['revision'], settled)
+        # A tap for another message, and one after an external change, are stale.
+        case.poll(case.tap(low, mid + 999))
+        self.assertIn('out of date', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        case.cli('crew', 'set', 'mayor', 'model=changed-externally')
+        fresh, fresh_mid = case.selector()
+        case.cli('crew', 'set', 'mayor', 'model=changed-again')
+        stale_change = self.named(fresh, 'Change effort')
+        case.poll(case.tap(stale_change, fresh_mid))
+        self.assertIn('out of date', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.operations(), [])
+
+    def test_effort_back_refused_while_a_handoff_is_pending(self):
+        case = self.case
+        sent, mid = case.selector()
+        token = next(button['callback_data'] for button in self.buttons(sent)
+                     if button['callback_data'].endswith(':opus')).split(':')[2]
+        # A handoff keeps the saved config, so only the pending guard stops a
+        # delayed Back from painting picks over the status card.
+        case.poll(case.tap(self.named(sent, 'Handoff now'), mid))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        edits = len(case.telegram.of('editMessageText'))
+        case.poll(case.tap(f'switch-model:eb:{token}:1', mid))
+        self.assertIn('already pending', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(len(case.telegram.of('editMessageText')), edits)
+        self.assertIn('Handoff of the current launch', case.edit()['text'])
+
+    def test_effort_refused_while_a_switch_is_pending(self):
+        case = self.case
+        sent, mid = case.selector()
+        token = next(button['callback_data'] for button in self.buttons(sent)
+                     if button['callback_data'].endswith(':opus')).split(':')[2]
+        case.poll(case.pick((sent, mid)))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        before = case.crew()
+        case.poll(case.tap(f'switch-model:e:{token}', mid))
+        self.assertIn('already pending', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        case.poll(case.tap(f'switch-model:el:{token}:1:low', mid))
+        self.assertIn('already pending', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew(), before)
+        self.assertEqual(len(case.operations()), 1)
+        with case.store.connect() as db:
+            taps = {(row[0], row[1], row[2]) for row in
+                    db.execute('SELECT pick, crew, state FROM switch_model_taps').fetchall()}
+        self.assertIn(('effort:low', 'mayor', 'refused'), taps)
+
+    def test_change_effort_unsupported_harness(self):
+        case = self.case
+        case.cli('crew', 'set', 'mayor', 'kind=pi')
+        sent, mid = case.selector()
+        edits = len(case.telegram.of('editMessageText'))
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        self.assertIn('offers no effort levels', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(len(case.telegram.of('editMessageText')), edits)
+        self.assertEqual(case.operations(), [])
+
+    def test_effort_crash_between_write_and_record_reconciles(self):
+        case = self.case
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        tap = case.tap(self.named(case.edit(), 'low'), mid)
+        switch = case.bridge.model_switch
+        real_commit = switch.commit_effort
+        def crash_once(*args, **kwargs):
+            switch.commit_effort = real_commit
+            raise SystemExit
+        switch.commit_effort = crash_once
+        with self.assertRaises(SystemExit):
+            case.poll(tap)
+        self.assertEqual(case.crew()['config']['args'], ['-c', 'model_reasoning_effort=low'])
+        self.assertEqual(case.store.switch_tap(tap['update_id'])['state'], 'reserved')
+        case.bridge.inbound(tap)
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.store.switch_tap(tap['update_id'])['state'], 'done')
+        self.assertIn('Saved: low for the next session.', case.edit()['text'])
+
+    def test_handoff_now_rotates_current_launch(self):
+        case = self.case
+        config_before = case.crew()['config']
+        sent, mid = case.selector()
+        handoff = self.named(sent, 'Handoff now')
+        self.assertRegex(handoff, r'^switch-model:h:[A-Za-z0-9_-]{16}$')
+        self.assertLessEqual(len(handoff.encode()), 64)
+        case.poll(case.tap(handoff, mid))
+        row = case.last()
+        self.assertTrue(row['handoff'])
+        self.assertEqual(row['observed']['state'], 'waiting')
+        self.assertEqual(row['request']['target']['kind'], config_before['kind'])
+        self.assertEqual(row['request']['target']['model'], config_before['model'])
+        self.assertEqual(case.crew()['config'], config_before)
+        self.assertIn('Handoff requested; please wait.', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        card = case.edit()
+        self.assertEqual(card['message_id'], mid)
+        self.assertIn('Handoff of the current launch (no model change).', card['text'])
+        self.assertIn('Force apply', json.dumps(card))
+        op = row['observed']
+        case.rpc('StepCrewSwitch', name='mayor', id=op['id'], generation=op['generation'], session=case.old, step='nudged')
+        case.handoff()
+        case.launch()
+        case.poll()
+        self.assertEqual(case.last()['observed']['state'], 'running')
+        self.assertIn('Running on target.', case.edit()['text'])
+        self.assertIn('Current: codex · old', case.edit()['text'])
+        self.assertEqual(case.crew()['launch']['model'], 'old')
+        self.assertEqual(case.crew()['config'], config_before)
+
+    def test_handoff_now_respects_pending_guards(self):
+        case = self.case
+        sent, mid = case.selector()
+        token = next(button['callback_data'] for button in self.buttons(sent)
+                     if button['callback_data'].endswith(':opus')).split(':')[2]
+        pick_data = next(button['callback_data'] for button in self.buttons(sent)
+                         if button['callback_data'].endswith(':opus'))
+        # A pending switch refuses a handoff tap.
+        case.poll(case.tap(pick_data, mid))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        case.poll(case.tap(f'switch-model:h:{token}', mid))
+        self.assertIn('already pending', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(len(case.operations()), 1)
+        # A fresh yard: a pending handoff refuses a different pick, and a
+        # second handoff tap joins the original card instead of admitting.
+        other = NativeSwitchTests(methodName='test_complete_real_native_poll_slice')
+        try:
+            other.setUp()
+            sent, mid = other.selector()
+            handoff = next(button['callback_data'] for button in
+                           [button for row in sent['reply_markup']['inline_keyboard'] for button in row]
+                           if button['text'] == 'Handoff now')
+            pick_data = next(button['callback_data'] for button in
+                             [button for row in sent['reply_markup']['inline_keyboard'] for button in row]
+                             if button['callback_data'].endswith(':opus'))
+            other.poll(other.tap(handoff, mid))
+            self.assertTrue(other.last()['handoff'])
+            other.poll(other.tap(pick_data, mid))
+            self.assertIn('different pick is refused', other.telegram.of('answerCallbackQuery')[-1]['text'])
+            other.poll(other.tap(handoff, mid))
+            self.assertIn('original card', other.telegram.of('answerCallbackQuery')[-1]['text'])
+            self.assertEqual(len(other.operations()), 1)
+        finally:
+            other.doCleanups()
+
+    def test_retired_effort_buttons_drop_by_provenance(self):
+        case = self.case
+        sent, mid = case.selector()
+        token = next(button['callback_data'] for button in self.buttons(sent)
+                     if button['callback_data'].endswith(':opus')).split(':')[2]
+        del case.config['yardr_switch_model']
+        case.config['commands'] = tuple(command for command in case.config['commands']
+                                        if command['name'] != 'switch_model')
+        case.bridge = case.reopen()
+        self.assertTrue(m.stale_native_callback(case.bridge, f'switch-model:e:{token}', mid))
+        self.assertTrue(m.stale_native_callback(case.bridge, f'switch-model:el:{token}:1:low', mid))
+        self.assertTrue(m.stale_native_callback(case.bridge, f'switch-model:eb:{token}:1', mid))
+        self.assertTrue(m.stale_native_callback(case.bridge, f'switch-model:h:{token}', mid))
+        self.assertFalse(m.stale_native_callback(case.bridge, f'switch-model:e:{"B" * 16}', mid))
+
+    def test_crew_flow_effort_and_handoff_use_crew_prefix(self):
+        case = self.case
+        case.cli('crew', 'add', 'designer', '--set', 'kind=claude', '--set', 'model=opus')
+        case.rpc('CrewLaunchedFor', name='designer', user='', previous='',
+                 launch=dict(kind='claude', model='opus', fingerprint='f' * 64),
+                 handle={'crew_generation': secrets.token_hex(12)})
+        case.rpc('CrewStatusFor', name='designer', user='', status='idle')
+        crews = (dict(crew='designer', label='Designer', timeout=10, picks=case.picks),)
+        case.config['yardr_switch_crews'] = crews
+        case.config['commands'] = case.config['commands'] + (
+            y.crew_command(case.config['yardr_switch_model'], crews),)
+        case.bridge = case.reopen()
+        case.poll(case.text('/crew designer'))
+        sent = case.telegram.of('sendMessage')[-1]
+        mid = case.telegram.next_id
+        change = self.named(sent, 'Change effort')
+        self.assertTrue(change.startswith('crew:e:'), change)
+        case.poll(case.tap(change, mid))
+        view = case.edit()
+        medium = self.named(view, 'medium')
+        self.assertTrue(medium.startswith('crew:el:'), medium)
+        case.poll(case.tap(medium, mid))
+        self.assertIn('Effort set to medium', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.rpc('GetCrew', name='designer')['config']['args'], ['--effort', 'medium'])
+        self.assertEqual(case.operations(), [])
+        card = case.edit()
+        self.assertIn('Saved: medium for the next session.', card['text'])
+        handoff = self.named(card, 'Handoff now')
+        self.assertTrue(handoff.startswith('crew:h:'), handoff)
+        case.poll(case.tap(handoff, mid))
+        row = case.last()
+        self.assertEqual((row['crew'], row['via'], row['handoff']), ('designer', 'crew', True))
+        self.assertEqual(row['observed']['state'], 'waiting')
+
+    def test_effort_refused_when_native_switch_unresolved(self):
+        case = self.case
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        view = case.edit()
+        low = self.named(view, 'low')
+        before = case.crew()
+        # An external same-target handoff, admitted outside Telegram with an
+        # empty bridge ledger: the native op must survive any effort tap.
+        cfg = before['config']
+        case.cli('crew', 'set', 'mayor', f"kind={cfg['kind']}", f"model={cfg['model']}",
+                 'args=' + json.dumps(cfg.get('args', [])),
+                 '--revision', before['revision'], '--handoff', '--request-id', 'ext-1',
+                 '--session-generation', before['session_generation'], '--wait-seconds', '600', '--json')
+        op = case.crew()['switch']
+        self.assertTrue(op['unresolved'])
+        self.assertEqual(op['state'], 'waiting')
+        # A fresh selector opens, but its effort view and level taps refuse.
+        fresh, fresh_mid = case.selector()
+        edits = len(case.telegram.of('editMessageText'))
+        case.poll(case.tap(self.named(fresh, 'Change effort'), fresh_mid))
+        self.assertIn('already pending', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(len(case.telegram.of('editMessageText')), edits)
+        case.poll(case.tap(low, mid))
+        self.assertIn('already pending', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        after = case.crew()
+        self.assertEqual(after['config'].get('args', []), cfg.get('args', []))
+        self.assertEqual(after['switch']['state'], 'waiting')
+        self.assertTrue(after['switch']['unresolved'])
+        self.assertEqual(case.operations(), [])
+
+    def test_delayed_level_after_back_is_stale(self):
+        case = self.case
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        view = case.edit()
+        low = self.named(view, 'low')
+        back = self.named(view, 'Back')
+        before = case.crew()
+        case.poll(case.tap(back, mid))
+        self.assertIn('Current: codex', case.edit()['text'])
+        case.poll(case.tap(low, mid))
+        self.assertIn('out of date', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        after = case.crew()
+        self.assertEqual(after['config'].get('args', []), before['config'].get('args', []))
+        self.assertEqual(after['revision'], before['revision'])
+        self.assertEqual(case.operations(), [])
+
+    def test_second_level_from_same_view_after_save_is_stale(self):
+        case = self.case
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        view = case.edit()
+        low = self.named(view, 'low')
+        high = self.named(view, 'high')
+        case.poll(case.tap(low, mid))
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew()['config']['args'], ['-c', 'model_reasoning_effort=low'])
+        settled = case.crew()['revision']
+        case.poll(case.tap(high, mid))
+        self.assertIn('out of date', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew()['config']['args'], ['-c', 'model_reasoning_effort=low'])
+        self.assertEqual(case.crew()['revision'], settled)
+
+    def test_luna_hides_ultra(self):
+        case = self.case
+        case.cli('crew', 'set', 'mayor', 'model=gpt-6-luna')
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        view = case.edit()
+        labels = [button['text'] for button in self.buttons(view)]
+        self.assertNotIn('ultra', labels)
+        self.assertEqual(labels, ['low', 'medium', 'high', 'xhigh', 'max', 'Back'])
+        low = self.named(view, 'low')
+        token, seq = low.split(':')[2:4]
+        before = case.crew()
+        case.poll(case.tap(f'switch-model:el:{token}:{seq}:ultra', mid))
+        self.assertIn('out of date', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew()['config'].get('args', []), before['config'].get('args', []))
+        self.assertEqual(case.operations(), [])
+
+    def test_agy_sibling_save_changes_model(self):
+        case = self.case
+        picks = (dict(id='h-low', label='Hydrogen low', kind='agy', model='gemini-4-hydrogen-low',
+                      args=(), env_file=None, effort=None),
+                 dict(id='h-medium', label='Hydrogen medium', kind='agy', model='gemini-4-hydrogen-medium',
+                      args=(), env_file=None, effort=None),
+                 dict(id='h-high', label='Hydrogen high', kind='agy', model='gemini-4-hydrogen-high',
+                      args=(), env_file=None, effort=None))
+        case.cli('crew', 'set', 'mayor', 'kind=agy', 'model=gemini-4-hydrogen-high', 'args=[]')
+        case.config['yardr_switch_model'] = dict(crew='mayor', timeout=10, picks=picks)
+        case.bridge = case.reopen()
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        view = case.edit()
+        labels = [button['text'] for button in self.buttons(view)]
+        self.assertEqual(labels, ['low', 'medium', 'high ✓', 'Back'])
+        low = self.named(view, 'low')
+        gen = case.crew()['session_generation']
+        case.poll(case.tap(low, mid))
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        after = case.crew()
+        self.assertEqual(after['config']['model'], 'gemini-4-hydrogen-low')
+        self.assertEqual(after['config']['args'], [])
+        self.assertIsNone(after.get('switch'))
+        self.assertEqual(after['session_generation'], gen)
+        self.assertEqual(case.operations(), [])
+        # Choosing the current sibling again is a noop without a write.
+        settled = after['revision']
+        fresh, fresh_mid = case.selector()
+        case.poll(case.tap(self.named(fresh, 'Change effort'), fresh_mid))
+        same = self.named(case.edit(), 'low ✓')
+        case.poll(case.tap(same, fresh_mid))
+        self.assertIn('Already at effort low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew()['revision'], settled)
+
+    def test_agy_without_siblings_offers_none(self):
+        case = self.case
+        case.cli('crew', 'set', 'mayor', 'kind=agy', 'model=gemini-4-hydrogen-high', 'args=[]')
+        sent, mid = case.selector()
+        edits = len(case.telegram.of('editMessageText'))
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        self.assertIn('No usable effort levels', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(len(case.telegram.of('editMessageText')), edits)
+        self.assertEqual(case.operations(), [])
+
+    def test_handoff_status_labels_saved_effort(self):
+        case = self.case
+        case.cli('crew', 'set', 'mayor', 'args=["-c","model_reasoning_effort=\\"high\\""]')
+        sent, mid = case.selector()
+        case.poll(case.tap(self.named(sent, 'Handoff now'), mid))
+        self.assertEqual(case.last()['observed']['state'], 'waiting')
+        self.assertIn('Saved: high for the next session.', case.edit()['text'])
+
+    def test_change_effort_rewrites_only_the_exact_codex_key(self):
+        case = self.case
+        case.cli('crew', 'set', 'mayor',
+                 'args=["-c","model_reasoning_effort=high","-c","review_model_reasoning_effort=medium"]')
+        sent, mid = case.selector()
+        # The decoy review key never counts as the effort.
+        self.assertIn('Saved: high for the next session.', sent['text'])
+        self.assertNotIn('medium', sent['text'])
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        view = case.edit()
+        self.assertIn('current high.', view['text'])
+        same = next(button['callback_data'] for button in self.buttons(view)
+                    if button['text'] == 'high ✓')
+        # Choosing high again is a noop without a native write.
+        settled = case.crew()['revision']
+        case.poll(case.tap(same, mid))
+        self.assertIn('Already at effort high', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew()['revision'], settled)
+        # Choosing low rewrites the exact key and preserves the decoy.
+        fresh, fresh_mid = case.selector()
+        case.poll(case.tap(self.named(fresh, 'Change effort'), fresh_mid))
+        low = self.named(case.edit(), 'low')
+        case.poll(case.tap(low, fresh_mid))
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        self.assertEqual(case.crew()['config']['args'],
+                         ['-c', 'model_reasoning_effort=low', '-c', 'review_model_reasoning_effort=medium'])
+        self.assertIn('Saved: low for the next session.', case.edit()['text'])
+        self.assertIsNone(case.crew().get('switch'))
+
+    def test_agy_sibling_levels_from_launch_and_saved_models(self):
+        case = self.case
+        picks = (dict(id='s-low', label='Sample low', kind='agy', model='sample-low',
+                      args=(), env_file=None, effort=None),
+                 dict(id='s-high', label='Sample high', kind='agy', model='sample-high',
+                      args=(), env_file=None, effort=None))
+        case.cli('crew', 'add', 'designer', '--set', 'kind=agy', '--set', 'model=sample-high')
+        case.rpc('CrewLaunchedFor', name='designer', user='', previous='',
+                 launch=dict(kind='agy', model='sample-high', fingerprint='f' * 64),
+                 handle={'crew_generation': secrets.token_hex(12)})
+        case.rpc('CrewStatusFor', name='designer', user='', status='idle')
+        crews = (dict(crew='designer', label='Designer', timeout=10, picks=picks),)
+        case.config['yardr_switch_crews'] = crews
+        case.config['commands'] = case.config['commands'] + (
+            y.crew_command(case.config['yardr_switch_model'], crews),)
+        case.bridge = case.reopen()
+        case.poll(case.text('/crew designer'))
+        sent = case.telegram.of('sendMessage')[-1]
+        mid = case.telegram.next_id
+        # Launch and saved model IDs each pin high; the fixture fingerprint
+        # never matches, so both show.
+        self.assertIn('Effort: high. Saved: high for the next session.', sent['text'])
+        case.poll(case.tap(self.named(sent, 'Change effort'), mid))
+        view = case.edit()
+        self.assertIn('current high.', view['text'])
+        self.assertEqual([button['text'] for button in self.buttons(view)],
+                         ['low', 'high ✓', 'Back'])
+        gen = case.rpc('GetCrew', name='designer')['session_generation']
+        case.poll(case.tap(self.named(view, 'low'), mid))
+        self.assertIn('Effort set to low', case.telegram.of('answerCallbackQuery')[-1]['text'])
+        after = case.rpc('GetCrew', name='designer')
+        self.assertEqual(after['config']['model'], 'sample-low')
+        self.assertEqual(after['session_generation'], gen)
+        self.assertIsNone(after.get('switch'))
+        card = case.edit()
+        self.assertIn('Effort: high. Saved: low for the next session.', card['text'])
+        case.poll(case.text('/crew'))
+        listing = case.telegram.of('sendMessage')[-1]
+        self.assertIn('Designer: agy · sample-high · saved low', listing['text'])
 
 
 if __name__ == '__main__':

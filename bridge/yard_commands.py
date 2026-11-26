@@ -713,33 +713,113 @@ def _quota(bridge, payload):
 
 # --- crew config reading and model display helpers ----------------------
 
-# Each harness's own reasoning-effort flag (the add-on's effort_of): Muse
-# and Grok take --reasoning-effort (alias --effort), Codex a -c/--config
-# override whose key ends in reasoning_effort.
+# Each harness's own reasoning-effort flag: Muse takes --reasoning-effort
+# (alias --effort), Codex a -c/--config override of its exact template key.
 EFFORT_FLAGS = ('--reasoning-effort', '--effort')
 CONFIG_FLAGS = ('-c', '--config')
 REVISION_RE = re.compile(r'[A-Za-z0-9]{1,64}')
 
 
-def effort_of(args):
-    """The reasoning effort a harness's args give, else None: the value of
-    `--reasoning-effort` or `--effort` (Muse, Grok), or of a `-c`/`--config`
-    override whose key ends in `reasoning_effort` (Codex's
-    model_reasoning_effort, a TOML value, quotes dropped). The last one
-    given wins, as the harnesses read them."""
-    effort, index = None, 0
+def effort_spec(template, aliases=()):
+    """('flag', flags) or ('config', key) for the harness's effort template,
+    else None: a flag template names its flag plus `aliases`, a -c template
+    its exact key. Only the exact setting counts, never another key that
+    merely ends the same way (review_model_reasoning_effort is not the
+    Codex effort)."""
+    if not isinstance(template, (list, tuple)):
+        return None
+    parts = list(template)
+    extra = {alias for alias in aliases if isinstance(alias, str) and alias}
+    if (len(parts) == 2 and parts[1] == '{level}' and isinstance(parts[0], str)
+            and parts[0]):
+        return ('flag', frozenset({parts[0]} | extra))
+    if len(parts) == 2 and isinstance(parts[1], str) and '{level}' in parts[1]:
+        key = parts[1].split('=', 1)[0].strip() if '=' in parts[1] else ''
+        return ('config', key) if key and parts[0] in CONFIG_FLAGS else None
+    if (len(parts) == 1 and isinstance(parts[0], str) and '=' in parts[0]
+            and '{level}' in parts[0] and parts[0].split('=', 1)[0]):
+        return ('flag', frozenset({parts[0].split('=', 1)[0]} | extra))
+    return None
+
+
+def set_effort(args, template, level, aliases=()):
+    """`args` with the reasoning effort set to `level`: the last exact effort
+    setting keeps its spelling and takes the new value, else `template` (the
+    harness's effort args with {level} substituted) is appended. A -c
+    override of another key is left alone, even one ending in
+    reasoning_effort."""
+    filled = [part.replace('{level}', level) for part in template]
+    if filled == list(template):
+        raise SwitchUnavailable('harness names no effort level')
+    spec = effort_spec(template, aliases)
+    out, index, found = list(args), 0, None
+    while index < len(out):
+        flag, sep, inline = out[index].partition('=')
+        if spec is not None and spec[0] == 'flag' and flag in spec[1]:
+            value = inline if sep else (out[index + 1] if index + 1 < len(out) else None)
+            step = 1 if sep else 2
+            if value is None:
+                index += 1
+                continue
+            found = (index, step, None)
+            index += step
+            continue
+        if spec is not None and spec[0] == 'config' and flag in CONFIG_FLAGS:
+            value = inline if sep else (out[index + 1] if index + 1 < len(out) else None)
+            step = 1 if sep else 2
+            if value is None:
+                index += 1
+                continue
+            key, key_sep, _ = value.partition('=')
+            if key_sep and key.strip() == spec[1]:
+                found = (index, step, spec[1])
+            index += step
+            continue
+        index += 1
+    if found is None:
+        return out + filled
+    index, step, key = found
+    if step == 1:
+        flag = out[index].partition('=')[0]
+        out[index] = flag + '=' + (level if key is None else key + '=' + level)
+    elif key is None:
+        out[index + 1] = level
+    else:
+        out[index + 1] = key + '=' + level
+    return out
+
+
+def effort_of(args, template=None, aliases=()):
+    """The reasoning effort a harness's args give, else None. With the
+    harness's effort `template` (plus `aliases`), only its exact setting
+    counts: its flag, or a -c/--config override of its exact key. Without
+    one, the legacy reading: the value of --reasoning-effort/--effort, or
+    of a -c/--config override whose key ends in reasoning_effort (a TOML
+    value, quotes dropped). The last one given wins, as the harnesses read
+    them."""
+    if template is None:
+        effort, index, spec = None, 0, None
+    else:
+        spec = effort_spec(template, aliases)
+        if spec is None:
+            return None
+        effort, index = None, 0
     while index < len(args):
         flag, sep, inline = args[index].partition('=')
-        if flag in EFFORT_FLAGS or flag in CONFIG_FLAGS:
+        if spec is None and flag in EFFORT_FLAGS or spec is not None and spec[0] == 'flag' and flag in spec[1]:
             value = inline if sep else (args[index + 1] if index + 1 < len(args) else None)
             index += 1 if sep else 2
             if value is None:
                 continue
-            if flag in EFFORT_FLAGS:
-                effort = value.strip() or None
+            effort = value.strip() or None
+            continue
+        if flag in CONFIG_FLAGS and (spec is None or spec[0] == 'config'):
+            value = inline if sep else (args[index + 1] if index + 1 < len(args) else None)
+            index += 1 if sep else 2
+            if value is None:
                 continue
-            key, sep, setting = value.partition('=')
-            if sep and key.strip().endswith('reasoning_effort'):
+            key, key_sep, setting = value.partition('=')
+            if key_sep and (key.strip().endswith('reasoning_effort') if spec is None else key.strip() == spec[1]):
                 setting = setting.strip()
                 if len(setting) >= 2 and setting[0] == setting[-1] and setting[0] in '"\'':
                     setting = setting[1:-1]

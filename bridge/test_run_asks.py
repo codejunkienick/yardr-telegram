@@ -54,9 +54,10 @@ def proposal():
                          back='propose the old command', back_by='an operator'))
 
 
-def general_proposal(words=None):
+def general_proposal(words=None, new=False):
     words = ['version'] if words is None else words
-    command = 'yardr ' + ' '.join("'" + w.replace("'", "'\\''") + "'" if '[' in w or ']' in w else w for w in words)
+    quotable = "[];()' " if new else "[]"
+    command = 'yardr ' + ' '.join("'" + w.replace("'", "'\\''") + "'" if any(c in w for c in quotable) else w for w in words)
     does = ['The yard has not checked this command: approving runs it as typed, as the operator.',
             'No way back is shown: nothing here says how to undo it.',
             'It is good until 12:34:56.', 'What the command prints is told to the asker.']
@@ -6335,6 +6336,10 @@ class NativeTests(NativeCase):
         for key in ('source', 'pack', 'group', 'crew', 'skill'):
             self.reset_native(general_proposal([key, 'add', 'unknown local-only command']))
             self.assertTrue(self.create()['delivered'], key)
+        modern = general_proposal(words, new=True)
+        self.assertNotEqual(modern['run']['command'], base['run']['command'])
+        self.reset_native(modern)
+        self.assertTrue(self.create()['delivered'])
         self.reset_native(copy.deepcopy(base))
         with patch.object(n, 'PACK_DOCUMENT_BYTES', 1):
             self.assertFalse(self.create()['delivered'])
@@ -8973,7 +8978,8 @@ class RealNativeTests(BridgeTestCase):
                 self.assertLess(time.monotonic(), deadline, 'native general carry did not settle')
                 time.sleep(.02)
 
-        # The real operator opts in only in this throwaway home; this is not remote bootstrap evidence.
+        # The real operator switches the setting off and on only in this throwaway home; this is not remote bootstrap evidence.
+        cli('settings', 'set', 'general_cards', 'false')
         off = filing(['version'])
         self.assertNotEqual(off.returncode, 0)
         self.assertIn('general run cards are off', off.stderr)
@@ -9194,7 +9200,7 @@ class RealNativeTests(BridgeTestCase):
                     client.call('GetBead', ['general-' + boundary])
         else:
             print('Native general durable expiry/claim fixtures: set TGBRIDGE_TEST_YARDR_SOURCE for the unchanged candidate source')
-        print('Native general: real opt-in/operator/socket, bead/exec/starting refusal, full long Unicode argv document, City /decide, '
+        print('Native general: real off-on/operator/socket, bead/exec/starting refusal, full long Unicode argv document, City /decide, '
               'origin/confirmation gates, lost approval reply, native success/failure, hard-crash UNKNOWN and HTTP timeout/one invocation, replay/one creation; '
               + ('native expiry-open and claimed-prior-boot unknown/no invocation' if fixture else 'basic binary slice'))
         return server

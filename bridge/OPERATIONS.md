@@ -3164,11 +3164,11 @@ to serve ordinary cards. The local core retains its separately reviewed
 filing refusals and persistence fixes; stock compatibility does not claim
 its looser refusal policy is identical.
 
-The actual operator must enable `general_cards` in that yard's terminal;
-it defaults off. Only the native yardmaster may file verbatim `--run-word`
-or `G:` words. A matching specific card still takes precedence. Turning
-the setting off stops new filings without revoking existing work. The
-bridge never enables it and cannot bootstrap it by card on stock core.
+`general_cards` stands on in that yard unless the actual operator turned
+it off in its terminal. Only the native yardmaster may file verbatim
+`--run-word` or `G:` words. A matching specific card still takes precedence.
+Turning the setting off stops new filings without revoking existing work.
+The bridge never changes it and cannot bootstrap it by card on stock core.
 
 The bridge checks General/argv identity, the full native command,
 Description, every Does sentence and numbered word, empty rollback and
@@ -3218,8 +3218,9 @@ Keep the SQLite ledger, review documents and native carry records across
 updates or rollback. A downgrade must understand those records; unknown
 work must never be replayed. Source landing is not installation or live
 activation. The instance operator owns reviewed installation, pairing,
-per-call grants, terminal opt-in and a harmless `version` acceptance card
-in the configured private topic. This source change performs none of those
+per-call grants, the terminal `general_cards` setting and a harmless
+`version` acceptance card in the configured private topic. This source
+change performs none of those
 live actions. Offline presentation: `python3 -B scripts/preview_run_asks.py --general`.
 
 ### Native skill administration cards

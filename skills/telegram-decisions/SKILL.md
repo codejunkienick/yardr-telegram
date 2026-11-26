@@ -148,11 +148,12 @@ Supported proposals and their mechanics:
   carried payloads outside the supported bundles.
 
 Native general cards use the same `run_ask` grant and `/decide`. The real
-operator must already have enabled `general_cards` in a terminal; only the
-native yardmaster can file verbatim `--run-word`/`G:` words. Do not try to
-enable it by card or substitute chat-button authority. Specific cards keep
-precedence. Public `5dc0bfca`/`52e22d57` need no fork endpoint; a command they
-lack relays native failure.
+operator must not have disabled `general_cards` in a terminal (it stands on
+unless turned off); only the native yardmaster can file verbatim
+`--run-word`/`G:` words. Do not try to change it by card or substitute
+chat-button authority. Specific cards keep precedence. Public
+`5dc0bfca`/`52e22d57` need no fork endpoint; a command they lack relays
+native failure.
 
 General review is one complete document with every escaped argv word,
 rune/UTF-8 byte counts and a bound compact strong-code card. Read all words,

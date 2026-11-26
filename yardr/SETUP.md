@@ -307,7 +307,7 @@ loses these bindings and delivery history. Recovery is in
 ### Skill copies (shell)
 
 Specific captured `skill add` cards refuse. Fork skills: [setup](#the-crews-skills-shell).
-For unchecked General on public `5dc0bfca`/`52e22d57`, see [operator opt-in,
+For unchecked General on public `5dc0bfca`/`52e22d57`, see [operator setting,
 complete words, expiry and recovery](../bridge/OPERATIONS.md#native-general-cards).
 No remote bootstrap or live activation is implied.
 

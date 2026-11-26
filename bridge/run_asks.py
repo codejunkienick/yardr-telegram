@@ -457,7 +457,12 @@ GENERAL_STOPPED = 'the yard stopped while this ran; whether it finished is not k
 
 
 def general_command(words):
-    # Upstream typedWords only quotes square brackets; argv below is the unambiguous review.
+    # Upstream typedWords quotes a word holding a bracket, semicolon, paren, quote or space; argv below is the unambiguous review.
+    return 'yardr ' + ' '.join("'" + word.replace("'", "'\\''") + "'" if any(c in word for c in "[];()' ") else word for word in words)
+
+
+def general_command_old(words):
+    # The brackets-only rendering of cores before upstream yardr-5k27; still accepted.
     return 'yardr ' + ' '.join("'" + word.replace("'", "'\\''") + "'" if '[' in word or ']' in word else word for word in words)
 
 
@@ -498,8 +503,8 @@ def validate_general(ask):
             fail()
     if skill_card_words(words):
         raise NativeError('run_ask_skill_general_refused; this skill operation has its own card' + FALLBACK)
-    command = general_command(words)
-    if (run['argv'] != words or run['command'] != command or run['description'] != GENERAL_DESCRIPTION
+    commands = {general_command(words), general_command_old(words)}
+    if (run['argv'] != words or run['command'] not in commands or run['description'] != GENERAL_DESCRIPTION
             or run['back'] != '' or run.get('back_by', '') != ''):
         fail()
     does = run['does']
@@ -509,9 +514,9 @@ def validate_general(ask):
             or does[3] != GENERAL_WARNINGS[2]
             or does[4:] != [f'{i}: ({len(word)}) {general_shown(word)}' for i, word in enumerate(words, 1)]):
         fail()
-    expected = [{'class': 'code', 'line': 'brings a program the yard will run: '
-                 + ' '.join((GENERAL_DESCRIPTION + ': ' + command).split())}]
-    if ask.get('weight') != expected:
+    expected = [[{'class': 'code', 'line': 'brings a program the yard will run: '
+                 + ' '.join((GENERAL_DESCRIPTION + ': ' + command).split())}] for command in commands]
+    if ask.get('weight') not in expected:
         fail()
     return words
 

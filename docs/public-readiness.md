@@ -42,8 +42,9 @@ leaves the native ask open; unknown completion after a claimed operation's
 restart requires independent inspection and a fresh human decision, never
 automatic replay. See [operation and rollback](../bridge/OPERATIONS.md#native-general-cards).
 
-Native test setup opts in as the actual operator in an isolated home. It
-proves neither remote bootstrap nor any live setting write. Source is not
+Native test setup switches the operator setting off and on as the actual
+operator in an isolated home. It proves neither remote bootstrap nor any
+live setting write. Source is not
 installed, activated, published or live. The existing **public-source / not
 installable-release** gate remains: v0.17.0 lacks merged prerequisites and
 cannot inherit a capability claim from either main-branch pin. Installation,
